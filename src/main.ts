@@ -18,6 +18,13 @@ import {
   WorkspaceLeaf,
   requestUrl,
 } from 'obsidian'
+import {
+  feedKnowledge,
+  runDistribute,
+  runSalesReview,
+  runTopicRadar,
+  runWechatWriter,
+} from './actions'
 
 // ── 设置 ──────────────────────────────────────────────
 
@@ -26,6 +33,10 @@ interface AiLinziSettings {
   token: string
   /** 「带上当前笔记」开关的默认值 */
   attachNoteDefault: boolean
+  /** 技能产出落盘的文件夹(相对 vault 根) */
+  outputFolder: string
+  /** 选题雷达默认赛道描述(跑一次后自动记住) */
+  defaultNiche: string
 }
 
 const DEFAULT_SETTINGS: AiLinziSettings = {
@@ -33,6 +44,8 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   serverUrl: 'http://localhost:3000',
   token: '',
   attachNoteDefault: true,
+  outputFolder: 'AI霖子输出',
+  defaultNiche: '',
 }
 
 const VIEW_TYPE_CHAT = 'ai-linzi-chat'
@@ -71,6 +84,32 @@ export default class AiLinziPlugin extends Plugin {
       name: '测试与 AI霖子 的连接',
       callback: () => this.testConnection(),
     })
+
+    // ── M2:四技能 + 喂库(笔记即输入) ──
+    const skillCommands: { id: string; name: string; fn: (p: AiLinziPlugin) => Promise<void> }[] = [
+      { id: 'topic-radar', name: '选题雷达:从当前笔记提炼选题', fn: runTopicRadar },
+      { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
+      { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
+      { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
+      { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
+    ]
+    for (const c of skillCommands) {
+      this.addCommand({ id: c.id, name: c.name, callback: () => void c.fn(this) })
+    }
+
+    // 编辑器右键菜单
+    this.registerEvent(
+      this.app.workspace.on('editor-menu', (menu) => {
+        for (const c of skillCommands) {
+          menu.addItem((item) =>
+            item
+              .setTitle(`AI霖子:${c.name.split(':')[0]}`)
+              .setIcon('sparkles')
+              .onClick(() => void c.fn(this)),
+          )
+        }
+      }),
+    )
 
     this.addSettingTab(new AiLinziSettingTab(this.app, this))
   }
@@ -127,6 +166,40 @@ export default class AiLinziPlugin extends Plugin {
       throw new Error(msg)
     }
     return data
+  }
+
+  /**
+   * 调用返回纯文本流的技能路由(toTextStreamResponse)。
+   * requestUrl 会把流缓冲成完整文本;错误时这些路由返回 JSON,这里解析出友好文案。
+   */
+  async apiText(path: string, body: unknown): Promise<string> {
+    const { serverUrl, token } = this.settings
+    if (!serverUrl || !token) {
+      throw new Error('请先在设置里填写服务器地址和 Token')
+    }
+    const res = await requestUrl({
+      url: `${serverUrl.replace(/\/+$/, '')}${path}`,
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      throw: false,
+    })
+    if (res.status >= 400) {
+      let msg = `请求失败(${res.status})`
+      try {
+        const data = JSON.parse(res.text) as { error?: string }
+        if (typeof data.error === 'string') msg = data.error
+      } catch {
+        /* 非 JSON 错误体 */
+      }
+      throw new Error(msg)
+    }
+    const text = res.text?.trim()
+    if (!text) throw new Error('AI 返回了空内容,请稍后重试')
+    return text
   }
 
   async testConnection() {
@@ -338,6 +411,19 @@ class AiLinziSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings()
           })
       })
+
+    new Setting(containerEl)
+      .setName('产出落盘文件夹')
+      .setDesc('技能生成的内容保存到这里(只新建不覆盖)。相对 vault 根路径。')
+      .addText((t) =>
+        t
+          .setPlaceholder('AI霖子输出')
+          .setValue(this.plugin.settings.outputFolder)
+          .onChange(async (v) => {
+            this.plugin.settings.outputFolder = v.trim() || 'AI霖子输出'
+            await this.plugin.saveSettings()
+          }),
+      )
 
     new Setting(containerEl)
       .setName('默认带上当前笔记')
