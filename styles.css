@@ -1,0 +1,119 @@
+/* AI霖子 Obsidian 插件 · 对话面板样式 */
+.ai-linzi-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 8px;
+}
+
+.ai-linzi-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.ai-linzi-title {
+  font-weight: 600;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.ai-linzi-newchat {
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px;
+}
+
+.ai-linzi-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.ai-linzi-empty-sub {
+  font-size: var(--font-ui-smaller);
+  margin-top: 6px;
+  max-width: 220px;
+}
+
+.ai-linzi-msg {
+  display: flex;
+}
+
+.ai-linzi-msg-user {
+  justify-content: flex-end;
+}
+
+.ai-linzi-msg-body {
+  max-width: 92%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: var(--font-ui-small);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ai-linzi-msg-user .ai-linzi-msg-body {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.ai-linzi-msg-assistant .ai-linzi-msg-body {
+  background: var(--background-secondary);
+  white-space: normal;
+}
+
+.ai-linzi-msg-assistant .ai-linzi-msg-body p:first-child {
+  margin-top: 0;
+}
+
+.ai-linzi-msg-assistant .ai-linzi-msg-body p:last-child {
+  margin-bottom: 0;
+}
+
+.ai-linzi-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 8px;
+}
+
+.ai-linzi-toggle-row {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ai-linzi-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.ai-linzi-input {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+  font-size: var(--font-ui-small);
+}
+
+.ai-linzi-send {
+  align-self: flex-end;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.ai-linzi-send:disabled {
+  opacity: 0.6;
+}
