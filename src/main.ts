@@ -314,16 +314,31 @@ class ChatView extends ItemView {
 
     try {
       const noteContext = await this.currentNoteContext()
-      const data = await this.plugin.api('/api/plugin/chat', {
-        method: 'POST',
-        body: {
-          messages: this.messages,
-          sessionId: this.sessionId,
-          stream: false, // M1:非流式兜底;M3 升级流式
-          noteContext,
-        },
-      })
-      const answer = typeof data.text === 'string' ? data.text : '(空响应)'
+      // M3:优先流式(fetch 纯文本流,逐块显示);CORS/网络不支持时自动回落非流式;
+      // 业务错误(积分不足/tier/限流)不回落不重发,直接显示。
+      let answer: string
+      let streamed: { kind: 'ok'; text: string } | { kind: 'bizError'; message: string } | null
+      try {
+        streamed = await this.sendStreaming(noteContext)
+      } catch {
+        streamed = null
+      }
+      if (streamed?.kind === 'bizError') {
+        answer = `⚠️ ${streamed.message}`
+      } else if (streamed?.kind === 'ok') {
+        answer = streamed.text
+      } else {
+        const data = await this.plugin.api('/api/plugin/chat', {
+          method: 'POST',
+          body: {
+            messages: this.messages,
+            sessionId: this.sessionId,
+            stream: false,
+            noteContext,
+          },
+        })
+        answer = typeof data.text === 'string' ? data.text : '(空响应)'
+      }
       this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: answer }] })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -339,6 +354,62 @@ class ChatView extends ItemView {
       this.sendBtn.disabled = false
       this.renderMessages()
     }
+  }
+
+  /**
+   * 流式发送:POST stream:'text' → fetch 逐块读 → 实时刷在临时气泡里。
+   * 返回 {kind:'ok'} 完整文本 或 {kind:'bizError'} 服务端业务错误(调用方不回落不重发);
+   * 网络/CORS 层异常直接 throw,由调用方回落非流式。
+   */
+  private async sendStreaming(
+    noteContext: { filename: string; text: string } | undefined,
+  ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
+    const { serverUrl, token } = this.plugin.settings
+    const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/api/plugin/chat`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messages: this.messages,
+        sessionId: this.sessionId,
+        stream: 'text',
+        noteContext,
+      }),
+    })
+    if (!res.ok) {
+      let msg = `请求失败(${res.status})`
+      try {
+        const data = (await res.json()) as { error?: string }
+        if (typeof data.error === 'string') msg = data.error
+      } catch {
+        /* 非 JSON */
+      }
+      return { kind: 'bizError', message: msg }
+    }
+    if (!res.body) throw new Error('no stream body')
+
+    // 临时流式气泡
+    const row = this.listEl.createDiv({ cls: 'ai-linzi-msg ai-linzi-msg-assistant' })
+    const body = row.createDiv({ cls: 'ai-linzi-msg-body' })
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let full = ''
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        full += decoder.decode(value, { stream: true })
+        body.setText(full)
+        this.listEl.scrollTop = this.listEl.scrollHeight
+      }
+      full += decoder.decode()
+    } finally {
+      row.remove() // 定稿气泡由 renderMessages 统一渲染(markdown)
+    }
+    if (!full.trim()) throw new Error('empty stream')
+    return { kind: 'ok', text: full }
   }
 
   private renderMessages(thinking = false) {
