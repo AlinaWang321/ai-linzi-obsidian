@@ -1,5 +1,5 @@
 /**
- * AI霖子 Obsidian 插件 · v0.1(M1 骨架)
+ * AI霖子 Obsidian 插件 · 学员内容工作流
  *
  * 已实现:设置页(服务器地址/Token/测试连接) + 侧边栏对话面板(可带当前笔记上下文)
  * M1 用非流式模式(requestUrl 绕 CORS,稳定优先);流式 fetch 升级排 M3。
@@ -45,6 +45,10 @@ import {
   isArticleIllustrationEditIntent,
   type PluginSkillSuggestion,
 } from './skill-suggest'
+import {
+  ContentDashboardView,
+  VIEW_TYPE_CONTENT_DASHBOARD,
+} from './content-dashboard'
 
 /** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -172,8 +176,10 @@ export default class AiLinziPlugin extends Plugin {
     )
 
     this.registerView(VIEW_TYPE_CHAT, (leaf) => new ChatView(leaf, this))
+    this.registerView(VIEW_TYPE_CONTENT_DASHBOARD, (leaf) => new ContentDashboardView(leaf, this))
 
     this.addRibbonIcon('sparkles', 'AI霖子对话', () => this.activateChatView())
+    this.addRibbonIcon('layout-dashboard', 'AI霖子内容发布看板', () => this.activateContentDashboard())
 
     this.addCommand({
       id: 'open-chat',
@@ -185,6 +191,12 @@ export default class AiLinziPlugin extends Plugin {
       id: 'test-connection',
       name: '测试与 AI霖子 的连接',
       callback: () => this.testConnection(),
+    })
+
+    this.addCommand({
+      id: 'open-content-dashboard',
+      name: '打开内容发布看板',
+      callback: () => this.activateContentDashboard(),
     })
 
     // ── M2:四技能 + 喂库(笔记即输入);三入口共用 SKILL_ACTIONS ──
@@ -258,6 +270,18 @@ export default class AiLinziPlugin extends Plugin {
     const leaf = workspace.getRightLeaf(false)
     if (!leaf) return
     await leaf.setViewState({ type: VIEW_TYPE_CHAT, active: true })
+    workspace.revealLeaf(leaf)
+  }
+
+  async activateContentDashboard() {
+    const { workspace } = this.app
+    const existing = workspace.getLeavesOfType(VIEW_TYPE_CONTENT_DASHBOARD)
+    if (existing.length > 0) {
+      workspace.revealLeaf(existing[0])
+      return
+    }
+    const leaf = workspace.getLeaf('tab')
+    await leaf.setViewState({ type: VIEW_TYPE_CONTENT_DASHBOARD, active: true })
     workspace.revealLeaf(leaf)
   }
 
@@ -433,7 +457,9 @@ class ChatView extends ItemView {
     }
     const kbBtn = actionsRow.createEl('button', { text: '📚 存入知识库', cls: 'ai-linzi-action-btn' })
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
-    actionsRow.createSpan({ text: '作用于当前打开的笔记', cls: 'ai-linzi-actions-hint' })
+    const dashboardBtn = actionsRow.createEl('button', { text: '📊 内容看板', cls: 'ai-linzi-action-btn' })
+    dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
+    actionsRow.createSpan({ text: '技能作用于当前打开的笔记', cls: 'ai-linzi-actions-hint' })
 
     const toggleRow = footer.createDiv({ cls: 'ai-linzi-toggle-row' })
     const label = toggleRow.createEl('label', { cls: 'ai-linzi-toggle' })

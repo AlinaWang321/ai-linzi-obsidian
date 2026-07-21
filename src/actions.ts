@@ -13,6 +13,7 @@ import {
   stripFrontmatter,
 } from './article-format'
 import { extractExactTextHints } from './skill-suggest'
+import { canonicalContentFields } from './content-state'
 
 // ── 与服务端对齐的常量 ─────────────────────────────
 
@@ -53,6 +54,11 @@ function isoDate(): string {
   const d = new Date()
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+function contentId(): string {
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)
+  return `ailinzi-${stamp}-${Math.random().toString(36).slice(2, 8)}`
 }
 
 function sanitizeTitle(s: string): string {
@@ -114,13 +120,35 @@ export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Prom
     path = normalizePath(`${folder}/${base}_${i}.md`)
   }
 
+  const date = isoDate()
+  const canonical = canonicalContentFields({
+    skill: spec.skill,
+    platform: spec.platform,
+    date,
+    contentId: contentId(),
+  })
+  const contentLines = canonical
+    ? [
+        ...Object.entries(canonical).map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
+        '公众号草稿箱时间: ',
+        '公众号发布日期: ',
+        '公众号链接: ',
+        '视频生成时间: ',
+        '视频发布日期: ',
+        '视频链接: ',
+        '小红书生成时间: ',
+        '小红书发布日期: ',
+        '小红书链接: ',
+      ]
+    : []
   const fm = [
     '---',
     `title: ${JSON.stringify(spec.title)}`,
     `来源技能: ${spec.skill}`,
-    `状态: 草稿`,
+    `状态: ${canonical?.['内容阶段'] ?? '草稿'}`,
     `平台: ${spec.platform}`,
-    `日期: ${isoDate()}`,
+    `日期: ${date}`,
+    ...contentLines,
     spec.summary ? `摘要: ${JSON.stringify(spec.summary)}` : null,
     spec.titleCandidates?.length ? `候选标题: ${JSON.stringify(spec.titleCandidates.slice(0, 5))}` : null,
     spec.sourceNote ? `关联笔记: "[[${spec.sourceNote.basename}]]"` : null,
@@ -275,7 +303,7 @@ export async function runWechatWriter(plugin: AiLinziPlugin) {
       material: clip(stripFrontmatter(note.text), LIMITS.WECHAT_MATERIAL_MAX, '笔记素材'),
     })
     const article = prepareWechatArticle(text)
-    await writeOutput(plugin, {
+    const articleFile = await writeOutput(plugin, {
       skill: '公众号写作',
       platform: '公众号',
       title: article.titleCandidates[0] || input.topic.trim(),
@@ -284,6 +312,14 @@ export async function runWechatWriter(plugin: AiLinziPlugin) {
       titleCandidates: article.titleCandidates,
       sourceNote: note.file,
     })
+    const sourceFm = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter
+    if (sourceFm?.['内容类型'] === '选题' || sourceFm?.['来源技能'] === '选题雷达') {
+      await plugin.app.fileManager.processFrontMatter(note.file, (fm) => {
+        fm['状态'] = '已生成草稿'
+        fm['内容阶段'] = '已生成草稿'
+        fm['关联文章'] = `[[${articleFile.basename}]]`
+      })
+    }
     new Notice('✅ 公众号文章已生成并落盘')
   } catch (e) {
     new Notice(`❌ 公众号写作:${e instanceof Error ? e.message : String(e)}`, 8000)
@@ -615,13 +651,13 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
   const input = await new PromptModal(plugin.app, '文章配图 · 极简小清新手绘', '先生成配图方案', [
     {
       key: 'count',
-      label: '正文插图几张?(2-4)',
+      label: '正文插图几张?(2-5)',
       desc: '会额外规划 1 张封面。先免费查看每张图的核心意思、放置位置和画面文字；确认后才生图并扣积分。使用学员通用小人偶，不使用 AI霖子个人手绘 IP。',
       initial: '3',
     },
   ]).result
   if (!input) return
-  const count = Math.min(4, Math.max(2, parseInt(input.count) || 3))
+  const count = Math.min(5, Math.max(2, parseInt(input.count) || 3))
 
   const planning = new Notice('🤖 正在读文章并规划配图点…', 0)
   try {
@@ -657,7 +693,11 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       generating.hide()
     }
     const imgs = data.images ?? []
-    if (!data.cover && imgs.length === 0) throw new Error('没有生成任何图片')
+    const expectedTotal = confirmed.images.length + (confirmed.cover ? 1 : 0)
+    const actualTotal = imgs.length + (data.cover ? 1 : 0)
+    if (imgs.length !== confirmed.images.length || Boolean(data.cover) !== Boolean(confirmed.cover)) {
+      throw new Error(`配图没有按确认方案补齐(${actualTotal}/${expectedTotal}),已停止写入当前文章`)
+    }
 
     const folder = normalizePath(
       `${plugin.settings.outputFolder || 'AI霖子输出'}/配图/${today()}_${sanitizeTitle(note.file.basename)}`,
@@ -697,9 +737,8 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       if (coverPath) out = insertCoverEmbed(out, coverPath)
       return out
     })
-    const failMsg = data.failedCount ? `;${data.failedCount} 张生成失败(未扣积分)` : ''
     new Notice(
-      `✅ ${coverPath ? '封面 + ' : ''}${saved.length} 张正文插图已插入文章(${hits} 张按段落定位)${failMsg}\n方案和提示词已保存:${promptsPath}`,
+      `✅ 已按确认方案生成 ${actualTotal} 张图片：${coverPath ? '1 张封面 + ' : ''}${saved.length} 张正文插图(${hits} 张按段落定位)\n方案和提示词已保存:${promptsPath}`,
       10000,
     )
   } catch (e) {

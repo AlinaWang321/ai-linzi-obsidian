@@ -340,8 +340,16 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
 
     // 回写状态到源笔记 frontmatter
     await plugin.app.fileManager.processFrontMatter(note.file, (fm) => {
-      fm['状态'] = '已进草稿箱'
-      fm['草稿箱时间'] = new Date().toISOString().slice(0, 10)
+      const now = new Date()
+      const sentAt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      fm['状态'] = '已发送公众号草稿箱'
+      fm['内容类型'] = '公众号文章'
+      fm['内容阶段'] = '已生成草稿'
+      fm['公众号状态'] = '已发送公众号草稿箱'
+      fm['公众号草稿箱时间'] = sentAt
+      fm['草稿箱时间'] = sentAt
+      fm['视频状态'] = fm['视频状态'] || '未开始'
+      fm['小红书状态'] = fm['小红书状态'] || '未开始'
     })
     n.hide()
     new Notice(`✅ 已进入公众号草稿箱!\n去 公众号后台 → 草稿箱 预览和群发\n(标题:${title})`, 10000)
