@@ -751,6 +751,24 @@ class ChatView extends ItemView {
             })
             new Notice(`✅ 已存为笔记:${f.basename}`)
           }
+          // 用这条回复覆盖当前笔记正文(保留 frontmatter;显式确认;Obsidian 文件恢复可回滚)
+          const updateBtn = bar.createEl('button', { text: '✏️ 更新当前笔记' })
+          updateBtn.onclick = async () => {
+            const file = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+            if (!file) {
+              new Notice('没有找到当前打开的笔记')
+              return
+            }
+            const ok = window.confirm(
+              `将用这条回复替换笔记「${file.basename}」的正文(文档属性 frontmatter 保留)。\n\n改错了不用慌:笔记内可 ⌘Z 撤销,或 设置 → 文件恢复 里回滚历史版本。\n\n确定更新?`,
+            )
+            if (!ok) return
+            await this.app.vault.process(file, (content) => {
+              const fm = /^---\n[\s\S]*?\n---\n/.exec(content)
+              return (fm ? fm[0] : '') + text.trim() + '\n'
+            })
+            new Notice(`✅ 已更新「${file.basename}」(可用 ⌘Z 或「文件恢复」回滚)`)
+          }
         }
       } else {
         body.setText(text)
