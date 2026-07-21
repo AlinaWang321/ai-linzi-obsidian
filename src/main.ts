@@ -11,10 +11,12 @@ import {
   App,
   ItemView,
   MarkdownRenderer,
+  Menu,
   Notice,
   Plugin,
   PluginSettingTab,
   Setting,
+  TFile,
   WorkspaceLeaf,
   requestUrl,
 } from 'obsidian'
@@ -25,6 +27,19 @@ import {
   runTopicRadar,
   runWechatWriter,
 } from './actions'
+
+/** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
+export const SKILL_ACTIONS: {
+  id: string
+  name: string
+  fn: (p: AiLinziPlugin) => Promise<void>
+}[] = [
+  { id: 'topic-radar', name: '选题雷达:从当前笔记提炼选题', fn: runTopicRadar },
+  { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
+  { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
+  { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
+  { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
+]
 
 // ── 设置 ──────────────────────────────────────────────
 
@@ -65,9 +80,21 @@ function uid(): string {
 
 export default class AiLinziPlugin extends Plugin {
   settings: AiLinziSettings = DEFAULT_SETTINGS
+  /**
+   * 最近一次激活的笔记。侧边面板(对话)获得焦点时 getActiveFile() 会返回 null,
+   * 面板上的「调用技能/存入知识库」按钮靠这个记录知道用户"当前开着哪篇笔记"。
+   */
+  lastActiveFile: TFile | null = null
 
   async onload() {
     await this.loadSettings()
+
+    this.registerEvent(
+      this.app.workspace.on('active-leaf-change', () => {
+        const f = this.app.workspace.getActiveFile()
+        if (f) this.lastActiveFile = f
+      }),
+    )
 
     this.registerView(VIEW_TYPE_CHAT, (leaf) => new ChatView(leaf, this))
 
@@ -85,22 +112,15 @@ export default class AiLinziPlugin extends Plugin {
       callback: () => this.testConnection(),
     })
 
-    // ── M2:四技能 + 喂库(笔记即输入) ──
-    const skillCommands: { id: string; name: string; fn: (p: AiLinziPlugin) => Promise<void> }[] = [
-      { id: 'topic-radar', name: '选题雷达:从当前笔记提炼选题', fn: runTopicRadar },
-      { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
-      { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
-      { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
-      { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
-    ]
-    for (const c of skillCommands) {
+    // ── M2:四技能 + 喂库(笔记即输入);三入口共用 SKILL_ACTIONS ──
+    for (const c of SKILL_ACTIONS) {
       this.addCommand({ id: c.id, name: c.name, callback: () => void c.fn(this) })
     }
 
-    // 编辑器右键菜单
+    // 编辑器右键菜单(编辑模式正文;对话面板按钮是主入口,这里是顺手入口)
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu) => {
-        for (const c of skillCommands) {
+        for (const c of SKILL_ACTIONS) {
           menu.addItem((item) =>
             item
               .setTitle(`AI霖子:${c.name.split(':')[0]}`)
@@ -267,6 +287,26 @@ class ChatView extends ItemView {
     // 底部输入区
     const footer = root.createDiv({ cls: 'ai-linzi-footer' })
 
+    // 动作按钮行:技能与喂库的主入口(比正文右键菜单直观,对小白友好)
+    const actionsRow = footer.createDiv({ cls: 'ai-linzi-actions' })
+    const skillBtn = actionsRow.createEl('button', { text: '⚡ 调用技能', cls: 'ai-linzi-action-btn' })
+    skillBtn.onclick = (evt: MouseEvent) => {
+      const menu = new Menu()
+      for (const c of SKILL_ACTIONS) {
+        if (c.id === 'feed-knowledge') continue
+        menu.addItem((item) =>
+          item
+            .setTitle(c.name)
+            .setIcon('sparkles')
+            .onClick(() => void c.fn(this.plugin)),
+        )
+      }
+      menu.showAtMouseEvent(evt)
+    }
+    const kbBtn = actionsRow.createEl('button', { text: '📚 存入知识库', cls: 'ai-linzi-action-btn' })
+    kbBtn.onclick = () => void feedKnowledge(this.plugin)
+    actionsRow.createSpan({ text: '作用于当前打开的笔记', cls: 'ai-linzi-actions-hint' })
+
     const toggleRow = footer.createDiv({ cls: 'ai-linzi-toggle-row' })
     const label = toggleRow.createEl('label', { cls: 'ai-linzi-toggle' })
     this.attachToggleEl = label.createEl('input', { type: 'checkbox' })
@@ -278,7 +318,7 @@ class ChatView extends ItemView {
 
     this.inputEl = footer.createEl('textarea', {
       cls: 'ai-linzi-input',
-      attr: { placeholder: '问军师任何事…(Enter 发送,Shift+Enter 换行)' },
+      attr: { placeholder: '问 AI霖子 任何事…(Enter 发送,Shift+Enter 换行)' },
     })
     this.inputEl.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
@@ -437,7 +477,7 @@ class ChatView extends ItemView {
     }
     if (thinking) {
       const row = this.listEl.createDiv({ cls: 'ai-linzi-msg ai-linzi-msg-assistant' })
-      row.createDiv({ cls: 'ai-linzi-msg-body', text: '军师思考中…' })
+      row.createDiv({ cls: 'ai-linzi-msg-body', text: 'AI霖子思考中…' })
     }
     this.listEl.scrollTop = this.listEl.scrollHeight
   }

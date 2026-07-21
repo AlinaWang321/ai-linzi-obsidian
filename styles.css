@@ -117,3 +117,23 @@
 .ai-linzi-send:disabled {
   opacity: 0.6;
 }
+
+.ai-linzi-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ai-linzi-action-btn {
+  font-size: var(--font-ui-smaller);
+  padding: 4px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.ai-linzi-actions-hint {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  margin-left: auto;
+}

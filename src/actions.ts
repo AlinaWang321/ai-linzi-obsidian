@@ -59,8 +59,10 @@ function clip(text: string, max: number, what: string): string {
   return text.slice(0, max)
 }
 
-async function getActiveNote(app: App): Promise<{ file: TFile; text: string } | null> {
-  const file = app.workspace.getActiveFile()
+async function getActiveNote(plugin: AiLinziPlugin): Promise<{ file: TFile; text: string } | null> {
+  const app = plugin.app
+  // 对话面板获得焦点时 getActiveFile() 为 null → 回落到最近激活的笔记
+  const file = app.workspace.getActiveFile() ?? plugin.lastActiveFile
   if (!file) {
     new Notice('请先打开一篇笔记再运行技能')
     return null
@@ -202,7 +204,7 @@ function runningNotice(label: string): Notice {
 // ── 四个技能动作 ────────────────────────────────────
 
 export async function runTopicRadar(plugin: AiLinziPlugin) {
-  const note = await getActiveNote(plugin.app)
+  const note = await getActiveNote(plugin)
   if (!note) return
   const input = await new PromptModal(plugin.app, '选题雷达 · 从当前笔记提炼选题', '生成选题', [
     {
@@ -241,7 +243,7 @@ export async function runTopicRadar(plugin: AiLinziPlugin) {
 }
 
 export async function runWechatWriter(plugin: AiLinziPlugin) {
-  const note = await getActiveNote(plugin.app)
+  const note = await getActiveNote(plugin)
   if (!note) return
   const input = await new PromptModal(plugin.app, '公众号写作 · 当前笔记作素材', '开始写作', [
     {
@@ -275,7 +277,7 @@ export async function runWechatWriter(plugin: AiLinziPlugin) {
 }
 
 export async function runDistribute(plugin: AiLinziPlugin) {
-  const note = await getActiveNote(plugin.app)
+  const note = await getActiveNote(plugin)
   if (!note) return
   const article = stripFrontmatter(note.text)
   if (article.length < LIMITS.DISTRIBUTE_ARTICLE_MIN) {
@@ -313,7 +315,7 @@ export async function runDistribute(plugin: AiLinziPlugin) {
 }
 
 export async function runSalesReview(plugin: AiLinziPlugin) {
-  const note = await getActiveNote(plugin.app)
+  const note = await getActiveNote(plugin)
   if (!note) return
   const transcript = stripFrontmatter(note.text)
   if (transcript.length < LIMITS.SALES_REVIEW_TRANSCRIPT_MIN) {
@@ -411,7 +413,7 @@ class KbConfirmModal extends Modal {
 }
 
 export async function feedKnowledge(plugin: AiLinziPlugin) {
-  const note = await getActiveNote(plugin.app)
+  const note = await getActiveNote(plugin)
   if (!note) return
 
   const n = new Notice('🤖 AI 正在阅读笔记、推荐章节…', 0)
