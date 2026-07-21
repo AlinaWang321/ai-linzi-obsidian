@@ -33,12 +33,18 @@ import {
 import {
   feedKnowledge,
   runArticleIllustration,
+  runArticleIllustrationEdit,
   runDistribute,
   runSalesReview,
   runTopicRadar,
   runWechatWriter,
   writeOutput,
 } from './actions'
+import {
+  extractPluginSkillSuggestions,
+  isArticleIllustrationEditIntent,
+  type PluginSkillSuggestion,
+} from './skill-suggest'
 
 /** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -755,9 +761,11 @@ class ChatView extends ItemView {
             break
           }
         }
-        const patch = parseNotePatch(text)
+        const skillResult = extractPluginSkillSuggestions(text, previousUserText)
+        const cleanText = skillResult.cleanText
+        const patch = parseNotePatch(cleanText)
         const editReply = this.mode === 'chat' && isNoteEditIntent(previousUserText)
-        void MarkdownRenderer.render(this.app, patch?.displayText ?? text, body, '', this)
+        void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
         if (patch) this.renderPatchCards(row, patch)
         // 每条 AI 回复都能一键落盘——内容留在用户自己的 Obsidian 里才是关键(Alina 2026-07-21)
         if (text.trim().length > 0 && !text.startsWith('⚠️')) {
@@ -768,6 +776,16 @@ class ChatView extends ItemView {
               cls: 'ai-linzi-apply-patch',
             })
             applyBtn.onclick = () => void this.applyPatchToCurrentNote(patch, applyBtn)
+          }
+          for (const suggestion of skillResult.suggestions) {
+            const skillBtn = bar.createEl('button', {
+              text:
+                suggestion.actionId === 'illustration' && isArticleIllustrationEditIntent(previousUserText)
+                  ? '🖼️ 修改当前文章配图'
+                  : `⚡ ${suggestion.label}`,
+              cls: 'ai-linzi-suggested-skill',
+            })
+            skillBtn.onclick = () => void this.runSuggestedSkill(suggestion, previousUserText)
           }
           const saveBtn = bar.createEl('button', { text: '📝 存为笔记' })
           saveBtn.onclick = async () => {
@@ -835,6 +853,22 @@ class ChatView extends ItemView {
       card.createDiv({ text: op.new || '（删除）', cls: 'ai-linzi-patch-text ai-linzi-patch-new' })
       if (op.reason) card.createDiv({ text: op.reason, cls: 'ai-linzi-patch-reason' })
     })
+  }
+
+  private async runSuggestedSkill(
+    suggestion: PluginSkillSuggestion,
+    previousUserText: string,
+  ): Promise<void> {
+    if (suggestion.actionId === 'illustration' && isArticleIllustrationEditIntent(previousUserText)) {
+      await runArticleIllustrationEdit(this.plugin, previousUserText)
+      return
+    }
+    const action = SKILL_ACTIONS.find((item) => item.id === suggestion.actionId)
+    if (!action) {
+      new Notice(`插件暂不支持「${suggestion.label}」`)
+      return
+    }
+    await action.fn(this.plugin)
   }
 
   private async applyPatchToCurrentNote(patch: ParsedNotePatch, button: HTMLButtonElement): Promise<void> {

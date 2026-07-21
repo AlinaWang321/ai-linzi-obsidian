@@ -220,6 +220,18 @@
   filter: brightness(1.06);
 }
 
+.ai-linzi-msg-actions .ai-linzi-suggested-skill {
+  color: #0057ff;
+  background: rgba(0, 87, 255, 0.08);
+  border-color: rgba(0, 87, 255, 0.35);
+  font-weight: 600;
+}
+
+.ai-linzi-msg-actions .ai-linzi-suggested-skill:hover {
+  color: #0045cc;
+  background: rgba(0, 87, 255, 0.13);
+}
+
 /* Claudian 式局部修改预览：只展示发生变化的原文与新文，不再重复整篇文章。 */
 .ai-linzi-note-patch {
   display: flex;
@@ -301,4 +313,15 @@
   margin: 6px 0 0;
   color: var(--text-muted);
   line-height: 1.55;
+}
+
+.ai-linzi-image-edit-preview {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  margin: 10px 0 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  object-fit: contain;
+  background: #fff;
 }

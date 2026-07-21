@@ -12,6 +12,7 @@ import {
   prepareWechatArticle,
   stripFrontmatter,
 } from './article-format'
+import { extractExactTextHints } from './skill-suggest'
 
 // ── 与服务端对齐的常量 ─────────────────────────────
 
@@ -704,5 +705,251 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
   } catch (e) {
     planning.hide()
     new Notice(`❌ 文章配图:${e instanceof Error ? e.message : String(e)}`, 10000)
+  }
+}
+
+// ── 从主对话修改当前文章里的单张配图 ─────────────────
+
+interface ArticleImageEntry {
+  file: TFile
+  linkTargets: string[]
+}
+
+interface IllustrationEditRequest {
+  image: ArticleImageEntry
+  instruction: string
+  exactText: string[]
+}
+
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp'])
+
+function findArticleImages(plugin: AiLinziPlugin, noteFile: TFile, noteText: string): ArticleImageEntry[] {
+  const byPath = new Map<string, ArticleImageEntry>()
+  const addTarget = (rawTarget: string) => {
+    const target = rawTarget
+      .trim()
+      .replace(/^<|>$/g, '')
+      .split('|')[0]
+      .split('#')[0]
+      .trim()
+    if (!target || /^https?:|^data:/i.test(target)) return
+    let decoded = target
+    try {
+      decoded = decodeURIComponent(target)
+    } catch {
+      /* 不是 URI 编码就用原值 */
+    }
+    const file = plugin.app.metadataCache.getFirstLinkpathDest(decoded, noteFile.path)
+    if (!(file instanceof TFile) || !IMAGE_EXTENSIONS.has(file.extension.toLowerCase())) return
+    const existing = byPath.get(file.path)
+    if (existing) {
+      if (!existing.linkTargets.includes(rawTarget)) existing.linkTargets.push(rawTarget)
+    } else {
+      byPath.set(file.path, { file, linkTargets: [rawTarget] })
+    }
+  }
+  for (const match of noteText.matchAll(/!\[\[([^\]]+)\]\]/g)) addTarget(match[1])
+  for (const match of noteText.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) addTarget(match[1])
+  return [...byPath.values()]
+}
+
+function splitExactText(value: string): string[] {
+  const out: string[] = []
+  for (const raw of value.split(/[\n/／、，,|｜]+/)) {
+    const text = raw.trim().replace(/^[「『“‘"']+|[」』”’"']+$/g, '')
+    if (text.length < 2 || text.length > 20 || out.includes(text)) continue
+    out.push(text)
+  }
+  return out.slice(0, 5)
+}
+
+class IllustrationEditModal extends Modal {
+  private submitted = false
+  private resolve!: (value: IllustrationEditRequest | null) => void
+  readonly result: Promise<IllustrationEditRequest | null>
+
+  constructor(
+    app: App,
+    private images: ArticleImageEntry[],
+    private initialInstruction: string,
+  ) {
+    super(app)
+    this.result = new Promise((resolve) => (this.resolve = resolve))
+    this.open()
+  }
+
+  onOpen() {
+    this.titleEl.setText('修改当前文章配图')
+    this.contentEl.createEl('p', {
+      text: '选择文章里的图片并写清修改要求。AI 会参考原图只改这一张，生成成功后自动备份并覆盖原图。',
+      cls: 'ai-linzi-plan-intro',
+    })
+    let selected = this.images[0]
+    let instruction = this.initialInstruction.trim()
+    let exactText = extractExactTextHints(instruction).join(' / ')
+    const preview = this.contentEl.createEl('img', { cls: 'ai-linzi-image-edit-preview' })
+    const refreshPreview = () => {
+      preview.src = this.app.vault.getResourcePath(selected.file)
+      preview.alt = selected.file.basename
+    }
+
+    new Setting(this.contentEl)
+      .setName('要修改哪张图?')
+      .addDropdown((dropdown) => {
+        this.images.forEach((item, index) => {
+          dropdown.addOption(item.file.path, `${index + 1}. ${item.file.basename}`)
+        })
+        dropdown.setValue(selected.file.path).onChange((path) => {
+          selected = this.images.find((item) => item.file.path === path) ?? this.images[0]
+          refreshPreview()
+        })
+      })
+
+    new Setting(this.contentEl)
+      .setName('修改要求')
+      .setDesc('例如:把标题里的错字改对，其他画面、人物和构图都保持不变。')
+      .addTextArea((input) => {
+        input.setValue(instruction).onChange((value) => (instruction = value))
+        input.inputEl.rows = 3
+        input.inputEl.style.width = '100%'
+      })
+
+    new Setting(this.contentEl)
+      .setName('必须写对的文字')
+      .setDesc('用 / 分隔，最多 5 组。系统会在出图后逐字识别，不通过就自动重试。')
+      .addText((input) => {
+        input.setValue(exactText).onChange((value) => (exactText = value))
+        input.inputEl.style.width = '100%'
+      })
+
+    refreshPreview()
+    new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
+      .addButton((button) =>
+        button
+          .setButtonText('生成修改版并覆盖原图')
+          .setCta()
+          .onClick(() => {
+            if (instruction.trim().length < 2) {
+              new Notice('请先写清楚图片要修改什么')
+              return
+            }
+            this.submitted = true
+            this.resolve({ image: selected, instruction: instruction.trim(), exactText: splitExactText(exactText) })
+            this.close()
+          }),
+      )
+  }
+
+  onClose() {
+    if (!this.submitted) this.resolve(null)
+    this.contentEl.empty()
+  }
+}
+
+async function imageFileToReferenceDataUrl(plugin: AiLinziPlugin, file: TFile): Promise<string> {
+  const binary = await plugin.app.vault.readBinary(file)
+  const mime = file.extension.toLowerCase() === 'png' ? 'image/png' : 'image/jpeg'
+  const objectUrl = URL.createObjectURL(new Blob([new Uint8Array(binary)], { type: mime }))
+  try {
+    const image = new Image()
+    image.src = objectUrl
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve()
+      image.onerror = () => reject(new Error('无法读取当前配图'))
+    })
+    const scale = Math.min(1, 1600 / image.naturalWidth, 1000 / image.naturalHeight)
+    const width = Math.max(1, Math.round(image.naturalWidth * scale))
+    const height = Math.max(1, Math.round(image.naturalHeight * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('图片压缩失败')
+    ctx.fillStyle = '#FFFFFF'
+    ctx.fillRect(0, 0, width, height)
+    ctx.drawImage(image, 0, 0, width, height)
+    return canvas.toDataURL('image/jpeg', 0.88)
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+function timestampForFilename(): string {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
+export async function runArticleIllustrationEdit(plugin: AiLinziPlugin, initialInstruction = ''): Promise<void> {
+  const note = await getActiveNote(plugin)
+  if (!note) return
+  const images = findArticleImages(plugin, note.file, note.text)
+  if (images.length === 0) {
+    new Notice('当前笔记里没有找到本地 PNG/JPG/WebP 配图')
+    return
+  }
+  const request = await new IllustrationEditModal(plugin.app, images, initialInstruction).result
+  if (!request) return
+
+  const working = new Notice('🎨 正在参考原图修改，并逐字检查图片文字…', 0)
+  try {
+    const imageDataUrl = await imageFileToReferenceDataUrl(plugin, request.image.file)
+    const article = prepareWechatArticle(note.text).body
+    const data = (await plugin.api('/api/skills/article-illustration', {
+      method: 'POST',
+      body: {
+        article: clip(article, 20_000, '文章'),
+        mode: 'edit',
+        edit: {
+          imageDataUrl,
+          instruction: request.instruction,
+          exactText: request.exactText,
+        },
+      },
+    })) as { imageUrl?: string; prompt?: string }
+    if (!data.imageUrl) throw new Error('服务端没有返回修改后的图片')
+
+    const originalBinary = await plugin.app.vault.readBinary(request.image.file)
+    const modifiedBinary = await fetchImageBinary(data.imageUrl)
+    if (request.image.file.extension.toLowerCase() === 'png') {
+      const parent = request.image.file.parent?.path ?? ''
+      const backupPath = uniqueVaultPath(
+        plugin,
+        normalizePath(
+          `${parent ? `${parent}/` : ''}${request.image.file.basename}_修改前_${timestampForFilename()}.png`,
+        ),
+      )
+      await plugin.app.vault.createBinary(backupPath, originalBinary)
+      await plugin.app.vault.modifyBinary(request.image.file, modifiedBinary)
+      new Notice(`✅ 已修改并覆盖「${request.image.file.name}」\n原图备份:${backupPath}`, 10000)
+    } else {
+      const parent = request.image.file.parent?.path ?? ''
+      const newPath = uniqueVaultPath(
+        plugin,
+        normalizePath(`${parent ? `${parent}/` : ''}${request.image.file.basename}_修改版.png`),
+      )
+      await plugin.app.vault.createBinary(newPath, modifiedBinary)
+      await plugin.app.vault.process(note.file, (content) => {
+        let out = content
+        for (const target of request.image.linkTargets) out = out.split(target).join(newPath)
+        return out
+      })
+      new Notice(`✅ 已生成修改版并替换文章引用:${newPath}`, 10000)
+    }
+
+    const promptFile = request.image.file.parent
+      ? plugin.app.vault.getAbstractFileByPath(`${request.image.file.parent.path}/AI霖子正文配图_PROMPTS.md`)
+      : null
+    if (promptFile instanceof TFile && data.prompt) {
+      await plugin.app.vault.append(
+        promptFile,
+        `\n\n---\n\n## 单图修改 · ${request.image.file.name}\n\n- 修改要求:${request.instruction}\n- 文字白名单:${request.exactText.join(' / ') || '无'}\n\n### 修改提示词\n\n${data.prompt}\n`,
+      )
+    }
+  } catch (error) {
+    new Notice(`❌ 修改配图:${error instanceof Error ? error.message : String(error)}`, 10000)
+  } finally {
+    working.hide()
   }
 }
