@@ -88,6 +88,17 @@ interface WireMessage {
   parts: { type: 'text'; text: string }[]
 }
 
+/** 本地保存的会话(存插件目录 conversations.json,升级/重启不丢) */
+interface SavedConvo {
+  id: string
+  mode: 'chat' | 'interview'
+  title: string
+  updatedAt: number
+  messages: WireMessage[]
+}
+
+const MAX_SAVED_CONVOS = 30
+
 function uid(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
@@ -185,6 +196,33 @@ export default class AiLinziPlugin extends Plugin {
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData())
+  }
+
+  // ── 会话本地持久化(独立文件,不进 data.json 防设置写放大) ──
+
+  private convosPath(): string {
+    return `${this.manifest.dir}/conversations.json`
+  }
+
+  async loadConvos(): Promise<SavedConvo[]> {
+    try {
+      const raw = await this.app.vault.adapter.read(this.convosPath())
+      const list = JSON.parse(raw) as SavedConvo[]
+      return Array.isArray(list) ? list : []
+    } catch {
+      return []
+    }
+  }
+
+  async saveConvo(convo: SavedConvo): Promise<void> {
+    const list = (await this.loadConvos()).filter((c) => c.id !== convo.id)
+    list.unshift(convo)
+    list.sort((a, b) => b.updatedAt - a.updatedAt)
+    await this.app.vault.adapter.write(this.convosPath(), JSON.stringify(list.slice(0, MAX_SAVED_CONVOS)))
+  }
+
+  async deleteAllConvos(): Promise<void> {
+    await this.app.vault.adapter.write(this.convosPath(), '[]')
   }
 
   async saveSettings() {
@@ -328,13 +366,18 @@ class ChatView extends ItemView {
     root.empty()
     root.addClass('ai-linzi-root')
 
-    // 顶栏:新对话
+    // 顶栏:历史 + 新对话
     const topbar = root.createDiv({ cls: 'ai-linzi-topbar' })
-    topbar.createSpan({ text: 'AI霖子 · 你的商业军师', cls: 'ai-linzi-title' })
-    const newBtn = topbar.createEl('button', { text: '新对话', cls: 'ai-linzi-newchat' })
+    topbar.createSpan({ text: 'AI霖子 · 你的 24 小时商业教练', cls: 'ai-linzi-title' })
+    const btns = topbar.createDiv({ cls: 'ai-linzi-topbar-btns' })
+    const histBtn = btns.createEl('button', { text: '历史', cls: 'ai-linzi-newchat' })
+    histBtn.onclick = (evt: MouseEvent) => void this.showHistoryMenu(evt)
+    const newBtn = btns.createEl('button', { text: '新对话', cls: 'ai-linzi-newchat' })
     newBtn.onclick = () => {
+      void this.persistNow() // 旧对话先落盘
       this.messages = []
       this.sessionId = uid()
+      if (this.mode === 'interview') this.exitInterviewMode()
       this.renderMessages()
     }
 
@@ -397,6 +440,77 @@ class ChatView extends ItemView {
     this.sendBtn.onclick = () => void this.send()
 
     this.renderMessages()
+    // 恢复最近一次会话(升级/重启后不丢)
+    void this.restoreLatest()
+  }
+
+  /** 每轮对话后自动保存;消息为空不存 */
+  private async persistNow(): Promise<void> {
+    if (this.messages.length === 0) return
+    const firstUser = this.messages.find((m) => m.role === 'user')
+    const title = (firstUser?.parts.map((p) => p.text).join('') ?? '对话').slice(0, 24)
+    await this.plugin.saveConvo({
+      id: this.sessionId,
+      mode: this.mode,
+      title,
+      updatedAt: Date.now(),
+      messages: this.messages,
+    })
+  }
+
+  private async restoreLatest(): Promise<void> {
+    if (this.messages.length > 0) return
+    const [latest] = await this.plugin.loadConvos()
+    if (!latest || latest.messages.length === 0) return
+    this.loadConvo(latest)
+  }
+
+  private loadConvo(c: SavedConvo): void {
+    this.messages = c.messages
+    this.sessionId = c.id
+    if (c.mode === 'interview' && this.mode !== 'interview') {
+      this.mode = 'interview'
+      this.interviewBar.show()
+      this.inputEl.placeholder = '先告诉 AI 你想写什么方向(一句话),它会开始采访你…'
+    } else if (c.mode === 'chat' && this.mode === 'interview') {
+      this.mode = 'chat'
+      this.interviewBar.hide()
+      this.inputEl.placeholder = '问 AI霖子 任何事…(Enter 发送,Shift+Enter 换行)'
+    }
+    this.renderMessages()
+  }
+
+  private async showHistoryMenu(evt: MouseEvent): Promise<void> {
+    const convos = await this.plugin.loadConvos()
+    const menu = new Menu()
+    if (convos.length === 0) {
+      menu.addItem((i) => i.setTitle('还没有历史对话').setDisabled(true))
+    }
+    for (const c of convos.slice(0, 15)) {
+      const d = new Date(c.updatedAt)
+      const stamp = `${d.getMonth() + 1}/${d.getDate()}`
+      menu.addItem((i) =>
+        i
+          .setTitle(`${c.mode === 'interview' ? '✍️ ' : ''}${c.title} · ${stamp}`)
+          .onClick(() => {
+            void this.persistNow()
+            this.loadConvo(c)
+          }),
+      )
+    }
+    menu.addSeparator()
+    menu.addItem((i) =>
+      i.setTitle('🗑 清空全部历史对话').onClick(() => {
+        if (!window.confirm('确定清空全部历史对话吗?此操作不可恢复(已「存为笔记」的成稿不受影响)。')) return
+        void this.plugin.deleteAllConvos().then(() => {
+          this.messages = []
+          this.sessionId = uid()
+          this.renderMessages()
+          new Notice('历史对话已清空')
+        })
+      }),
+    )
+    menu.showAtMouseEvent(evt)
   }
 
   private async currentNoteContext(): Promise<{ filename: string; text: string } | undefined> {
@@ -422,6 +536,7 @@ class ChatView extends ItemView {
       if (this.mode === 'interview') {
         const answer = await this.sendInterview()
         this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: answer }] })
+        await this.persistNow()
         return
       }
       const noteContext = await this.currentNoteContext()
@@ -451,6 +566,7 @@ class ChatView extends ItemView {
         answer = typeof data.text === 'string' ? data.text : '(空响应)'
       }
       this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: answer }] })
+      await this.persistNow()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       new Notice(`AI霖子:${msg}`, 6000)
