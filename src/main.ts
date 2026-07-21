@@ -21,6 +21,7 @@ import {
   requestUrl,
 } from 'obsidian'
 import { applyUpdate, autoCheck, checkLatest, type UpdateInfo } from './updater'
+import { copyWechatFormatted, sendToWechatDraft } from './publish'
 import {
   feedKnowledge,
   runDistribute,
@@ -45,6 +46,8 @@ export const SKILL_ACTIONS: {
   { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
   { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
+  { id: 'wechat-copy', name: '公众号排版:一键复制(去后台粘贴)', fn: async (p) => copyWechatFormatted(p) },
+  { id: 'wechat-draft', name: '发到公众号草稿箱(自动传图,需配置AppID)', fn: async (p) => sendToWechatDraft(p) },
   { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
 ]
 
@@ -61,6 +64,9 @@ interface AiLinziSettings {
   defaultNiche: string
   /** 上次自动检查更新的时间戳(约每20小时一次) */
   lastUpdateCheckAt?: number
+  /** 公众号发布(选配):学员自己的公众号开发者凭证,只存本地 */
+  wechatAppId: string
+  wechatAppSecret: string
 }
 
 const DEFAULT_SETTINGS: AiLinziSettings = {
@@ -69,6 +75,8 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   attachNoteDefault: true,
   outputFolder: 'AI霖子输出',
   defaultNiche: '',
+  wechatAppId: '',
+  wechatAppSecret: '',
 }
 
 const VIEW_TYPE_CHAT = 'ai-linzi-chat'
@@ -673,6 +681,34 @@ class AiLinziSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings()
         }),
       )
+
+    new Setting(containerEl).setName('公众号发布(选配)').setHeading()
+
+    new Setting(containerEl)
+      .setName('公众号 AppID')
+      .setDesc('在 公众号后台 → 设置与开发 → 基本配置 里查看。配好后可用「发到公众号草稿箱」一键发布(图片自动上传)。凭证只保存在你的电脑上。')
+      .addText((t) =>
+        t
+          .setPlaceholder('wx 开头的一串')
+          .setValue(this.plugin.settings.wechatAppId)
+          .onChange(async (v) => {
+            this.plugin.settings.wechatAppId = v.trim()
+            await this.plugin.saveSettings()
+          }),
+      )
+
+    new Setting(containerEl)
+      .setName('公众号 AppSecret')
+      .setDesc('同一页面「开发者密码」。⚠️ 还需把本机 IP 加入该页的「IP 白名单」,否则微信会拒绝(报错时插件会告诉你该加哪个 IP)。')
+      .addText((t) => {
+        t.inputEl.type = 'password'
+        t.setPlaceholder('•••')
+          .setValue(this.plugin.settings.wechatAppSecret)
+          .onChange(async (v) => {
+            this.plugin.settings.wechatAppSecret = v.trim()
+            await this.plugin.saveSettings()
+          })
+      })
 
     new Setting(containerEl)
       .setName(`插件更新(当前 v${this.plugin.manifest.version})`)
