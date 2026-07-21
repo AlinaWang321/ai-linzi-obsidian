@@ -66,16 +66,12 @@ function styleHtml(html: string): string {
   // 公众号标题有独立输入框;正文不重复显示 Markdown 的首个 H1。
   out = out.replace(/^\s*<h1>[\s\S]*?<\/h1>\s*/i, '')
 
-  // 支持 *Part 1*、**PART 01** 和 ## PART 01,但不能吞掉普通斜体图注。
+  // 只有独行强调语法(*Part 1* / **PART 01**)做黄色胶囊。
+  // 标题语法(## PART 01)必须继续走下方 H2 大标题规则,不能在这里吞掉。
   out = out.replace(
-    /<(p|h[1-6])>\s*<(em|strong)>\s*(PART\s*(?:\d+|[一二三四五六七八九十]+))\s*<\/\2>\s*<\/\1>/gi,
-    (_all, _block, _emphasis, label: string) => partPill(label.toUpperCase()),
+    /<p>\s*<(em|strong)>\s*(PART\s*(?:\d+|[一二三四五六七八九十]+))\s*<\/\1>\s*<\/p>/gi,
+    (_all, _emphasis, label: string) => partPill(label.toUpperCase()),
   )
-  out = out.replace(
-    /<h[1-6]>\s*(PART\s*(?:\d+|[一二三四五六七八九十]+))\s*<\/h[1-6]>/gi,
-    (_all, label: string) => partPill(label.toUpperCase()),
-  )
-
   // 独立斜体行是图片说明/注释,沿用原版的居中灰字,不再误做黄色胶囊。
   out = out.replace(
     /<p>\s*<em>([\s\S]*?)<\/em>\s*<\/p>/g,
