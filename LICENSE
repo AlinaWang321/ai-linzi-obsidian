@@ -1,0 +1,72 @@
+AI LINZI PLUGIN PROPRIETARY LICENSE
+Version 1.0 — 2026-07-22
+
+Copyright (c) 2026 Alina Wang (AI Linzi). All rights reserved.
+
+This software and its source code are made publicly viewable for security
+review, Obsidian Community Plugin review, and transparency. They are not open
+source software.
+
+1. Permitted use
+
+Subject to these terms, an end user may download, install, and run an official,
+unmodified release of the AI Linzi plugin for the user's own personal or
+internal business purposes. Use of AI Linzi online services also requires a
+valid AI Linzi account and is governed by the applicable service terms.
+
+2. Distribution permission
+
+Obsidian.md and GitHub may host, cache, index, and distribute unmodified
+official release artifacts solely for operating the Obsidian Community Plugin
+directory and this repository. This permission does not authorize third-party
+forks, mirrors, modified releases, or competing distributions.
+
+3. Restrictions
+
+Except with prior written permission from the copyright holder, you may not:
+
+- copy, modify, adapt, translate, or create derivative works from the source
+  code or release artifacts;
+- publish, redistribute, sublicense, sell, rent, lease, or commercially exploit
+  the software or any substantial part of it;
+- use the software, source code, workflows, prompts, visual rules, or interfaces
+  to build, train, operate, or assist a competing product or service;
+- remove or alter copyright, trademark, attribution, or license notices; or
+- bypass account controls, access controls, rate limits, payments, or other
+  technical protections.
+
+The limited copies automatically created by a device, browser, GitHub, Obsidian,
+or a backup system while carrying out a permitted use are allowed.
+
+4. Reserved rights
+
+No rights are granted to the AI Linzi name, trademarks, brand assets, private
+backend, models, prompts, datasets, knowledge bases, APIs, course materials, or
+other services except as expressly stated above. All rights not expressly
+granted are reserved.
+
+5. User content
+
+This license does not claim ownership of a user's notes, images, or other
+content. Users retain their rights in content they create or store in their own
+Obsidian vaults, subject to the rights of any third-party materials they use.
+
+6. Termination
+
+This license terminates automatically if you breach these terms. On termination,
+you must stop using and distributing the software and delete unauthorized
+copies. Sections 3 through 8 survive termination.
+
+7. No warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, AND NON-INFRINGEMENT. TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE
+COPYRIGHT HOLDER IS NOT LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING
+FROM THE SOFTWARE OR ITS USE.
+
+8. Commercial or modification permission
+
+For written permission to modify, redistribute, integrate, or commercially
+license this software, contact the copyright holder through the official AI
+Linzi website: https://www.alinalinzi.cn/
