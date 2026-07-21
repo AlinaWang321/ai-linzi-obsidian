@@ -108,10 +108,23 @@ interface OutputSpec {
 
 export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Promise<TFile> {
   const app = plugin.app
-  const folder = normalizePath(plugin.settings.outputFolder || 'AI霖子输出')
-  if (!app.vault.getAbstractFileByPath(folder)) {
-    await app.vault.createFolder(folder).catch(() => {})
-  }
+  const date = isoDate()
+  const canonical = canonicalContentFields({
+    skill: spec.skill,
+    platform: spec.platform,
+    date,
+    contentId: contentId(),
+  })
+  const rootFolder = normalizePath(plugin.settings.outputFolder || 'AI霖子输出')
+  const contentType = canonical?.['内容类型']
+  const folder = normalizePath(
+    contentType === '选题'
+      ? `${rootFolder}/选题`
+      : contentType === '公众号文章'
+        ? `${rootFolder}/公众号文章`
+        : rootFolder,
+  )
+  await ensureFolder(plugin, folder)
 
   const base = `${today()}_${sanitizeTitle(spec.title) || '未命名'}`
   let path = normalizePath(`${folder}/${base}.md`)
@@ -120,13 +133,6 @@ export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Prom
     path = normalizePath(`${folder}/${base}_${i}.md`)
   }
 
-  const date = isoDate()
-  const canonical = canonicalContentFields({
-    skill: spec.skill,
-    platform: spec.platform,
-    date,
-    contentId: contentId(),
-  })
   const contentLines = canonical
     ? [
         ...Object.entries(canonical).map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
@@ -619,7 +625,7 @@ function planMarkdown(
     images?: ({ prompt?: string } & IllustrationPlanItem)[]
   },
 ): string {
-  const blocks = ['# 极简小清新手绘配图方案', '', '> 学员通用视觉：不使用 AI霖子个人手绘 IP。']
+  const blocks = ['# 极简小清新手绘配图方案', '', '> 画面统一使用极简线条人偶，只保留经确认的必要文字。']
   if (plan.cover) {
     blocks.push('', `## 00 · 封面 · ${plan.cover.title}`, '', `- 核心意思：${plan.cover.coreIdea}`, `- 画面：${plan.cover.concept}`)
     if (generated.cover?.prompt) blocks.push('', '### 生图提示词', '', generated.cover.prompt)
@@ -652,7 +658,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     {
       key: 'count',
       label: '正文插图几张?(2-5)',
-      desc: '会额外规划 1 张封面。先免费查看每张图的核心意思、放置位置和画面文字；确认后才生图并扣积分。使用学员通用小人偶，不使用 AI霖子个人手绘 IP。',
+      desc: '会额外规划 1 张封面。先免费查看每张图的核心意思、放置位置和画面文字；确认后才生图并扣积分。',
       initial: '3',
     },
   ]).result
@@ -700,7 +706,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     }
 
     const folder = normalizePath(
-      `${plugin.settings.outputFolder || 'AI霖子输出'}/配图/${today()}_${sanitizeTitle(note.file.basename)}`,
+      `${plugin.settings.outputFolder || 'AI霖子输出'}/公众号文章/配图/${today()}_${sanitizeTitle(note.file.basename)}`,
     )
     await ensureFolder(plugin, folder)
 

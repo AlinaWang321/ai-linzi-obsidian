@@ -316,7 +316,13 @@ export default class AiLinziPlugin extends Plugin {
       /* 非 JSON 响应 */
     }
     if (res.status >= 400) {
-      const msg = typeof data.error === 'string' ? data.error : `请求失败(${res.status})`
+      const timeout = /FUNCTION_INVOCATION_TIMEOUT|Task timed out|exceeded.*duration/i.test(res.text ?? '')
+      const msg =
+        typeof data.error === 'string'
+          ? data.error
+          : timeout
+            ? '生成时间超过服务上限。系统没有写入残缺图片，也不会扣本轮配图积分，请稍后重试。'
+            : `请求失败(${res.status})`
       throw new Error(msg)
     }
     return data

@@ -40,6 +40,22 @@ export interface ContentRecord {
   modifiedAt: number
 }
 
+/** 看板只读取插件自己的产出根目录，避免把学员整个 Vault 的普通笔记误判成内容资产。 */
+export function isInsideOutputFolder(path: string, outputFolder: string): boolean {
+  const clean = (value: string) => value.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  const filePath = clean(path)
+  const root = clean(outputFolder)
+  return Boolean(root && (filePath === root || filePath.startsWith(`${root}/`)))
+}
+
+/** 排除配图提示词等辅助文件；文章图片可以存在这里，但这些 Markdown 不是内容卡片。 */
+export function isDashboardContentPath(path: string, outputFolder: string): boolean {
+  if (!isInsideOutputFolder(path, outputFolder)) return false
+  const clean = (value: string) => value.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  const relative = clean(path).slice(clean(outputFolder).length).replace(/^\//, '')
+  return !/^公众号文章\/配图(?:\/|$)/.test(relative)
+}
+
 function text(value: unknown): string {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return localDate(value)
   if (typeof value === 'string' || typeof value === 'number') return String(value).trim()

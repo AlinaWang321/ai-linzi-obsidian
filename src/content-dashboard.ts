@@ -1,15 +1,17 @@
-import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, setIcon } from 'obsidian'
+import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian'
 import type AiLinziPlugin from './main'
 import { runArticleIllustration, runTopicRadar, runWechatWriter } from './actions'
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
 import {
   boardLane,
   deriveContentRecord,
+  isDashboardContentPath,
   isDateInRange,
   parseLocalDate,
   startOfWeek,
   type BoardLane,
   type ContentRecord,
+  type WechatStatus,
 } from './content-state'
 
 export const VIEW_TYPE_CONTENT_DASHBOARD = 'ai-linzi-content-dashboard'
@@ -37,8 +39,10 @@ function hasLocalImage(plugin: AiLinziPlugin, file: TFile): boolean {
 }
 
 function scanContent(plugin: AiLinziPlugin): ContentRecord[] {
+  const outputRoot = normalizePath(plugin.settings.outputFolder || 'AI霖子输出')
   return plugin.app.vault
     .getMarkdownFiles()
+    .filter((file) => isDashboardContentPath(file.path, outputRoot))
     .map((file) => {
       const cache = plugin.app.metadataCache.getFileCache(file)
       return deriveContentRecord({
@@ -54,24 +58,51 @@ function scanContent(plugin: AiLinziPlugin): ContentRecord[] {
     .sort((a, b) => b.modifiedAt - a.modifiedAt)
 }
 
-class MarkWechatPublishedModal extends Modal {
+class UpdateWechatStatusModal extends Modal {
   private submitted = false
-  private resolve!: (value: { date: string; url: string } | null) => void
-  readonly result: Promise<{ date: string; url: string } | null>
+  private resolve!: (value: { status: WechatStatus; date: string; url: string } | null) => void
+  readonly result: Promise<{ status: WechatStatus; date: string; url: string } | null>
 
-  constructor(app: AiLinziPlugin['app'], private initialUrl: string) {
+  constructor(
+    app: AiLinziPlugin['app'],
+    private record: ContentRecord,
+    private initialStatus?: WechatStatus,
+  ) {
     super(app)
     this.result = new Promise((resolve) => (this.resolve = resolve))
     this.open()
   }
 
   onOpen() {
-    this.titleEl.setText('标记公众号已发布')
-    let date = isoToday()
-    let url = this.initialUrl
+    this.titleEl.setText('修改公众号状态')
+    let status = this.initialStatus ?? this.record.wechatStatus
+    if (status === '未开始') status = '已生成草稿'
+    let date =
+      status === '已正式发布'
+        ? this.record.wechatPublishedDate || isoToday()
+        : status === '已发送公众号草稿箱'
+          ? this.record.wechatDraftDate || isoToday()
+          : isoToday()
+    let url = this.record.wechatUrl
+    this.contentEl.createEl('p', {
+      text: '从插件发送草稿箱后会自动更新。手动上传、正式发布或状态有误时，可以在这里修正。',
+      cls: 'setting-item-description',
+    })
     new Setting(this.contentEl)
-      .setName('发布日期')
-      .setDesc('用于看板统计和日历视图')
+      .setName('当前状态')
+      .addDropdown((input) =>
+        input
+          .addOption('已生成草稿', '已生成草稿')
+          .addOption('已发送公众号草稿箱', '已发送公众号草稿箱')
+          .addOption('已正式发布', '已正式发布')
+          .setValue(status)
+          .onChange((value) => {
+            status = value as WechatStatus
+          }),
+      )
+    new Setting(this.contentEl)
+      .setName('状态日期')
+      .setDesc('发送草稿箱或正式发布时使用，用于统计和日历')
       .addText((input) => input.setPlaceholder('YYYY-MM-DD').setValue(date).onChange((value) => (date = value.trim())))
     new Setting(this.contentEl)
       .setName('公众号文章链接（选填）')
@@ -84,19 +115,19 @@ class MarkWechatPublishedModal extends Modal {
       .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
       .addButton((button) =>
         button
-          .setButtonText('确认已发布')
+          .setButtonText('保存状态')
           .setCta()
           .onClick(() => {
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !parseLocalDate(date)) {
-              new Notice('发布日期请填写为 YYYY-MM-DD')
+            if (status !== '已生成草稿' && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !parseLocalDate(date))) {
+              new Notice('状态日期请填写为 YYYY-MM-DD')
               return
             }
-            if (url && !/^https?:\/\//i.test(url)) {
+            if (status === '已正式发布' && url && !/^https?:\/\//i.test(url)) {
               new Notice('公众号链接需要以 http:// 或 https:// 开头')
               return
             }
             this.submitted = true
-            this.resolve({ date, url })
+            this.resolve({ status, date, url })
             this.close()
           }),
       )
@@ -167,6 +198,9 @@ export class ContentDashboardView extends ItemView {
     const header = root.createDiv({ cls: 'ai-linzi-dashboard-header' })
     const heading = header.createDiv()
     heading.createEl('h2', { text: '内容发布看板' })
+    heading.createEl('p', {
+      text: `内容来源：${normalizePath(this.plugin.settings.outputFolder || 'AI霖子输出')}（可在插件设置中修改）`,
+    })
     const headerActions = header.createDiv({ cls: 'ai-linzi-dashboard-header-actions' })
     const refresh = headerActions.createEl('button', { text: '刷新' })
     refresh.onclick = () => this.render()
@@ -281,13 +315,20 @@ export class ContentDashboardView extends ItemView {
       const button = actions.createEl('button', { text: '标记已发布' })
       button.onclick = (event) => {
         event.stopPropagation()
-        void this.markPublished(record, button)
+        void this.updateWechatStatus(record, button, '已正式发布')
       }
     } else if (lane === 'published' && record.wechatUrl) {
       const button = actions.createEl('button', { text: '打开公众号' })
       button.onclick = (event) => {
         event.stopPropagation()
         window.open(record.wechatUrl)
+      }
+    }
+    if (record.kind === '公众号文章') {
+      const statusButton = actions.createEl('button', { text: '修改状态' })
+      statusButton.onclick = (event) => {
+        event.stopPropagation()
+        void this.updateWechatStatus(record, statusButton)
       }
     }
   }
@@ -328,8 +369,12 @@ export class ContentDashboardView extends ItemView {
     return file
   }
 
-  private async markPublished(record: ContentRecord, button: HTMLButtonElement) {
-    const result = await new MarkWechatPublishedModal(this.app, record.wechatUrl).result
+  private async updateWechatStatus(
+    record: ContentRecord,
+    button: HTMLButtonElement,
+    initialStatus?: WechatStatus,
+  ) {
+    const result = await new UpdateWechatStatusModal(this.app, record, initialStatus).result
     if (!result) return
     const file = this.app.vault.getAbstractFileByPath(record.filePath)
     if (!(file instanceof TFile)) {
@@ -339,20 +384,40 @@ export class ContentDashboardView extends ItemView {
     button.disabled = true
     try {
       await this.app.fileManager.processFrontMatter(file, (fm) => {
-        fm['状态'] = '已正式发布'
+        fm['状态'] = result.status
         fm['内容类型'] = '公众号文章'
         fm['内容阶段'] = '已生成草稿'
-        fm['公众号状态'] = '已正式发布'
-        fm['公众号发布日期'] = result.date
-        fm['发布日期'] = result.date
+        fm['公众号状态'] = result.status
         fm['视频状态'] = fm['视频状态'] || '未开始'
         fm['小红书状态'] = fm['小红书状态'] || '未开始'
-        if (result.url) {
-          fm['公众号链接'] = result.url
-          fm['发布链接'] = result.url
+        if (result.status === '已生成草稿') {
+          delete fm['公众号草稿ID']
+          delete fm['公众号草稿箱时间']
+          delete fm['草稿箱时间']
+          delete fm['公众号发布日期']
+          delete fm['发布日期']
+          delete fm['公众号链接']
+          delete fm['发布链接']
+        } else if (result.status === '已发送公众号草稿箱') {
+          fm['公众号草稿箱时间'] = result.date
+          fm['草稿箱时间'] = result.date
+          delete fm['公众号发布日期']
+          delete fm['发布日期']
+          delete fm['公众号链接']
+          delete fm['发布链接']
+        } else {
+          fm['公众号发布日期'] = result.date
+          fm['发布日期'] = result.date
+          if (result.url) {
+            fm['公众号链接'] = result.url
+            fm['发布链接'] = result.url
+          } else {
+            delete fm['公众号链接']
+            delete fm['发布链接']
+          }
         }
       })
-      new Notice('✅ 已标记为公众号正式发布')
+      new Notice(`✅ 公众号状态已更新为「${result.status}」`)
       this.render()
     } finally {
       button.disabled = false

@@ -346,6 +346,7 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
       fm['内容类型'] = '公众号文章'
       fm['内容阶段'] = '已生成草稿'
       fm['公众号状态'] = '已发送公众号草稿箱'
+      fm['公众号草稿ID'] = d.media_id
       fm['公众号草稿箱时间'] = sentAt
       fm['草稿箱时间'] = sentAt
       fm['视频状态'] = fm['视频状态'] || '未开始'

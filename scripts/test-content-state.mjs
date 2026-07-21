@@ -15,6 +15,15 @@ const module = { exports: {} }
 new Function('module', 'exports', 'require', result.outputFiles[0].text)(module, module.exports, require)
 const state = module.exports
 
+assert.equal(state.isInsideOutputFolder('AI霖子输出/公众号文章/测试.md', 'AI霖子输出'), true)
+assert.equal(state.isInsideOutputFolder('AI霖子输出2/测试.md', 'AI霖子输出'), false)
+assert.equal(state.isInsideOutputFolder('04_Output/公众号文章/测试.md', 'AI霖子输出'), false)
+assert.equal(state.isDashboardContentPath('AI霖子输出/公众号文章/2026.07.21_测试.md', 'AI霖子输出'), true)
+assert.equal(
+  state.isDashboardContentPath('AI霖子输出/公众号文章/配图/测试/AI霖子正文配图_PROMPTS.md', 'AI霖子输出'),
+  false,
+)
+
 const base = {
   path: 'AI霖子输出/2026.07.21_测试.md',
   basename: '2026.07.21_测试',
