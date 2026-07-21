@@ -24,6 +24,13 @@ import { applyUpdate, autoCheck, checkLatest, type UpdateInfo } from './updater'
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
 import { prepareWechatArticle } from './article-format'
 import {
+  applyNotePatch,
+  formatNotePatchMarkdown,
+  isNoteEditIntent,
+  parseNotePatch,
+  type ParsedNotePatch,
+} from './note-patch'
+import {
   feedKnowledge,
   runArticleIllustration,
   runDistribute,
@@ -546,12 +553,13 @@ class ChatView extends ItemView {
         return
       }
       const noteContext = await this.currentNoteContext()
+      const noteEdit = Boolean(noteContext && isNoteEditIntent(text))
       // M3:优先流式(fetch 纯文本流,逐块显示);CORS/网络不支持时自动回落非流式;
       // 业务错误(积分不足/tier/限流)不回落不重发,直接显示。
       let answer: string
       let streamed: { kind: 'ok'; text: string } | { kind: 'bizError'; message: string } | null
       try {
-        streamed = await this.sendStreaming(noteContext)
+        streamed = await this.sendStreaming(noteContext, noteEdit)
       } catch {
         streamed = null
       }
@@ -567,6 +575,7 @@ class ChatView extends ItemView {
             sessionId: this.sessionId,
             stream: false,
             noteContext,
+            noteEdit,
           },
         })
         answer = typeof data.text === 'string' ? data.text : '(空响应)'
@@ -664,6 +673,7 @@ class ChatView extends ItemView {
    */
   private async sendStreaming(
     noteContext: { filename: string; text: string } | undefined,
+    noteEdit: boolean,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl, token } = this.plugin.settings
     const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/api/plugin/chat`, {
@@ -677,6 +687,7 @@ class ChatView extends ItemView {
         sessionId: this.sessionId,
         stream: 'text',
         noteContext,
+        noteEdit,
       }),
     })
     if (!res.ok) {
@@ -702,7 +713,12 @@ class ChatView extends ItemView {
         const { done, value } = await reader.read()
         if (done) break
         full += decoder.decode(value, { stream: true })
-        body.setText(full)
+        const patchAt = full.indexOf('<AI_LINZI_NOTE_PATCH>')
+        body.setText(
+          patchAt >= 0
+            ? `${full.slice(0, patchAt).trim()}\n\n正在整理可一键应用的修改…`
+            : full,
+        )
         this.listEl.scrollTop = this.listEl.scrollHeight
       }
       full += decoder.decode()
@@ -732,22 +748,34 @@ class ChatView extends ItemView {
       const body = row.createDiv({ cls: 'ai-linzi-msg-body' })
       const text = m.parts.map((p) => p.text).join('')
       if (m.role === 'assistant') {
-        void MarkdownRenderer.render(this.app, text, body, '', this)
+        let previousUserText = ''
+        for (let j = mi - 1; j >= 0; j--) {
+          if (this.messages[j].role === 'user') {
+            previousUserText = this.messages[j].parts.map((p) => p.text).join('')
+            break
+          }
+        }
+        const patch = parseNotePatch(text)
+        const editReply = this.mode === 'chat' && isNoteEditIntent(previousUserText)
+        void MarkdownRenderer.render(this.app, patch?.displayText ?? text, body, '', this)
+        if (patch) this.renderPatchCards(row, patch)
         // 每条 AI 回复都能一键落盘——内容留在用户自己的 Obsidian 里才是关键(Alina 2026-07-21)
-        if (text.trim().length > 20 && !text.startsWith('⚠️')) {
+        if (text.trim().length > 0 && !text.startsWith('⚠️')) {
           const bar = row.createDiv({ cls: 'ai-linzi-msg-actions' })
+          if (patch) {
+            const applyBtn = bar.createEl('button', {
+              text: `✅ 一键应用 ${patch.operations.length} 处修改`,
+              cls: 'ai-linzi-apply-patch',
+            })
+            applyBtn.onclick = () => void this.applyPatchToCurrentNote(patch, applyBtn)
+          }
           const saveBtn = bar.createEl('button', { text: '📝 存为笔记' })
           saveBtn.onclick = async () => {
             // 标题:往前找最近一条用户消息作主题;找不到用回复首行
-            let hint = ''
-            for (let j = mi - 1; j >= 0; j--) {
-              if (this.messages[j].role === 'user') {
-                hint = this.messages[j].parts.map((p) => p.text).join('').slice(0, 24)
-                break
-              }
-            }
+            let hint = previousUserText.slice(0, 24)
             if (!hint) hint = text.split('\n')[0].replace(/[#*>]/g, '').trim().slice(0, 24) || '对话内容'
-            const article = prepareWechatArticle(text)
+            const savedText = patch ? formatNotePatchMarkdown(patch) : text
+            const article = prepareWechatArticle(savedText)
             const isArticle = article.recognizedContainer
             const f = await writeOutput(this.plugin, {
               skill: isArticle ? '公众号写作' : '对话',
@@ -759,24 +787,30 @@ class ChatView extends ItemView {
             })
             new Notice(`✅ 已存为笔记:${f.basename}`)
           }
-          // 用这条回复覆盖当前笔记正文(保留 frontmatter;显式确认;Obsidian 文件恢复可回滚)
-          const updateBtn = bar.createEl('button', { text: '✏️ 更新当前笔记' })
-          updateBtn.onclick = async () => {
-            const file = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
-            if (!file) {
-              new Notice('没有找到当前打开的笔记')
-              return
+          if (!patch && editReply) {
+            const unavailableBtn = bar.createEl('button', { text: '⚠️ 未识别到可安全应用的修改' })
+            unavailableBtn.disabled = true
+            unavailableBtn.title = '请让 AI 重新读取当前笔记，并明确要修改的原文'
+          } else if (!patch) {
+            // 非局部编辑回复仍保留“整篇更新”出口；它始终位于回复底部且需要二次确认。
+            const updateBtn = bar.createEl('button', { text: '✏️ 更新当前笔记' })
+            updateBtn.onclick = async () => {
+              const file = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+              if (!file) {
+                new Notice('没有找到当前打开的笔记')
+                return
+              }
+              const ok = window.confirm(
+                `将用这条回复替换笔记「${file.basename}」的正文(文档属性 frontmatter 保留)。\n\n改错了不用慌:笔记内可 ⌘Z 撤销,或 设置 → 文件恢复 里回滚历史版本。\n\n确定更新?`,
+              )
+              if (!ok) return
+              const article = prepareWechatArticle(text)
+              await this.app.vault.process(file, (content) => {
+                const fm = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(content)
+                return (fm ? fm[0] : '') + article.body.trim() + '\n'
+              })
+              new Notice(`✅ 已更新「${file.basename}」(可用 ⌘Z 或「文件恢复」回滚)`)
             }
-            const ok = window.confirm(
-              `将用这条回复替换笔记「${file.basename}」的正文(文档属性 frontmatter 保留)。\n\n改错了不用慌:笔记内可 ⌘Z 撤销,或 设置 → 文件恢复 里回滚历史版本。\n\n确定更新?`,
-            )
-            if (!ok) return
-            const article = prepareWechatArticle(text)
-            await this.app.vault.process(file, (content) => {
-              const fm = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(content)
-              return (fm ? fm[0] : '') + article.body.trim() + '\n'
-            })
-            new Notice(`✅ 已更新「${file.basename}」(可用 ⌘Z 或「文件恢复」回滚)`)
           }
         }
       } else {
@@ -788,6 +822,54 @@ class ChatView extends ItemView {
       row.createDiv({ cls: 'ai-linzi-msg-body', text: 'AI霖子思考中…' })
     }
     this.listEl.scrollTop = this.listEl.scrollHeight
+  }
+
+  private renderPatchCards(row: HTMLElement, patch: ParsedNotePatch): void {
+    const list = row.createDiv({ cls: 'ai-linzi-note-patch' })
+    patch.operations.forEach((op, index) => {
+      const card = list.createDiv({ cls: 'ai-linzi-note-patch-item' })
+      card.createDiv({ text: `修改 ${index + 1}${op.all ? ' · 全文同类位置' : ''}`, cls: 'ai-linzi-patch-title' })
+      card.createDiv({ text: '原文', cls: 'ai-linzi-patch-label' })
+      card.createDiv({ text: op.old, cls: 'ai-linzi-patch-text ai-linzi-patch-old' })
+      card.createDiv({ text: '改为', cls: 'ai-linzi-patch-label' })
+      card.createDiv({ text: op.new || '（删除）', cls: 'ai-linzi-patch-text ai-linzi-patch-new' })
+      if (op.reason) card.createDiv({ text: op.reason, cls: 'ai-linzi-patch-reason' })
+    })
+  }
+
+  private async applyPatchToCurrentNote(patch: ParsedNotePatch, button: HTMLButtonElement): Promise<void> {
+    const file = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+    if (!file) {
+      new Notice('没有找到当前打开的笔记')
+      return
+    }
+    const originalLabel = button.textContent ?? '一键应用修改'
+    button.disabled = true
+    button.setText('正在应用…')
+    try {
+      let replacements = 0
+      let alreadyApplied = 0
+      await this.app.vault.process(file, (content) => {
+        const result = applyNotePatch(content, patch)
+        replacements = result.replacements
+        alreadyApplied = result.alreadyApplied
+        return result.content
+      })
+      button.setText(replacements > 0 ? '✅ 已应用到当前笔记' : '✅ 当前笔记已是修改后内容')
+      new Notice(
+        replacements > 0
+          ? `✅ 已在「${file.basename}」精确更新 ${replacements} 处（可用 ⌘Z 撤销）`
+          : `「${file.basename}」已经包含这些修改，无需重复应用`,
+        6000,
+      )
+      if (alreadyApplied > 0 && replacements > 0) {
+        new Notice(`另有 ${alreadyApplied} 项此前已经应用，本次已自动跳过`)
+      }
+    } catch (error) {
+      button.disabled = false
+      button.setText(originalLabel)
+      new Notice(error instanceof Error ? error.message : String(error), 8000)
+    }
   }
 }
 

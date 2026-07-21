@@ -1,12 +1,12 @@
 {
   "name": "ai-linzi-obsidian-plugin",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "AI霖子 Obsidian 插件",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit && node esbuild.config.mjs production",
-    "test": "node scripts/test-format.mjs"
+    "test": "node scripts/test-format.mjs && node scripts/test-note-patch.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

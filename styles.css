@@ -53,6 +53,12 @@
   justify-content: flex-end;
 }
 
+/* AI 回复按“正文 → 局部修改卡片 → 操作按钮”纵向排列，按钮永远在回复最下面。 */
+.ai-linzi-msg-assistant {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .ai-linzi-msg-body {
   max-width: 92%;
   padding: 8px 12px;
@@ -69,6 +75,7 @@
 }
 
 .ai-linzi-msg-assistant .ai-linzi-msg-body {
+  max-width: 100%;
   background: var(--background-secondary);
   white-space: normal;
 }
@@ -174,7 +181,13 @@
 }
 
 .ai-linzi-msg-actions {
-  margin-top: 4px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
 }
 
 .ai-linzi-msg-actions button {
@@ -189,6 +202,80 @@
 
 .ai-linzi-msg-actions button:hover {
   color: var(--text-normal);
+}
+
+.ai-linzi-msg-actions button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.ai-linzi-msg-actions .ai-linzi-apply-patch {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+
+.ai-linzi-msg-actions .ai-linzi-apply-patch:hover {
+  color: var(--text-on-accent);
+  filter: brightness(1.06);
+}
+
+/* Claudian 式局部修改预览：只展示发生变化的原文与新文，不再重复整篇文章。 */
+.ai-linzi-note-patch {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.ai-linzi-note-patch-item {
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: 8px;
+  background: var(--background-secondary-alt);
+}
+
+.ai-linzi-patch-title {
+  margin-bottom: 8px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.ai-linzi-patch-label {
+  margin: 6px 0 3px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.ai-linzi-patch-text {
+  padding: 7px 9px;
+  border-radius: 6px;
+  font-size: var(--font-ui-small);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ai-linzi-patch-old {
+  color: var(--text-muted);
+  background: rgba(232, 77, 77, 0.09);
+  text-decoration: line-through;
+  text-decoration-color: rgba(232, 77, 77, 0.55);
+}
+
+.ai-linzi-patch-new {
+  color: var(--text-normal);
+  background: rgba(46, 160, 103, 0.12);
+}
+
+.ai-linzi-patch-reason {
+  margin-top: 7px;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  color: var(--text-muted);
 }
 
 /* 配图先审方案：扣生图积分前先看清每张图讲什么、写什么字。 */
