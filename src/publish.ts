@@ -12,16 +12,20 @@ import { Notice, TFile, requestUrl } from 'obsidian'
 import { marked } from 'marked'
 import type AiLinziPlugin from './main'
 
-// ── 版式主题(参数化,Alina 定稿时改这里) ──────────────
+// ── 版式主题(移植自 Alina 发布工作台排版 2026-07-21;两处调整:Part胶囊14px/大标题#0057FF) ──
 const THEME = {
-  ink: '#1A1612',
-  inkSoft: '#4A4036',
-  inkMute: '#8A7E74',
-  navy: '#293857',
-  line: '#E7DFD2',
-  bgSoft: '#F7F3EC',
-  fontSize: '16px',
-  lineHeight: '1.8',
+  ink: '#2b2b2b',
+  inkMute: '#7d7d7d',
+  navy: '#1f3f7c',
+  blueBright: '#0057FF',
+  linkBlue: '#1f63c5',
+  yellow: '#f5c518',
+  yellowSoft: '#fce38a',
+  quoteBg: '#fff9dc',
+  quoteInk: '#4f4a3f',
+  imgBorder: '#e3e8f0',
+  line: '#e8ebf1',
+  bgSoft: '#f4f6f9',
 }
 
 const FONT =
@@ -47,31 +51,30 @@ function extractImages(md: string): { md: string; imgs: ImgRef[] } {
   return { md: out, imgs }
 }
 
-/** 标签替换式加内联样式(不依赖 marked renderer API,版本稳) */
+/** 标签替换式加内联样式(移植 Alina 工作台版式;不依赖 marked renderer API) */
 function styleHtml(html: string): string {
   const T = THEME
-  const navySoft = '#5C7BB0'
-  const dot = `<span style="display:inline-block;width:6px;height:6px;background:#C9D4E8;border-radius:50%;margin:0 5px;"></span>`
   return (
     html
-      .replaceAll('<p>', `<p style="margin:0 0 1.25em;font-size:${T.fontSize};line-height:${T.lineHeight};color:${T.ink};letter-spacing:.4px;">`)
-      // H1/H2 = 藏蓝标签块 + 浅蓝装饰短线(纯内联样式,公众号编辑器稳定支持)
-      .replaceAll('<h1>', `<section style="margin:2.1em 0 1.2em;"><section style="display:inline-block;padding:7px 16px;background:${T.navy};color:#ffffff;font-size:17px;font-weight:700;border-radius:8px;letter-spacing:1px;line-height:1.4;">`)
-      .replaceAll('</h1>', `</section><section style="width:42px;height:3px;background:${'$'}{navySoft};border-radius:2px;margin-top:8px;"></section></section>`.replace('${navySoft}', navySoft))
-      .replaceAll('<h2>', `<section style="margin:2.1em 0 1.2em;"><section style="display:inline-block;padding:7px 16px;background:${T.navy};color:#ffffff;font-size:17px;font-weight:700;border-radius:8px;letter-spacing:1px;line-height:1.4;">`)
-      .replaceAll('</h2>', `</section><section style="width:42px;height:3px;background:${'$'}{navySoft};border-radius:2px;margin-top:8px;"></section></section>`.replace('${navySoft}', navySoft))
-      // H3 = 圆点 + 藏蓝粗体
-      .replaceAll('<h3>', `<h3 style="margin:1.7em 0 .8em;font-size:16px;font-weight:700;color:${T.navy};"><span style="display:inline-block;width:8px;height:8px;background:${'$'}{navySoft};border-radius:50%;margin-right:8px;"></span>`.replace('${navySoft}', navySoft))
-      // 引用块 = 暖底卡片 + 引号缀饰
-      .replaceAll('<blockquote>', `<blockquote style="margin:1.5em 0;padding:14px 18px;background:${T.bgSoft};border-left:3px solid ${'$'}{navySoft};border-radius:6px;color:${T.inkSoft};font-size:15px;line-height:1.8;"><span style="display:block;font-size:20px;color:${'$'}{navySoft};line-height:1;margin-bottom:4px;">❝</span>`.replaceAll('${navySoft}', navySoft))
-      .replaceAll('<ul>', `<ul style="margin:0 0 1.25em;padding-left:1.4em;color:${T.ink};font-size:${T.fontSize};line-height:${T.lineHeight};">`)
-      .replaceAll('<ol>', `<ol style="margin:0 0 1.25em;padding-left:1.4em;color:${T.ink};font-size:${T.fontSize};line-height:${T.lineHeight};">`)
-      .replaceAll('<li>', `<li style="margin:.35em 0;">`)
-      .replaceAll('<strong>', `<strong style="color:${T.navy};">`)
-      // 分隔线 = 居中三圆点
-      .replaceAll('<hr>', `<section style="margin:2.2em 0;text-align:center;">${dot}${dot}${dot}</section>`)
-      .replaceAll('<code>', `<code style="background:${T.bgSoft};padding:2px 6px;border-radius:4px;font-size:14px;color:${T.navy};">`)
-      .replace(/<a href="([^"]*)">/g, `<a href="$1" style="color:${T.navy};border-bottom:1px solid ${T.line};text-decoration:none;">`)
+      // 独立一行的 *Part 1* → 黄底胶囊(比原版大一号:14px)
+      .replace(
+        /<p><em>([^<]+)<\/em><\/p>/g,
+        `<p style="display:inline-block;margin:34px 0 10px;padding:6px 14px;border-radius:999px;background:${T.yellowSoft};color:${T.navy};font-size:14px;line-height:1.4;font-weight:700;letter-spacing:2px;">$1</p>`,
+      )
+      .replaceAll('<p>', `<p style="margin:0 0 18px;color:${T.ink};font-size:16px;line-height:1.95;text-align:justify;">`)
+      // 大标题:黄左边条 + 亮蓝 #0057FF(Alina 拍板,原深蓝不够亮眼)
+      .replaceAll('<h1>', `<h2 style="margin:30px 0 22px;padding-left:13px;border-left:4px solid ${T.yellow};color:${T.blueBright};font-size:23px;line-height:1.45;font-weight:800;">`)
+      .replaceAll('</h1>', '</h2>')
+      .replaceAll('<h2>', `<h2 style="margin:30px 0 22px;padding-left:13px;border-left:4px solid ${T.yellow};color:${T.blueBright};font-size:23px;line-height:1.45;font-weight:800;">`)
+      .replaceAll('<h3>', `<h3 style="margin:28px 0 14px;color:${T.navy};font-size:18px;line-height:1.55;font-weight:700;">`)
+      .replaceAll('<blockquote>', `<blockquote style="margin:22px 0;padding:14px 18px;border-left:4px solid ${T.yellow};background:${T.quoteBg};color:${T.quoteInk};font-size:16px;line-height:1.85;">`)
+      .replaceAll('<ul>', `<ul style="margin:0 0 20px;padding-left:1.4em;color:${T.ink};font-size:16px;line-height:1.85;">`)
+      .replaceAll('<ol>', `<ol style="margin:0 0 20px;padding-left:1.4em;color:${T.ink};font-size:16px;line-height:1.85;">`)
+      .replaceAll('<li>', `<li style="margin:0 0 8px;">`)
+      .replaceAll('<strong>', `<strong style="color:${T.navy};font-weight:700;">`)
+      .replaceAll('<hr>', `<hr style="margin:32px auto;border:none;border-top:1px solid ${T.line};width:100%;">`)
+      .replaceAll('<code>', `<code style="padding:2px 5px;border-radius:4px;background:#eef4ff;color:${T.navy};font-size:14px;">`)
+      .replace(/<a href="([^"]*)">/g, `<a href="$1" style="color:${T.linkBlue};font-weight:700;text-decoration:none;">`)
   )
 }
 
@@ -127,7 +130,7 @@ export async function copyWechatFormatted(plugin: AiLinziPlugin) {
   let localImgCount = 0
   const html = mdToWechatHtml(note.body, (img) => {
     if (/^https?:\/\//.test(img.src)) {
-      return `<img src="${img.src}" alt="${img.alt}" style="max-width:100%;border-radius:6px;margin:1.2em 0;">`
+      return `<img src="${img.src}" alt="${img.alt}" style="display:block;width:100%;height:auto;margin:26px 0 10px;border:1px solid ${THEME.imgBorder};border-radius:5px;">`
     }
     localImgCount++
     return `<p style="margin:1.2em 0;padding:10px;background:${THEME.bgSoft};border-radius:6px;color:${THEME.inkMute};font-size:13px;text-align:center;">📷 此处有本地图片「${img.alt || img.src}」——粘贴后请在公众号编辑器手动插入</p>`
@@ -263,7 +266,7 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
     const html = mdToWechatHtml(note.body, (img) => {
       const url = /^https?:\/\//.test(img.src) ? img.src : urlMap.get(img.src)
       return url
-        ? `<img src="${url}" alt="${img.alt}" style="max-width:100%;border-radius:6px;margin:1.2em 0;">`
+        ? `<img src="${url}" alt="${img.alt}" style="display:block;width:100%;height:auto;margin:26px 0 10px;border:1px solid ${THEME.imgBorder};border-radius:5px;">`
         : ''
     }, plugin.settings.brandFooter)
 

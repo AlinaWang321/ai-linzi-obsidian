@@ -720,7 +720,8 @@ class ChatView extends ItemView {
       })
       return
     }
-    for (const m of this.messages) {
+    for (let mi = 0; mi < this.messages.length; mi++) {
+      const m = this.messages[mi]
       const row = this.listEl.createDiv({
         cls: `ai-linzi-msg ai-linzi-msg-${m.role}`,
       })
@@ -728,6 +729,29 @@ class ChatView extends ItemView {
       const text = m.parts.map((p) => p.text).join('')
       if (m.role === 'assistant') {
         void MarkdownRenderer.render(this.app, text, body, '', this)
+        // 每条 AI 回复都能一键落盘——内容留在用户自己的 Obsidian 里才是关键(Alina 2026-07-21)
+        if (text.trim().length > 20 && !text.startsWith('⚠️')) {
+          const bar = row.createDiv({ cls: 'ai-linzi-msg-actions' })
+          const saveBtn = bar.createEl('button', { text: '📝 存为笔记' })
+          saveBtn.onclick = async () => {
+            // 标题:往前找最近一条用户消息作主题;找不到用回复首行
+            let hint = ''
+            for (let j = mi - 1; j >= 0; j--) {
+              if (this.messages[j].role === 'user') {
+                hint = this.messages[j].parts.map((p) => p.text).join('').slice(0, 24)
+                break
+              }
+            }
+            if (!hint) hint = text.split('\n')[0].replace(/[#*>]/g, '').trim().slice(0, 24) || '对话内容'
+            const f = await writeOutput(this.plugin, {
+              skill: '对话',
+              platform: '通用',
+              title: hint,
+              body: text,
+            })
+            new Notice(`✅ 已存为笔记:${f.basename}`)
+          }
+        }
       } else {
         body.setText(text)
       }

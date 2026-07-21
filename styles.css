@@ -172,3 +172,21 @@
   display: flex;
   gap: 6px;
 }
+
+.ai-linzi-msg-actions {
+  margin-top: 4px;
+}
+
+.ai-linzi-msg-actions button {
+  font-size: var(--font-ui-smaller);
+  padding: 2px 8px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ai-linzi-msg-actions button:hover {
+  color: var(--text-normal);
+}
