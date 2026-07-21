@@ -537,8 +537,8 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
   const input = await new PromptModal(plugin.app, '文章配图 · 手绘火柴人风', '开始配图', [
     {
       key: 'count',
-      label: '生成几张?(2-4)',
-      desc: '统一的火柴人手绘风,自动插到对应段落。按张扣积分,失败的那张不扣;第一张图同时满足「发草稿箱」的封面要求。',
+      label: '正文插图几张?(2-4)',
+      desc: '会额外生成 1 张带大字标题的封面图(表达全文主题,自动放到文首、发草稿箱时自动作封面)。统一火柴人手绘风,按张扣积分,失败的那张不扣。',
       initial: '3',
     },
   ]).result
@@ -550,14 +550,27 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     const data = (await plugin.api('/api/skills/article-illustration', {
       method: 'POST',
       body: { article: clip(article, 20_000, '文章'), count },
-    })) as { images?: { anchor: string; title: string; imageUrl: string }[]; failedCount?: number }
+    })) as {
+      cover?: { title: string; imageUrl: string } | null
+      images?: { anchor: string; title: string; imageUrl: string }[]
+      failedCount?: number
+    }
     const imgs = data.images ?? []
-    if (imgs.length === 0) throw new Error('没有生成任何图片')
+    if (!data.cover && imgs.length === 0) throw new Error('没有生成任何图片')
 
     const folder = normalizePath(
       `${plugin.settings.outputFolder || 'AI霖子输出'}/配图/${today()}_${sanitizeTitle(note.file.basename)}`,
     )
     await ensureFolder(plugin, folder)
+
+    // 封面单独处理:存 00_封面,插到文章最顶部(发草稿箱时自动成为封面)
+    let coverPath: string | null = null
+    if (data.cover) {
+      const bin = await fetchImageBinary(data.cover.imageUrl)
+      coverPath = normalizePath(`${folder}/00_封面_${sanitizeTitle(data.cover.title) || '封面'}.png`)
+      await plugin.app.vault.createBinary(coverPath, bin)
+    }
+
     const saved: { path: string; anchor: string }[] = []
     for (let i = 0; i < imgs.length; i++) {
       const bin = await fetchImageBinary(imgs[i].imageUrl)
@@ -569,11 +582,16 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     let hits = 0
     await plugin.app.vault.process(note.file, (content) => {
       const r = insertEmbeds(content, saved)
+      let out = r.out
       hits = r.hits
-      return r.out
+      if (coverPath) out = `![[${coverPath}]]\n\n${out}`
+      return out
     })
     const failMsg = data.failedCount ? `;${data.failedCount} 张生成失败(未扣积分)` : ''
-    new Notice(`✅ ${saved.length} 张配图已插入文章(${hits} 张按段落定位,其余在文首/文末)${failMsg}\n图片保存在:${folder}`, 10000)
+    new Notice(
+      `✅ ${coverPath ? '封面 + ' : ''}${saved.length} 张正文插图已插入文章(${hits} 张按段落定位)${failMsg}\n图片保存在:${folder}`,
+      10000,
+    )
   } catch (e) {
     new Notice(`❌ 文章配图:${e instanceof Error ? e.message : String(e)}`, 10000)
   } finally {
