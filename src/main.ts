@@ -802,7 +802,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('公众号 AppID')
-      .setDesc('在 公众号后台 → 设置与开发 → 基本配置 里查看。配好后可用「发到公众号草稿箱」一键发布(图片自动上传)。凭证只保存在你的电脑上。')
+      .setDesc('登录 微信开发者平台 developers.weixin.qq.com/platform → 我的业务 → 公众号 → 你的号 → 基础信息里复制(个人订阅号即可)。凭证只保存在你的电脑上。')
       .addText((t) =>
         t
           .setPlaceholder('wx 开头的一串')
@@ -815,7 +815,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('公众号 AppSecret')
-      .setDesc('同一页面「开发者密码」。⚠️ 还需把本机 IP 加入该页的「IP 白名单」,否则微信会拒绝(报错时插件会告诉你该加哪个 IP)。')
+      .setDesc('同一页面「开发密钥」处点重置获取(只显示一次,立即复制)。⚠️ 还需把本机 IP 加入同页「API IP 白名单」。')
       .addText((t) => {
         t.inputEl.type = 'password'
         t.setPlaceholder('•••')
@@ -825,6 +825,41 @@ class AiLinziSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings()
           })
       })
+
+    new Setting(containerEl)
+      .setName('查看本机 IP')
+      .setDesc('加 IP 白名单用。家里网络的 IP 隔段时间会变,变了就再查一次、再加一次。')
+      .addButton((b) =>
+        b.setButtonText('查询并复制').onClick(async () => {
+          b.setDisabled(true)
+          try {
+            let ip = ''
+            for (const url of ['https://myip.ipip.net/s', 'https://api.ipify.org']) {
+              try {
+                const r = await requestUrl({ url, throw: false })
+                const t = (r.text ?? '').trim()
+                if (/^\d+\.\d+\.\d+\.\d+$/.test(t)) { ip = t; break }
+              } catch { /* 换下一个源 */ }
+            }
+            if (!ip) throw new Error('查询失败,请稍后再试或打开 ip.cn 查看')
+            await navigator.clipboard.writeText(ip)
+            new Notice(`你的本机 IP:${ip}\n已复制,去微信开发者平台粘进「API IP 白名单」`, 10000)
+          } catch (e) {
+            new Notice(`${e instanceof Error ? e.message : String(e)}`, 6000)
+          } finally {
+            b.setDisabled(false)
+          }
+        }),
+      )
+
+    new Setting(containerEl)
+      .setName('图文配置教程')
+      .setDesc('AppID / AppSecret / IP 白名单,带截图的一步步指引')
+      .addButton((b) =>
+        b.setButtonText('打开教程').onClick(() => {
+          window.open('https://github.com/AlinaWang321/ai-linzi-obsidian/blob/master/docs/wechat-setup-guide.md')
+        }),
+      )
 
     new Setting(containerEl)
       .setName(`插件更新(当前 v${this.plugin.manifest.version})`)
