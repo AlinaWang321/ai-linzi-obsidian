@@ -567,14 +567,14 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     let coverPath: string | null = null
     if (data.cover) {
       const bin = await fetchImageBinary(data.cover.imageUrl)
-      coverPath = normalizePath(`${folder}/00_封面_${sanitizeTitle(data.cover.title) || '封面'}.png`)
+      coverPath = normalizePath(`${folder}/${today()}_00_封面_${sanitizeTitle(data.cover.title) || '封面'}.png`)
       await plugin.app.vault.createBinary(coverPath, bin)
     }
 
     const saved: { path: string; anchor: string }[] = []
     for (let i = 0; i < imgs.length; i++) {
       const bin = await fetchImageBinary(imgs[i].imageUrl)
-      const path = normalizePath(`${folder}/${String(i + 1).padStart(2, '0')}_${sanitizeTitle(imgs[i].title) || '配图'}.png`)
+      const path = normalizePath(`${folder}/${today()}_${String(i + 1).padStart(2, '0')}_${sanitizeTitle(imgs[i].title) || '配图'}.png`)
       await plugin.app.vault.createBinary(path, bin)
       saved.push({ path, anchor: imgs[i].anchor })
     }
