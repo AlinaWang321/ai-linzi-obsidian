@@ -2,8 +2,8 @@
  * 公众号发布 · v0.3
  *
  * ① 一键排版复制:笔记 md → 内联样式富文本(公众号编辑器可直接粘贴)。
- *    版式参考 alinalinzi.cn 文章风格(藏蓝层级+暖底引用块),颜色集中在 THEME 便于调整;
- *    刻意不用 Alina 个人标志性黄色高亮(学员通用版)。
+ *    版式以 Alina 发布工作台为基准(亮蓝标题+黄色结构强调+暖底引用块),
+ *    但不包含 Alina 的个人眉题与页尾 slogan,保持学员通用。
  * ② 直发草稿箱:用学员自己的 AppID/AppSecret 从本机直连微信接口
  *    (凭证只存本地;需在公众号后台把本机 IP 加入白名单)。
  *    图片自动走微信素材接口上传替换;第一张图作封面(草稿必须有封面)。
@@ -51,31 +51,67 @@ function extractImages(md: string): { md: string; imgs: ImgRef[] } {
   return { md: out, imgs }
 }
 
-/** 标签替换式加内联样式(移植 Alina 工作台版式;不依赖 marked renderer API) */
+function partPill(label: string): string {
+  return `<p style="display:inline-block;margin:34px 0 10px;padding:6px 14px;border-radius:999px;background:${THEME.yellowSoft};color:${THEME.navy};font-size:14px;line-height:1.4;font-weight:700;letter-spacing:2px;">${label}</p>`
+}
+
+/**
+ * 给 marked 产出的 HTML 写入公众号可保留的内联样式。
+ * 这里先识别 Part、图注、引用块等结构,再处理普通标签,避免把图注误排成 Part 标签。
+ */
 function styleHtml(html: string): string {
   const T = THEME
-  return (
-    html
-      // 独立一行的 *Part 1* → 黄底胶囊(比原版大一号:14px)
-      .replace(
-        /<p><em>([^<]+)<\/em><\/p>/g,
-        `<p style="display:inline-block;margin:34px 0 10px;padding:6px 14px;border-radius:999px;background:${T.yellowSoft};color:${T.navy};font-size:14px;line-height:1.4;font-weight:700;letter-spacing:2px;">$1</p>`,
-      )
-      .replaceAll('<p>', `<p style="margin:0 0 18px;color:${T.ink};font-size:16px;line-height:1.95;text-align:justify;">`)
-      // 大标题:黄左边条 + 亮蓝 #0057FF(Alina 拍板,原深蓝不够亮眼)
-      .replaceAll('<h1>', `<h2 style="margin:30px 0 22px;padding-left:13px;border-left:4px solid ${T.yellow};color:${T.blueBright};font-size:23px;line-height:1.45;font-weight:800;">`)
-      .replaceAll('</h1>', '</h2>')
-      .replaceAll('<h2>', `<h2 style="margin:30px 0 22px;padding-left:13px;border-left:4px solid ${T.yellow};color:${T.blueBright};font-size:23px;line-height:1.45;font-weight:800;">`)
-      .replaceAll('<h3>', `<h3 style="margin:28px 0 14px;color:${T.navy};font-size:18px;line-height:1.55;font-weight:700;">`)
-      .replaceAll('<blockquote>', `<blockquote style="margin:22px 0;padding:14px 18px;border-left:4px solid ${T.yellow};background:${T.quoteBg};color:${T.quoteInk};font-size:16px;line-height:1.85;">`)
-      .replaceAll('<ul>', `<ul style="margin:0 0 20px;padding-left:1.4em;color:${T.ink};font-size:16px;line-height:1.85;">`)
-      .replaceAll('<ol>', `<ol style="margin:0 0 20px;padding-left:1.4em;color:${T.ink};font-size:16px;line-height:1.85;">`)
-      .replaceAll('<li>', `<li style="margin:0 0 8px;">`)
-      .replaceAll('<strong>', `<strong style="color:${T.navy};font-weight:700;">`)
-      .replaceAll('<hr>', `<hr style="margin:32px auto;border:none;border-top:1px solid ${T.line};width:100%;">`)
-      .replaceAll('<code>', `<code style="padding:2px 5px;border-radius:4px;background:#eef4ff;color:${T.navy};font-size:14px;">`)
-      .replace(/<a href="([^"]*)">/g, `<a href="$1" style="color:${T.linkBlue};font-weight:700;text-decoration:none;">`)
+  let out = html
+
+  // 公众号标题有独立输入框;正文不重复显示 Markdown 的首个 H1。
+  out = out.replace(/^\s*<h1>[\s\S]*?<\/h1>\s*/i, '')
+
+  // 支持 *Part 1*、**PART 01** 和 ## PART 01,但不能吞掉普通斜体图注。
+  out = out.replace(
+    /<(p|h[1-6])>\s*<(em|strong)>\s*(PART\s*(?:\d+|[一二三四五六七八九十]+))\s*<\/\2>\s*<\/\1>/gi,
+    (_all, _block, _emphasis, label: string) => partPill(label.toUpperCase()),
   )
+  out = out.replace(
+    /<h[1-6]>\s*(PART\s*(?:\d+|[一二三四五六七八九十]+))\s*<\/h[1-6]>/gi,
+    (_all, label: string) => partPill(label.toUpperCase()),
+  )
+
+  // 独立斜体行是图片说明/注释,沿用原版的居中灰字,不再误做黄色胶囊。
+  out = out.replace(
+    /<p>\s*<em>([\s\S]*?)<\/em>\s*<\/p>/g,
+    `<p style="margin:0 12px 26px;color:${T.inkMute};font-size:13px;line-height:1.7;text-align:center;">$1</p>`,
+  )
+
+  // marked 会在 blockquote 内再包 p;先处理内层,避免继承普通正文的 18px 下边距。
+  out = out.replace(/<blockquote>([\s\S]*?)<\/blockquote>/g, (_all, inner: string) => {
+    const quoteBody = inner
+      .replaceAll('<p>', `<p style="margin:0 0 8px;color:${T.quoteInk};font-size:16px;line-height:1.85;text-align:left;">`)
+      .replaceAll('<ul>', `<ul style="margin:0;padding-left:1.35em;color:${T.quoteInk};font-size:16px;line-height:1.85;">`)
+      .replaceAll('<ol>', `<ol style="margin:0;padding-left:1.35em;color:${T.quoteInk};font-size:16px;line-height:1.85;">`)
+    return `<blockquote style="margin:22px 0;padding:14px 18px;border-left:4px solid ${T.yellow};background:${T.quoteBg};color:${T.quoteInk};font-size:16px;line-height:1.85;">${quoteBody}</blockquote>`
+  })
+
+  // 代码块必须先于行内 code 处理,否则会出现双层小胶囊。
+  out = out.replace(
+    /<pre><code(?: class="[^"]*")?>([\s\S]*?)<\/code><\/pre>/g,
+    `<pre style="margin:22px 0;padding:14px 16px;overflow-x:auto;border:1px solid ${T.line};border-radius:6px;background:${T.bgSoft};color:${T.ink};font-size:13px;line-height:1.75;white-space:pre-wrap;word-break:break-word;"><code style="padding:0;background:transparent;color:inherit;font-size:inherit;">$1</code></pre>`,
+  )
+
+  return out
+    .replaceAll('<p>', `<p style="margin:0 0 18px;color:${T.ink};font-size:16px;line-height:1.95;text-align:justify;letter-spacing:0;">`)
+    // 大标题:原版黄色左边条;按 Alina 确认改为亮蓝 #0057FF。
+    .replaceAll('<h1>', `<h2 style="margin:4px 0 22px;padding-left:13px;border-left:4px solid ${T.yellow};color:${T.blueBright};font-size:23px;line-height:1.45;font-weight:800;letter-spacing:0;">`)
+    .replaceAll('</h1>', '</h2>')
+    .replaceAll('<h2>', `<h2 style="margin:4px 0 22px;padding-left:13px;border-left:4px solid ${T.yellow};color:${T.blueBright};font-size:23px;line-height:1.45;font-weight:800;letter-spacing:0;">`)
+    .replaceAll('<h3>', `<h3 style="margin:28px 0 14px;color:${T.navy};font-size:18px;line-height:1.55;font-weight:700;letter-spacing:0;">`)
+    .replaceAll('<h4>', `<h4 style="margin:24px 0 12px;color:${T.navy};font-size:16px;line-height:1.6;font-weight:700;letter-spacing:0;">`)
+    .replaceAll('<ul>', `<ul style="margin:0 0 20px;padding-left:1.4em;color:${T.ink};font-size:16px;line-height:1.85;">`)
+    .replaceAll('<ol>', `<ol style="margin:0 0 20px;padding-left:1.4em;color:${T.ink};font-size:16px;line-height:1.85;">`)
+    .replaceAll('<li>', `<li style="margin:0 0 8px;">`)
+    .replaceAll('<strong>', `<strong style="color:${T.navy};font-weight:700;">`)
+    .replaceAll('<hr>', `<hr style="margin:32px auto;border:none;border-top:1px solid ${T.line};width:100%;">`)
+    .replaceAll('<code>', `<code style="padding:2px 5px;border-radius:4px;background:#eef4ff;color:${T.navy};font-size:14px;">`)
+    .replace(/<a href="([^"]*)"([^>]*)>/g, `<a href="$1"$2 style="color:${T.linkBlue};font-weight:700;text-decoration:underline;text-decoration-color:${T.yellow};text-underline-offset:3px;word-break:break-all;">`)
 }
 
 function wrapSection(inner: string): string {
@@ -85,8 +121,10 @@ function wrapSection(inner: string): string {
 /** 文末品牌小卡(设置可关):读者问「怎么排的」,答案在文末 */
 function brandFooterHtml(): string {
   return (
-    `<section style="margin:2.8em 0 0;text-align:center;">` +
-    `<section style="display:inline-block;padding:6px 16px;border:1px solid ${THEME.line};border-radius:999px;font-size:12px;color:${THEME.inkMute};letter-spacing:1px;">✨ 排版与配图 · AI霖子</section>` +
+    `<section style="margin:40px 0 0;padding:17px 16px;border:1px solid ${THEME.line};border-radius:8px;background:#fbfcfe;text-align:center;">` +
+    `<span style="display:inline-block;width:7px;height:7px;margin:0 8px 1px 0;border-radius:50%;background:${THEME.yellow};"></span>` +
+    `<span style="color:${THEME.navy};font-size:13px;line-height:1.7;font-weight:700;letter-spacing:.5px;">AI霖子</span>` +
+    `<span style="color:${THEME.inkMute};font-size:12px;line-height:1.7;letter-spacing:.5px;"> · 公众号排版与配图</span>` +
     `</section>`
   )
 }
@@ -105,7 +143,7 @@ function mdToWechatHtml(mdRaw: string, imgHtml: (img: ImgRef) => string, withFoo
 }
 
 function stripFm(text: string): string {
-  return text.replace(/^---\n[\s\S]*?\n---\n?/, '').trim()
+  return text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '').trim()
 }
 
 async function currentNote(plugin: AiLinziPlugin): Promise<{ file: TFile; body: string } | null> {
