@@ -208,26 +208,29 @@ function runningNotice(label: string): Notice {
 export async function runTopicRadar(plugin: AiLinziPlugin) {
   const note = await getActiveNote(plugin)
   if (!note) return
+  // 赛道/定位不再问——AI霖子服务端本来就带着用户档案和知识库(2026-07-21 Alina 反馈)。
+  // 只问受众(选填):写给谁看,留空则按定位自动判断。
   const input = await new PromptModal(plugin.app, '选题雷达 · 从当前笔记提炼选题', '生成选题', [
     {
-      key: 'niche',
-      label: '你的赛道/定位(一句话)',
-      desc: '例:帮职场女性做副业咨询。会记住本次填写作为默认值。',
+      key: 'audience',
+      label: '这批选题主要写给谁看?(选填)',
+      desc: '例:想做副业的职场女性。留空则 AI 按你的定位与知识库自动判断。',
       initial: plugin.settings.defaultNiche,
-      required: true,
     },
   ]).result
   if (!input) return
 
-  plugin.settings.defaultNiche = input.niche.trim()
+  const audience = input.audience.trim()
+  plugin.settings.defaultNiche = audience
   await plugin.saveSettings()
 
   const n = runningNotice('选题雷达')
   try {
+    const material = stripFrontmatter(note.text)
+    const context = audience ? `这批选题主要写给:${audience}。\n\n参考素材:\n${material}` : material
     const text = await plugin.apiText('/api/skills/topic-radar', {
       method: 'gap',
-      niche: input.niche.trim().slice(0, 1000),
-      context: clip(stripFrontmatter(note.text), LIMITS.TOPIC_RADAR_CONTEXT_MAX, '笔记素材'),
+      context: clip(context, LIMITS.TOPIC_RADAR_CONTEXT_MAX, '笔记素材'),
     })
     await writeOutput(plugin, {
       skill: '选题雷达',

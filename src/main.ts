@@ -50,7 +50,7 @@ interface AiLinziSettings {
   attachNoteDefault: boolean
   /** 技能产出落盘的文件夹(相对 vault 根) */
   outputFolder: string
-  /** 选题雷达默认赛道描述(跑一次后自动记住) */
+  /** 选题雷达默认受众(跑一次后自动记住;历史key沿用defaultNiche兼容旧设置) */
   defaultNiche: string
 }
 
