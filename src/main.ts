@@ -20,6 +20,7 @@ import {
   WorkspaceLeaf,
   requestUrl,
 } from 'obsidian'
+import { applyUpdate, autoCheck, checkLatest, type UpdateInfo } from './updater'
 import {
   feedKnowledge,
   runDistribute,
@@ -52,11 +53,12 @@ interface AiLinziSettings {
   outputFolder: string
   /** 选题雷达默认受众(跑一次后自动记住;历史key沿用defaultNiche兼容旧设置) */
   defaultNiche: string
+  /** 上次自动检查更新的时间戳(约每20小时一次) */
+  lastUpdateCheckAt?: number
 }
 
 const DEFAULT_SETTINGS: AiLinziSettings = {
-  // 本地联调默认;正式发布版改为生产地址
-  serverUrl: 'http://localhost:3000',
+  serverUrl: 'https://chat.alinalinzi.com',
   token: '',
   attachNoteDefault: true,
   outputFolder: 'AI霖子输出',
@@ -85,9 +87,14 @@ export default class AiLinziPlugin extends Plugin {
    * 面板上的「调用技能/存入知识库」按钮靠这个记录知道用户"当前开着哪篇笔记"。
    */
   lastActiveFile: TFile | null = null
+  /** 启动检查发现的待装更新(设置页展示) */
+  pendingUpdate: UpdateInfo | null = null
 
   async onload() {
     await this.loadSettings()
+
+    // 启动 8s 后静默查一次更新(不阻塞加载;找到只提示,由用户在设置页确认)
+    window.setTimeout(() => void autoCheck(this), 8000)
 
     this.registerEvent(
       this.app.workspace.on('active-leaf-change', () => {
@@ -544,6 +551,31 @@ class AiLinziSettingTab extends PluginSettingTab {
           this.plugin.settings.attachNoteDefault = v
           await this.plugin.saveSettings()
         }),
+      )
+
+    new Setting(containerEl)
+      .setName(`插件更新(当前 v${this.plugin.manifest.version})`)
+      .setDesc(this.plugin.pendingUpdate ? `发现新版本 v${this.plugin.pendingUpdate.version}!` : '检查 GitHub 上是否有新版本,一键更新并自动重载')
+      .addButton((b) =>
+        b
+          .setButtonText(this.plugin.pendingUpdate ? `更新到 v${this.plugin.pendingUpdate.version}` : '检查并更新')
+          .setCta()
+          .onClick(async () => {
+            b.setDisabled(true)
+            try {
+              const info = this.plugin.pendingUpdate ?? (await checkLatest(this.plugin))
+              if (!info) {
+                new Notice('✅ 已经是最新版本')
+                return
+              }
+              new Notice(`开始更新到 v${info.version}…`)
+              await applyUpdate(this.plugin, info)
+            } catch (e) {
+              new Notice(`更新失败:${e instanceof Error ? e.message : String(e)}`, 8000)
+            } finally {
+              b.setDisabled(false)
+            }
+          }),
       )
 
     new Setting(containerEl)
