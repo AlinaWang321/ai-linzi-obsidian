@@ -1,6 +1,6 @@
 {
   "name": "ai-linzi-obsidian-plugin",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "AI霖子 Obsidian 插件",
   "main": "main.js",
   "scripts": {

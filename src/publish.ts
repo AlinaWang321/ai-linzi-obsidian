@@ -4,8 +4,9 @@
  * ① 一键排版复制:笔记 md → 内联样式富文本(公众号编辑器可直接粘贴)。
  *    版式以 Alina 发布工作台为基准(亮蓝标题+黄色结构强调+暖底引用块),
  *    但不包含 Alina 的个人眉题与页尾 slogan,保持学员通用。
- * ② 直发草稿箱:用学员自己的 AppID/AppSecret 从本机直连微信接口
- *    (凭证只存本地;需在公众号后台把本机 IP 加入白名单)。
+ * ② 直发草稿箱:用学员自己的 AppID/AppSecret 从本机直连微信接口。
+ *    AppSecret 只从 Obsidian SecretStorage 读取，不写入插件 data.json；
+ *    仍需在公众号后台把本机 IP 加入白名单。
  *    图片自动走微信素材接口上传替换;第一张图作封面(草稿必须有封面)。
  */
 import { Notice, TFile, requestUrl } from 'obsidian'
@@ -277,7 +278,8 @@ function resolveImgFile(plugin: AiLinziPlugin, src: string, from: TFile): TFile 
 }
 
 export async function sendToWechatDraft(plugin: AiLinziPlugin) {
-  const { wechatAppId, wechatAppSecret } = plugin.settings
+  const { wechatAppId } = plugin.settings
+  const wechatAppSecret = plugin.getWechatAppSecret()
   if (!wechatAppId || !wechatAppSecret) {
     new Notice('先在 设置 → AI霖子 → 公众号发布 里填入你的 AppID 和 AppSecret(公众号后台「基本配置」里抄)', 8000)
     return

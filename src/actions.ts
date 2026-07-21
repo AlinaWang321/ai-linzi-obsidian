@@ -518,6 +518,8 @@ export async function feedKnowledge(plugin: AiLinziPlugin) {
 
 // ── 文章配图(学员通用 · 极简小清新手绘人偶) ─────────
 
+const ARTICLE_ILLUSTRATION_API = '/api/plugin/v1/article-illustration'
+
 async function fetchImageBinary(url: string): Promise<ArrayBuffer> {
   if (url.startsWith('data:')) {
     const b64 = url.slice(url.indexOf(',') + 1)
@@ -649,7 +651,11 @@ function planMarkdown(
 export async function runArticleIllustration(plugin: AiLinziPlugin) {
   const note = await getActiveNote(plugin)
   if (!note) return
-  const article = prepareWechatArticle(note.text).body
+  const prepared = prepareWechatArticle(note.text)
+  const article = prepared.body
+  const articleTitle =
+    prepared.titleCandidates[0]?.trim() ||
+    note.file.basename.replace(/^\d{4}[.-]\d{1,2}[.-]\d{1,2}_?/, '').trim()
   if (article.length < 300) {
     new Notice(`文章只有 ${article.length} 字——配图需要至少 300 字的成稿`)
     return
@@ -667,9 +673,9 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
 
   const planning = new Notice('🤖 正在读文章并规划配图点…', 0)
   try {
-    const planData = (await plugin.api('/api/skills/article-illustration', {
+    const planData = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
       method: 'POST',
-      body: { article: clip(article, 20_000, '文章'), count, mode: 'plan' },
+      body: { article: clip(article, 20_000, '文章'), articleTitle, count, mode: 'plan' },
     })) as {
       plan?: IllustrationPlan
       estimatedCredits?: number
@@ -691,9 +697,15 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       failedCount?: number
     }
     try {
-      data = (await plugin.api('/api/skills/article-illustration', {
+      data = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
         method: 'POST',
-        body: { article: clip(article, 20_000, '文章'), count, mode: 'generate', plan: confirmed },
+        body: {
+          article: clip(article, 20_000, '文章'),
+          articleTitle,
+          count,
+          mode: 'generate',
+          plan: confirmed,
+        },
       })) as typeof data
     } finally {
       generating.hide()
@@ -941,7 +953,7 @@ export async function runArticleIllustrationEdit(plugin: AiLinziPlugin, initialI
   try {
     const imageDataUrl = await imageFileToReferenceDataUrl(plugin, request.image.file)
     const article = prepareWechatArticle(note.text).body
-    const data = (await plugin.api('/api/skills/article-illustration', {
+    const data = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
       method: 'POST',
       body: {
         article: clip(article, 20_000, '文章'),

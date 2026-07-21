@@ -15,6 +15,7 @@ import {
   Notice,
   Plugin,
   PluginSettingTab,
+  SecretComponent,
   Setting,
   TFile,
   WorkspaceLeaf,
@@ -75,7 +76,8 @@ export const SKILL_ACTIONS: {
 
 interface AiLinziSettings {
   serverUrl: string
-  token: string
+  /** SecretStorage 中保存 AI霖子连接密钥的条目名，不保存密钥明文 */
+  tokenSecretId: string
   /** 「带上当前笔记」开关的默认值 */
   attachNoteDefault: boolean
   /** 技能产出落盘的文件夹(相对 vault 根) */
@@ -84,23 +86,32 @@ interface AiLinziSettings {
   defaultNiche: string
   /** 上次自动检查更新的时间戳(约每20小时一次) */
   lastUpdateCheckAt?: number
-  /** 公众号发布(选配):学员自己的公众号开发者凭证,只存本地 */
+  /** 公众号发布(选配):AppID 可留在普通设置，AppSecret 只存 SecretStorage */
   wechatAppId: string
-  wechatAppSecret: string
+  wechatAppSecretId: string
   /** 文末品牌小卡「排版与配图 · AI霖子」(默认开,可关) */
   brandFooter: boolean
 }
 
 const DEFAULT_SETTINGS: AiLinziSettings = {
   serverUrl: 'https://chat.alinalinzi.com',
-  token: '',
+  tokenSecretId: '',
   attachNoteDefault: true,
   outputFolder: 'AI霖子输出',
   defaultNiche: '',
   wechatAppId: '',
-  wechatAppSecret: '',
+  wechatAppSecretId: '',
   brandFooter: true,
 }
+
+interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
+  /** v0.5.1 及以前曾把这两个敏感值明文写进 data.json，仅用于一次性迁移 */
+  token?: string
+  wechatAppSecret?: string
+}
+
+const DEFAULT_TOKEN_SECRET_ID = 'ai-linzi-api-token'
+const DEFAULT_WECHAT_SECRET_ID = 'ai-linzi-wechat-app-secret'
 
 const VIEW_TYPE_CHAT = 'ai-linzi-chat'
 
@@ -118,6 +129,14 @@ interface SavedConvo {
   title: string
   updatedAt: number
   messages: WireMessage[]
+}
+
+interface CloudSessionSummary {
+  sessionId: string
+  preview: string
+  title: string | null
+  lastActivity: string
+  messageCount: number
 }
 
 const MAX_SAVED_CONVOS = 30
@@ -226,7 +245,36 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData())
+    const raw = ((await this.loadData()) ?? {}) as LegacyAiLinziSettings
+    const { token: legacyToken, wechatAppSecret: legacyWechatSecret, ...safeSettings } = raw
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
+
+    // v0.6.0：首次启动自动把旧 data.json 里的明文密钥迁到 Obsidian SecretStorage，
+    // 随后立刻重写 data.json，只留下 SecretStorage 条目名。
+    let migrated = false
+    if (legacyToken?.trim()) {
+      const id = this.settings.tokenSecretId || DEFAULT_TOKEN_SECRET_ID
+      this.app.secretStorage.setSecret(id, legacyToken.trim())
+      this.settings.tokenSecretId = id
+      migrated = true
+    }
+    if (legacyWechatSecret?.trim()) {
+      const id = this.settings.wechatAppSecretId || DEFAULT_WECHAT_SECRET_ID
+      this.app.secretStorage.setSecret(id, legacyWechatSecret.trim())
+      this.settings.wechatAppSecretId = id
+      migrated = true
+    }
+    if (migrated) await this.saveSettings()
+  }
+
+  getApiToken(): string {
+    const id = this.settings.tokenSecretId.trim()
+    return id ? this.app.secretStorage.getSecret(id)?.trim() ?? '' : ''
+  }
+
+  getWechatAppSecret(): string {
+    const id = this.settings.wechatAppSecretId.trim()
+    return id ? this.app.secretStorage.getSecret(id)?.trim() ?? '' : ''
   }
 
   // ── 会话本地持久化(独立文件,不进 data.json 防设置写放大) ──
@@ -254,6 +302,41 @@ export default class AiLinziPlugin extends Plugin {
 
   async deleteAllConvos(): Promise<void> {
     await this.app.vault.adapter.write(this.convosPath(), '[]')
+  }
+
+  async loadCloudSessions(): Promise<CloudSessionSummary[]> {
+    const data = await this.api('/api/plugin/v1/chat/sessions')
+    return Array.isArray(data.sessions) ? (data.sessions as CloudSessionSummary[]) : []
+  }
+
+  async loadCloudConvo(sessionId?: string): Promise<SavedConvo | null> {
+    const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''
+    const data = await this.api(`/api/plugin/v1/chat/history${query}`)
+    const id = typeof data.sessionId === 'string' ? data.sessionId : ''
+    const rows = Array.isArray(data.messages)
+      ? (data.messages as Array<{ id?: unknown; role?: unknown; content?: unknown; createdAt?: unknown }>)
+      : []
+    if (!id || rows.length === 0) return null
+    const messages: WireMessage[] = rows
+      .filter((row) => row.role === 'user' || row.role === 'assistant')
+      .map((row) => ({
+        id: String(row.id ?? uid()),
+        role: row.role as 'user' | 'assistant',
+        parts: [{ type: 'text' as const, text: String(row.content ?? '') }],
+      }))
+    const firstUser = messages.find((message) => message.role === 'user')
+    const lastCreatedAt = String(rows.at(-1)?.createdAt ?? '')
+    return {
+      id,
+      mode: 'chat',
+      title: (firstUser?.parts.map((part) => part.text).join('') ?? '云端对话').slice(0, 24),
+      updatedAt: Number.isFinite(Date.parse(lastCreatedAt)) ? Date.parse(lastCreatedAt) : Date.now(),
+      messages,
+    }
+  }
+
+  async deleteAllCloudConvos(): Promise<void> {
+    await this.api('/api/plugin/v1/chat/history', { method: 'DELETE' })
   }
 
   async saveSettings() {
@@ -295,7 +378,8 @@ export default class AiLinziPlugin extends Plugin {
 
   /** 统一 API 调用(requestUrl 绕 CORS;throw:false 自己处理错误码) */
   async api(path: string, init?: { method?: string; body?: unknown }) {
-    const { serverUrl, token } = this.settings
+    const { serverUrl } = this.settings
+    const token = this.getApiToken()
     if (!serverUrl || !token) {
       throw new Error('请先在设置里填写服务器地址和 Token')
     }
@@ -333,7 +417,8 @@ export default class AiLinziPlugin extends Plugin {
    * requestUrl 会把流缓冲成完整文本;错误时这些路由返回 JSON,这里解析出友好文案。
    */
   async apiText(path: string, body: unknown): Promise<string> {
-    const { serverUrl, token } = this.settings
+    const { serverUrl } = this.settings
+    const token = this.getApiToken()
     if (!serverUrl || !token) {
       throw new Error('请先在设置里填写服务器地址和 Token')
     }
@@ -511,9 +596,21 @@ class ChatView extends ItemView {
 
   private async restoreLatest(): Promise<void> {
     if (this.messages.length > 0) return
-    const [latest] = await this.plugin.loadConvos()
-    if (!latest || latest.messages.length === 0) return
-    this.loadConvo(latest)
+    const [latestLocal] = await this.plugin.loadConvos()
+    try {
+      const [latestCloudSummary] = await this.plugin.loadCloudSessions()
+      const cloudTime = latestCloudSummary ? Date.parse(latestCloudSummary.lastActivity) : 0
+      if (latestCloudSummary && (!latestLocal || cloudTime >= latestLocal.updatedAt)) {
+        const cloud = await this.plugin.loadCloudConvo(latestCloudSummary.sessionId)
+        if (cloud?.messages.length) {
+          this.loadConvo(cloud)
+          return
+        }
+      }
+    } catch {
+      // 离线或旧服务器尚未部署 v1 历史接口时，继续使用本机缓存。
+    }
+    if (latestLocal?.messages.length) this.loadConvo(latestLocal)
   }
 
   private loadConvo(c: SavedConvo): void {
@@ -532,33 +629,71 @@ class ChatView extends ItemView {
   }
 
   private async showHistoryMenu(evt: MouseEvent): Promise<void> {
-    const convos = await this.plugin.loadConvos()
+    const localConvos = await this.plugin.loadConvos()
+    let cloudSessions: CloudSessionSummary[] = []
+    try {
+      cloudSessions = await this.plugin.loadCloudSessions()
+    } catch {
+      // 云端不可用时历史菜单仍能展示本机缓存。
+    }
+    const cloudIds = new Set(cloudSessions.map((session) => session.sessionId))
+    const items: Array<
+      | { kind: 'cloud'; id: string; title: string; updatedAt: number }
+      | { kind: 'local'; convo: SavedConvo; title: string; updatedAt: number }
+    > = cloudSessions.map((session) => ({
+      kind: 'cloud' as const,
+      id: session.sessionId,
+      title: session.title || session.preview || '云端对话',
+      updatedAt: Date.parse(session.lastActivity) || 0,
+    }))
+    for (const convo of localConvos) {
+      if (cloudIds.has(convo.id)) continue
+      items.push({ kind: 'local', convo, title: convo.title, updatedAt: convo.updatedAt })
+    }
+    items.sort((a, b) => b.updatedAt - a.updatedAt)
     const menu = new Menu()
-    if (convos.length === 0) {
+    if (items.length === 0) {
       menu.addItem((i) => i.setTitle('还没有历史对话').setDisabled(true))
     }
-    for (const c of convos.slice(0, 15)) {
-      const d = new Date(c.updatedAt)
+    for (const item of items.slice(0, 15)) {
+      const d = new Date(item.updatedAt)
       const stamp = `${d.getMonth() + 1}/${d.getDate()}`
       menu.addItem((i) =>
         i
-          .setTitle(`${c.mode === 'interview' ? '✍️ ' : ''}${c.title} · ${stamp}`)
+          .setTitle(
+            `${item.kind === 'local' && item.convo.mode === 'interview' ? '✍️ ' : ''}${item.title.slice(0, 30)} · ${stamp}`,
+          )
           .onClick(() => {
             void this.persistNow()
-            this.loadConvo(c)
+            if (item.kind === 'local') {
+              this.loadConvo(item.convo)
+              return
+            }
+            void this.plugin
+              .loadCloudConvo(item.id)
+              .then((convo) => {
+                if (convo) this.loadConvo(convo)
+              })
+              .catch((error) => {
+                new Notice(`恢复云端对话失败:${error instanceof Error ? error.message : String(error)}`)
+              })
           }),
       )
     }
     menu.addSeparator()
     menu.addItem((i) =>
-      i.setTitle('🗑 清空全部历史对话').onClick(() => {
-        if (!window.confirm('确定清空全部历史对话吗?此操作不可恢复(已「存为笔记」的成稿不受影响)。')) return
-        void this.plugin.deleteAllConvos().then(() => {
-          this.messages = []
-          this.sessionId = uid()
-          this.renderMessages()
-          new Notice('历史对话已清空')
-        })
+      i.setTitle('🗑 清空云端及本机历史').onClick(() => {
+        if (!window.confirm('确定清空 AI霖子云端和本机的全部历史对话吗?此操作不可恢复(已「存为笔记」的成稿不受影响)。')) return
+        void Promise.all([this.plugin.deleteAllCloudConvos(), this.plugin.deleteAllConvos()])
+          .then(() => {
+            this.messages = []
+            this.sessionId = uid()
+            this.renderMessages()
+            new Notice('云端及本机历史对话已清空')
+          })
+          .catch((error) => {
+            new Notice(`清空历史失败:${error instanceof Error ? error.message : String(error)}`)
+          })
       }),
     )
     menu.showAtMouseEvent(evt)
@@ -679,7 +814,9 @@ class ChatView extends ItemView {
 
   /** 访谈模式发送:走 wechat-interview 技能路由(UIMessage SSE,缓冲后解析) */
   private async sendInterview(): Promise<string> {
-    const { serverUrl, token } = this.plugin.settings
+    const { serverUrl } = this.plugin.settings
+    const token = this.plugin.getApiToken()
+    if (!token) return '⚠️ 请先在设置里选择或新建 AI霖子连接密钥'
     const res = await requestUrl({
       url: `${serverUrl.replace(/\/+$/, '')}/api/skills/wechat-interview`,
       method: 'POST',
@@ -713,7 +850,9 @@ class ChatView extends ItemView {
     noteContext: { filename: string; text: string } | undefined,
     noteEdit: boolean,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
-    const { serverUrl, token } = this.plugin.settings
+    const { serverUrl } = this.plugin.settings
+    const token = this.plugin.getApiToken()
+    if (!token) return { kind: 'bizError', message: '请先在设置里选择或新建 AI霖子连接密钥' }
     const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/api/plugin/chat`, {
       method: 'POST',
       headers: {
@@ -968,16 +1107,15 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('API Token')
-      .setDesc('在 AI霖子 网页「我的 → 连接中心」生成密钥后粘贴到这里。还没有账号?先到 chat.alinalinzi.com 注册。⚠️ 不要把含密钥的 vault 配置分享给别人。')
-      .addText((t) => {
-        t.inputEl.type = 'password'
-        t.setPlaceholder('alz_...')
-          .setValue(this.plugin.settings.token)
+      .setDesc('在 AI霖子 网页「我的 → 连接中心」生成密钥，再在这里新建一个安全条目并粘贴。插件设置只保存条目名，不再把密钥明文写进 data.json。换电脑后重新生成或重新填写即可。')
+      .addComponent((el) =>
+        new SecretComponent(this.app, el)
+          .setValue(this.plugin.settings.tokenSecretId)
           .onChange(async (v) => {
-            this.plugin.settings.token = v.trim()
+            this.plugin.settings.tokenSecretId = v.trim()
             await this.plugin.saveSettings()
-          })
-      })
+          }),
+      )
 
     new Setting(containerEl)
       .setName('产出内容保存到文件夹')
@@ -1019,16 +1157,15 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('公众号 AppSecret')
-      .setDesc('同一页面「开发密钥」处点重置获取(只显示一次,立即复制)。⚠️ 还需把本机 IP 加入同页「API IP 白名单」。')
-      .addText((t) => {
-        t.inputEl.type = 'password'
-        t.setPlaceholder('•••')
-          .setValue(this.plugin.settings.wechatAppSecret)
+      .setDesc('在公众号后台获取后，新建一个安全条目并粘贴。data.json 只保存条目名；密钥保留在当前设备的 Obsidian SecretStorage。换设备时需要重新填写。')
+      .addComponent((el) =>
+        new SecretComponent(this.app, el)
+          .setValue(this.plugin.settings.wechatAppSecretId)
           .onChange(async (v) => {
-            this.plugin.settings.wechatAppSecret = v.trim()
+            this.plugin.settings.wechatAppSecretId = v.trim()
             await this.plugin.saveSettings()
-          })
-      })
+          }),
+      )
 
     new Setting(containerEl)
       .setName('文末品牌小卡')
