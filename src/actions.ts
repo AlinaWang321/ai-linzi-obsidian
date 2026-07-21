@@ -4,7 +4,7 @@
  * 写入铁律(整合定稿 §2.2):只写输出文件夹、只新建不覆盖、frontmatter 落标。
  * 输入上限与服务端 lib/input-limits.ts 对齐,超限先截断并明确告知(透明原则)。
  */
-import { App, Modal, Notice, Setting, TFile, normalizePath } from 'obsidian'
+import { App, Modal, Notice, Setting, TFile, normalizePath, requestUrl } from 'obsidian'
 import type AiLinziPlugin from './main'
 
 // ── 与服务端对齐的常量 ─────────────────────────────
@@ -460,5 +460,123 @@ export async function feedKnowledge(plugin: AiLinziPlugin) {
   } catch (e) {
     // starter_wall(403)/kb_section_full/kb_total_full(422) 的 error 文案服务端已写得很友好,直接透传
     new Notice(`喂库:${e instanceof Error ? e.message : String(e)}`, 10000)
+  }
+}
+
+// ── 文章配图(手绘火柴人风) ──────────────────────────
+
+async function fetchImageBinary(url: string): Promise<ArrayBuffer> {
+  if (url.startsWith('data:')) {
+    const b64 = url.slice(url.indexOf(',') + 1)
+    const s = atob(b64)
+    const u = new Uint8Array(s.length)
+    for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i)
+    return u.buffer
+  }
+  const r = await requestUrl({ url, throw: false })
+  if (r.status !== 200 || !r.arrayBuffer) throw new Error(`图片下载失败(${r.status})`)
+  return r.arrayBuffer
+}
+
+async function ensureFolder(plugin: AiLinziPlugin, folder: string): Promise<void> {
+  const parts = folder.split('/')
+  let cur = ''
+  for (const p of parts) {
+    cur = cur ? `${cur}/${p}` : p
+    if (!plugin.app.vault.getAbstractFileByPath(cur)) {
+      await plugin.app.vault.createFolder(cur).catch(() => {})
+    }
+  }
+}
+
+/** 把图片按 anchor 插回正文;从后往前插避免行号位移;返回命中数 */
+function insertEmbeds(content: string, items: { path: string; anchor: string }[]): { out: string; hits: number } {
+  const lines = content.split('\n')
+  const used = new Set<number>()
+  const placed: { idx: number; embed: string }[] = []
+  const missed: string[] = []
+  for (const it of items) {
+    const embed = `![[${it.path}]]`
+    const a = (it.anchor ?? '').trim()
+    let idx = -1
+    if (a.length >= 3) {
+      idx = lines.findIndex((l, i) => !used.has(i) && l.includes(a))
+      if (idx < 0) {
+        // 宽松匹配:去掉 # 和空白后取前 8 字
+        const short = a.replace(/[#\s]/g, '').slice(0, 8)
+        if (short.length >= 4) {
+          idx = lines.findIndex((l, i) => !used.has(i) && l.replace(/[#\s]/g, '').includes(short))
+        }
+      }
+    }
+    if (idx >= 0) {
+      used.add(idx)
+      placed.push({ idx, embed })
+    } else {
+      missed.push(embed)
+    }
+  }
+  placed.sort((x, y) => y.idx - x.idx)
+  for (const p of placed) lines.splice(p.idx + 1, 0, '', p.embed)
+  // 没定位到的:第一张兜底插在文首(保证封面),其余附在文末
+  if (missed.length > 0) {
+    lines.splice(1, 0, '', missed[0])
+    for (const e of missed.slice(1)) lines.push('', e)
+  }
+  return { out: lines.join('\n'), hits: placed.length }
+}
+
+export async function runArticleIllustration(plugin: AiLinziPlugin) {
+  const note = await getActiveNote(plugin)
+  if (!note) return
+  const article = stripFrontmatter(note.text)
+  if (article.length < 300) {
+    new Notice(`文章只有 ${article.length} 字——配图需要至少 300 字的成稿`)
+    return
+  }
+  const input = await new PromptModal(plugin.app, '文章配图 · 手绘火柴人风', '开始配图', [
+    {
+      key: 'count',
+      label: '生成几张?(2-4)',
+      desc: '统一的火柴人手绘风,自动插到对应段落。按张扣积分,失败的那张不扣;第一张图同时满足「发草稿箱」的封面要求。',
+      initial: '3',
+    },
+  ]).result
+  if (!input) return
+  const count = Math.min(4, Math.max(2, parseInt(input.count) || 3))
+
+  const n = runningNotice('文章配图')
+  try {
+    const data = (await plugin.api('/api/skills/article-illustration', {
+      method: 'POST',
+      body: { article: clip(article, 20_000, '文章'), count },
+    })) as { images?: { anchor: string; title: string; imageUrl: string }[]; failedCount?: number }
+    const imgs = data.images ?? []
+    if (imgs.length === 0) throw new Error('没有生成任何图片')
+
+    const folder = normalizePath(
+      `${plugin.settings.outputFolder || 'AI霖子输出'}/配图/${today()}_${sanitizeTitle(note.file.basename)}`,
+    )
+    await ensureFolder(plugin, folder)
+    const saved: { path: string; anchor: string }[] = []
+    for (let i = 0; i < imgs.length; i++) {
+      const bin = await fetchImageBinary(imgs[i].imageUrl)
+      const path = normalizePath(`${folder}/${String(i + 1).padStart(2, '0')}_${sanitizeTitle(imgs[i].title) || '配图'}.png`)
+      await plugin.app.vault.createBinary(path, bin)
+      saved.push({ path, anchor: imgs[i].anchor })
+    }
+
+    let hits = 0
+    await plugin.app.vault.process(note.file, (content) => {
+      const r = insertEmbeds(content, saved)
+      hits = r.hits
+      return r.out
+    })
+    const failMsg = data.failedCount ? `;${data.failedCount} 张生成失败(未扣积分)` : ''
+    new Notice(`✅ ${saved.length} 张配图已插入文章(${hits} 张按段落定位,其余在文首/文末)${failMsg}\n图片保存在:${folder}`, 10000)
+  } catch (e) {
+    new Notice(`❌ 文章配图:${e instanceof Error ? e.message : String(e)}`, 10000)
+  } finally {
+    n.hide()
   }
 }

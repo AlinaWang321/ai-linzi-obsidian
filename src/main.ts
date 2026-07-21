@@ -24,6 +24,7 @@ import { applyUpdate, autoCheck, checkLatest, type UpdateInfo } from './updater'
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
 import {
   feedKnowledge,
+  runArticleIllustration,
   runDistribute,
   runSalesReview,
   runTopicRadar,
@@ -46,6 +47,7 @@ export const SKILL_ACTIONS: {
   { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
   { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
+  { id: 'illustration', name: '文章配图:手绘火柴人风(自动插入正文)', fn: runArticleIllustration },
   { id: 'wechat-copy', name: '公众号排版:一键复制(去后台粘贴)', fn: async (p) => copyWechatFormatted(p) },
   { id: 'wechat-draft', name: '发到公众号草稿箱(自动传图,需配置AppID)', fn: async (p) => sendToWechatDraft(p) },
   { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },

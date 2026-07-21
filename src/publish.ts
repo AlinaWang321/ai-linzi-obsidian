@@ -50,20 +50,29 @@ function extractImages(md: string): { md: string; imgs: ImgRef[] } {
 /** 标签替换式加内联样式(不依赖 marked renderer API,版本稳) */
 function styleHtml(html: string): string {
   const T = THEME
-  return html
-    .replaceAll('<p>', `<p style="margin:0 0 1.2em;font-size:${T.fontSize};line-height:${T.lineHeight};color:${T.ink};letter-spacing:.4px;">`)
-    .replaceAll('<h1>', `<h2 style="margin:1.8em 0 1em;font-size:20px;font-weight:700;color:${T.navy};line-height:1.5;"><span style="display:inline-block;width:4px;height:18px;background:${T.navy};border-radius:2px;margin-right:9px;vertical-align:-2px;"></span>`)
-    .replaceAll('</h1>', '</h2>')
-    .replaceAll('<h2>', `<h2 style="margin:1.8em 0 1em;font-size:19px;font-weight:700;color:${T.navy};line-height:1.5;"><span style="display:inline-block;width:4px;height:17px;background:${T.navy};border-radius:2px;margin-right:9px;vertical-align:-2px;"></span>`)
-    .replaceAll('<h3>', `<h3 style="margin:1.6em 0 .8em;font-size:17px;font-weight:700;color:${T.navy};">`)
-    .replaceAll('<blockquote>', `<blockquote style="margin:1.4em 0;padding:12px 16px;background:${T.bgSoft};border-left:3px solid ${T.navy};border-radius:4px;color:${T.inkSoft};font-size:15px;">`)
-    .replaceAll('<ul>', `<ul style="margin:0 0 1.2em;padding-left:1.4em;color:${T.ink};font-size:${T.fontSize};line-height:${T.lineHeight};">`)
-    .replaceAll('<ol>', `<ol style="margin:0 0 1.2em;padding-left:1.4em;color:${T.ink};font-size:${T.fontSize};line-height:${T.lineHeight};">`)
-    .replaceAll('<li>', `<li style="margin:.3em 0;">`)
-    .replaceAll('<strong>', `<strong style="color:${T.navy};">`)
-    .replaceAll('<hr>', `<hr style="margin:2em auto;border:none;border-top:1px solid ${T.line};width:40%;">`)
-    .replaceAll('<code>', `<code style="background:${T.bgSoft};padding:2px 6px;border-radius:4px;font-size:14px;color:${T.navy};">`)
-    .replace(/<a href="([^"]*)">/g, `<a href="$1" style="color:${T.navy};border-bottom:1px solid ${T.line};text-decoration:none;">`)
+  const navySoft = '#5C7BB0'
+  const dot = `<span style="display:inline-block;width:6px;height:6px;background:#C9D4E8;border-radius:50%;margin:0 5px;"></span>`
+  return (
+    html
+      .replaceAll('<p>', `<p style="margin:0 0 1.25em;font-size:${T.fontSize};line-height:${T.lineHeight};color:${T.ink};letter-spacing:.4px;">`)
+      // H1/H2 = 藏蓝标签块 + 浅蓝装饰短线(纯内联样式,公众号编辑器稳定支持)
+      .replaceAll('<h1>', `<section style="margin:2.1em 0 1.2em;"><section style="display:inline-block;padding:7px 16px;background:${T.navy};color:#ffffff;font-size:17px;font-weight:700;border-radius:8px;letter-spacing:1px;line-height:1.4;">`)
+      .replaceAll('</h1>', `</section><section style="width:42px;height:3px;background:${'$'}{navySoft};border-radius:2px;margin-top:8px;"></section></section>`.replace('${navySoft}', navySoft))
+      .replaceAll('<h2>', `<section style="margin:2.1em 0 1.2em;"><section style="display:inline-block;padding:7px 16px;background:${T.navy};color:#ffffff;font-size:17px;font-weight:700;border-radius:8px;letter-spacing:1px;line-height:1.4;">`)
+      .replaceAll('</h2>', `</section><section style="width:42px;height:3px;background:${'$'}{navySoft};border-radius:2px;margin-top:8px;"></section></section>`.replace('${navySoft}', navySoft))
+      // H3 = 圆点 + 藏蓝粗体
+      .replaceAll('<h3>', `<h3 style="margin:1.7em 0 .8em;font-size:16px;font-weight:700;color:${T.navy};"><span style="display:inline-block;width:8px;height:8px;background:${'$'}{navySoft};border-radius:50%;margin-right:8px;"></span>`.replace('${navySoft}', navySoft))
+      // 引用块 = 暖底卡片 + 引号缀饰
+      .replaceAll('<blockquote>', `<blockquote style="margin:1.5em 0;padding:14px 18px;background:${T.bgSoft};border-left:3px solid ${'$'}{navySoft};border-radius:6px;color:${T.inkSoft};font-size:15px;line-height:1.8;"><span style="display:block;font-size:20px;color:${'$'}{navySoft};line-height:1;margin-bottom:4px;">❝</span>`.replaceAll('${navySoft}', navySoft))
+      .replaceAll('<ul>', `<ul style="margin:0 0 1.25em;padding-left:1.4em;color:${T.ink};font-size:${T.fontSize};line-height:${T.lineHeight};">`)
+      .replaceAll('<ol>', `<ol style="margin:0 0 1.25em;padding-left:1.4em;color:${T.ink};font-size:${T.fontSize};line-height:${T.lineHeight};">`)
+      .replaceAll('<li>', `<li style="margin:.35em 0;">`)
+      .replaceAll('<strong>', `<strong style="color:${T.navy};">`)
+      // 分隔线 = 居中三圆点
+      .replaceAll('<hr>', `<section style="margin:2.2em 0;text-align:center;">${dot}${dot}${dot}</section>`)
+      .replaceAll('<code>', `<code style="background:${T.bgSoft};padding:2px 6px;border-radius:4px;font-size:14px;color:${T.navy};">`)
+      .replace(/<a href="([^"]*)">/g, `<a href="$1" style="color:${T.navy};border-bottom:1px solid ${T.line};text-decoration:none;">`)
+  )
 }
 
 function wrapSection(inner: string): string {
