@@ -627,7 +627,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('服务器地址')
-      .setDesc('AI霖子 服务地址。本地联调填 http://localhost:3000')
+      .setDesc('默认已是 AI霖子 官方地址,一般不需要修改')
       .addText((t) =>
         t
           .setPlaceholder('http://localhost:3000')
@@ -640,7 +640,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('API Token')
-      .setDesc('在 AI霖子 网页「我的」页生成。⚠️ 不要把含 Token 的 vault 配置分享给别人。')
+      .setDesc('在 AI霖子 网页「我的 → 连接中心」生成密钥后粘贴到这里。还没有账号?先到 chat.alinalinzi.com 注册。⚠️ 不要把含密钥的 vault 配置分享给别人。')
       .addText((t) => {
         t.inputEl.type = 'password'
         t.setPlaceholder('alz_...')
@@ -652,8 +652,8 @@ class AiLinziSettingTab extends PluginSettingTab {
       })
 
     new Setting(containerEl)
-      .setName('产出落盘文件夹')
-      .setDesc('技能生成的内容保存到这里(只新建不覆盖)。相对 vault 根路径。')
+      .setName('产出内容保存到文件夹')
+      .setDesc('技能生成的选题、文章、分发内容都会保存到这个文件夹(只新建、不覆盖你的笔记)')
       .addText((t) =>
         t
           .setPlaceholder('AI霖子输出')
@@ -701,7 +701,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('测试连接')
-      .setDesc('验证地址与 Token 是否可用,并显示账号与积分余额')
+      .setDesc('验证地址与密钥是否可用,并显示账号与积分余额')
       .addButton((b) =>
         b.setButtonText('测试').onClick(async () => {
           b.setDisabled(true)
@@ -709,5 +709,8 @@ class AiLinziSettingTab extends PluginSettingTab {
           b.setDisabled(false)
         }),
       )
+
+    const support = containerEl.createEl('p', { cls: 'ai-linzi-support' })
+    support.setText('遇到任何问题,欢迎添加开发者 Alina霖子 微信:AlinaWang321')
   }
 }

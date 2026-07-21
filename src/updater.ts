@@ -67,13 +67,25 @@ export async function applyUpdate(plugin: AiLinziPlugin, info: UpdateInfo): Prom
   }
 
   new Notice(`✅ AI霖子插件已更新到 v${info.version},正在重载…`, 6000)
-  const plugins = (
-    plugin.app as unknown as {
-      plugins: { disablePlugin(id: string): Promise<void>; enablePlugin(id: string): Promise<void> }
+  // 2026-07-21 修:①重载前刷新清单缓存(否则版本号仍显示旧值)
+  // ②旧设置页随旧实例销毁会白屏 → 重载后自动重开本插件设置页
+  const id = plugin.manifest.id
+  const appAny = plugin.app as unknown as {
+    plugins: {
+      disablePlugin(id: string): Promise<void>
+      enablePlugin(id: string): Promise<void>
+      loadManifests?: () => Promise<void>
     }
-  ).plugins
-  await plugins.disablePlugin(plugin.manifest.id)
-  await plugins.enablePlugin(plugin.manifest.id)
+    setting?: { openTabById?: (id: string) => void }
+  }
+  await appAny.plugins.disablePlugin(id)
+  await appAny.plugins.loadManifests?.()
+  await appAny.plugins.enablePlugin(id)
+  try {
+    appAny.setting?.openTabById?.(id)
+  } catch {
+    /* 设置窗未开着就算了 */
+  }
 }
 
 /** 启动静默检查(约每 20 小时一次);发现新版只提示,不自动装 */
