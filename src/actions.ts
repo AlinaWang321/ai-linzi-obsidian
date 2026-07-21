@@ -152,6 +152,8 @@ class PromptModal extends Modal {
     this.fields = fields
     for (const f of fields) this.values[f.key] = f.initial ?? ''
     this.result = new Promise((r) => (this.resolve = r))
+    // 构造即打开:调用方 await .result 即可(2026-07-21 修「点技能没反应」——此前忘了 open())
+    this.open()
   }
 
   onOpen() {
@@ -372,6 +374,8 @@ class KbConfirmModal extends Modal {
     this.sectionKey = suggestedKey
     this.summary = summary
     this.result = new Promise((r) => (this.resolve = r))
+    // 构造即打开(同 PromptModal,2026-07-21 修)
+    this.open()
   }
 
   onOpen() {
