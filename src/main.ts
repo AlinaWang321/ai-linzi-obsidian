@@ -47,7 +47,7 @@ export const SKILL_ACTIONS: {
   { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
   { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
-  { id: 'illustration', name: '文章配图:手绘火柴人风(自动插入正文)', fn: runArticleIllustration },
+  { id: 'illustration', name: '文章配图:AI霖子手绘风(自动插入正文)', fn: runArticleIllustration },
   { id: 'wechat-copy', name: '公众号排版:一键复制(去后台粘贴)', fn: async (p) => copyWechatFormatted(p) },
   { id: 'wechat-draft', name: '发到公众号草稿箱(自动传图,需配置AppID)', fn: async (p) => sendToWechatDraft(p) },
   { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
@@ -69,6 +69,8 @@ interface AiLinziSettings {
   /** 公众号发布(选配):学员自己的公众号开发者凭证,只存本地 */
   wechatAppId: string
   wechatAppSecret: string
+  /** 文末品牌小卡「排版与配图 · AI霖子」(默认开,可关) */
+  brandFooter: boolean
 }
 
 const DEFAULT_SETTINGS: AiLinziSettings = {
@@ -79,6 +81,7 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   defaultNiche: '',
   wechatAppId: '',
   wechatAppSecret: '',
+  brandFooter: true,
 }
 
 const VIEW_TYPE_CHAT = 'ai-linzi-chat'
@@ -827,6 +830,16 @@ class AiLinziSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings()
           })
       })
+
+    new Setting(containerEl)
+      .setName('文末品牌小卡')
+      .setDesc('排版/发草稿箱时在文章末尾加一枚极简小徽章「✨ 排版与配图 · AI霖子」。读者好奇你的排版是怎么做的,答案就在文末。')
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.brandFooter).onChange(async (v) => {
+          this.plugin.settings.brandFooter = v
+          await this.plugin.saveSettings()
+        }),
+      )
 
     new Setting(containerEl)
       .setName('查看本机 IP')

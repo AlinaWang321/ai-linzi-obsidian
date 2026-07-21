@@ -79,8 +79,17 @@ function wrapSection(inner: string): string {
   return `<section style="font-family:${FONT};max-width:100%;word-break:break-word;">${inner}</section>`
 }
 
+/** 文末品牌小卡(设置可关):读者问「怎么排的」,答案在文末 */
+function brandFooterHtml(): string {
+  return (
+    `<section style="margin:2.8em 0 0;text-align:center;">` +
+    `<section style="display:inline-block;padding:6px 16px;border:1px solid ${THEME.line};border-radius:999px;font-size:12px;color:${THEME.inkMute};letter-spacing:1px;">✨ 排版与配图 · AI霖子</section>` +
+    `</section>`
+  )
+}
+
 /** 通用转换:imgResolver 决定每张图输出什么(复制场景=占位提示;草稿场景=微信图床 img) */
-function mdToWechatHtml(mdRaw: string, imgHtml: (img: ImgRef) => string): string {
+function mdToWechatHtml(mdRaw: string, imgHtml: (img: ImgRef) => string, withFooter = false): string {
   const { md, imgs } = extractImages(mdRaw)
   let html = marked.parse(md, { async: false }) as string
   html = styleHtml(html)
@@ -89,7 +98,7 @@ function mdToWechatHtml(mdRaw: string, imgHtml: (img: ImgRef) => string): string
     const wrapped = new RegExp(`<p[^>]*>\\s*${img.placeholder}\\s*</p>|${img.placeholder}`)
     html = html.replace(wrapped, imgHtml(img))
   }
-  return wrapSection(html)
+  return wrapSection(html + (withFooter ? brandFooterHtml() : ''))
 }
 
 function stripFm(text: string): string {
@@ -122,7 +131,7 @@ export async function copyWechatFormatted(plugin: AiLinziPlugin) {
     }
     localImgCount++
     return `<p style="margin:1.2em 0;padding:10px;background:${THEME.bgSoft};border-radius:6px;color:${THEME.inkMute};font-size:13px;text-align:center;">📷 此处有本地图片「${img.alt || img.src}」——粘贴后请在公众号编辑器手动插入</p>`
-  })
+  }, plugin.settings.brandFooter)
   const plain = note.body
   await navigator.clipboard.write([
     new ClipboardItem({
@@ -256,7 +265,7 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
       return url
         ? `<img src="${url}" alt="${img.alt}" style="max-width:100%;border-radius:6px;margin:1.2em 0;">`
         : ''
-    })
+    }, plugin.settings.brandFooter)
 
     // 标题:frontmatter title > 去日期前缀的文件名
     const fmTitle = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter?.title as string | undefined

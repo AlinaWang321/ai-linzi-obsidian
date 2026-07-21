@@ -534,11 +534,11 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     new Notice(`文章只有 ${article.length} 字——配图需要至少 300 字的成稿`)
     return
   }
-  const input = await new PromptModal(plugin.app, '文章配图 · 手绘火柴人风', '开始配图', [
+  const input = await new PromptModal(plugin.app, '文章配图 · AI霖子手绘风', '开始配图', [
     {
       key: 'count',
       label: '正文插图几张?(2-4)',
-      desc: '会额外生成 1 张带大字标题的封面图(表达全文主题,自动放到文首、发草稿箱时自动作封面)。统一火柴人手绘风,按张扣积分,失败的那张不扣。',
+      desc: '会额外生成 1 张带大字标题的封面图(自动放到文首、发草稿箱时自动作封面)。统一的极简小清新手绘信息图:结构化布局+从你文章提炼的配文。按张扣积分,失败的那张不扣。',
       initial: '3',
     },
   ]).result
