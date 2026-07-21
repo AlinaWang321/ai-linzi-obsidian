@@ -137,3 +137,26 @@
   color: var(--text-faint);
   margin-left: auto;
 }
+
+.ai-linzi-interview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--background-modifier-hover);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ai-linzi-interview-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.ai-linzi-interview-btns button {
+  font-size: var(--font-ui-smaller);
+  padding: 2px 8px;
+}

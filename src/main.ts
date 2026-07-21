@@ -27,6 +27,7 @@ import {
   runSalesReview,
   runTopicRadar,
   runWechatWriter,
+  writeOutput,
 } from './actions'
 
 /** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
@@ -35,6 +36,11 @@ export const SKILL_ACTIONS: {
   name: string
   fn: (p: AiLinziPlugin) => Promise<void>
 }[] = [
+  {
+    id: 'interview',
+    name: '原创访谈写作:AI 采访你 → 写成公众号长文',
+    fn: async (p) => p.startInterview(),
+  },
   { id: 'topic-radar', name: '选题雷达:从当前笔记提炼选题', fn: runTopicRadar },
   { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
@@ -76,6 +82,30 @@ interface WireMessage {
 
 function uid(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+/**
+ * 解析缓冲后的 UIMessage SSE 流(访谈写作路由用):只取 text-delta 正文,
+ * 跳过 reasoning-delta(V4 Pro 思考过程,不该给用户看),error 事件透传。
+ * 格式实测于 2026-07-21 生产环境。
+ */
+function extractTextFromSSE(raw: string): { text: string; error?: string } {
+  let text = ''
+  let error: string | undefined
+  for (const line of raw.split('\n')) {
+    const l = line.trim()
+    if (!l.startsWith('data:')) continue
+    const payload = l.slice(5).trim()
+    if (!payload || payload === '[DONE]') continue
+    try {
+      const ev = JSON.parse(payload) as { type?: string; delta?: string; errorText?: string }
+      if (ev.type === 'text-delta' && typeof ev.delta === 'string') text += ev.delta
+      else if (ev.type === 'error') error = ev.errorText ?? '生成出错'
+    } catch {
+      /* 非 JSON 行跳过 */
+    }
+  }
+  return { text, error }
 }
 
 // ── 插件主体 ──────────────────────────────────────────
@@ -166,6 +196,14 @@ export default class AiLinziPlugin extends Plugin {
     workspace.revealLeaf(leaf)
   }
 
+  /** 进入访谈写作模式(SKILL_ACTIONS 菜单入口) */
+  async startInterview() {
+    await this.activateChatView()
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]
+    const view = leaf?.view
+    if (view instanceof ChatView) view.enterInterviewMode()
+  }
+
   /** 统一 API 调用(requestUrl 绕 CORS;throw:false 自己处理错误码) */
   async api(path: string, init?: { method?: string; body?: unknown }) {
     const { serverUrl, token } = this.settings
@@ -252,6 +290,9 @@ class ChatView extends ItemView {
   private sessionId = uid()
   private attachNote: boolean
   private sending = false
+  /** chat=日常对话;interview=访谈写作(多轮采访→成稿) */
+  private mode: 'chat' | 'interview' = 'chat'
+  private interviewBar!: HTMLElement
 
   private listEl!: HTMLElement
   private inputEl!: HTMLTextAreaElement
@@ -288,6 +329,16 @@ class ChatView extends ItemView {
       this.sessionId = uid()
       this.renderMessages()
     }
+
+    // 访谈写作模式条(默认隐藏)
+    this.interviewBar = root.createDiv({ cls: 'ai-linzi-interview-bar' })
+    this.interviewBar.hide()
+    this.interviewBar.createSpan({ text: '✍️ 访谈写作中:答完 AI 的采访,它会写成公众号长文' })
+    const ivBtns = this.interviewBar.createDiv({ cls: 'ai-linzi-interview-btns' })
+    const saveBtn = ivBtns.createEl('button', { text: '存为笔记' })
+    saveBtn.onclick = () => void this.saveLastReplyAsNote()
+    const exitBtn = ivBtns.createEl('button', { text: '结束访谈' })
+    exitBtn.onclick = () => this.exitInterviewMode()
 
     this.listEl = root.createDiv({ cls: 'ai-linzi-messages' })
 
@@ -360,6 +411,11 @@ class ChatView extends ItemView {
     this.renderMessages(true)
 
     try {
+      if (this.mode === 'interview') {
+        const answer = await this.sendInterview()
+        this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: answer }] })
+        return
+      }
       const noteContext = await this.currentNoteContext()
       // M3:优先流式(fetch 纯文本流,逐块显示);CORS/网络不支持时自动回落非流式;
       // 业务错误(积分不足/tier/限流)不回落不重发,直接显示。
@@ -401,6 +457,71 @@ class ChatView extends ItemView {
       this.sendBtn.disabled = false
       this.renderMessages()
     }
+  }
+
+  enterInterviewMode() {
+    this.mode = 'interview'
+    this.messages = []
+    this.sessionId = uid()
+    this.interviewBar.show()
+    this.inputEl.placeholder = '先告诉 AI 你想写什么方向(一句话),它会开始采访你…'
+    this.renderMessages()
+    new Notice('✍️ 已进入访谈写作:先说你想写的方向', 5000)
+  }
+
+  exitInterviewMode() {
+    this.mode = 'chat'
+    this.messages = []
+    this.sessionId = uid()
+    this.interviewBar.hide()
+    this.inputEl.placeholder = '问 AI霖子 任何事…(Enter 发送,Shift+Enter 换行)'
+    this.renderMessages()
+  }
+
+  /** 把最新一条 AI 回复(通常是成稿)落盘为笔记 */
+  private async saveLastReplyAsNote() {
+    const lastAi = [...this.messages].reverse().find((m) => m.role === 'assistant')
+    if (!lastAi) {
+      new Notice('还没有可保存的 AI 回复')
+      return
+    }
+    const body = lastAi.parts.map((p) => p.text).join('')
+    const firstUser = this.messages.find((m) => m.role === 'user')
+    const hint = firstUser ? firstUser.parts.map((p) => p.text).join('').slice(0, 24) : '访谈成稿'
+    const f = await writeOutput(this.plugin, {
+      skill: '访谈写作',
+      platform: '公众号',
+      title: `访谈成稿_${hint}`,
+      body,
+    })
+    new Notice(`✅ 已存为笔记:${f.basename}`)
+  }
+
+  /** 访谈模式发送:走 wechat-interview 技能路由(UIMessage SSE,缓冲后解析) */
+  private async sendInterview(): Promise<string> {
+    const { serverUrl, token } = this.plugin.settings
+    const res = await requestUrl({
+      url: `${serverUrl.replace(/\/+$/, '')}/api/skills/wechat-interview`,
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ messages: this.messages }),
+      throw: false,
+    })
+    if (res.status >= 400) {
+      let msg = `请求失败(${res.status})`
+      try {
+        const d = JSON.parse(res.text) as { error?: string }
+        if (typeof d.error === 'string') msg = d.error
+      } catch { /* 非 JSON */ }
+      return `⚠️ ${msg}`
+    }
+    const { text, error } = extractTextFromSSE(res.text ?? '')
+    if (error) return `⚠️ ${error}`
+    if (!text.trim()) return '⚠️ AI 返回了空内容,请再发一次'
+    return text
   }
 
   /**
