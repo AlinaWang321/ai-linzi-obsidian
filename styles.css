@@ -190,3 +190,28 @@
 .ai-linzi-msg-actions button:hover {
   color: var(--text-normal);
 }
+
+/* 配图先审方案：扣生图积分前先看清每张图讲什么、写什么字。 */
+.ai-linzi-plan-intro {
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
+.ai-linzi-plan-card {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-left: 4px solid #f5c518;
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.ai-linzi-plan-card strong {
+  color: #0057ff;
+}
+
+.ai-linzi-plan-card p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  line-height: 1.55;
+}

@@ -6,6 +6,12 @@
  */
 import { App, Modal, Notice, Setting, TFile, normalizePath, requestUrl } from 'obsidian'
 import type AiLinziPlugin from './main'
+import {
+  insertCoverEmbed,
+  insertEmbeds,
+  prepareWechatArticle,
+  stripFrontmatter,
+} from './article-format'
 
 // ── 与服务端对齐的常量 ─────────────────────────────
 
@@ -75,11 +81,6 @@ async function getActiveNote(plugin: AiLinziPlugin): Promise<{ file: TFile; text
   return { file, text }
 }
 
-/** 去掉 frontmatter 再作为技能输入(输入是正文,不是元数据) */
-function stripFrontmatter(text: string): string {
-  return text.replace(/^---\n[\s\S]*?\n---\n?/, '').trim()
-}
-
 // ── 落盘 ─────────────────────────────────────────
 
 interface OutputSpec {
@@ -93,6 +94,9 @@ interface OutputSpec {
   body: string
   /** 来源笔记(wikilink 关联) */
   sourceNote?: TFile
+  /** 文章辅助信息写进 frontmatter，不混入可发布正文 */
+  summary?: string
+  titleCandidates?: string[]
 }
 
 export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Promise<TFile> {
@@ -111,10 +115,13 @@ export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Prom
 
   const fm = [
     '---',
+    `title: ${JSON.stringify(spec.title)}`,
     `来源技能: ${spec.skill}`,
     `状态: 草稿`,
     `平台: ${spec.platform}`,
     `日期: ${isoDate()}`,
+    spec.summary ? `摘要: ${JSON.stringify(spec.summary)}` : null,
+    spec.titleCandidates?.length ? `候选标题: ${JSON.stringify(spec.titleCandidates.slice(0, 5))}` : null,
     spec.sourceNote ? `关联笔记: "[[${spec.sourceNote.basename}]]"` : null,
     `发布日期: `,
     `发布链接: `,
@@ -266,11 +273,14 @@ export async function runWechatWriter(plugin: AiLinziPlugin) {
       topic: input.topic.trim().slice(0, LIMITS.WECHAT_TOPIC_MAX),
       material: clip(stripFrontmatter(note.text), LIMITS.WECHAT_MATERIAL_MAX, '笔记素材'),
     })
+    const article = prepareWechatArticle(text)
     await writeOutput(plugin, {
       skill: '公众号写作',
       platform: '公众号',
-      title: input.topic.trim(),
-      body: text,
+      title: article.titleCandidates[0] || input.topic.trim(),
+      body: article.body,
+      summary: article.digest,
+      titleCandidates: article.titleCandidates,
       sourceNote: note.file,
     })
     new Notice('✅ 公众号文章已生成并落盘')
@@ -463,7 +473,7 @@ export async function feedKnowledge(plugin: AiLinziPlugin) {
   }
 }
 
-// ── 文章配图(手绘火柴人风) ──────────────────────────
+// ── 文章配图(学员通用 · 极简小清新手绘人偶) ─────────
 
 async function fetchImageBinary(url: string): Promise<ArrayBuffer> {
   if (url.startsWith('data:')) {
@@ -489,71 +499,161 @@ async function ensureFolder(plugin: AiLinziPlugin, folder: string): Promise<void
   }
 }
 
-/** 把图片按 anchor 插回正文;从后往前插避免行号位移;返回命中数 */
-function insertEmbeds(content: string, items: { path: string; anchor: string }[]): { out: string; hits: number } {
-  const lines = content.split('\n')
-  const used = new Set<number>()
-  const placed: { idx: number; embed: string }[] = []
-  const missed: string[] = []
-  for (const it of items) {
-    const embed = `![[${it.path}]]`
-    const a = (it.anchor ?? '').trim()
-    let idx = -1
-    if (a.length >= 3) {
-      idx = lines.findIndex((l, i) => !used.has(i) && l.includes(a))
-      if (idx < 0) {
-        // 宽松匹配:去掉 # 和空白后取前 8 字
-        const short = a.replace(/[#\s]/g, '').slice(0, 8)
-        if (short.length >= 4) {
-          idx = lines.findIndex((l, i) => !used.has(i) && l.replace(/[#\s]/g, '').includes(short))
-        }
-      }
-    }
-    if (idx >= 0) {
-      used.add(idx)
-      placed.push({ idx, embed })
-    } else {
-      missed.push(embed)
-    }
+interface IllustrationPlanItem {
+  anchor: string
+  title: string
+  layout: string
+  labels: string[]
+  coreIdea: string
+  concept: string
+}
+
+interface IllustrationPlan {
+  cover: { title: string; coreIdea: string; concept: string } | null
+  images: IllustrationPlanItem[]
+}
+
+class IllustrationPlanModal extends Modal {
+  private submitted = false
+  private resolve!: (value: IllustrationPlan | null) => void
+  readonly result: Promise<IllustrationPlan | null>
+
+  constructor(app: App, private plan: IllustrationPlan, private estimatedCredits?: number) {
+    super(app)
+    this.result = new Promise((resolve) => (this.resolve = resolve))
+    this.open()
   }
-  placed.sort((x, y) => y.idx - x.idx)
-  for (const p of placed) lines.splice(p.idx + 1, 0, '', p.embed)
-  // 没定位到的:第一张兜底插在文首(保证封面),其余附在文末
-  if (missed.length > 0) {
-    lines.splice(1, 0, '', missed[0])
-    for (const e of missed.slice(1)) lines.push('', e)
+
+  onOpen() {
+    this.titleEl.setText('确认配图方案')
+    this.contentEl.createEl('p', {
+      text: `先确认每张图讲什么、放哪里、写哪些原文词，再开始生图${this.estimatedCredits ? `（预计最多 ${this.estimatedCredits} 积分）` : ''}。取消不会生成图片。`,
+      cls: 'ai-linzi-plan-intro',
+    })
+    if (this.plan.cover) {
+      const card = this.contentEl.createDiv({ cls: 'ai-linzi-plan-card' })
+      card.createEl('strong', { text: `封面 · ${this.plan.cover.title}` })
+      card.createEl('p', { text: this.plan.cover.coreIdea })
+    }
+    this.plan.images.forEach((item, index) => {
+      const card = this.contentEl.createDiv({ cls: 'ai-linzi-plan-card' })
+      card.createEl('strong', { text: `${index + 1}. ${item.title}` })
+      card.createEl('p', { text: `放在「${item.anchor}」之后` })
+      card.createEl('p', { text: `核心意思：${item.coreIdea}` })
+      card.createEl('p', { text: `画面大字：${item.labels.length ? item.labels.join(' / ') : '无文字，靠场景表达'}` })
+    })
+    new Setting(this.contentEl)
+      .addButton((button) =>
+        button.setButtonText('取消').onClick(() => this.close()),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText('确认并开始生图')
+          .setCta()
+          .onClick(() => {
+            this.submitted = true
+            this.resolve(this.plan)
+            this.close()
+          }),
+      )
   }
-  return { out: lines.join('\n'), hits: placed.length }
+
+  onClose() {
+    if (!this.submitted) this.resolve(null)
+    this.contentEl.empty()
+  }
+}
+
+function uniqueVaultPath(plugin: AiLinziPlugin, desired: string): string {
+  if (!plugin.app.vault.getAbstractFileByPath(desired)) return desired
+  const dot = desired.lastIndexOf('.')
+  const base = dot >= 0 ? desired.slice(0, dot) : desired
+  const ext = dot >= 0 ? desired.slice(dot) : ''
+  for (let i = 2; ; i++) {
+    const candidate = `${base}_${i}${ext}`
+    if (!plugin.app.vault.getAbstractFileByPath(candidate)) return candidate
+  }
+}
+
+function planMarkdown(
+  plan: IllustrationPlan,
+  generated: {
+    cover?: { prompt?: string } | null
+    images?: ({ prompt?: string } & IllustrationPlanItem)[]
+  },
+): string {
+  const blocks = ['# 极简小清新手绘配图方案', '', '> 学员通用视觉：不使用 AI霖子个人手绘 IP。']
+  if (plan.cover) {
+    blocks.push('', `## 00 · 封面 · ${plan.cover.title}`, '', `- 核心意思：${plan.cover.coreIdea}`, `- 画面：${plan.cover.concept}`)
+    if (generated.cover?.prompt) blocks.push('', '### 生图提示词', '', generated.cover.prompt)
+  }
+  plan.images.forEach((item, index) => {
+    blocks.push(
+      '',
+      `## ${String(index + 1).padStart(2, '0')} · ${item.title}`,
+      '',
+      `- 放置位置：${item.anchor}`,
+      `- 核心意思：${item.coreIdea}`,
+      `- 画面大字：${item.labels.length ? item.labels.map((x) => `\`${x}\``).join('、') : '无'}`,
+      `- 构图：${item.concept}`,
+    )
+    const prompt = generated.images?.find((generatedItem) => generatedItem.anchor === item.anchor)?.prompt
+    if (prompt) blocks.push('', '### 生图提示词', '', prompt)
+  })
+  return blocks.join('\n').trim() + '\n'
 }
 
 export async function runArticleIllustration(plugin: AiLinziPlugin) {
   const note = await getActiveNote(plugin)
   if (!note) return
-  const article = stripFrontmatter(note.text)
+  const article = prepareWechatArticle(note.text).body
   if (article.length < 300) {
     new Notice(`文章只有 ${article.length} 字——配图需要至少 300 字的成稿`)
     return
   }
-  const input = await new PromptModal(plugin.app, '文章配图 · AI霖子手绘风', '开始配图', [
+  const input = await new PromptModal(plugin.app, '文章配图 · 极简小清新手绘', '先生成配图方案', [
     {
       key: 'count',
       label: '正文插图几张?(2-4)',
-      desc: '会额外生成 1 张带大字标题的封面图(自动放到文首、发草稿箱时自动作封面)。统一的极简小清新手绘信息图:结构化布局+从你文章提炼的配文。按张扣积分,失败的那张不扣。',
+      desc: '会额外规划 1 张封面。先免费查看每张图的核心意思、放置位置和画面文字；确认后才生图并扣积分。使用学员通用小人偶，不使用 AI霖子个人手绘 IP。',
       initial: '3',
     },
   ]).result
   if (!input) return
   const count = Math.min(4, Math.max(2, parseInt(input.count) || 3))
 
-  const n = runningNotice('文章配图')
+  const planning = new Notice('🤖 正在读文章并规划配图点…', 0)
   try {
-    const data = (await plugin.api('/api/skills/article-illustration', {
+    const planData = (await plugin.api('/api/skills/article-illustration', {
       method: 'POST',
-      body: { article: clip(article, 20_000, '文章'), count },
+      body: { article: clip(article, 20_000, '文章'), count, mode: 'plan' },
     })) as {
-      cover?: { title: string; imageUrl: string } | null
-      images?: { anchor: string; title: string; imageUrl: string }[]
+      plan?: IllustrationPlan
+      estimatedCredits?: number
+    }
+    planning.hide()
+    if (!planData.plan || (!planData.plan.cover && planData.plan.images.length === 0)) {
+      throw new Error('没有规划出有效配图点')
+    }
+    const confirmed = await new IllustrationPlanModal(plugin.app, planData.plan, planData.estimatedCredits).result
+    if (!confirmed) {
+      new Notice('已取消，没有生成图片，也没有扣生图积分')
+      return
+    }
+
+    const generating = runningNotice('文章配图')
+    let data: {
+      cover?: { title: string; imageUrl: string; prompt?: string } | null
+      images?: (IllustrationPlanItem & { imageUrl: string; prompt?: string })[]
       failedCount?: number
+    }
+    try {
+      data = (await plugin.api('/api/skills/article-illustration', {
+        method: 'POST',
+        body: { article: clip(article, 20_000, '文章'), count, mode: 'generate', plan: confirmed },
+      })) as typeof data
+    } finally {
+      generating.hide()
     }
     const imgs = data.images ?? []
     if (!data.cover && imgs.length === 0) throw new Error('没有生成任何图片')
@@ -567,34 +667,42 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     let coverPath: string | null = null
     if (data.cover) {
       const bin = await fetchImageBinary(data.cover.imageUrl)
-      coverPath = normalizePath(`${folder}/${today()}_00_封面_${sanitizeTitle(data.cover.title) || '封面'}.png`)
+      coverPath = uniqueVaultPath(
+        plugin,
+        normalizePath(`${folder}/${today()}_00_封面_${sanitizeTitle(data.cover.title) || '封面'}.png`),
+      )
       await plugin.app.vault.createBinary(coverPath, bin)
     }
 
     const saved: { path: string; anchor: string }[] = []
     for (let i = 0; i < imgs.length; i++) {
       const bin = await fetchImageBinary(imgs[i].imageUrl)
-      const path = normalizePath(`${folder}/${today()}_${String(i + 1).padStart(2, '0')}_${sanitizeTitle(imgs[i].title) || '配图'}.png`)
+      const path = uniqueVaultPath(
+        plugin,
+        normalizePath(`${folder}/${today()}_${String(i + 1).padStart(2, '0')}_${sanitizeTitle(imgs[i].title) || '配图'}.png`),
+      )
       await plugin.app.vault.createBinary(path, bin)
       saved.push({ path, anchor: imgs[i].anchor })
     }
+
+    const promptsPath = uniqueVaultPath(plugin, normalizePath(`${folder}/AI霖子正文配图_PROMPTS.md`))
+    await plugin.app.vault.create(promptsPath, planMarkdown(confirmed, data))
 
     let hits = 0
     await plugin.app.vault.process(note.file, (content) => {
       const r = insertEmbeds(content, saved)
       let out = r.out
       hits = r.hits
-      if (coverPath) out = `![[${coverPath}]]\n\n${out}`
+      if (coverPath) out = insertCoverEmbed(out, coverPath)
       return out
     })
     const failMsg = data.failedCount ? `;${data.failedCount} 张生成失败(未扣积分)` : ''
     new Notice(
-      `✅ ${coverPath ? '封面 + ' : ''}${saved.length} 张正文插图已插入文章(${hits} 张按段落定位)${failMsg}\n图片保存在:${folder}`,
+      `✅ ${coverPath ? '封面 + ' : ''}${saved.length} 张正文插图已插入文章(${hits} 张按段落定位)${failMsg}\n方案和提示词已保存:${promptsPath}`,
       10000,
     )
   } catch (e) {
+    planning.hide()
     new Notice(`❌ 文章配图:${e instanceof Error ? e.message : String(e)}`, 10000)
-  } finally {
-    n.hide()
   }
 }

@@ -22,6 +22,7 @@ import {
 } from 'obsidian'
 import { applyUpdate, autoCheck, checkLatest, type UpdateInfo } from './updater'
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
+import { prepareWechatArticle } from './article-format'
 import {
   feedKnowledge,
   runArticleIllustration,
@@ -47,7 +48,7 @@ export const SKILL_ACTIONS: {
   { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
   { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
-  { id: 'illustration', name: '文章配图:AI霖子手绘风(自动插入正文)', fn: runArticleIllustration },
+  { id: 'illustration', name: '文章配图:极简小清新手绘(先看方案再生图)', fn: runArticleIllustration },
   { id: 'wechat-copy', name: '公众号排版:一键复制(去后台粘贴)', fn: async (p) => copyWechatFormatted(p) },
   { id: 'wechat-draft', name: '发到公众号草稿箱(自动传图,需配置AppID)', fn: async (p) => sendToWechatDraft(p) },
   { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
@@ -520,7 +521,7 @@ class ChatView extends ItemView {
 
   private async currentNoteContext(): Promise<{ filename: string; text: string } | undefined> {
     if (!this.attachNote) return undefined
-    const file = this.app.workspace.getActiveFile()
+    const file = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
     if (!file) return undefined
     const text = await this.app.vault.cachedRead(file)
     if (!text.trim()) return undefined
@@ -615,13 +616,16 @@ class ChatView extends ItemView {
       return
     }
     const body = lastAi.parts.map((p) => p.text).join('')
+    const article = prepareWechatArticle(body)
     const firstUser = this.messages.find((m) => m.role === 'user')
     const hint = firstUser ? firstUser.parts.map((p) => p.text).join('').slice(0, 24) : '访谈成稿'
     const f = await writeOutput(this.plugin, {
       skill: '访谈写作',
       platform: '公众号',
-      title: `访谈成稿_${hint}`,
-      body,
+      title: article.titleCandidates[0] || `访谈成稿_${hint}`,
+      body: article.body,
+      summary: article.digest,
+      titleCandidates: article.titleCandidates,
     })
     new Notice(`✅ 已存为笔记:${f.basename}`)
   }
@@ -743,11 +747,15 @@ class ChatView extends ItemView {
               }
             }
             if (!hint) hint = text.split('\n')[0].replace(/[#*>]/g, '').trim().slice(0, 24) || '对话内容'
+            const article = prepareWechatArticle(text)
+            const isArticle = article.recognizedContainer
             const f = await writeOutput(this.plugin, {
-              skill: '对话',
-              platform: '通用',
-              title: hint,
-              body: text,
+              skill: isArticle ? '公众号写作' : '对话',
+              platform: isArticle ? '公众号' : '通用',
+              title: article.titleCandidates[0] || hint,
+              body: article.body,
+              summary: article.digest,
+              titleCandidates: article.titleCandidates,
             })
             new Notice(`✅ 已存为笔记:${f.basename}`)
           }
@@ -763,9 +771,10 @@ class ChatView extends ItemView {
               `将用这条回复替换笔记「${file.basename}」的正文(文档属性 frontmatter 保留)。\n\n改错了不用慌:笔记内可 ⌘Z 撤销,或 设置 → 文件恢复 里回滚历史版本。\n\n确定更新?`,
             )
             if (!ok) return
+            const article = prepareWechatArticle(text)
             await this.app.vault.process(file, (content) => {
-              const fm = /^---\n[\s\S]*?\n---\n/.exec(content)
-              return (fm ? fm[0] : '') + text.trim() + '\n'
+              const fm = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(content)
+              return (fm ? fm[0] : '') + article.body.trim() + '\n'
             })
             new Notice(`✅ 已更新「${file.basename}」(可用 ⌘Z 或「文件恢复」回滚)`)
           }

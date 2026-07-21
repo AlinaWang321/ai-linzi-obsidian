@@ -11,6 +11,7 @@
 import { Notice, TFile, requestUrl } from 'obsidian'
 import { marked } from 'marked'
 import type AiLinziPlugin from './main'
+import { prepareWechatArticle, stripFrontmatter } from './article-format'
 
 // ── 版式主题(移植自 Alina 发布工作台排版 2026-07-21;两处调整:Part胶囊14px/大标题#0057FF) ──
 const THEME = {
@@ -40,7 +41,7 @@ interface ImgRef {
 }
 
 /** wiki 嵌入转标准 md 图片,并把所有图片抽成占位符(后续按场景解析) */
-function extractImages(md: string): { md: string; imgs: ImgRef[] } {
+export function extractImages(md: string): { md: string; imgs: ImgRef[] } {
   const imgs: ImgRef[] = []
   let out = md.replace(/!\[\[([^\]]+?)\]\]/g, (_m, p: string) => `![](${p.split('|')[0].trim()})`)
   out = out.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt: string, src: string) => {
@@ -59,9 +60,16 @@ function partPill(label: string): string {
  * 给 marked 产出的 HTML 写入公众号可保留的内联样式。
  * 这里先识别 Part、图注、引用块等结构,再处理普通标签,避免把图注误排成 Part 标签。
  */
-function styleHtml(html: string): string {
+export function styleHtml(html: string): string {
   const T = THEME
   let out = html
+
+  // 文章来自 AI 或用户笔记；预览/粘贴前移除可执行标签与事件属性。
+  out = out
+    .replace(/<(script|style|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<(script|style|iframe|object|embed)\b[^>]*\/?>/gi, '')
+    .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/href\s*=\s*(["'])\s*javascript:[\s\S]*?\1/gi, 'href="#"')
 
   // 公众号标题有独立输入框;正文不重复显示 Markdown 的首个 H1。
   out = out.replace(/^\s*<h1>[\s\S]*?<\/h1>\s*/i, '')
@@ -126,8 +134,9 @@ function brandFooterHtml(): string {
 }
 
 /** 通用转换:imgResolver 决定每张图输出什么(复制场景=占位提示;草稿场景=微信图床 img) */
-function mdToWechatHtml(mdRaw: string, imgHtml: (img: ImgRef) => string, withFooter = false): string {
-  const { md, imgs } = extractImages(mdRaw)
+export function mdToWechatHtml(mdRaw: string, imgHtml: (img: ImgRef) => string, withFooter = false): string {
+  const prepared = prepareWechatArticle(mdRaw)
+  const { md, imgs } = extractImages(prepared.body)
   let html = marked.parse(md, { async: false }) as string
   html = styleHtml(html)
   for (const img of imgs) {
@@ -138,22 +147,23 @@ function mdToWechatHtml(mdRaw: string, imgHtml: (img: ImgRef) => string, withFoo
   return wrapSection(html + (withFooter ? brandFooterHtml() : ''))
 }
 
-function stripFm(text: string): string {
-  return text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '').trim()
+function escapeAttr(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-async function currentNote(plugin: AiLinziPlugin): Promise<{ file: TFile; body: string } | null> {
+async function currentNote(plugin: AiLinziPlugin): Promise<{ file: TFile; body: string; digest: string } | null> {
   const file = plugin.app.workspace.getActiveFile() ?? plugin.lastActiveFile
   if (!file) {
     new Notice('请先打开要发布的文章笔记')
     return null
   }
-  const body = stripFm(await plugin.app.vault.cachedRead(file))
+  const prepared = prepareWechatArticle(stripFrontmatter(await plugin.app.vault.cachedRead(file)))
+  const body = prepared.body
   if (body.length < 50) {
     new Notice('当前笔记内容太短,不像一篇可发布的文章')
     return null
   }
-  return { file, body }
+  return { file, body, digest: prepared.digest }
 }
 
 // ── ① 一键排版复制 ──────────────────────────────────
@@ -164,7 +174,7 @@ export async function copyWechatFormatted(plugin: AiLinziPlugin) {
   let localImgCount = 0
   const html = mdToWechatHtml(note.body, (img) => {
     if (/^https?:\/\//.test(img.src)) {
-      return `<img src="${img.src}" alt="${img.alt}" style="display:block;width:100%;height:auto;margin:26px 0 10px;border:1px solid ${THEME.imgBorder};border-radius:5px;">`
+      return `<img src="${img.src}" alt="${escapeAttr(img.alt)}" style="display:block;width:100%;height:auto;margin:26px 0 10px;border:1px solid ${THEME.imgBorder};border-radius:5px;">`
     }
     localImgCount++
     return `<p style="margin:1.2em 0;padding:10px;background:${THEME.bgSoft};border-radius:6px;color:${THEME.inkMute};font-size:13px;text-align:center;">📷 此处有本地图片「${img.alt || img.src}」——粘贴后请在公众号编辑器手动插入</p>`
@@ -283,12 +293,19 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
     const { imgs } = extractImages(note.body)
     const urlMap = new Map<string, string>()
     let coverFile: TFile | null = null
+    const missingImages: string[] = []
     for (const img of imgs) {
       if (/^https?:\/\//.test(img.src)) continue
       const f = resolveImgFile(plugin, img.src, note.file)
-      if (!f) continue
+      if (!f) {
+        missingImages.push(img.src)
+        continue
+      }
       if (!coverFile) coverFile = f
       if (!urlMap.has(img.src)) urlMap.set(img.src, await uploadContentImage(token, f, plugin))
+    }
+    if (missingImages.length > 0) {
+      throw new Error(`有 ${missingImages.length} 张本地图片找不到，已停止发布：${missingImages.slice(0, 3).join('、')}`)
     }
     if (!coverFile) {
       n.hide()
@@ -300,14 +317,15 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
     const html = mdToWechatHtml(note.body, (img) => {
       const url = /^https?:\/\//.test(img.src) ? img.src : urlMap.get(img.src)
       return url
-        ? `<img src="${url}" alt="${img.alt}" style="display:block;width:100%;height:auto;margin:26px 0 10px;border:1px solid ${THEME.imgBorder};border-radius:5px;">`
+        ? `<img src="${url}" alt="${escapeAttr(img.alt)}" style="display:block;width:100%;height:auto;margin:26px 0 10px;border:1px solid ${THEME.imgBorder};border-radius:5px;">`
         : ''
     }, plugin.settings.brandFooter)
 
     // 标题:frontmatter title > 去日期前缀的文件名
     const fmTitle = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter?.title as string | undefined
     const title = (fmTitle ?? note.file.basename.replace(/^\d{4}\.\d{2}\.\d{2}_/, '')).slice(0, 60)
-    const digest = note.body.replace(/[#*>\-\n]/g, '').slice(0, 100)
+    const fmDigest = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter?.['摘要'] as string | undefined
+    const digest = (fmDigest?.trim() || note.digest || note.body.replace(/[#*>\-\n]/g, '')).slice(0, 100)
 
     const res = await requestUrl({
       url: `https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${token}`,
