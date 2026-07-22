@@ -34,6 +34,8 @@ import {
 } from './note-patch'
 import {
   feedKnowledge,
+  generateArticleIllustrationFromChat,
+  insertChatIllustrationIntoNote,
   runAiImageGeneration,
   runArticleIllustration,
   runArticleIllustrationEdit,
@@ -42,10 +44,12 @@ import {
   runTopicRadar,
   runWechatWriter,
   writeOutput,
+  type ChatIllustrationCandidate,
 } from './actions'
 import {
   extractPluginSkillSuggestions,
   isArticleIllustrationEditIntent,
+  isSingleArticleIllustrationIntent,
   type PluginSkillSuggestion,
 } from './skill-suggest'
 import {
@@ -123,6 +127,8 @@ interface WireMessage {
   id: string
   role: 'user' | 'assistant'
   parts: { type: 'text'; text: string }[]
+  /** 只保存在插件本机历史；发送给主对话 API 时会被剥离。 */
+  imageResult?: ChatIllustrationCandidate
 }
 
 /** 本地保存的会话(存插件目录 conversations.json,升级/重启不丢) */
@@ -746,7 +752,10 @@ class ChatView extends ItemView {
     const kbBtn = actionsRow.createEl('button', { text: '📚 存入知识库', cls: 'ai-linzi-action-btn' })
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
     const imageBtn = actionsRow.createEl('button', { text: '🖼️ 用 AI 生图', cls: 'ai-linzi-action-btn' })
-    imageBtn.onclick = () => void runAiImageGeneration(this.plugin)
+    imageBtn.onclick = () => void (async () => {
+      const noteContext = await this.currentNoteContext()
+      await runAiImageGeneration(this.plugin, noteContext)
+    })()
     const dashboardBtn = actionsRow.createEl('button', { text: '📊 内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
     actionsRow.createSpan({ text: '技能作用于当前打开的笔记', cls: 'ai-linzi-actions-hint' })
@@ -896,13 +905,18 @@ class ChatView extends ItemView {
     ).open()
   }
 
-  private async currentNoteContext(): Promise<{ filename: string; text: string } | undefined> {
+  private async currentNoteContext(): Promise<{ filename: string; text: string; path: string } | undefined> {
     if (!this.attachNote) return undefined
     const file = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
     if (!file) return undefined
     const text = await this.app.vault.cachedRead(file)
     if (!text.trim()) return undefined
-    return { filename: file.name, text }
+    return { filename: file.name, text, path: file.path }
+  }
+
+  /** 本地候选图片元数据绝不传给主对话；云端只收到标准 UIMessage。 */
+  private messagesForApi(): WireMessage[] {
+    return this.messages.map(({ id, role, parts }) => ({ id, role, parts }))
   }
 
   private async send() {
@@ -926,13 +940,16 @@ class ChatView extends ItemView {
       // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
       // 图片修改会在 AI 回复下方显示专用入口，先预览候选图再由用户确认替换。
       const illustrationEdit = isArticleIllustrationEditIntent(text)
-      const noteEdit = Boolean(noteContext && !illustrationEdit && isNoteEditIntent(text))
+      const singleIllustration = Boolean(noteContext && isSingleArticleIllustrationIntent(text))
+      const noteEdit = Boolean(
+        noteContext && !illustrationEdit && !singleIllustration && isNoteEditIntent(text),
+      )
       // M3:优先流式(fetch 纯文本流,逐块显示);CORS/网络不支持时自动回落非流式;
       // 业务错误(积分不足/tier/限流)不回落不重发,直接显示。
       let answer: string
       let streamed: { kind: 'ok'; text: string } | { kind: 'bizError'; message: string } | null
       try {
-        streamed = await this.sendStreaming(noteContext, noteEdit)
+        streamed = await this.sendStreaming(noteContext, noteEdit, singleIllustration)
       } catch {
         streamed = null
       }
@@ -944,17 +961,21 @@ class ChatView extends ItemView {
         const data = await this.plugin.api('/api/plugin/v1/chat', {
           method: 'POST',
           body: {
-            messages: this.messages,
+            messages: this.messagesForApi(),
             sessionId: this.sessionId,
             stream: false,
             noteContext,
             noteEdit,
+            noteImageIntent: singleIllustration,
           },
         })
         answer = typeof data.text === 'string' ? data.text : '(空响应)'
       }
       this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: answer }] })
       await this.persistNow()
+      if (singleIllustration && noteContext && !answer.startsWith('⚠️')) {
+        await this.generateChatIllustration(text, noteContext)
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       new Notice(`AI霖子:${msg}`, 6000)
@@ -967,6 +988,41 @@ class ChatView extends ItemView {
     } finally {
       this.sending = false
       this.sendBtn.disabled = false
+      this.renderMessages()
+    }
+  }
+
+  private async generateChatIllustration(
+    instruction: string,
+    noteContext: { filename: string; text: string; path: string },
+  ): Promise<void> {
+    const message: WireMessage = {
+      id: uid(),
+      role: 'assistant',
+      parts: [{ type: 'text', text: '正在结合当前笔记全文生成一张候选配图…' }],
+    }
+    this.messages.push(message)
+    this.renderMessages()
+    const notice = new Notice('🎨 正在读取文章并生成候选配图…', 0)
+    try {
+      const candidate = await generateArticleIllustrationFromChat(
+        this.plugin,
+        instruction,
+        noteContext,
+      )
+      message.imageResult = candidate
+      message.parts = [{
+        type: 'text',
+        text: `已根据当前笔记生成一张候选配图，准备放在「${candidate.anchor}」之后。请先预览，确认后再插入文章。`,
+      }]
+    } catch (error) {
+      message.parts = [{
+        type: 'text',
+        text: `⚠️ 候选配图生成失败：${error instanceof Error ? error.message : String(error)}`,
+      }]
+    } finally {
+      notice.hide()
+      await this.persistNow()
       this.renderMessages()
     }
   }
@@ -1048,8 +1104,9 @@ class ChatView extends ItemView {
    * 网络/CORS 层异常直接 throw,由调用方回落非流式。
    */
   private async sendStreaming(
-    noteContext: { filename: string; text: string } | undefined,
+    noteContext: { filename: string; text: string; path: string } | undefined,
     noteEdit: boolean,
+    noteImageIntent: boolean,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
@@ -1062,11 +1119,12 @@ class ChatView extends ItemView {
         'X-AI-Linzi-Plugin-Version': this.plugin.manifest.version,
       },
       body: JSON.stringify({
-        messages: this.messages,
+        messages: this.messagesForApi(),
         sessionId: this.sessionId,
         stream: 'text',
         noteContext,
         noteEdit,
+        noteImageIntent,
       }),
     })
     if (!res.ok) {
@@ -1140,6 +1198,10 @@ class ChatView extends ItemView {
         const illustrationEdit = isArticleIllustrationEditIntent(previousUserText)
         const editReply = this.mode === 'chat' && !illustrationEdit && isNoteEditIntent(previousUserText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
+        if (m.imageResult) {
+          this.renderChatIllustrationResult(row, m)
+          continue
+        }
         if (patch) this.renderPatchCards(row, patch)
         // 每条 AI 回复都能一键落盘——内容留在用户自己的 Obsidian 里才是关键(Alina 2026-07-21)
         if (text.trim().length > 0 && !text.startsWith('⚠️')) {
@@ -1214,6 +1276,73 @@ class ChatView extends ItemView {
       row.createDiv({ cls: 'ai-linzi-msg-body', text: 'AI霖子思考中…' })
     }
     this.listEl.scrollTop = this.listEl.scrollHeight
+  }
+
+  private renderChatIllustrationResult(row: HTMLElement, message: WireMessage): void {
+    const candidate = message.imageResult
+    if (!candidate) return
+    const card = row.createDiv({ cls: 'ai-linzi-chat-image-result' })
+    if (/^(?:https?:\/\/|data:image\/)/i.test(candidate.imageUrl)) {
+      card.createEl('img', {
+        attr: { src: candidate.imageUrl, alt: candidate.title || 'AI 生成的文章配图' },
+      })
+    } else {
+      card.createDiv({ text: '候选图片地址已失效，请重新生成。', cls: 'ai-linzi-image-error' })
+    }
+    const meta = card.createDiv({ cls: 'ai-linzi-chat-image-meta' })
+    meta.createEl('strong', { text: candidate.title || '新增配图' })
+    meta.createEl('span', { text: `放在「${candidate.anchor}」之后` })
+    const actions = card.createDiv({ cls: 'ai-linzi-chat-image-actions' })
+    const insertBtn = actions.createEl('button', {
+      text: candidate.insertedPath ? '✅ 已插入当前笔记' : '插入当前笔记',
+      cls: 'ai-linzi-apply-patch',
+    })
+    insertBtn.disabled = Boolean(candidate.insertedPath)
+    insertBtn.onclick = async () => {
+      insertBtn.disabled = true
+      insertBtn.setText('正在插入…')
+      try {
+        candidate.insertedPath = await insertChatIllustrationIntoNote(this.plugin, candidate)
+        await this.persistNow()
+        this.renderMessages()
+        new Notice(`✅ 配图已插入「${candidate.articleTitle}」对应段落`, 7000)
+      } catch (error) {
+        insertBtn.disabled = false
+        insertBtn.setText('插入当前笔记')
+        new Notice(`插入配图失败：${error instanceof Error ? error.message : String(error)}`, 9000)
+      }
+    }
+    const regenerateBtn = actions.createEl('button', { text: '重新生成' })
+    regenerateBtn.onclick = () => void this.regenerateChatIllustration(message)
+  }
+
+  private async regenerateChatIllustration(message: WireMessage): Promise<void> {
+    const previous = message.imageResult
+    if (!previous) return
+    const file = this.app.vault.getAbstractFileByPath(previous.notePath)
+    if (!(file instanceof TFile)) {
+      new Notice('原笔记已经移动或不存在，无法重新生成')
+      return
+    }
+    const notice = new Notice('🎨 正在结合当前文章重新生成候选图…', 0)
+    try {
+      message.imageResult = await generateArticleIllustrationFromChat(
+        this.plugin,
+        previous.instruction,
+        { filename: file.name, text: await this.app.vault.cachedRead(file), path: file.path },
+      )
+      const candidate = message.imageResult
+      message.parts = [{
+        type: 'text',
+        text: `已重新生成候选配图，准备放在「${candidate.anchor}」之后。确认后再插入文章。`,
+      }]
+      await this.persistNow()
+    } catch (error) {
+      new Notice(`重新生成失败：${error instanceof Error ? error.message : String(error)}`, 9000)
+    } finally {
+      notice.hide()
+      this.renderMessages()
+    }
   }
 
   private renderPatchCards(row: HTMLElement, patch: ParsedNotePatch): void {

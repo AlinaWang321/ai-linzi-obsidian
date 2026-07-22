@@ -37,13 +37,24 @@ const MARKER_RE = /<<<\s*推荐技能[\s　]+([a-z0-9-]+)\s*>>>/g
 const HANGING_RE = /\n?<{1,3}(?:\s*推?荐?技?能?[\s　]*[a-z0-9-]*)?$/
 
 export function isArticleIllustrationIntent(text: string): boolean {
-  return /(?:文章配图|正文配图|插图|图片|封面)/.test(text) &&
+  return /(?:文章配图|正文配图|配图|插图|图片|封面)/.test(text) &&
     (/(?:生成|生图|做图|配图|插图|加图|加入|插入)/.test(text) || isArticleIllustrationEditIntent(text))
 }
 
 export function isArticleIllustrationEditIntent(text: string): boolean {
   return /(?:配图|插图|图片|封面)/.test(text) &&
     /(?:修改|改一下|改图|改成|改为|换成|换为|换掉|调整|重做|重新生成|替换|错字|写错|不对|去掉|移除|删除|修正|校对)/.test(text)
+}
+
+/**
+ * 主对话里的单张新增配图请求。它和“给整篇文章配图”分开：前者会读取当前笔记、
+ * 自动生成一张候选图；后者才进入完整的封面 + 多张正文图流程。
+ */
+export function isSingleArticleIllustrationIntent(text: string): boolean {
+  if (isArticleIllustrationEditIntent(text)) return false
+  const directSingleImage = /(?:再|另|新增|增加|加上?|补充?|插入|放|配)(?:给|到|在)?[^。！？!?\n]{0,12}(?:一|1)\s*张图/i.test(text)
+  if (!isArticleIllustrationIntent(text) && !directSingleImage) return false
+  return /(?:再|另|新增|增加|加上|补充|补一|插入|放一|配一|一张|1\s*张|part\s*0*\d+|第[一二三四五六七八九十\d]+(?:部分|章|节)|这(?:一)?段|某一段)/i.test(text)
 }
 
 export function extractExactTextHints(text: string): string[] {
@@ -74,6 +85,8 @@ export function extractPluginSkillSuggestions(
     return ''
   })
   cleanText = cleanText.replace(HANGING_RE, '').trimEnd()
-  if (isArticleIllustrationIntent(previousUserText)) add(PLUGIN_SKILLS['article-illustration'])
+  if (isArticleIllustrationIntent(previousUserText) && !isSingleArticleIllustrationIntent(previousUserText)) {
+    add(PLUGIN_SKILLS['article-illustration'])
+  }
   return { cleanText, suggestions }
 }

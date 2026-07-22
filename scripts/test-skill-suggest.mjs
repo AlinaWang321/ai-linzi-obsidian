@@ -40,6 +40,19 @@ assert.equal(suggest.isArticleIllustrationEditIntent(firstImageEdit), true)
 assert.equal(suggest.extractPluginSkillSuggestions('可以修改。', firstImageEdit).suggestions[0].slug, 'article-illustration')
 assert.deepEqual(suggest.extractExactTextHints(firstImageEdit), ['一键撰写、配图、排版、发布公众号'])
 assert.equal(suggest.isArticleIllustrationEditIntent('我想调整商业模式'), false)
+const addPartImage = '把 Part 4 也增加一张配图'
+assert.equal(suggest.isSingleArticleIllustrationIntent(addPartImage), true)
+assert.equal(suggest.isSingleArticleIllustrationIntent('再给这一段加一张图'), true)
+assert.deepEqual(
+  suggest.extractPluginSkillSuggestions('我会根据当前笔记补一张图。', addPartImage).suggestions,
+  [],
+  '单张补图请求应直接进入主对话生图链路，不能再推荐整篇文章配图技能',
+)
+assert.equal(suggest.isSingleArticleIllustrationIntent('给整篇文章生成配图'), false)
+assert.equal(
+  suggest.extractPluginSkillSuggestions('可以。', '给整篇文章生成配图').suggestions[0].slug,
+  'article-illustration',
+)
 assert.equal(suggest.isArticleIllustrationIntent('帮我看看咨询简报'), false)
 assert.deepEqual(
   suggest.extractExactTextHints('把配图里的「AI霖子」改正确，霖字写错了'),

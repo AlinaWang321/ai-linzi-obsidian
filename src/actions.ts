@@ -588,6 +588,18 @@ interface IllustrationGenerateResult {
   requestId?: string
 }
 
+/** 主对话根据当前笔记生成的单张候选配图。核心构图提示仍只存在私有后端。 */
+export interface ChatIllustrationCandidate {
+  imageUrl: string
+  anchor: string
+  title: string
+  coreIdea: string
+  instruction: string
+  notePath: string
+  articleTitle: string
+  insertedPath?: string
+}
+
 interface SavedIllustrationJob {
   notePath: string
   articleFingerprint: string
@@ -809,6 +821,91 @@ function uniqueVaultPath(plugin: AiLinziPlugin, desired: string): string {
     const candidate = `${base}_${i}${ext}`
     if (!plugin.app.vault.getAbstractFileByPath(candidate)) return candidate
   }
+}
+
+export async function generateArticleIllustrationFromChat(
+  plugin: AiLinziPlugin,
+  instruction: string,
+  note: { filename: string; text: string; path: string },
+): Promise<ChatIllustrationCandidate> {
+  const prepared = prepareWechatArticle(note.text)
+  const article = prepared.body
+  if (article.length < 300) {
+    throw new Error(`当前笔记只有 ${article.length} 字，至少需要 300 字才能结合全文生成文章配图`)
+  }
+  const articleTitle =
+    prepared.titleCandidates[0]?.trim() ||
+    note.filename.replace(/\.md$/i, '').replace(/^\d{4}[.-]\d{1,2}[.-]\d{1,2}_?/, '').trim()
+  const data = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
+    method: 'POST',
+    body: {
+      article: clip(article, 20_000, '文章'),
+      articleTitle,
+      mode: 'single',
+      single: { instruction: instruction.trim() },
+    },
+  })) as {
+    image?: { imageUrl?: string; anchor?: string; title?: string; coreIdea?: string }
+  }
+  const image = data.image
+  if (
+    !image?.imageUrl ||
+    !/^https?:\/\/|^data:image\//i.test(image.imageUrl) ||
+    !image.anchor ||
+    !article.includes(image.anchor)
+  ) {
+    throw new Error('服务端没有返回可定位的文章配图')
+  }
+  return {
+    imageUrl: image.imageUrl,
+    anchor: image.anchor,
+    title: image.title?.trim() || '新增配图',
+    coreIdea: image.coreIdea?.trim() || '结合当前文章生成的配图',
+    instruction: instruction.trim(),
+    notePath: note.path,
+    articleTitle,
+  }
+}
+
+export async function insertChatIllustrationIntoNote(
+  plugin: AiLinziPlugin,
+  candidate: ChatIllustrationCandidate,
+): Promise<string> {
+  const file = plugin.app.vault.getAbstractFileByPath(candidate.notePath)
+  if (!(file instanceof TFile) || file.extension !== 'md') {
+    throw new Error('生成图片时使用的原笔记已经移动或不存在')
+  }
+  const current = await plugin.app.vault.cachedRead(file)
+  const initialAnchorCount = current.split(candidate.anchor).length - 1
+  if (initialAnchorCount === 0) {
+    throw new Error(`当前笔记已经变化，找不到原来的插入位置「${candidate.anchor}」`)
+  }
+  if (initialAnchorCount > 1) {
+    throw new Error(`当前笔记里有多处相同内容「${candidate.anchor}」，暂不自动插入以免放错位置`)
+  }
+  const folder = normalizePath(
+    `${plugin.settings.outputFolder || 'AI霖子输出'}/公众号文章/配图/${today()}_${sanitizeTitle(file.basename)}`,
+  )
+  await ensureFolder(plugin, folder)
+  const path = uniqueVaultPath(
+    plugin,
+    normalizePath(
+      `${folder}/${today()}_${timestampForFilename()}_${sanitizeTitle(candidate.title) || '新增配图'}.png`,
+    ),
+  )
+  const preview = insertEmbeds(current, [{ path, anchor: candidate.anchor }])
+  if (preview.hits < 1) {
+    throw new Error(`无法安全定位「${candidate.anchor}」，当前笔记没有改变`)
+  }
+  await plugin.app.vault.createBinary(path, await fetchImageBinary(candidate.imageUrl))
+  await plugin.app.vault.process(file, (content) => {
+    const anchorCount = content.split(candidate.anchor).length - 1
+    if (anchorCount !== 1) throw new Error(`写入前文章发生变化，无法唯一定位「${candidate.anchor}」`)
+    const result = insertEmbeds(content, [{ path, anchor: candidate.anchor }])
+    if (result.hits < 1) throw new Error(`写入前文章发生变化，找不到「${candidate.anchor}」`)
+    return result.out
+  })
+  return path
 }
 
 export async function runArticleIllustration(plugin: AiLinziPlugin) {
@@ -1467,8 +1564,12 @@ class AiImageGenerationModal extends Modal {
   private imageUrl = ''
   private savedPath = ''
   private generating = false
+  private articleCandidate: ChatIllustrationCandidate | null = null
 
-  constructor(private plugin: AiLinziPlugin) {
+  constructor(
+    private plugin: AiLinziPlugin,
+    private noteContext?: { filename: string; text: string; path: string },
+  ) {
     super(plugin.app)
   }
 
@@ -1480,81 +1581,93 @@ class AiImageGenerationModal extends Modal {
   private render(): void {
     this.contentEl.empty()
     this.contentEl.createEl('p', {
-      text: '直接描述想生成或修改的图片。参考图是可选的：可以不传，也可以从 Vault 或电脑选择最多 3 张。',
+      text: this.noteContext
+        ? `已带上当前笔记「${this.noteContext.filename}」。只需说明想给哪个部分增加什么图片，AI 会结合全文生成候选图。`
+        : '直接描述想生成或修改的图片。参考图是可选的：可以不传，也可以从 Vault 或电脑选择最多 3 张。',
       cls: 'ai-linzi-plan-intro',
     })
 
     new Setting(this.contentEl)
       .setName('图片要求')
-      .setDesc('有参考图时，可以用“图1、图2”说明分别参考什么。')
+      .setDesc(this.noteContext ? '例如：给 Part 4 增加一张突出“人 + AI 团队”的配图。' : '有参考图时，可以用“图1、图2”说明分别参考什么。')
       .addTextArea((input) => {
         input.setValue(this.instruction).onChange((value) => (this.instruction = value))
         input.inputEl.rows = 5
-        input.inputEl.placeholder = '例如：参考图1的人物和图2的构图，生成一张16:9横版图片；标题写成……'
+        input.inputEl.placeholder = this.noteContext
+          ? '例如：给 Part 4 增加一张配图，突出一个人加一支 AI 团队'
+          : '例如：参考图1的人物和图2的构图，生成一张16:9横版图片；标题写成……'
         input.inputEl.addClass('ai-linzi-full-width')
         input.setDisabled(this.generating)
       })
 
-    new Setting(this.contentEl)
-      .setName('图片比例')
-      .addDropdown((dropdown) => {
-        dropdown.addOption('16:9', '16:9 横版')
-        dropdown.addOption('3:4', '3:4 竖版')
-        dropdown.setValue(this.ratio).onChange((value) => {
-          this.ratio = value === '3:4' ? '3:4' : '16:9'
+    if (this.noteContext) {
+      this.contentEl.createEl('p', { text: '文章配图使用 16:9 横版，并自动沿用当前文章的极简手绘风格。', cls: 'ai-linzi-plan-intro' })
+    } else {
+      new Setting(this.contentEl)
+        .setName('图片比例')
+        .addDropdown((dropdown) => {
+          dropdown.addOption('16:9', '16:9 横版')
+          dropdown.addOption('3:4', '3:4 竖版')
+          dropdown.setValue(this.ratio).onChange((value) => {
+            this.ratio = value === '3:4' ? '3:4' : '16:9'
+          })
+          dropdown.setDisabled(this.generating)
         })
-        dropdown.setDisabled(this.generating)
-      })
 
-    const referenceSetting = new Setting(this.contentEl)
-      .setName('参考图（可选）')
-      .setDesc('按选择顺序编号为图1、图2、图3。')
-    referenceSetting
-      .addButton((button) =>
-        button
-          .setButtonText('选择 Vault 图片')
-          .setDisabled(this.generating)
-          .onClick(() => this.chooseVaultReference()),
-      )
-      .addButton((button) =>
-        button
-          .setButtonText('选择电脑图片')
-          .setDisabled(this.generating)
-          .onClick(() => this.chooseComputerReferences()),
-      )
-    const referencesEl = this.contentEl.createDiv({ cls: 'ai-linzi-reference-list' })
-    renderReferenceGallery(referencesEl, this.references, (index) => {
-      if (this.generating) return
-      this.references.splice(index, 1)
-      this.render()
-    })
+      const referenceSetting = new Setting(this.contentEl)
+        .setName('参考图（可选）')
+        .setDesc('按选择顺序编号为图1、图2、图3。')
+      referenceSetting
+        .addButton((button) =>
+          button
+            .setButtonText('选择 Vault 图片')
+            .setDisabled(this.generating)
+            .onClick(() => this.chooseVaultReference()),
+        )
+        .addButton((button) =>
+          button
+            .setButtonText('选择电脑图片')
+            .setDisabled(this.generating)
+            .onClick(() => this.chooseComputerReferences()),
+        )
+      const referencesEl = this.contentEl.createDiv({ cls: 'ai-linzi-reference-list' })
+      renderReferenceGallery(referencesEl, this.references, (index) => {
+        if (this.generating) return
+        this.references.splice(index, 1)
+        this.render()
+      })
+    }
 
     if (this.imageUrl) {
       const result = this.contentEl.createDiv({ cls: 'ai-linzi-ai-image-result' })
       result.createEl('strong', { text: '生成结果' })
       result.createEl('img', { attr: { src: this.imageUrl, alt: 'AI 生成图片' } })
+      if (this.articleCandidate) {
+        result.createEl('p', { text: `建议放在「${this.articleCandidate.anchor}」之后` })
+      }
     }
 
     const actions = new Setting(this.contentEl)
     actions.addButton((button) => button.setButtonText('关闭').onClick(() => this.close()))
     if (this.imageUrl) {
-      actions
-        .addButton((button) =>
+      if (!this.articleCandidate) {
+        actions.addButton((button) =>
           button
             .setButtonText('保存到 Vault')
             .setDisabled(this.generating)
             .onClick(() => void this.saveToVault()),
         )
-        .addButton((button) =>
-          button
-            .setButtonText('插入当前笔记')
-            .setDisabled(this.generating)
-            .onClick(() => void this.insertIntoCurrentNote()),
-        )
+      }
+      actions.addButton((button) =>
+        button
+          .setButtonText(this.articleCandidate?.insertedPath ? '✅ 已插入当前笔记' : '插入当前笔记')
+          .setDisabled(this.generating || Boolean(this.articleCandidate?.insertedPath))
+          .onClick(() => void this.insertIntoCurrentNote()),
+      )
     }
     actions.addButton((button) =>
       button
-        .setButtonText(this.imageUrl ? '重新生成' : '用 AI 生图')
+        .setButtonText(this.imageUrl ? '重新生成' : this.noteContext ? '根据当前笔记生图' : '用 AI 生图')
         .setCta()
         .setDisabled(this.generating)
         .onClick(() => void this.generate()),
@@ -1605,16 +1718,26 @@ class AiImageGenerationModal extends Modal {
     this.render()
     const notice = new Notice('🎨 AI 正在生成图片…', 0)
     try {
-      const data = (await this.plugin.api(AI_IMAGE_API, {
-        method: 'POST',
-        body: {
-          instruction: this.instruction.trim(),
-          ratio: this.ratio,
-          referenceImages: this.references.map((reference) => reference.dataUrl),
-        },
-      })) as { imageUrl?: string }
-      if (!data.imageUrl) throw new Error('服务端没有返回图片')
-      this.imageUrl = data.imageUrl
+      if (this.noteContext) {
+        this.articleCandidate = await generateArticleIllustrationFromChat(
+          this.plugin,
+          this.instruction,
+          this.noteContext,
+        )
+        this.imageUrl = this.articleCandidate.imageUrl
+      } else {
+        const data = (await this.plugin.api(AI_IMAGE_API, {
+          method: 'POST',
+          body: {
+            instruction: this.instruction.trim(),
+            ratio: this.ratio,
+            referenceImages: this.references.map((reference) => reference.dataUrl),
+          },
+        })) as { imageUrl?: string }
+        if (!data.imageUrl) throw new Error('服务端没有返回图片')
+        this.imageUrl = data.imageUrl
+        this.articleCandidate = null
+      }
       this.savedPath = ''
     } catch (error) {
       new Notice(`❌ AI 生图：${error instanceof Error ? error.message : String(error)}`, 10000)
@@ -1650,6 +1773,17 @@ class AiImageGenerationModal extends Modal {
   }
 
   private async insertIntoCurrentNote(): Promise<void> {
+    if (this.articleCandidate) {
+      try {
+        this.savedPath = await insertChatIllustrationIntoNote(this.plugin, this.articleCandidate)
+        this.articleCandidate.insertedPath = this.savedPath
+        new Notice(`✅ 图片已插入「${this.articleCandidate.articleTitle}」对应段落`)
+        this.render()
+      } catch (error) {
+        new Notice(`插入图片失败：${error instanceof Error ? error.message : String(error)}`, 8000)
+      }
+      return
+    }
     const file = this.plugin.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
     if (!file) {
       new Notice('请先打开一篇笔记再插入图片')
@@ -1681,6 +1815,9 @@ class AiImageGenerationModal extends Modal {
   }
 }
 
-export async function runAiImageGeneration(plugin: AiLinziPlugin): Promise<void> {
-  new AiImageGenerationModal(plugin).open()
+export async function runAiImageGeneration(
+  plugin: AiLinziPlugin,
+  noteContext?: { filename: string; text: string; path: string },
+): Promise<void> {
+  new AiImageGenerationModal(plugin, noteContext).open()
 }

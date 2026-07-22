@@ -7,10 +7,17 @@ const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
 assert.match(main, /🖼️ 用 AI 生图/)
 assert.match(
   main,
-  /const illustrationEdit = isArticleIllustrationEditIntent\(text\)[\s\S]*?!illustrationEdit && isNoteEditIntent\(text\)/,
-  '修改图片的请求不能误送进正文局部补丁协议',
+  /const illustrationEdit = isArticleIllustrationEditIntent\(text\)[\s\S]*?const singleIllustration = Boolean\([\s\S]*?!illustrationEdit && !singleIllustration && isNoteEditIntent\(text\)/,
+  '修改或新增图片的请求不能误送进正文局部补丁协议',
 )
 assert.match(actions, /\/api\/plugin\/v1\/images\/generate/)
+assert.match(actions, /mode: 'single'/, '当前笔记补图必须走插件专用单图接口')
+assert.match(main, /noteImageIntent: singleIllustration/)
+assert.match(main, /generateArticleIllustrationFromChat/)
+assert.match(main, /imageResult/)
+assert.match(main, /insertChatIllustrationIntoNote/)
+assert.match(main, /插入当前笔记/)
+assert.match(main, /重新生成/)
 assert.match(actions, /参考图（可选）/)
 assert.match(actions, /确认替换原图/)
 assert.match(actions, /value\.split\(\/\[\\n\/／\|｜\]\+\//, '完整标题里的中文顿号不能被拆散')
