@@ -63,13 +63,13 @@ export const SKILL_ACTIONS: {
   name: string
   fn: (p: AiLinziPlugin) => Promise<void>
 }[] = [
-  {
-    id: 'interview',
-    name: '原创访谈写作:AI 采访你 → 写成公众号长文',
-    fn: async (p) => p.startInterview(),
-  },
   { id: 'topic-radar', name: '选题雷达:从当前笔记提炼选题', fn: runTopicRadar },
   { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
+  {
+    id: 'interview',
+    name: '公众号原创访谈写作:AI 采访你 → 写成公众号长文',
+    fn: async (p) => p.startInterview(),
+  },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
   { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
   { id: 'illustration', name: '文章配图:极简小清新手绘(先看方案再生图)', fn: runArticleIllustration },

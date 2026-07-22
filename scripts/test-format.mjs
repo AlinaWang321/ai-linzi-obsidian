@@ -55,6 +55,8 @@ const writerOutput = `## 一、5 个爆款标题候选
 **PART 04**
 **低心力客户，最容易把教练拖进拯救关系**
 
+**真正值得加粗的是这一节的核心判断。**
+
 这是正文。
 
 ![图注](assets/body.png)
@@ -102,5 +104,9 @@ assert.match(html, /font-size:14px/)
 assert.match(html, /color:#0057FF/)
 assert.doesNotMatch(html, /标题候选|这是摘要|<script|alert\(/)
 assert.match(html, /example\.com\/body\.png/)
+assert.match(
+  html,
+  /<strong style="color:#1f3f7c;font-weight:700;">真正值得加粗的是这一节的核心判断。<\/strong>/,
+)
 
 console.log('format regression tests passed')
