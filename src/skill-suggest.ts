@@ -76,16 +76,20 @@ export function extractPluginSkillSuggestions(
   previousUserText = '',
 ): { cleanText: string; suggestions: PluginSkillSuggestion[] } {
   const suggestions: PluginSkillSuggestion[] = []
+  const singleIllustration = isSingleArticleIllustrationIntent(previousUserText)
   const add = (skill: PluginSkillSuggestion | undefined) => {
     if (!skill || suggestions.some((item) => item.slug === skill.slug)) return
     suggestions.push(skill)
   }
   let cleanText = text.replace(MARKER_RE, (_marker, slug: string) => {
-    add(PLUGIN_SKILLS[slug])
+    const skill = PLUGIN_SKILLS[slug]
+    // 服务端旧缓存或模型偶发仍可能输出整篇配图标记；单张补图由主对话自动执行，
+    // 这里必须吞掉该标记，不能让用户再次点回完整技能。
+    if (!(singleIllustration && skill?.slug === 'article-illustration')) add(skill)
     return ''
   })
   cleanText = cleanText.replace(HANGING_RE, '').trimEnd()
-  if (isArticleIllustrationIntent(previousUserText) && !isSingleArticleIllustrationIntent(previousUserText)) {
+  if (isArticleIllustrationIntent(previousUserText) && !singleIllustration) {
     add(PLUGIN_SKILLS['article-illustration'])
   }
   return { cleanText, suggestions }

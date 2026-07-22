@@ -44,7 +44,10 @@ const addPartImage = '把 Part 4 也增加一张配图'
 assert.equal(suggest.isSingleArticleIllustrationIntent(addPartImage), true)
 assert.equal(suggest.isSingleArticleIllustrationIntent('再给这一段加一张图'), true)
 assert.deepEqual(
-  suggest.extractPluginSkillSuggestions('我会根据当前笔记补一张图。', addPartImage).suggestions,
+  suggest.extractPluginSkillSuggestions(
+    '我会根据当前笔记补一张图。\n<<<推荐技能 article-illustration>>>',
+    addPartImage,
+  ).suggestions,
   [],
   '单张补图请求应直接进入主对话生图链路，不能再推荐整篇文章配图技能',
 )
