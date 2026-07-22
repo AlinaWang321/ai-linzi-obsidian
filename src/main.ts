@@ -140,9 +140,24 @@ interface CloudSessionSummary {
 }
 
 const MAX_SAVED_CONVOS = 30
+const PLUGIN_SESSION_PREFIX = 'obsidian:'
 
 function uid(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+/**
+ * 插件会话必须使用独立命名空间。服务端只允许插件历史接口读取/删除这个前缀，
+ * 因而网页端会话不会被插件历史列表拉回，也不会被插件的“清空历史”误删。
+ */
+function normalizePluginSessionId(value?: string): string {
+  const trimmed = value?.trim()
+  if (!trimmed) return `${PLUGIN_SESSION_PREFIX}${uid()}`
+  return trimmed.startsWith(PLUGIN_SESSION_PREFIX) ? trimmed : `${PLUGIN_SESSION_PREFIX}${trimmed}`
+}
+
+function newPluginSessionId(): string {
+  return normalizePluginSessionId(uid())
 }
 
 /**
@@ -287,7 +302,11 @@ export default class AiLinziPlugin extends Plugin {
     try {
       const raw = await this.app.vault.adapter.read(this.convosPath())
       const list = JSON.parse(raw) as SavedConvo[]
-      return Array.isArray(list) ? list : []
+      // conversations.json 本来就只保存插件对话。旧版本的普通 UUID 在本机读取时
+      // 安全迁入 obsidian: 命名空间；无法辨认来源的旧云端 UUID 则不做迁移。
+      return Array.isArray(list)
+        ? list.map((convo) => ({ ...convo, id: normalizePluginSessionId(convo.id) }))
+        : []
     } catch {
       return []
     }
@@ -467,7 +486,7 @@ export default class AiLinziPlugin extends Plugin {
 class ChatView extends ItemView {
   private plugin: AiLinziPlugin
   private messages: WireMessage[] = []
-  private sessionId = uid()
+  private sessionId = newPluginSessionId()
   private attachNote: boolean
   private sending = false
   /** chat=日常对话;interview=访谈写作(多轮采访→成稿) */
@@ -510,7 +529,7 @@ class ChatView extends ItemView {
     newBtn.onclick = () => {
       void this.persistNow() // 旧对话先落盘
       this.messages = []
-      this.sessionId = uid()
+      this.sessionId = newPluginSessionId()
       if (this.mode === 'interview') this.exitInterviewMode()
       this.renderMessages()
     }
@@ -615,7 +634,7 @@ class ChatView extends ItemView {
 
   private loadConvo(c: SavedConvo): void {
     this.messages = c.messages
-    this.sessionId = c.id
+    this.sessionId = normalizePluginSessionId(c.id)
     if (c.mode === 'interview' && this.mode !== 'interview') {
       this.mode = 'interview'
       this.interviewBar.show()
@@ -682,14 +701,19 @@ class ChatView extends ItemView {
     }
     menu.addSeparator()
     menu.addItem((i) =>
-      i.setTitle('🗑 清空云端及本机历史').onClick(() => {
-        if (!window.confirm('确定清空 AI霖子云端和本机的全部历史对话吗?此操作不可恢复(已「存为笔记」的成稿不受影响)。')) return
+      i.setTitle('🗑 清空插件对话历史').onClick(() => {
+        if (
+          !window.confirm(
+            '确定清空 AI霖子 Obsidian 插件产生的云端及本机历史吗？此操作不可恢复；网页版和微信端对话不会被删除，已「存为笔记」的成稿不受影响。',
+          )
+        )
+          return
         void Promise.all([this.plugin.deleteAllCloudConvos(), this.plugin.deleteAllConvos()])
           .then(() => {
             this.messages = []
-            this.sessionId = uid()
+            this.sessionId = newPluginSessionId()
             this.renderMessages()
-            new Notice('云端及本机历史对话已清空')
+            new Notice('插件产生的云端及本机历史已清空；网页版对话未受影响')
           })
           .catch((error) => {
             new Notice(`清空历史失败:${error instanceof Error ? error.message : String(error)}`)
@@ -774,7 +798,7 @@ class ChatView extends ItemView {
   enterInterviewMode() {
     this.mode = 'interview'
     this.messages = []
-    this.sessionId = uid()
+    this.sessionId = newPluginSessionId()
     this.interviewBar.show()
     this.inputEl.placeholder = '先告诉 AI 你想写什么方向(一句话),它会开始采访你…'
     this.renderMessages()
@@ -784,7 +808,7 @@ class ChatView extends ItemView {
   exitInterviewMode() {
     this.mode = 'chat'
     this.messages = []
-    this.sessionId = uid()
+    this.sessionId = newPluginSessionId()
     this.interviewBar.hide()
     this.inputEl.placeholder = '问 AI霖子 任何事…(Enter 发送,Shift+Enter 换行)'
     this.renderMessages()
