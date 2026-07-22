@@ -1,13 +1,13 @@
 {
   "name": "ai-linzi-obsidian-plugin",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "AI霖子 Obsidian 插件",
   "license": "SEE LICENSE IN LICENSE",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit && node esbuild.config.mjs production",
-    "test": "node scripts/test-format.mjs && node scripts/test-note-patch.mjs && node scripts/test-skill-suggest.mjs && node scripts/test-content-state.mjs"
+    "test": "node scripts/test-format.mjs && node scripts/test-note-patch.mjs && node scripts/test-skill-suggest.mjs && node scripts/test-content-state.mjs && node scripts/test-chat-scope.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
