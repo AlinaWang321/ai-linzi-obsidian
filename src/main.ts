@@ -12,6 +12,7 @@ import {
   ItemView,
   MarkdownRenderer,
   Menu,
+  Modal,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -33,6 +34,9 @@ import {
 } from './note-patch'
 import {
   feedKnowledge,
+  generateArticleIllustrationFromChat,
+  insertChatIllustrationIntoNote,
+  runAiImageGeneration,
   runArticleIllustration,
   runArticleIllustrationEdit,
   runDistribute,
@@ -40,10 +44,12 @@ import {
   runTopicRadar,
   runWechatWriter,
   writeOutput,
+  type ChatIllustrationCandidate,
 } from './actions'
 import {
   extractPluginSkillSuggestions,
   isArticleIllustrationEditIntent,
+  isSingleArticleIllustrationIntent,
   type PluginSkillSuggestion,
 } from './skill-suggest'
 import {
@@ -57,13 +63,13 @@ export const SKILL_ACTIONS: {
   name: string
   fn: (p: AiLinziPlugin) => Promise<void>
 }[] = [
-  {
-    id: 'interview',
-    name: '原创访谈写作:AI 采访你 → 写成公众号长文',
-    fn: async (p) => p.startInterview(),
-  },
   { id: 'topic-radar', name: '选题雷达:从当前笔记提炼选题', fn: runTopicRadar },
   { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
+  {
+    id: 'interview',
+    name: '公众号原创访谈写作:AI 采访你 → 写成公众号长文',
+    fn: async (p) => p.startInterview(),
+  },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
   { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
   { id: 'illustration', name: '文章配图:极简小清新手绘(先看方案再生图)', fn: runArticleIllustration },
@@ -121,6 +127,8 @@ interface WireMessage {
   id: string
   role: 'user' | 'assistant'
   parts: { type: 'text'; text: string }[]
+  /** 只保存在插件本机历史；发送给主对话 API 时会被剥离。 */
+  imageResult?: ChatIllustrationCandidate
 }
 
 /** 本地保存的会话(存插件目录 conversations.json,升级/重启不丢) */
@@ -138,6 +146,133 @@ interface CloudSessionSummary {
   title: string | null
   lastActivity: string
   messageCount: number
+}
+
+interface ChatHistoryEntry {
+  kind: 'cloud' | 'local'
+  id: string
+  title: string
+  updatedAt: number
+  mode: 'chat' | 'interview'
+  convo?: SavedConvo
+}
+
+/**
+ * 插件历史管理窗口。每条会话的“打开”和“删除”分开，避免用户只能清空全部。
+ * 删除回调仍由 ChatView 执行，以便同时收窄云端 obsidian: 会话与本机缓存。
+ */
+class ChatHistoryModal extends Modal {
+  constructor(
+    app: App,
+    private entries: ChatHistoryEntry[],
+    private readonly currentSessionId: string,
+    private readonly onOpenEntry: (entry: ChatHistoryEntry) => Promise<void>,
+    private readonly onDeleteEntry: (entry: ChatHistoryEntry) => Promise<void>,
+    private readonly onClearAll: () => Promise<void>,
+  ) {
+    super(app)
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass('ai-linzi-history-modal')
+    this.renderHistory()
+  }
+
+  onClose(): void {
+    this.contentEl.empty()
+  }
+
+  private renderHistory(): void {
+    const { contentEl } = this
+    contentEl.empty()
+    contentEl.createEl('h2', { text: '插件对话历史' })
+    contentEl.createDiv({
+      text: '这里只显示 AI霖子 Obsidian 插件产生的对话，不包含网页版和微信端历史。',
+      cls: 'ai-linzi-history-note',
+    })
+
+    if (this.entries.length === 0) {
+      contentEl.createDiv({ text: '还没有插件对话历史', cls: 'ai-linzi-history-empty' })
+      return
+    }
+
+    const list = contentEl.createDiv({ cls: 'ai-linzi-history-list' })
+    for (const entry of this.entries) {
+      const row = list.createDiv({ cls: 'ai-linzi-history-row' })
+      const summary = row.createDiv({ cls: 'ai-linzi-history-summary' })
+      const titleRow = summary.createDiv({ cls: 'ai-linzi-history-title-row' })
+      titleRow.createSpan({
+        text: `${entry.mode === 'interview' ? '✍️ ' : ''}${entry.title.slice(0, 60) || '未命名对话'}`,
+        cls: 'ai-linzi-history-title',
+      })
+      if (entry.id === this.currentSessionId) {
+        titleRow.createSpan({ text: '当前', cls: 'ai-linzi-history-current' })
+      }
+      const timestamp =
+        Number.isFinite(entry.updatedAt) && entry.updatedAt > 0
+          ? new Date(entry.updatedAt).toLocaleString('zh-CN', {
+              month: 'numeric',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+          : '时间未知'
+      summary.createDiv({ text: timestamp, cls: 'ai-linzi-history-time' })
+
+      const actions = row.createDiv({ cls: 'ai-linzi-history-actions' })
+      const openButton = actions.createEl('button', { text: '打开' })
+      openButton.onclick = async () => {
+        openButton.disabled = true
+        try {
+          await this.onOpenEntry(entry)
+          this.close()
+        } catch (error) {
+          new Notice(`恢复对话失败:${error instanceof Error ? error.message : String(error)}`)
+          openButton.disabled = false
+        }
+      }
+      const deleteButton = actions.createEl('button', {
+        text: '删除',
+        cls: 'ai-linzi-history-delete',
+      })
+      deleteButton.onclick = async () => {
+        const confirmed = window.confirm(
+          `确定删除这条插件对话“${entry.title.slice(0, 30) || '未命名对话'}”吗？\n\n只会删除这一条 AI霖子 Obsidian 插件对话；其他插件对话、网页版和微信端对话都不受影响。删除后不可恢复。`,
+        )
+        if (!confirmed) return
+        deleteButton.disabled = true
+        try {
+          await this.onDeleteEntry(entry)
+          this.entries = this.entries.filter((item) => item.id !== entry.id)
+          this.renderHistory()
+        } catch (error) {
+          new Notice(`删除这条对话失败:${error instanceof Error ? error.message : String(error)}`)
+          deleteButton.disabled = false
+        }
+      }
+    }
+
+    const footer = contentEl.createDiv({ cls: 'ai-linzi-history-footer' })
+    const clearButton = footer.createEl('button', {
+      text: '清空全部插件对话',
+      cls: 'ai-linzi-history-clear',
+    })
+    clearButton.onclick = async () => {
+      const confirmed = window.confirm(
+        '确定清空 AI霖子 Obsidian 插件产生的云端及本机历史吗？此操作不可恢复；网页版和微信端对话不会被删除，已「存为笔记」的成稿不受影响。',
+      )
+      if (!confirmed) return
+      clearButton.disabled = true
+      try {
+        await this.onClearAll()
+        this.entries = []
+        this.renderHistory()
+      } catch (error) {
+        new Notice(`清空历史失败:${error instanceof Error ? error.message : String(error)}`)
+        clearButton.disabled = false
+      }
+    }
+  }
 }
 
 const MAX_SAVED_CONVOS = 30
@@ -349,6 +484,12 @@ export default class AiLinziPlugin extends Plugin {
     await this.app.vault.adapter.write(this.convosPath(), '[]')
   }
 
+  async deleteConvo(sessionId: string): Promise<void> {
+    const targetId = normalizePluginSessionId(sessionId)
+    const list = (await this.loadConvos()).filter((convo) => convo.id !== targetId)
+    await this.app.vault.adapter.write(this.convosPath(), JSON.stringify(list.slice(0, MAX_SAVED_CONVOS)))
+  }
+
   async loadCloudSessions(): Promise<CloudSessionSummary[]> {
     const data = await this.api('/api/plugin/v1/chat/sessions')
     return Array.isArray(data.sessions) ? (data.sessions as CloudSessionSummary[]) : []
@@ -382,6 +523,13 @@ export default class AiLinziPlugin extends Plugin {
 
   async deleteAllCloudConvos(): Promise<void> {
     await this.api('/api/plugin/v1/chat/history', { method: 'DELETE' })
+  }
+
+  async deleteCloudConvo(sessionId: string): Promise<void> {
+    const targetId = normalizePluginSessionId(sessionId)
+    await this.api(`/api/plugin/v1/chat/history?sessionId=${encodeURIComponent(targetId)}`, {
+      method: 'DELETE',
+    })
   }
 
   async saveSettings() {
@@ -457,7 +605,7 @@ export default class AiLinziPlugin extends Plugin {
         typeof data.error === 'string'
           ? data.error
           : timeout
-            ? '生成时间超过服务上限。系统没有写入残缺图片，也不会扣本轮配图积分，请稍后重试。'
+            ? '生成时间超过服务上限。系统没有写入残缺图片，请稍后重试。'
             : `请求失败(${res.status})`
       const supportId = typeof data.requestId === 'string' ? `（问题编号：${data.requestId}）` : ''
       throw new Error(`${msg}${supportId}`)
@@ -506,7 +654,7 @@ export default class AiLinziPlugin extends Plugin {
     try {
       const data = await this.api('/api/plugin/v1/capabilities')
       new Notice(
-        `✅ 已连接 AI霖子\n学号:${data.studentNo}\ntier:${data.tier} · 余额:${data.balance} 积分\n插件 API:v${data.apiVersion}`,
+        `✅ 已连接 AI霖子\n学号:${data.studentNo}\ntier:${data.tier}\n插件 API:v${data.apiVersion}`,
         6000,
       )
       return true
@@ -560,7 +708,7 @@ class ChatView extends ItemView {
     topbar.createSpan({ text: 'AI霖子 · 你的 24 小时商业教练', cls: 'ai-linzi-title' })
     const btns = topbar.createDiv({ cls: 'ai-linzi-topbar-btns' })
     const histBtn = btns.createEl('button', { text: '历史', cls: 'ai-linzi-newchat' })
-    histBtn.onclick = (evt: MouseEvent) => void this.showHistoryMenu(evt)
+    histBtn.onclick = () => void this.showHistoryMenu()
     const newBtn = btns.createEl('button', { text: '新对话', cls: 'ai-linzi-newchat' })
     newBtn.onclick = () => {
       void this.persistNow() // 旧对话先落盘
@@ -603,6 +751,11 @@ class ChatView extends ItemView {
     }
     const kbBtn = actionsRow.createEl('button', { text: '📚 存入知识库', cls: 'ai-linzi-action-btn' })
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
+    const imageBtn = actionsRow.createEl('button', { text: '🖼️ 用 AI 生图', cls: 'ai-linzi-action-btn' })
+    imageBtn.onclick = () => void (async () => {
+      const noteContext = await this.currentNoteContext()
+      await runAiImageGeneration(this.plugin, noteContext)
+    })()
     const dashboardBtn = actionsRow.createEl('button', { text: '📊 内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
     actionsRow.createSpan({ text: '技能作用于当前打开的笔记', cls: 'ai-linzi-actions-hint' })
@@ -614,7 +767,7 @@ class ChatView extends ItemView {
     this.attachToggleEl.onchange = () => {
       this.attachNote = this.attachToggleEl.checked
     }
-    label.createSpan({ text: ' 带上当前笔记(Pro)' })
+    label.createSpan({ text: ' 带上当前笔记' })
 
     this.inputEl = footer.createEl('textarea', {
       cls: 'ai-linzi-input',
@@ -683,7 +836,8 @@ class ChatView extends ItemView {
     this.renderMessages()
   }
 
-  private async showHistoryMenu(evt: MouseEvent): Promise<void> {
+  private async showHistoryMenu(): Promise<void> {
+    await this.persistNow()
     const localConvos = await this.plugin.loadConvos()
     let cloudSessions: CloudSessionSummary[] = []
     try {
@@ -692,80 +846,82 @@ class ChatView extends ItemView {
       // 云端不可用时历史菜单仍能展示本机缓存。
     }
     const cloudIds = new Set(cloudSessions.map((session) => session.sessionId))
-    const items: Array<
-      | { kind: 'cloud'; id: string; title: string; updatedAt: number }
-      | { kind: 'local'; convo: SavedConvo; title: string; updatedAt: number }
-    > = cloudSessions.map((session) => ({
-      kind: 'cloud' as const,
-      id: session.sessionId,
-      title: session.title || session.preview || '云端对话',
-      updatedAt: Date.parse(session.lastActivity) || 0,
-    }))
+    const localById = new Map(localConvos.map((convo) => [convo.id, convo]))
+    const items: ChatHistoryEntry[] = cloudSessions.map((session) => {
+      const local = localById.get(session.sessionId)
+      return {
+        kind: 'cloud' as const,
+        id: session.sessionId,
+        title: session.title || session.preview || '云端对话',
+        updatedAt: Math.max(Date.parse(session.lastActivity) || 0, local?.updatedAt ?? 0),
+        mode: local?.mode ?? 'chat',
+        // 云端保存标准文字历史；本地副本还包含待确认图片卡片，打开时应优先保留它。
+        convo: local,
+      }
+    })
     for (const convo of localConvos) {
       if (cloudIds.has(convo.id)) continue
-      items.push({ kind: 'local', convo, title: convo.title, updatedAt: convo.updatedAt })
+      items.push({
+        kind: 'local',
+        id: convo.id,
+        convo,
+        title: convo.title,
+        updatedAt: convo.updatedAt,
+        mode: convo.mode,
+      })
     }
     items.sort((a, b) => b.updatedAt - a.updatedAt)
-    const menu = new Menu()
-    if (items.length === 0) {
-      menu.addItem((i) => i.setTitle('还没有历史对话').setDisabled(true))
-    }
-    for (const item of items.slice(0, 15)) {
-      const d = new Date(item.updatedAt)
-      const stamp = `${d.getMonth() + 1}/${d.getDate()}`
-      menu.addItem((i) =>
-        i
-          .setTitle(
-            `${item.kind === 'local' && item.convo.mode === 'interview' ? '✍️ ' : ''}${item.title.slice(0, 30)} · ${stamp}`,
-          )
-          .onClick(() => {
-            void this.persistNow()
-            if (item.kind === 'local') {
-              this.loadConvo(item.convo)
-              return
-            }
-            void this.plugin
-              .loadCloudConvo(item.id)
-              .then((convo) => {
-                if (convo) this.loadConvo(convo)
-              })
-              .catch((error) => {
-                new Notice(`恢复云端对话失败:${error instanceof Error ? error.message : String(error)}`)
-              })
-          }),
-      )
-    }
-    menu.addSeparator()
-    menu.addItem((i) =>
-      i.setTitle('🗑 清空插件对话历史').onClick(() => {
-        if (
-          !window.confirm(
-            '确定清空 AI霖子 Obsidian 插件产生的云端及本机历史吗？此操作不可恢复；网页版和微信端对话不会被删除，已「存为笔记」的成稿不受影响。',
-          )
-        )
+    new ChatHistoryModal(
+      this.app,
+      items.slice(0, MAX_SAVED_CONVOS),
+      this.sessionId,
+      async (item) => {
+        if (item.convo) {
+          this.loadConvo(item.convo)
           return
-        void Promise.all([this.plugin.deleteAllCloudConvos(), this.plugin.deleteAllConvos()])
-          .then(() => {
+        }
+        const convo = await this.plugin.loadCloudConvo(item.id)
+        if (!convo) throw new Error('云端没有找到这条对话')
+        this.loadConvo(convo)
+      },
+      async (item) => {
+        await this.plugin.deleteCloudConvo(item.id)
+        await this.plugin.deleteConvo(item.id)
+        if (item.id === this.sessionId) {
+          if (this.mode === 'interview') this.exitInterviewMode()
+          else {
             this.messages = []
             this.sessionId = newPluginSessionId()
             this.renderMessages()
-            new Notice('插件产生的云端及本机历史已清空；网页版对话未受影响')
-          })
-          .catch((error) => {
-            new Notice(`清空历史失败:${error instanceof Error ? error.message : String(error)}`)
-          })
-      }),
-    )
-    menu.showAtMouseEvent(evt)
+          }
+        }
+        new Notice('已删除这条插件对话；其他插件、网页版和微信端对话未受影响')
+      },
+      async () => {
+        await Promise.all([this.plugin.deleteAllCloudConvos(), this.plugin.deleteAllConvos()])
+        if (this.mode === 'interview') this.exitInterviewMode()
+        else {
+          this.messages = []
+          this.sessionId = newPluginSessionId()
+          this.renderMessages()
+        }
+        new Notice('插件产生的云端及本机历史已清空；网页版和微信端对话未受影响')
+      },
+    ).open()
   }
 
-  private async currentNoteContext(): Promise<{ filename: string; text: string } | undefined> {
+  private async currentNoteContext(): Promise<{ filename: string; text: string; path: string } | undefined> {
     if (!this.attachNote) return undefined
     const file = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
     if (!file) return undefined
     const text = await this.app.vault.cachedRead(file)
     if (!text.trim()) return undefined
-    return { filename: file.name, text }
+    return { filename: file.name, text, path: file.path }
+  }
+
+  /** 本地候选图片元数据绝不传给主对话；云端只收到标准 UIMessage。 */
+  private messagesForApi(): WireMessage[] {
+    return this.messages.map(({ id, role, parts }) => ({ id, role, parts }))
   }
 
   private async send() {
@@ -786,13 +942,19 @@ class ChatView extends ItemView {
         return
       }
       const noteContext = await this.currentNoteContext()
-      const noteEdit = Boolean(noteContext && isNoteEditIntent(text))
+      // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
+      // 图片修改会在 AI 回复下方显示专用入口，先预览候选图再由用户确认替换。
+      const illustrationEdit = isArticleIllustrationEditIntent(text)
+      const singleIllustration = Boolean(noteContext && isSingleArticleIllustrationIntent(text))
+      const noteEdit = Boolean(
+        noteContext && !illustrationEdit && !singleIllustration && isNoteEditIntent(text),
+      )
       // M3:优先流式(fetch 纯文本流,逐块显示);CORS/网络不支持时自动回落非流式;
       // 业务错误(积分不足/tier/限流)不回落不重发,直接显示。
       let answer: string
       let streamed: { kind: 'ok'; text: string } | { kind: 'bizError'; message: string } | null
       try {
-        streamed = await this.sendStreaming(noteContext, noteEdit)
+        streamed = await this.sendStreaming(noteContext, noteEdit, singleIllustration)
       } catch {
         streamed = null
       }
@@ -804,17 +966,21 @@ class ChatView extends ItemView {
         const data = await this.plugin.api('/api/plugin/v1/chat', {
           method: 'POST',
           body: {
-            messages: this.messages,
+            messages: this.messagesForApi(),
             sessionId: this.sessionId,
             stream: false,
             noteContext,
             noteEdit,
+            noteImageIntent: singleIllustration,
           },
         })
         answer = typeof data.text === 'string' ? data.text : '(空响应)'
       }
       this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: answer }] })
       await this.persistNow()
+      if (singleIllustration && noteContext && !answer.startsWith('⚠️')) {
+        await this.generateChatIllustration(text, noteContext)
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       new Notice(`AI霖子:${msg}`, 6000)
@@ -827,6 +993,41 @@ class ChatView extends ItemView {
     } finally {
       this.sending = false
       this.sendBtn.disabled = false
+      this.renderMessages()
+    }
+  }
+
+  private async generateChatIllustration(
+    instruction: string,
+    noteContext: { filename: string; text: string; path: string },
+  ): Promise<void> {
+    const message: WireMessage = {
+      id: uid(),
+      role: 'assistant',
+      parts: [{ type: 'text', text: '正在结合当前笔记全文生成一张候选配图…' }],
+    }
+    this.messages.push(message)
+    this.renderMessages()
+    const notice = new Notice('🎨 正在读取文章并生成候选配图…', 0)
+    try {
+      const candidate = await generateArticleIllustrationFromChat(
+        this.plugin,
+        instruction,
+        noteContext,
+      )
+      message.imageResult = candidate
+      message.parts = [{
+        type: 'text',
+        text: `已根据当前笔记生成一张候选配图，准备放在「${candidate.anchor}」之后。请先预览，确认后再插入文章。`,
+      }]
+    } catch (error) {
+      message.parts = [{
+        type: 'text',
+        text: `⚠️ 候选配图生成失败：${error instanceof Error ? error.message : String(error)}`,
+      }]
+    } finally {
+      notice.hide()
+      await this.persistNow()
       this.renderMessages()
     }
   }
@@ -908,8 +1109,9 @@ class ChatView extends ItemView {
    * 网络/CORS 层异常直接 throw,由调用方回落非流式。
    */
   private async sendStreaming(
-    noteContext: { filename: string; text: string } | undefined,
+    noteContext: { filename: string; text: string; path: string } | undefined,
     noteEdit: boolean,
+    noteImageIntent: boolean,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
@@ -922,11 +1124,12 @@ class ChatView extends ItemView {
         'X-AI-Linzi-Plugin-Version': this.plugin.manifest.version,
       },
       body: JSON.stringify({
-        messages: this.messages,
+        messages: this.messagesForApi(),
         sessionId: this.sessionId,
         stream: 'text',
         noteContext,
         noteEdit,
+        noteImageIntent,
       }),
     })
     if (!res.ok) {
@@ -997,8 +1200,13 @@ class ChatView extends ItemView {
         const skillResult = extractPluginSkillSuggestions(text, previousUserText)
         const cleanText = skillResult.cleanText
         const patch = parseNotePatch(cleanText)
-        const editReply = this.mode === 'chat' && isNoteEditIntent(previousUserText)
+        const illustrationEdit = isArticleIllustrationEditIntent(previousUserText)
+        const editReply = this.mode === 'chat' && !illustrationEdit && isNoteEditIntent(previousUserText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
+        if (m.imageResult) {
+          this.renderChatIllustrationResult(row, m)
+          continue
+        }
         if (patch) this.renderPatchCards(row, patch)
         // 每条 AI 回复都能一键落盘——内容留在用户自己的 Obsidian 里才是关键(Alina 2026-07-21)
         if (text.trim().length > 0 && !text.startsWith('⚠️')) {
@@ -1073,6 +1281,73 @@ class ChatView extends ItemView {
       row.createDiv({ cls: 'ai-linzi-msg-body', text: 'AI霖子思考中…' })
     }
     this.listEl.scrollTop = this.listEl.scrollHeight
+  }
+
+  private renderChatIllustrationResult(row: HTMLElement, message: WireMessage): void {
+    const candidate = message.imageResult
+    if (!candidate) return
+    const card = row.createDiv({ cls: 'ai-linzi-chat-image-result' })
+    if (/^(?:https?:\/\/|data:image\/)/i.test(candidate.imageUrl)) {
+      card.createEl('img', {
+        attr: { src: candidate.imageUrl, alt: candidate.title || 'AI 生成的文章配图' },
+      })
+    } else {
+      card.createDiv({ text: '候选图片地址已失效，请重新生成。', cls: 'ai-linzi-image-error' })
+    }
+    const meta = card.createDiv({ cls: 'ai-linzi-chat-image-meta' })
+    meta.createEl('strong', { text: candidate.title || '新增配图' })
+    meta.createEl('span', { text: `放在「${candidate.anchor}」之后` })
+    const actions = card.createDiv({ cls: 'ai-linzi-chat-image-actions' })
+    const insertBtn = actions.createEl('button', {
+      text: candidate.insertedPath ? '✅ 已插入当前笔记' : '插入当前笔记',
+      cls: 'ai-linzi-apply-patch',
+    })
+    insertBtn.disabled = Boolean(candidate.insertedPath)
+    insertBtn.onclick = async () => {
+      insertBtn.disabled = true
+      insertBtn.setText('正在插入…')
+      try {
+        candidate.insertedPath = await insertChatIllustrationIntoNote(this.plugin, candidate)
+        await this.persistNow()
+        this.renderMessages()
+        new Notice(`✅ 配图已插入「${candidate.articleTitle}」对应段落`, 7000)
+      } catch (error) {
+        insertBtn.disabled = false
+        insertBtn.setText('插入当前笔记')
+        new Notice(`插入配图失败：${error instanceof Error ? error.message : String(error)}`, 9000)
+      }
+    }
+    const regenerateBtn = actions.createEl('button', { text: '重新生成' })
+    regenerateBtn.onclick = () => void this.regenerateChatIllustration(message)
+  }
+
+  private async regenerateChatIllustration(message: WireMessage): Promise<void> {
+    const previous = message.imageResult
+    if (!previous) return
+    const file = this.app.vault.getAbstractFileByPath(previous.notePath)
+    if (!(file instanceof TFile)) {
+      new Notice('原笔记已经移动或不存在，无法重新生成')
+      return
+    }
+    const notice = new Notice('🎨 正在结合当前文章重新生成候选图…', 0)
+    try {
+      message.imageResult = await generateArticleIllustrationFromChat(
+        this.plugin,
+        previous.instruction,
+        { filename: file.name, text: await this.app.vault.cachedRead(file), path: file.path },
+      )
+      const candidate = message.imageResult
+      message.parts = [{
+        type: 'text',
+        text: `已重新生成候选配图，准备放在「${candidate.anchor}」之后。确认后再插入文章。`,
+      }]
+      await this.persistNow()
+    } catch (error) {
+      new Notice(`重新生成失败：${error instanceof Error ? error.message : String(error)}`, 9000)
+    } finally {
+      notice.hide()
+      this.renderMessages()
+    }
   }
 
   private renderPatchCards(row: HTMLElement, patch: ParsedNotePatch): void {
@@ -1194,7 +1469,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('默认带上当前笔记')
-      .setDesc('对话面板「带上当前笔记」开关的默认状态(带笔记走 Pro 附件通道)')
+      .setDesc('对话面板「带上当前笔记」开关的默认状态；只读取用户当前主动打开的这一篇笔记')
       .addToggle((t) =>
         t.setValue(this.plugin.settings.attachNoteDefault).onChange(async (v) => {
           this.plugin.settings.attachNoteDefault = v
@@ -1301,7 +1576,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('测试连接')
-      .setDesc('验证地址与密钥是否可用,并显示账号与积分余额')
+      .setDesc('验证地址、密钥、账号和插件 API 是否可用')
       .addButton((b) =>
         b.setButtonText('测试').onClick(async () => {
           b.setDisabled(true)

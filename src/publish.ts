@@ -41,6 +41,8 @@ interface ImgRef {
   src: string
 }
 
+const DIGEST_FRONTMATTER_KEYS = ['一句话摘要', '摘要', 'digest', 'summary', 'description'] as const
+
 /** wiki 嵌入转标准 md 图片,并把所有图片抽成占位符(后续按场景解析) */
 export function extractImages(md: string): { md: string; imgs: ImgRef[] } {
   const imgs: ImgRef[] = []
@@ -152,6 +154,69 @@ function escapeAttr(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+function limitUnicode(text: string, max: number): string {
+  return Array.from(text).slice(0, max).join('')
+}
+
+function cleanDigestText(text: string): string {
+  return text
+    .replace(/!\[\[[^\]]+\]\]/g, '')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_all, path: string, alias?: string) => alias || path)
+    .replace(/<[^>]+>/g, '')
+    .replace(/^\s*(?:#{1,6}|>|[-+*]|\d+[.、)])\s*/, '')
+    .replace(/[\\*_`~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * 公众号摘要优先级：frontmatter 明确摘要 → 写作技能的摘要段 → 第一段有效正文。
+ * 历史文章即使以封面图片开头，也不会再把图片路径误当摘要。
+ */
+export function resolveWechatDigest(
+  frontmatter: Record<string, unknown> | undefined,
+  preparedDigest: string,
+  body: string,
+): string {
+  for (const key of DIGEST_FRONTMATTER_KEYS) {
+    const value = frontmatter?.[key]
+    if (typeof value === 'string' && cleanDigestText(value)) {
+      return limitUnicode(cleanDigestText(value), 120)
+    }
+  }
+
+  const prepared = cleanDigestText(preparedDigest)
+  if (prepared) return limitUnicode(prepared, 120)
+
+  const paragraphs = body.replace(/\r\n/g, '\n').split(/\n{2,}|\n/)
+  for (const paragraph of paragraphs) {
+    const raw = paragraph.trim()
+    if (
+      !raw ||
+      /^!\[\[/.test(raw) ||
+      /^!\[[^\]]*\]\(/.test(raw) ||
+      /^#{1,6}\s/.test(raw) ||
+      /^\*{0,2}\s*PART\s*\d+/i.test(raw) ||
+      /^(?:---|___|\*\*\*)$/.test(raw)
+    ) continue
+    const candidate = cleanDigestText(raw)
+    if (candidate.length >= 8) return limitUnicode(candidate, 120)
+  }
+  return ''
+}
+
+/** 由文章配图生成器产出的独立封面只用于公众号封面，不进入正文。 */
+export function isDedicatedWechatCover(img: Pick<ImgRef, 'src' | 'alt'>): boolean {
+  return /(?:封面|cover)/i.test(`${img.src} ${img.alt}`)
+}
+
+/** 用独立 section 固定图片块边界，避免公众号编辑器把图片吸附进标题或相邻段落。 */
+export function wechatImageHtml(url: string, alt = ''): string {
+  return `<section style="display:block;margin:26px 0 10px;padding:0;text-align:center;"><img src="${escapeAttr(url)}" alt="${escapeAttr(alt)}" style="display:block;width:100%;max-width:100%;height:auto;margin:0 auto;border:1px solid ${THEME.imgBorder};border-radius:5px;"></section>`
+}
+
 async function currentNote(plugin: AiLinziPlugin): Promise<{ file: TFile; body: string; digest: string } | null> {
   const file = plugin.app.workspace.getActiveFile() ?? plugin.lastActiveFile
   if (!file) {
@@ -174,8 +239,9 @@ export async function copyWechatFormatted(plugin: AiLinziPlugin) {
   if (!note) return
   let localImgCount = 0
   const html = mdToWechatHtml(note.body, (img) => {
+    if (isDedicatedWechatCover(img)) return ''
     if (/^https?:\/\//.test(img.src)) {
-      return `<img src="${img.src}" alt="${escapeAttr(img.alt)}" style="display:block;width:100%;height:auto;margin:26px 0 10px;border:1px solid ${THEME.imgBorder};border-radius:5px;">`
+      return wechatImageHtml(img.src, img.alt)
     }
     localImgCount++
     return `<p style="margin:1.2em 0;padding:10px;background:${THEME.bgSoft};border-radius:6px;color:${THEME.inkMute};font-size:13px;text-align:center;">📷 此处有本地图片「${img.alt || img.src}」——粘贴后请在公众号编辑器手动插入</p>`
@@ -291,11 +357,11 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
   try {
     const token = await getAccessToken(wechatAppId, wechatAppSecret)
 
-    // 收集本地图片并上传
+    // 收集本地图片并上传。独立封面只上传为 thumb_media_id，不重复塞进正文。
     const { imgs } = extractImages(note.body)
     const urlMap = new Map<string, string>()
-    let coverFile: TFile | null = null
     const missingImages: string[] = []
+    const localFiles = new Map<string, TFile>()
     for (const img of imgs) {
       if (/^https?:\/\//.test(img.src)) continue
       const f = resolveImgFile(plugin, img.src, note.file)
@@ -303,37 +369,58 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
         missingImages.push(img.src)
         continue
       }
-      if (!coverFile) coverFile = f
-      if (!urlMap.has(img.src)) urlMap.set(img.src, await uploadContentImage(token, f, plugin))
+      localFiles.set(img.src, f)
     }
     if (missingImages.length > 0) {
       throw new Error(`有 ${missingImages.length} 张本地图片找不到，已停止发布：${missingImages.slice(0, 3).join('、')}`)
     }
+    const dedicatedCover = imgs.find((img) => localFiles.has(img.src) && isDedicatedWechatCover(img)) ?? null
+    const fallbackCover = imgs.find((img) => localFiles.has(img.src)) ?? null
+    const coverRef = dedicatedCover ?? fallbackCover
+    const coverFile = coverRef ? localFiles.get(coverRef.src) ?? null : null
     if (!coverFile) {
       n.hide()
       new Notice('公众号草稿必须有一张封面图——请在文章里至少插入一张本地图片(第一张会自动作为封面)', 9000)
       return
     }
+
+    for (const img of imgs) {
+      const f = localFiles.get(img.src)
+      if (!f || (dedicatedCover && img.placeholder === dedicatedCover.placeholder)) continue
+      if (!urlMap.has(img.src)) urlMap.set(img.src, await uploadContentImage(token, f, plugin))
+    }
     const thumbMediaId = await uploadThumb(token, coverFile, plugin)
 
     const html = mdToWechatHtml(note.body, (img) => {
+      if (dedicatedCover && img.placeholder === dedicatedCover.placeholder) return ''
       const url = /^https?:\/\//.test(img.src) ? img.src : urlMap.get(img.src)
-      return url
-        ? `<img src="${url}" alt="${escapeAttr(img.alt)}" style="display:block;width:100%;height:auto;margin:26px 0 10px;border:1px solid ${THEME.imgBorder};border-radius:5px;">`
-        : ''
+      return url ? wechatImageHtml(url, img.alt) : ''
     }, plugin.settings.brandFooter)
 
     // 标题:frontmatter title > 去日期前缀的文件名
-    const fmTitle = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter?.title as string | undefined
+    const frontmatter = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter as Record<string, unknown> | undefined
+    const fmTitle = frontmatter?.title as string | undefined
     const title = (fmTitle ?? note.file.basename.replace(/^\d{4}\.\d{2}\.\d{2}_/, '')).slice(0, 60)
-    const fmDigest = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter?.['摘要'] as string | undefined
-    const digest = (fmDigest?.trim() || note.digest || note.body.replace(/[#*>\-\n]/g, '')).slice(0, 100)
+    // 极端历史稿若没有摘要且正文只有图片/标题，也至少用文章标题兜底，
+    // 避免草稿箱出现完全空白摘要。
+    const digest = resolveWechatDigest(frontmatter, note.digest, note.body) || title
 
     const res = await requestUrl({
       url: `https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${token}`,
       method: 'POST',
       // 微信接口对中文要原样 UTF-8,JSON.stringify 默认不转义中文 ✓
-      body: JSON.stringify({ articles: [{ title, content: html, thumb_media_id: thumbMediaId, digest }] }),
+      body: JSON.stringify({
+        articles: [{
+          title,
+          content: html,
+          thumb_media_id: thumbMediaId,
+          digest,
+          auto_digest: 0,
+          show_cover_pic: 0,
+          need_open_comment: 0,
+          only_fans_can_comment: 0,
+        }],
+      }),
       contentType: 'application/json',
       throw: false,
     })

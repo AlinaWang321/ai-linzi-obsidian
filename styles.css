@@ -24,6 +24,110 @@
   font-size: var(--font-ui-smaller);
 }
 
+.ai-linzi-history-modal {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.ai-linzi-history-note {
+  margin: -6px 0 16px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.ai-linzi-history-list {
+  display: flex;
+  max-height: min(62vh, 560px);
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.ai-linzi-history-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 11px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.ai-linzi-history-summary {
+  min-width: 0;
+  flex: 1;
+}
+
+.ai-linzi-history-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ai-linzi-history-title {
+  overflow: hidden;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-linzi-history-current {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-history-time {
+  margin-top: 3px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-history-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.ai-linzi-history-actions button {
+  min-width: 52px;
+}
+
+.ai-linzi-history-delete,
+.ai-linzi-history-clear {
+  color: var(--text-error);
+}
+
+.ai-linzi-history-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.ai-linzi-history-empty {
+  padding: 28px 8px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+@media (max-width: 520px) {
+  .ai-linzi-history-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ai-linzi-history-actions {
+    justify-content: flex-end;
+  }
+}
+
 .ai-linzi-messages {
   flex: 1;
   overflow-y: auto;
@@ -67,6 +171,17 @@
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Obsidian 的侧边栏默认偏向面板交互；对话正文必须恢复原生拖选与 ⌘C 复制。 */
+.ai-linzi-msg-body,
+.ai-linzi-msg-body * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+.ai-linzi-msg-body {
+  cursor: text;
 }
 
 .ai-linzi-msg-user .ai-linzi-msg-body {
@@ -236,6 +351,65 @@
   background: rgba(0, 87, 255, 0.13);
 }
 
+/* 主对话里的文章配图候选：先预览，再由用户明确插入原文。 */
+.ai-linzi-chat-image-result {
+  width: 100%;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-secondary);
+}
+
+.ai-linzi-chat-image-result img {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  background: #fff;
+}
+
+.ai-linzi-chat-image-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 11px 5px;
+}
+
+.ai-linzi-chat-image-meta strong {
+  color: #0057ff;
+  font-size: var(--font-ui-small);
+}
+
+.ai-linzi-chat-image-meta span,
+.ai-linzi-image-error {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-image-error {
+  padding: 14px;
+}
+
+.ai-linzi-chat-image-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  padding: 7px 11px 10px;
+}
+
+.ai-linzi-chat-image-actions button {
+  min-height: 28px;
+  padding: 3px 9px;
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-chat-image-actions .ai-linzi-apply-patch {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+
 /* Claudian 式局部修改预览：只展示发生变化的原文与新文，不再重复整篇文章。 */
 .ai-linzi-note-patch {
   display: flex;
@@ -328,6 +502,99 @@
   border-radius: 8px;
   object-fit: contain;
   background: #fff;
+}
+
+.ai-linzi-reference-list {
+  margin: -2px 0 14px;
+}
+
+.ai-linzi-reference-empty {
+  margin: 4px 0;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-reference-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.ai-linzi-reference-card {
+  position: relative;
+  padding: 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 9px;
+  background: var(--background-secondary);
+}
+
+.ai-linzi-reference-card img {
+  display: block;
+  width: 100%;
+  height: 82px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #fff;
+}
+
+.ai-linzi-reference-card span {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-linzi-reference-remove {
+  width: 100%;
+  margin-top: 5px;
+  padding: 3px 6px;
+  font-size: 11px;
+}
+
+.ai-linzi-image-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0 18px;
+}
+
+.ai-linzi-image-compare > div {
+  min-width: 0;
+}
+
+.ai-linzi-image-compare strong {
+  display: block;
+  margin-bottom: 7px;
+}
+
+.ai-linzi-image-compare img,
+.ai-linzi-ai-image-result img {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 9px;
+  object-fit: contain;
+  background: #fff;
+}
+
+.ai-linzi-ai-image-result {
+  margin: 16px 0 10px;
+}
+
+.ai-linzi-ai-image-result strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #0057ff;
+}
+
+@media (max-width: 620px) {
+  .ai-linzi-image-compare {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── 内容发布看板 v0.5 ───────────────────────────── */

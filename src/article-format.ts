@@ -37,7 +37,7 @@ function headingIndex(lines: string[], kind: 'titles' | 'body' | 'digest'): numb
   const patterns = {
     titles: /^#{1,6}\s*(?:一|1)[、.．)]\s*(?:5\s*个)?(?:爆款)?标题候选\s*$/i,
     body: /^#{1,6}\s*(?:二|2)[、.．)]\s*正文(?:\s*[（(].*?[）)])?\s*$/i,
-    digest: /^#{1,6}\s*(?:三|3)[、.．)]\s*摘要\s*$/i,
+    digest: /^#{1,6}\s*(?:三|3)[、.．)]\s*(?:一句话\s*)?摘要(?:\s*一句话)?\s*$/i,
   }
   return lines.findIndex((line) => patterns[kind].test(line.trim()))
 }
