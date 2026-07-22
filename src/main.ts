@@ -160,6 +160,22 @@ function newPluginSessionId(): string {
   return normalizePluginSessionId(uid())
 }
 
+function compareVersions(left: string, right: string): number {
+  const parse = (value: string) => value.split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const a = parse(left)
+  const b = parse(right)
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    const diff = (a[index] ?? 0) - (b[index] ?? 0)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+
+function responseHeader(headers: Record<string, string>, wanted: string): string {
+  const hit = Object.entries(headers).find(([key]) => key.toLowerCase() === wanted.toLowerCase())
+  return hit?.[1] ?? ''
+}
+
 /**
  * 解析缓冲后的 UIMessage SSE 流(访谈写作路由用):只取 text-delta 正文,
  * 跳过 reasoning-delta(V4 Pro 思考过程,不该给用户看),error 事件透传。
@@ -408,6 +424,7 @@ export default class AiLinziPlugin extends Plugin {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
+        'X-AI-Linzi-Plugin-Version': this.manifest.version,
       },
       body: init?.body === undefined ? undefined : JSON.stringify(init.body),
       throw: false,
@@ -417,6 +434,12 @@ export default class AiLinziPlugin extends Plugin {
       data = res.json as Record<string, unknown>
     } catch {
       /* 非 JSON 响应 */
+    }
+    const minPluginVersion = responseHeader(res.headers, 'X-AI-Linzi-Min-Plugin-Version')
+    if (minPluginVersion && compareVersions(this.manifest.version, minPluginVersion) < 0) {
+      throw new Error(
+        `当前插件版本 ${this.manifest.version} 已不再兼容服务器，请先更新到 ${minPluginVersion} 或更高版本`,
+      )
     }
     if (res.status >= 400) {
       const timeout = /FUNCTION_INVOCATION_TIMEOUT|Task timed out|exceeded.*duration/i.test(res.text ?? '')
@@ -447,6 +470,7 @@ export default class AiLinziPlugin extends Plugin {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
+        'X-AI-Linzi-Plugin-Version': this.manifest.version,
       },
       body: JSON.stringify(body),
       throw: false,
@@ -468,9 +492,9 @@ export default class AiLinziPlugin extends Plugin {
 
   async testConnection() {
     try {
-      const data = await this.api('/api/plugin/ping')
+      const data = await this.api('/api/plugin/v1/capabilities')
       new Notice(
-        `✅ 已连接 AI霖子\n学号:${data.studentNo}\ntier:${data.tier} · 余额:${data.balance} 积分`,
+        `✅ 已连接 AI霖子\n学号:${data.studentNo}\ntier:${data.tier} · 余额:${data.balance} 积分\n插件 API:v${data.apiVersion}`,
         6000,
       )
       return true
@@ -847,6 +871,7 @@ class ChatView extends ItemView {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
+        'X-AI-Linzi-Plugin-Version': this.plugin.manifest.version,
       },
       body: JSON.stringify({ messages: this.messages }),
       throw: false,
@@ -882,6 +907,7 @@ class ChatView extends ItemView {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
+        'X-AI-Linzi-Plugin-Version': this.plugin.manifest.version,
       },
       body: JSON.stringify({
         messages: this.messages,

@@ -558,6 +558,14 @@ interface IllustrationPlan {
   images: IllustrationPlanItem[]
 }
 
+interface IllustrationGenerateResult {
+  status?: 'complete' | 'partial'
+  cover?: { title: string; imageUrl: string } | null
+  images?: (IllustrationPlanItem & { imageUrl: string })[]
+  failedCount?: number
+  failedPlan?: IllustrationPlan | null
+}
+
 class IllustrationPlanModal extends Modal {
   private submitted = false
   private resolve!: (value: IllustrationPlan | null) => void
@@ -620,17 +628,10 @@ function uniqueVaultPath(plugin: AiLinziPlugin, desired: string): string {
   }
 }
 
-function planMarkdown(
-  plan: IllustrationPlan,
-  generated: {
-    cover?: { prompt?: string } | null
-    images?: ({ prompt?: string } & IllustrationPlanItem)[]
-  },
-): string {
+function planMarkdown(plan: IllustrationPlan): string {
   const blocks = ['# 极简小清新手绘配图方案', '', '> 画面统一使用极简线条人偶，只保留经确认的必要文字。']
   if (plan.cover) {
     blocks.push('', `## 00 · 封面 · ${plan.cover.title}`, '', `- 核心意思：${plan.cover.coreIdea}`, `- 画面：${plan.cover.concept}`)
-    if (generated.cover?.prompt) blocks.push('', '### 生图提示词', '', generated.cover.prompt)
   }
   plan.images.forEach((item, index) => {
     blocks.push(
@@ -642,8 +643,6 @@ function planMarkdown(
       `- 画面大字：${item.labels.length ? item.labels.map((x) => `\`${x}\``).join('、') : '无'}`,
       `- 构图：${item.concept}`,
     )
-    const prompt = generated.images?.find((generatedItem) => generatedItem.anchor === item.anchor)?.prompt
-    if (prompt) blocks.push('', '### 生图提示词', '', prompt)
   })
   return blocks.join('\n').trim() + '\n'
 }
@@ -691,31 +690,48 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     }
 
     const generating = runningNotice('文章配图')
-    let data: {
-      cover?: { title: string; imageUrl: string; prompt?: string } | null
-      images?: (IllustrationPlanItem & { imageUrl: string; prompt?: string })[]
-      failedCount?: number
-    }
+    let pendingPlan: IllustrationPlan = confirmed
+    let generatedCover: IllustrationGenerateResult['cover'] = null
+    const generatedImages = new Map<string, NonNullable<IllustrationGenerateResult['images']>[number]>()
+    let lastResult: IllustrationGenerateResult | null = null
     try {
-      data = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
-        method: 'POST',
-        body: {
-          article: clip(article, 20_000, '文章'),
-          articleTitle,
-          count,
-          mode: 'generate',
-          plan: confirmed,
-        },
-      })) as typeof data
+      // 服务端会保留本轮成功图并返回 failedPlan。插件只重试失败项，不再把已经成功的
+      // 图片整组重画；最多三轮，覆盖临时限流、单张错字或质检偶发失败。
+      for (let round = 1; round <= 3; round++) {
+        if (round > 1) generating.setMessage(`文章配图：正在补齐第 ${round} 轮（只重试缺失图片）…`)
+        const result = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
+          method: 'POST',
+          body: {
+            article: clip(article, 20_000, '文章'),
+            articleTitle,
+            count,
+            mode: 'generate',
+            plan: pendingPlan,
+          },
+        })) as IllustrationGenerateResult
+        lastResult = result
+        if (result.cover?.imageUrl) generatedCover = result.cover
+        for (const image of result.images ?? []) {
+          if (image.imageUrl) generatedImages.set(image.anchor, image)
+        }
+        if (result.status !== 'partial' || !result.failedPlan) break
+        pendingPlan = result.failedPlan
+      }
     } finally {
       generating.hide()
+    }
+    const data: IllustrationGenerateResult = {
+      ...lastResult,
+      cover: generatedCover,
+      images: confirmed.images
+        .map((item) => generatedImages.get(item.anchor))
+        .filter((item): item is NonNullable<typeof item> => Boolean(item)),
     }
     const imgs = data.images ?? []
     const expectedTotal = confirmed.images.length + (confirmed.cover ? 1 : 0)
     const actualTotal = imgs.length + (data.cover ? 1 : 0)
-    if (imgs.length !== confirmed.images.length || Boolean(data.cover) !== Boolean(confirmed.cover)) {
-      throw new Error(`配图没有按确认方案补齐(${actualTotal}/${expectedTotal}),已停止写入当前文章`)
-    }
+    const complete = imgs.length === confirmed.images.length && Boolean(data.cover) === Boolean(confirmed.cover)
+    if (actualTotal === 0) throw new Error('本轮图片均未通过意图/文字质检，请稍后重试')
 
     const folder = normalizePath(
       `${plugin.settings.outputFolder || 'AI霖子输出'}/公众号文章/配图/${today()}_${sanitizeTitle(note.file.basename)}`,
@@ -744,8 +760,8 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       saved.push({ path, anchor: imgs[i].anchor })
     }
 
-    const promptsPath = uniqueVaultPath(plugin, normalizePath(`${folder}/AI霖子正文配图_PROMPTS.md`))
-    await plugin.app.vault.create(promptsPath, planMarkdown(confirmed, data))
+    const planPath = uniqueVaultPath(plugin, normalizePath(`${folder}/AI霖子正文配图_方案.md`))
+    await plugin.app.vault.create(planPath, planMarkdown(confirmed))
 
     let hits = 0
     await plugin.app.vault.process(note.file, (content) => {
@@ -756,8 +772,10 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       return out
     })
     new Notice(
-      `✅ 已按确认方案生成 ${actualTotal} 张图片：${coverPath ? '1 张封面 + ' : ''}${saved.length} 张正文插图(${hits} 张按段落定位)\n方案和提示词已保存:${promptsPath}`,
-      10000,
+      complete
+        ? `✅ 已按确认方案生成 ${actualTotal} 张图片：${coverPath ? '1 张封面 + ' : ''}${saved.length} 张正文插图(${hits} 张按段落定位)\n配图方案已保存:${planPath}`
+        : `⚠️ 已保留并插入 ${actualTotal}/${expectedTotal} 张通过质检的图片，缺失 ${expectedTotal - actualTotal} 张在三轮自动补图后仍未通过。成功图不会丢失或重复生成；请稍后再次执行配图补齐。\n配图方案已保存:${planPath}`,
+      complete ? 10000 : 14000,
     )
   } catch (e) {
     planning.hide()
