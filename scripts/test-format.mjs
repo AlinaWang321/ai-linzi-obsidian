@@ -88,6 +88,11 @@ PART 01 真正昂贵的是高质量思考
 const preparedInterview = article.prepareWechatArticle(interviewOutput)
 assert.match(preparedInterview.body, /\*\*PART 01\*\*\n\n## 真正昂贵的是高质量思考/)
 
+const oneSentenceDigest = article.prepareWechatArticle(
+  interviewOutput.replace('## 三、摘要', '## 三、一句话摘要'),
+)
+assert.equal(oneSentenceDigest.digest, '访谈摘要。')
+
 const withFrontmatter = `---\ntitle: 测试\n状态: 草稿\n---\n\n正文第一段。`
 const inserted = article.insertEmbeds(withFrontmatter, [{ path: 'assets/body.png', anchor: '找不到的锚点' }])
 assert.match(inserted.out, /^---\ntitle: 测试\n状态: 草稿\n---/)
@@ -108,5 +113,31 @@ assert.match(
   html,
   /<strong style="color:#1f3f7c;font-weight:700;">真正值得加粗的是这一节的核心判断。<\/strong>/,
 )
+
+const historicBody = `![[attachments/2026.07.22_00_封面_测试.png]]
+
+# PART 01
+
+过去几个月，AI霖子一直是一个网页端产品。`
+assert.equal(
+  publisher.resolveWechatDigest(undefined, '', historicBody),
+  '过去几个月，AI霖子一直是一个网页端产品。',
+)
+assert.equal(
+  publisher.resolveWechatDigest({ 一句话摘要: '  插件让本地笔记和 AI 无缝连接。  ' }, '', historicBody),
+  '插件让本地笔记和 AI 无缝连接。',
+)
+assert.equal(
+  publisher.isDedicatedWechatCover({ src: 'attachments/2026_00_封面_测试.png', alt: '' }),
+  true,
+)
+assert.equal(
+  publisher.isDedicatedWechatCover({ src: 'attachments/正文图.png', alt: '' }),
+  false,
+)
+const imageBlock = publisher.wechatImageHtml('https://example.com/a.png', '说明')
+assert.match(imageBlock, /^<section/)
+assert.match(imageBlock, /<img src="https:\/\/example\.com\/a\.png"/)
+assert.match(imageBlock, /<\/section>$/)
 
 console.log('format regression tests passed')

@@ -1,12 +1,13 @@
 {
   "name": "ai-linzi-obsidian-plugin",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "AI霖子 Obsidian 插件",
   "license": "SEE LICENSE IN LICENSE",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit && node esbuild.config.mjs production",
+    "package:release": "npm run build && node scripts/package-release.mjs",
     "test": "node scripts/test-format.mjs && node scripts/test-note-patch.mjs && node scripts/test-skill-suggest.mjs && node scripts/test-content-state.mjs && node scripts/test-chat-scope.mjs && node scripts/test-api-versioning.mjs && node scripts/test-illustration-resume.mjs && node scripts/test-ai-image-flow.mjs"
   },
   "devDependencies": {

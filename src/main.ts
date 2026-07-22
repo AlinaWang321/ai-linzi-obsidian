@@ -767,7 +767,7 @@ class ChatView extends ItemView {
     this.attachToggleEl.onchange = () => {
       this.attachNote = this.attachToggleEl.checked
     }
-    label.createSpan({ text: ' 带上当前笔记(Pro)' })
+    label.createSpan({ text: ' 带上当前笔记' })
 
     this.inputEl = footer.createEl('textarea', {
       cls: 'ai-linzi-input',
@@ -1469,7 +1469,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('默认带上当前笔记')
-      .setDesc('对话面板「带上当前笔记」开关的默认状态(带笔记走 Pro 附件通道)')
+      .setDesc('对话面板「带上当前笔记」开关的默认状态；只读取用户当前主动打开的这一篇笔记')
       .addToggle((t) =>
         t.setValue(this.plugin.settings.attachNoteDefault).onChange(async (v) => {
           this.plugin.settings.attachNoteDefault = v
