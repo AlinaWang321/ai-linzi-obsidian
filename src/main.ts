@@ -847,13 +847,18 @@ class ChatView extends ItemView {
     }
     const cloudIds = new Set(cloudSessions.map((session) => session.sessionId))
     const localById = new Map(localConvos.map((convo) => [convo.id, convo]))
-    const items: ChatHistoryEntry[] = cloudSessions.map((session) => ({
-      kind: 'cloud' as const,
-      id: session.sessionId,
-      title: session.title || session.preview || '云端对话',
-      updatedAt: Date.parse(session.lastActivity) || 0,
-      mode: localById.get(session.sessionId)?.mode ?? 'chat',
-    }))
+    const items: ChatHistoryEntry[] = cloudSessions.map((session) => {
+      const local = localById.get(session.sessionId)
+      return {
+        kind: 'cloud' as const,
+        id: session.sessionId,
+        title: session.title || session.preview || '云端对话',
+        updatedAt: Math.max(Date.parse(session.lastActivity) || 0, local?.updatedAt ?? 0),
+        mode: local?.mode ?? 'chat',
+        // 云端保存标准文字历史；本地副本还包含待确认图片卡片，打开时应优先保留它。
+        convo: local,
+      }
+    })
     for (const convo of localConvos) {
       if (cloudIds.has(convo.id)) continue
       items.push({
@@ -871,7 +876,7 @@ class ChatView extends ItemView {
       items.slice(0, MAX_SAVED_CONVOS),
       this.sessionId,
       async (item) => {
-        if (item.kind === 'local' && item.convo) {
+        if (item.convo) {
           this.loadConvo(item.convo)
           return
         }
