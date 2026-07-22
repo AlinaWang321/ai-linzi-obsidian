@@ -18,6 +18,8 @@ for (const name of ['manifest.json', 'main.js', 'styles.css']) {
 // 安装包内使用 ASCII 文件名，避免 Windows 的解压工具把中文文件名显示为乱码。
 // 文件内容仍是完整的中文安装说明。
 await copyFile(join(root, 'docs/安装说明.md'), join(pluginDir, 'INSTALL.md'))
+await mkdir(join(pluginDir, 'img'), { recursive: true })
+await copyFile(join(root, 'docs/img/install-location.png'), join(pluginDir, 'img/install-location.png'))
 
 execFileSync('zip', ['-q', '-r', archive, 'ai-linzi'], { cwd: dist })
 console.log(`AI霖子 Obsidian 插件 v${manifest.version} 安装包：${archive}`)
