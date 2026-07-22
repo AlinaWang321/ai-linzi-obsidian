@@ -12,6 +12,7 @@ import {
   ItemView,
   MarkdownRenderer,
   Menu,
+  Modal,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -139,6 +140,133 @@ interface CloudSessionSummary {
   title: string | null
   lastActivity: string
   messageCount: number
+}
+
+interface ChatHistoryEntry {
+  kind: 'cloud' | 'local'
+  id: string
+  title: string
+  updatedAt: number
+  mode: 'chat' | 'interview'
+  convo?: SavedConvo
+}
+
+/**
+ * 插件历史管理窗口。每条会话的“打开”和“删除”分开，避免用户只能清空全部。
+ * 删除回调仍由 ChatView 执行，以便同时收窄云端 obsidian: 会话与本机缓存。
+ */
+class ChatHistoryModal extends Modal {
+  constructor(
+    app: App,
+    private entries: ChatHistoryEntry[],
+    private readonly currentSessionId: string,
+    private readonly onOpenEntry: (entry: ChatHistoryEntry) => Promise<void>,
+    private readonly onDeleteEntry: (entry: ChatHistoryEntry) => Promise<void>,
+    private readonly onClearAll: () => Promise<void>,
+  ) {
+    super(app)
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass('ai-linzi-history-modal')
+    this.renderHistory()
+  }
+
+  onClose(): void {
+    this.contentEl.empty()
+  }
+
+  private renderHistory(): void {
+    const { contentEl } = this
+    contentEl.empty()
+    contentEl.createEl('h2', { text: '插件对话历史' })
+    contentEl.createDiv({
+      text: '这里只显示 AI霖子 Obsidian 插件产生的对话，不包含网页版和微信端历史。',
+      cls: 'ai-linzi-history-note',
+    })
+
+    if (this.entries.length === 0) {
+      contentEl.createDiv({ text: '还没有插件对话历史', cls: 'ai-linzi-history-empty' })
+      return
+    }
+
+    const list = contentEl.createDiv({ cls: 'ai-linzi-history-list' })
+    for (const entry of this.entries) {
+      const row = list.createDiv({ cls: 'ai-linzi-history-row' })
+      const summary = row.createDiv({ cls: 'ai-linzi-history-summary' })
+      const titleRow = summary.createDiv({ cls: 'ai-linzi-history-title-row' })
+      titleRow.createSpan({
+        text: `${entry.mode === 'interview' ? '✍️ ' : ''}${entry.title.slice(0, 60) || '未命名对话'}`,
+        cls: 'ai-linzi-history-title',
+      })
+      if (entry.id === this.currentSessionId) {
+        titleRow.createSpan({ text: '当前', cls: 'ai-linzi-history-current' })
+      }
+      const timestamp =
+        Number.isFinite(entry.updatedAt) && entry.updatedAt > 0
+          ? new Date(entry.updatedAt).toLocaleString('zh-CN', {
+              month: 'numeric',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+          : '时间未知'
+      summary.createDiv({ text: timestamp, cls: 'ai-linzi-history-time' })
+
+      const actions = row.createDiv({ cls: 'ai-linzi-history-actions' })
+      const openButton = actions.createEl('button', { text: '打开' })
+      openButton.onclick = async () => {
+        openButton.disabled = true
+        try {
+          await this.onOpenEntry(entry)
+          this.close()
+        } catch (error) {
+          new Notice(`恢复对话失败:${error instanceof Error ? error.message : String(error)}`)
+          openButton.disabled = false
+        }
+      }
+      const deleteButton = actions.createEl('button', {
+        text: '删除',
+        cls: 'ai-linzi-history-delete',
+      })
+      deleteButton.onclick = async () => {
+        const confirmed = window.confirm(
+          `确定删除这条插件对话“${entry.title.slice(0, 30) || '未命名对话'}”吗？\n\n只会删除这一条 AI霖子 Obsidian 插件对话；其他插件对话、网页版和微信端对话都不受影响。删除后不可恢复。`,
+        )
+        if (!confirmed) return
+        deleteButton.disabled = true
+        try {
+          await this.onDeleteEntry(entry)
+          this.entries = this.entries.filter((item) => item.id !== entry.id)
+          this.renderHistory()
+        } catch (error) {
+          new Notice(`删除这条对话失败:${error instanceof Error ? error.message : String(error)}`)
+          deleteButton.disabled = false
+        }
+      }
+    }
+
+    const footer = contentEl.createDiv({ cls: 'ai-linzi-history-footer' })
+    const clearButton = footer.createEl('button', {
+      text: '清空全部插件对话',
+      cls: 'ai-linzi-history-clear',
+    })
+    clearButton.onclick = async () => {
+      const confirmed = window.confirm(
+        '确定清空 AI霖子 Obsidian 插件产生的云端及本机历史吗？此操作不可恢复；网页版和微信端对话不会被删除，已「存为笔记」的成稿不受影响。',
+      )
+      if (!confirmed) return
+      clearButton.disabled = true
+      try {
+        await this.onClearAll()
+        this.entries = []
+        this.renderHistory()
+      } catch (error) {
+        new Notice(`清空历史失败:${error instanceof Error ? error.message : String(error)}`)
+        clearButton.disabled = false
+      }
+    }
+  }
 }
 
 const MAX_SAVED_CONVOS = 30
@@ -350,6 +478,12 @@ export default class AiLinziPlugin extends Plugin {
     await this.app.vault.adapter.write(this.convosPath(), '[]')
   }
 
+  async deleteConvo(sessionId: string): Promise<void> {
+    const targetId = normalizePluginSessionId(sessionId)
+    const list = (await this.loadConvos()).filter((convo) => convo.id !== targetId)
+    await this.app.vault.adapter.write(this.convosPath(), JSON.stringify(list.slice(0, MAX_SAVED_CONVOS)))
+  }
+
   async loadCloudSessions(): Promise<CloudSessionSummary[]> {
     const data = await this.api('/api/plugin/v1/chat/sessions')
     return Array.isArray(data.sessions) ? (data.sessions as CloudSessionSummary[]) : []
@@ -383,6 +517,13 @@ export default class AiLinziPlugin extends Plugin {
 
   async deleteAllCloudConvos(): Promise<void> {
     await this.api('/api/plugin/v1/chat/history', { method: 'DELETE' })
+  }
+
+  async deleteCloudConvo(sessionId: string): Promise<void> {
+    const targetId = normalizePluginSessionId(sessionId)
+    await this.api(`/api/plugin/v1/chat/history?sessionId=${encodeURIComponent(targetId)}`, {
+      method: 'DELETE',
+    })
   }
 
   async saveSettings() {
@@ -561,7 +702,7 @@ class ChatView extends ItemView {
     topbar.createSpan({ text: 'AI霖子 · 你的 24 小时商业教练', cls: 'ai-linzi-title' })
     const btns = topbar.createDiv({ cls: 'ai-linzi-topbar-btns' })
     const histBtn = btns.createEl('button', { text: '历史', cls: 'ai-linzi-newchat' })
-    histBtn.onclick = (evt: MouseEvent) => void this.showHistoryMenu(evt)
+    histBtn.onclick = () => void this.showHistoryMenu()
     const newBtn = btns.createEl('button', { text: '新对话', cls: 'ai-linzi-newchat' })
     newBtn.onclick = () => {
       void this.persistNow() // 旧对话先落盘
@@ -686,7 +827,8 @@ class ChatView extends ItemView {
     this.renderMessages()
   }
 
-  private async showHistoryMenu(evt: MouseEvent): Promise<void> {
+  private async showHistoryMenu(): Promise<void> {
+    await this.persistNow()
     const localConvos = await this.plugin.loadConvos()
     let cloudSessions: CloudSessionSummary[] = []
     try {
@@ -695,71 +837,63 @@ class ChatView extends ItemView {
       // 云端不可用时历史菜单仍能展示本机缓存。
     }
     const cloudIds = new Set(cloudSessions.map((session) => session.sessionId))
-    const items: Array<
-      | { kind: 'cloud'; id: string; title: string; updatedAt: number }
-      | { kind: 'local'; convo: SavedConvo; title: string; updatedAt: number }
-    > = cloudSessions.map((session) => ({
+    const localById = new Map(localConvos.map((convo) => [convo.id, convo]))
+    const items: ChatHistoryEntry[] = cloudSessions.map((session) => ({
       kind: 'cloud' as const,
       id: session.sessionId,
       title: session.title || session.preview || '云端对话',
       updatedAt: Date.parse(session.lastActivity) || 0,
+      mode: localById.get(session.sessionId)?.mode ?? 'chat',
     }))
     for (const convo of localConvos) {
       if (cloudIds.has(convo.id)) continue
-      items.push({ kind: 'local', convo, title: convo.title, updatedAt: convo.updatedAt })
+      items.push({
+        kind: 'local',
+        id: convo.id,
+        convo,
+        title: convo.title,
+        updatedAt: convo.updatedAt,
+        mode: convo.mode,
+      })
     }
     items.sort((a, b) => b.updatedAt - a.updatedAt)
-    const menu = new Menu()
-    if (items.length === 0) {
-      menu.addItem((i) => i.setTitle('还没有历史对话').setDisabled(true))
-    }
-    for (const item of items.slice(0, 15)) {
-      const d = new Date(item.updatedAt)
-      const stamp = `${d.getMonth() + 1}/${d.getDate()}`
-      menu.addItem((i) =>
-        i
-          .setTitle(
-            `${item.kind === 'local' && item.convo.mode === 'interview' ? '✍️ ' : ''}${item.title.slice(0, 30)} · ${stamp}`,
-          )
-          .onClick(() => {
-            void this.persistNow()
-            if (item.kind === 'local') {
-              this.loadConvo(item.convo)
-              return
-            }
-            void this.plugin
-              .loadCloudConvo(item.id)
-              .then((convo) => {
-                if (convo) this.loadConvo(convo)
-              })
-              .catch((error) => {
-                new Notice(`恢复云端对话失败:${error instanceof Error ? error.message : String(error)}`)
-              })
-          }),
-      )
-    }
-    menu.addSeparator()
-    menu.addItem((i) =>
-      i.setTitle('🗑 清空插件对话历史').onClick(() => {
-        if (
-          !window.confirm(
-            '确定清空 AI霖子 Obsidian 插件产生的云端及本机历史吗？此操作不可恢复；网页版和微信端对话不会被删除，已「存为笔记」的成稿不受影响。',
-          )
-        )
+    new ChatHistoryModal(
+      this.app,
+      items.slice(0, MAX_SAVED_CONVOS),
+      this.sessionId,
+      async (item) => {
+        if (item.kind === 'local' && item.convo) {
+          this.loadConvo(item.convo)
           return
-        void Promise.all([this.plugin.deleteAllCloudConvos(), this.plugin.deleteAllConvos()])
-          .then(() => {
+        }
+        const convo = await this.plugin.loadCloudConvo(item.id)
+        if (!convo) throw new Error('云端没有找到这条对话')
+        this.loadConvo(convo)
+      },
+      async (item) => {
+        await this.plugin.deleteCloudConvo(item.id)
+        await this.plugin.deleteConvo(item.id)
+        if (item.id === this.sessionId) {
+          if (this.mode === 'interview') this.exitInterviewMode()
+          else {
             this.messages = []
             this.sessionId = newPluginSessionId()
             this.renderMessages()
-            new Notice('插件产生的云端及本机历史已清空；网页版对话未受影响')
-          })
-          .catch((error) => {
-            new Notice(`清空历史失败:${error instanceof Error ? error.message : String(error)}`)
-          })
-      }),
-    )
-    menu.showAtMouseEvent(evt)
+          }
+        }
+        new Notice('已删除这条插件对话；其他插件、网页版和微信端对话未受影响')
+      },
+      async () => {
+        await Promise.all([this.plugin.deleteAllCloudConvos(), this.plugin.deleteAllConvos()])
+        if (this.mode === 'interview') this.exitInterviewMode()
+        else {
+          this.messages = []
+          this.sessionId = newPluginSessionId()
+          this.renderMessages()
+        }
+        new Notice('插件产生的云端及本机历史已清空；网页版和微信端对话未受影响')
+      },
+    ).open()
   }
 
   private async currentNoteContext(): Promise<{ filename: string; text: string } | undefined> {

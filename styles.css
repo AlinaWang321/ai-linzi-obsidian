@@ -24,6 +24,110 @@
   font-size: var(--font-ui-smaller);
 }
 
+.ai-linzi-history-modal {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.ai-linzi-history-note {
+  margin: -6px 0 16px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.ai-linzi-history-list {
+  display: flex;
+  max-height: min(62vh, 560px);
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.ai-linzi-history-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 11px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.ai-linzi-history-summary {
+  min-width: 0;
+  flex: 1;
+}
+
+.ai-linzi-history-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ai-linzi-history-title {
+  overflow: hidden;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-linzi-history-current {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-history-time {
+  margin-top: 3px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-history-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.ai-linzi-history-actions button {
+  min-width: 52px;
+}
+
+.ai-linzi-history-delete,
+.ai-linzi-history-clear {
+  color: var(--text-error);
+}
+
+.ai-linzi-history-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.ai-linzi-history-empty {
+  padding: 28px 8px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+@media (max-width: 520px) {
+  .ai-linzi-history-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ai-linzi-history-actions {
+    justify-content: flex-end;
+  }
+}
+
 .ai-linzi-messages {
   flex: 1;
   overflow-y: auto;
