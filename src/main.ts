@@ -33,6 +33,7 @@ import {
 } from './note-patch'
 import {
   feedKnowledge,
+  runAiImageGeneration,
   runArticleIllustration,
   runArticleIllustrationEdit,
   runDistribute,
@@ -457,7 +458,7 @@ export default class AiLinziPlugin extends Plugin {
         typeof data.error === 'string'
           ? data.error
           : timeout
-            ? '生成时间超过服务上限。系统没有写入残缺图片，也不会扣本轮配图积分，请稍后重试。'
+            ? '生成时间超过服务上限。系统没有写入残缺图片，请稍后重试。'
             : `请求失败(${res.status})`
       const supportId = typeof data.requestId === 'string' ? `（问题编号：${data.requestId}）` : ''
       throw new Error(`${msg}${supportId}`)
@@ -506,7 +507,7 @@ export default class AiLinziPlugin extends Plugin {
     try {
       const data = await this.api('/api/plugin/v1/capabilities')
       new Notice(
-        `✅ 已连接 AI霖子\n学号:${data.studentNo}\ntier:${data.tier} · 余额:${data.balance} 积分\n插件 API:v${data.apiVersion}`,
+        `✅ 已连接 AI霖子\n学号:${data.studentNo}\ntier:${data.tier}\n插件 API:v${data.apiVersion}`,
         6000,
       )
       return true
@@ -603,6 +604,8 @@ class ChatView extends ItemView {
     }
     const kbBtn = actionsRow.createEl('button', { text: '📚 存入知识库', cls: 'ai-linzi-action-btn' })
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
+    const imageBtn = actionsRow.createEl('button', { text: '🖼️ 用 AI 生图', cls: 'ai-linzi-action-btn' })
+    imageBtn.onclick = () => void runAiImageGeneration(this.plugin)
     const dashboardBtn = actionsRow.createEl('button', { text: '📊 内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
     actionsRow.createSpan({ text: '技能作用于当前打开的笔记', cls: 'ai-linzi-actions-hint' })
@@ -1301,7 +1304,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('测试连接')
-      .setDesc('验证地址与密钥是否可用,并显示账号与积分余额')
+      .setDesc('验证地址、密钥、账号和插件 API 是否可用')
       .addButton((b) =>
         b.setButtonText('测试').onClick(async () => {
           b.setDisabled(true)

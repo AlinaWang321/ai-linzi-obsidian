@@ -32,6 +32,7 @@ for (const stablePath of [
   '/api/plugin/v1/knowledge/suggest-section',
   '/api/plugin/v1/knowledge/sections/',
   '/api/plugin/v1/article-illustration',
+  '/api/plugin/v1/images/generate',
 ]) {
   assert.equal(source.includes(stablePath), true, `缺少插件稳定接口：${stablePath}`)
 }

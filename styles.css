@@ -330,6 +330,99 @@
   background: #fff;
 }
 
+.ai-linzi-reference-list {
+  margin: -2px 0 14px;
+}
+
+.ai-linzi-reference-empty {
+  margin: 4px 0;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-reference-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.ai-linzi-reference-card {
+  position: relative;
+  padding: 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 9px;
+  background: var(--background-secondary);
+}
+
+.ai-linzi-reference-card img {
+  display: block;
+  width: 100%;
+  height: 82px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #fff;
+}
+
+.ai-linzi-reference-card span {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-linzi-reference-remove {
+  width: 100%;
+  margin-top: 5px;
+  padding: 3px 6px;
+  font-size: 11px;
+}
+
+.ai-linzi-image-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0 18px;
+}
+
+.ai-linzi-image-compare > div {
+  min-width: 0;
+}
+
+.ai-linzi-image-compare strong {
+  display: block;
+  margin-bottom: 7px;
+}
+
+.ai-linzi-image-compare img,
+.ai-linzi-ai-image-result img {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 9px;
+  object-fit: contain;
+  background: #fff;
+}
+
+.ai-linzi-ai-image-result {
+  margin: 16px 0 10px;
+}
+
+.ai-linzi-ai-image-result strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #0057ff;
+}
+
+@media (max-width: 620px) {
+  .ai-linzi-image-compare {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── 内容发布看板 v0.5 ───────────────────────────── */
 .ai-linzi-dashboard-root {
   --ailinzi-blue: #0057ff;

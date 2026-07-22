@@ -4,7 +4,17 @@
  * 写入铁律(整合定稿 §2.2):只写输出文件夹、只新建不覆盖、frontmatter 落标。
  * 输入上限与服务端 lib/input-limits.ts 对齐,超限先截断并明确告知(透明原则)。
  */
-import { App, Modal, Notice, Setting, TFile, normalizePath, requestUrl } from 'obsidian'
+import {
+  App,
+  FuzzySuggestModal,
+  MarkdownView,
+  Modal,
+  Notice,
+  Setting,
+  TFile,
+  normalizePath,
+  requestUrl,
+} from 'obsidian'
 import type AiLinziPlugin from './main'
 import {
   insertCoverEmbed,
@@ -519,6 +529,7 @@ export async function feedKnowledge(plugin: AiLinziPlugin) {
 // ── 文章配图(学员通用 · 极简小清新手绘人偶) ─────────
 
 const ARTICLE_ILLUSTRATION_API = '/api/plugin/v1/article-illustration'
+const AI_IMAGE_API = '/api/plugin/v1/images/generate'
 
 async function fetchImageBinary(url: string): Promise<ArrayBuffer> {
   if (url.startsWith('data:')) {
@@ -666,7 +677,7 @@ class IllustrationPlanModal extends Modal {
   private resolve!: (value: IllustrationPlan | null) => void
   readonly result: Promise<IllustrationPlan | null>
 
-  constructor(app: App, private plan: IllustrationPlan, private estimatedCredits?: number) {
+  constructor(app: App, private plan: IllustrationPlan) {
     super(app)
     this.result = new Promise((resolve) => (this.resolve = resolve))
     this.open()
@@ -675,7 +686,7 @@ class IllustrationPlanModal extends Modal {
   onOpen() {
     this.titleEl.setText('确认配图方案')
     this.contentEl.createEl('p', {
-      text: `先确认每张图讲什么、放哪里、写哪些原文词，再开始生图${this.estimatedCredits ? `（预计最多 ${this.estimatedCredits} 积分）` : ''}。取消不会生成图片。`,
+      text: '先确认每张图讲什么、放哪里、写哪些原文词，再开始生图。取消不会生成图片。',
       cls: 'ai-linzi-plan-intro',
     })
     if (this.plan.cover) {
@@ -755,6 +766,40 @@ class IllustrationResumeModal extends Modal {
   }
 }
 
+class IllustrationCompleteModal extends Modal {
+  constructor(
+    app: App,
+    private summary: string,
+    private onEdit: () => void,
+  ) {
+    super(app)
+  }
+
+  onOpen() {
+    this.titleEl.setText('文章配图已写入当前笔记')
+    this.contentEl.createEl('p', { text: this.summary, cls: 'ai-linzi-plan-intro' })
+    this.contentEl.createEl('p', {
+      text: '如果某一张图需要调整，可以先生成修改版，预览确认后再替换原图。',
+      cls: 'ai-linzi-plan-intro',
+    })
+    new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText('完成').onClick(() => this.close()))
+      .addButton((button) =>
+        button
+          .setButtonText('修改其中一张配图')
+          .setCta()
+          .onClick(() => {
+            this.close()
+            this.onEdit()
+          }),
+      )
+  }
+
+  onClose() {
+    this.contentEl.empty()
+  }
+}
+
 function uniqueVaultPath(plugin: AiLinziPlugin, desired: string): string {
   if (!plugin.app.vault.getAbstractFileByPath(desired)) return desired
   const dot = desired.lastIndexOf('.')
@@ -805,7 +850,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
         {
           key: 'count',
           label: '正文插图几张?(2-5)',
-          desc: '会额外规划 1 张封面。先免费查看每张图的核心意思、放置位置和画面文字；确认后才生图并扣积分。',
+          desc: '会额外规划 1 张封面。先查看每张图的核心意思、放置位置和画面文字，确认后才开始生图。',
           initial: '3',
         },
       ]).result
@@ -818,16 +863,15 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
         body: { article: clip(article, 20_000, '文章'), articleTitle, count, mode: 'plan' },
       })) as {
         plan?: IllustrationPlan
-        estimatedCredits?: number
       }
       planning.hide()
       planning = null
       if (!planData.plan || (!planData.plan.cover && planData.plan.images.length === 0)) {
         throw new Error('没有规划出有效配图点')
       }
-      confirmed = await new IllustrationPlanModal(plugin.app, planData.plan, planData.estimatedCredits).result
+      confirmed = await new IllustrationPlanModal(plugin.app, planData.plan).result
       if (!confirmed) {
-        new Notice('已取消，没有生成图片，也没有扣生图积分')
+        new Notice('已取消，没有生成图片')
         return
       }
     }
@@ -937,12 +981,13 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       return out
     })
     if (complete) await clearIllustrationJob(plugin, note.file.path)
-    new Notice(
-      complete
-        ? `✅ 已生成 ${actualTotal} 张图片：${coverPath ? '1 张封面 + ' : ''}${saved.length} 张正文插图(${hits} 张按段落定位)`
-        : `⚠️ 已保留并插入 ${actualTotal}/${expectedTotal} 张可用图片，缺失 ${expectedTotal - actualTotal} 张在三轮自动补图后仍未生成。${illustrationFailureMessages(lastResult).length ? `原因：${illustrationFailureMessages(lastResult).slice(0, 2).join('；')}。` : ''}${lastResult?.requestId ? `问题编号：${lastResult.requestId}。` : ''}成功图不会丢失或重复生成；再次运行“文章配图”可继续补齐。`,
-      complete ? 10000 : 14000,
-    )
+    const completionSummary = complete
+      ? `已生成 ${actualTotal} 张图片：${coverPath ? '1 张封面 + ' : ''}${saved.length} 张正文插图（${hits} 张按段落定位）。`
+      : `已保留并插入 ${actualTotal}/${expectedTotal} 张可用图片；剩余 ${expectedTotal - actualTotal} 张可再次运行“文章配图”继续补齐。`
+    new Notice(`${complete ? '✅' : '⚠️'} ${completionSummary}`, complete ? 10000 : 14000)
+    new IllustrationCompleteModal(plugin.app, completionSummary, () => {
+      void runArticleIllustrationEdit(plugin)
+    }).open()
   } catch (e) {
     planning?.hide()
     new Notice(`❌ 文章配图:${e instanceof Error ? e.message : String(e)}`, 10000)
@@ -960,9 +1005,82 @@ interface IllustrationEditRequest {
   image: ArticleImageEntry
   instruction: string
   exactText: string[]
+  referenceImages: string[]
 }
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp'])
+
+interface LocalImageReference {
+  name: string
+  dataUrl: string
+}
+
+class VaultImageSuggestModal extends FuzzySuggestModal<TFile> {
+  constructor(
+    app: App,
+    private onChoose: (file: TFile) => void | Promise<void>,
+  ) {
+    super(app)
+    this.setPlaceholder('搜索 Vault 里的图片…')
+  }
+
+  getItems(): TFile[] {
+    return this.app.vault
+      .getFiles()
+      .filter((file) => IMAGE_EXTENSIONS.has(file.extension.toLowerCase()))
+  }
+
+  getItemText(file: TFile): string {
+    return file.path
+  }
+
+  onChooseItem(file: TFile): void {
+    void this.onChoose(file)
+  }
+}
+
+function renderReferenceGallery(
+  container: HTMLElement,
+  references: LocalImageReference[],
+  onRemove: (index: number) => void,
+): void {
+  container.empty()
+  if (references.length === 0) {
+    container.createEl('p', { text: '未添加参考图', cls: 'ai-linzi-reference-empty' })
+    return
+  }
+  const grid = container.createDiv({ cls: 'ai-linzi-reference-grid' })
+  references.forEach((reference, index) => {
+    const card = grid.createDiv({ cls: 'ai-linzi-reference-card' })
+    const image = card.createEl('img', { attr: { src: reference.dataUrl, alt: reference.name } })
+    image.title = reference.name
+    card.createEl('span', { text: `图${index + 1} · ${reference.name}` })
+    const remove = card.createEl('button', { text: '移除', cls: 'ai-linzi-reference-remove' })
+    remove.onclick = () => onRemove(index)
+  })
+}
+
+function chooseComputerImages(
+  remaining: number,
+  onChoose: (files: File[]) => void | Promise<void>,
+): void {
+  if (remaining <= 0) {
+    new Notice('参考图数量已满')
+    return
+  }
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = 'image/png,image/jpeg,image/webp'
+  input.multiple = remaining > 1
+  input.style.display = 'none'
+  document.body.appendChild(input)
+  input.onchange = () => {
+    const files = Array.from(input.files ?? []).slice(0, remaining)
+    void Promise.resolve(onChoose(files)).finally(() => input.remove())
+  }
+  input.oncancel = () => input.remove()
+  input.click()
+}
 
 function findArticleImages(plugin: AiLinziPlugin, noteFile: TFile, noteText: string): ArticleImageEntry[] {
   const byPath = new Map<string, ArticleImageEntry>()
@@ -1010,11 +1128,12 @@ class IllustrationEditModal extends Modal {
   readonly result: Promise<IllustrationEditRequest | null>
 
   constructor(
-    app: App,
+    private plugin: AiLinziPlugin,
     private images: ArticleImageEntry[],
     private initialInstruction: string,
+    private initialImagePath?: string,
   ) {
-    super(app)
+    super(plugin.app)
     this.result = new Promise((resolve) => (this.resolve = resolve))
     this.open()
   }
@@ -1022,12 +1141,13 @@ class IllustrationEditModal extends Modal {
   onOpen() {
     this.titleEl.setText('修改当前文章配图')
     this.contentEl.createEl('p', {
-      text: '选择文章里的图片并写清修改要求。AI 会参考原图只改这一张，生成成功后自动备份并覆盖原图。',
+      text: '选择文章里的图片并写清修改要求。AI 会先生成修改版供你预览，只有你确认后才会备份并替换原图。',
       cls: 'ai-linzi-plan-intro',
     })
-    let selected = this.images[0]
+    let selected = this.images.find((item) => item.file.path === this.initialImagePath) ?? this.images[0]
     let instruction = this.initialInstruction.trim()
     let exactText = extractExactTextHints(instruction).join(' / ')
+    const references: LocalImageReference[] = []
     const preview = this.contentEl.createEl('img', { cls: 'ai-linzi-image-edit-preview' })
     const refreshPreview = () => {
       preview.src = this.app.vault.getResourcePath(selected.file)
@@ -1057,18 +1177,63 @@ class IllustrationEditModal extends Modal {
 
     new Setting(this.contentEl)
       .setName('必须写对的文字')
-      .setDesc('用 / 分隔，最多 5 组。系统会在出图后逐字识别，不通过就自动重试。')
+      .setDesc('可选。图片里有必须保留或改对的短文字时填写，用 / 分隔，最多 5 组。')
       .addText((input) => {
         input.setValue(exactText).onChange((value) => (exactText = value))
         input.inputEl.addClass('ai-linzi-full-width')
       })
 
+    const referenceSetting = new Setting(this.contentEl)
+      .setName('补充参考图（可选）')
+      .setDesc('不添加也可以。需要参考另一张图的人物、物件或风格时，再从 Vault 或电脑选择，最多 2 张。')
+    const referencesEl = this.contentEl.createDiv({ cls: 'ai-linzi-reference-list' })
+    const refreshReferences = () =>
+      renderReferenceGallery(referencesEl, references, (index) => {
+        references.splice(index, 1)
+        refreshReferences()
+      })
+    referenceSetting
+      .addButton((button) =>
+        button.setButtonText('选择 Vault 图片').onClick(() => {
+          if (references.length >= 2) {
+            new Notice('补充参考图最多 2 张')
+            return
+          }
+          new VaultImageSuggestModal(this.app, async (file) => {
+            try {
+              references.push({
+                name: file.name,
+                dataUrl: await imageFileToReferenceDataUrl(this.plugin, file),
+              })
+              refreshReferences()
+            } catch (error) {
+              new Notice(`参考图读取失败：${error instanceof Error ? error.message : String(error)}`)
+            }
+          }).open()
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText('选择电脑图片').onClick(() => {
+          chooseComputerImages(2 - references.length, async (files) => {
+            for (const file of files) {
+              try {
+                references.push({ name: file.name, dataUrl: await browserImageToReferenceDataUrl(file) })
+              } catch (error) {
+                new Notice(`参考图读取失败：${error instanceof Error ? error.message : String(error)}`)
+              }
+            }
+            refreshReferences()
+          })
+        }),
+      )
+
     refreshPreview()
+    refreshReferences()
     new Setting(this.contentEl)
       .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
       .addButton((button) =>
         button
-          .setButtonText('生成修改版并覆盖原图')
+          .setButtonText('生成修改版')
           .setCta()
           .onClick(() => {
             if (instruction.trim().length < 2) {
@@ -1076,7 +1241,12 @@ class IllustrationEditModal extends Modal {
               return
             }
             this.submitted = true
-            this.resolve({ image: selected, instruction: instruction.trim(), exactText: splitExactText(exactText) })
+            this.resolve({
+              image: selected,
+              instruction: instruction.trim(),
+              exactText: splitExactText(exactText),
+              referenceImages: references.map((reference) => reference.dataUrl),
+            })
             this.close()
           }),
       )
@@ -1088,18 +1258,18 @@ class IllustrationEditModal extends Modal {
   }
 }
 
-async function imageFileToReferenceDataUrl(plugin: AiLinziPlugin, file: TFile): Promise<string> {
-  const binary = await plugin.app.vault.readBinary(file)
-  const mime = file.extension.toLowerCase() === 'png' ? 'image/png' : 'image/jpeg'
-  const objectUrl = URL.createObjectURL(new Blob([new Uint8Array(binary)], { type: mime }))
+async function imageBlobToReferenceDataUrl(blob: Blob, errorMessage: string): Promise<string> {
+  const objectUrl = URL.createObjectURL(blob)
   try {
     const image = new Image()
     image.src = objectUrl
     await new Promise<void>((resolve, reject) => {
       image.onload = () => resolve()
-      image.onerror = () => reject(new Error('无法读取当前配图'))
+      image.onerror = () => reject(new Error(errorMessage))
     })
-    const scale = Math.min(1, 1600 / image.naturalWidth, 1000 / image.naturalHeight)
+    // 多图请求要一起经过插件 API；压到 1280px 可以保留构图参考所需细节，同时避免
+    // 2-3 张手机原图叠加后撞到云函数请求体上限。
+    const scale = Math.min(1, 1280 / image.naturalWidth, 1280 / image.naturalHeight)
     const width = Math.max(1, Math.round(image.naturalWidth * scale))
     const height = Math.max(1, Math.round(image.naturalHeight * scale))
     const canvas = document.createElement('canvas')
@@ -1110,16 +1280,85 @@ async function imageFileToReferenceDataUrl(plugin: AiLinziPlugin, file: TFile): 
     ctx.fillStyle = '#FFFFFF'
     ctx.fillRect(0, 0, width, height)
     ctx.drawImage(image, 0, 0, width, height)
-    return canvas.toDataURL('image/jpeg', 0.88)
+    return canvas.toDataURL('image/jpeg', 0.8)
   } finally {
     URL.revokeObjectURL(objectUrl)
   }
+}
+
+async function imageFileToReferenceDataUrl(plugin: AiLinziPlugin, file: TFile): Promise<string> {
+  const binary = await plugin.app.vault.readBinary(file)
+  const mime = file.extension.toLowerCase() === 'png' ? 'image/png' : 'image/jpeg'
+  return imageBlobToReferenceDataUrl(
+    new Blob([new Uint8Array(binary)], { type: mime }),
+    '无法读取当前配图',
+  )
+}
+
+async function browserImageToReferenceDataUrl(file: File): Promise<string> {
+  return imageBlobToReferenceDataUrl(file, `无法读取「${file.name}」`)
 }
 
 function timestampForFilename(): string {
   const d = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
+class IllustrationEditPreviewModal extends Modal {
+  private submitted = false
+  private resolve!: (value: 'replace' | 'retry' | null) => void
+  readonly result: Promise<'replace' | 'retry' | null>
+
+  constructor(
+    app: App,
+    private originalUrl: string,
+    private candidateUrl: string,
+  ) {
+    super(app)
+    this.result = new Promise((resolve) => (this.resolve = resolve))
+    this.open()
+  }
+
+  onOpen() {
+    this.titleEl.setText('确认修改后的配图')
+    this.contentEl.createEl('p', {
+      text: '先对比原图和修改版。只有点击“确认替换原图”后，当前文章里的图片才会改变。',
+      cls: 'ai-linzi-plan-intro',
+    })
+    const compare = this.contentEl.createDiv({ cls: 'ai-linzi-image-compare' })
+    const original = compare.createDiv()
+    original.createEl('strong', { text: '原图' })
+    original.createEl('img', { attr: { src: this.originalUrl, alt: '原图' } })
+    const candidate = compare.createDiv()
+    candidate.createEl('strong', { text: '修改版' })
+    candidate.createEl('img', { attr: { src: this.candidateUrl, alt: '修改版' } })
+
+    new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText('保留原图').onClick(() => this.close()))
+      .addButton((button) =>
+        button.setButtonText('继续调整').onClick(() => {
+          this.submitted = true
+          this.resolve('retry')
+          this.close()
+        }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText('确认替换原图')
+          .setCta()
+          .onClick(() => {
+            this.submitted = true
+            this.resolve('replace')
+            this.close()
+          }),
+      )
+  }
+
+  onClose() {
+    if (!this.submitted) this.resolve(null)
+    this.contentEl.empty()
+  }
 }
 
 export async function runArticleIllustrationEdit(plugin: AiLinziPlugin, initialInstruction = ''): Promise<void> {
@@ -1130,67 +1369,317 @@ export async function runArticleIllustrationEdit(plugin: AiLinziPlugin, initialI
     new Notice('当前笔记里没有找到本地 PNG/JPG/WebP 配图')
     return
   }
-  const request = await new IllustrationEditModal(plugin.app, images, initialInstruction).result
-  if (!request) return
+  let instruction = initialInstruction
+  let selectedImagePath: string | undefined
 
-  const working = new Notice('🎨 正在参考原图修改，并逐字检查图片文字…', 0)
-  try {
-    const imageDataUrl = await imageFileToReferenceDataUrl(plugin, request.image.file)
-    const article = prepareWechatArticle(note.text).body
-    const data = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
-      method: 'POST',
-      body: {
-        article: clip(article, 20_000, '文章'),
-        mode: 'edit',
-        edit: {
-          imageDataUrl,
-          instruction: request.instruction,
-          exactText: request.exactText,
+  for (;;) {
+    const request = await new IllustrationEditModal(
+      plugin,
+      images,
+      instruction,
+      selectedImagePath,
+    ).result
+    if (!request) return
+    instruction = request.instruction
+    selectedImagePath = request.image.file.path
+
+    const working = new Notice('🎨 正在生成修改版…', 0)
+    let imageUrl = ''
+    try {
+      const imageDataUrl = await imageFileToReferenceDataUrl(plugin, request.image.file)
+      const article = prepareWechatArticle(note.text).body
+      const data = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
+        method: 'POST',
+        body: {
+          article: clip(article, 20_000, '文章'),
+          mode: 'edit',
+          edit: {
+            imageDataUrl,
+            instruction: request.instruction,
+            exactText: request.exactText,
+            referenceImages: request.referenceImages,
+          },
         },
-      },
-    })) as { imageUrl?: string; prompt?: string }
-    if (!data.imageUrl) throw new Error('服务端没有返回修改后的图片')
-
-    const originalBinary = await plugin.app.vault.readBinary(request.image.file)
-    const modifiedBinary = await fetchImageBinary(data.imageUrl)
-    if (request.image.file.extension.toLowerCase() === 'png') {
-      const parent = request.image.file.parent?.path ?? ''
-      const backupPath = uniqueVaultPath(
-        plugin,
-        normalizePath(
-          `${parent ? `${parent}/` : ''}${request.image.file.basename}_修改前_${timestampForFilename()}.png`,
-        ),
-      )
-      await plugin.app.vault.createBinary(backupPath, originalBinary)
-      await plugin.app.vault.modifyBinary(request.image.file, modifiedBinary)
-      new Notice(`✅ 已修改并覆盖「${request.image.file.name}」\n原图备份:${backupPath}`, 10000)
-    } else {
-      const parent = request.image.file.parent?.path ?? ''
-      const newPath = uniqueVaultPath(
-        plugin,
-        normalizePath(`${parent ? `${parent}/` : ''}${request.image.file.basename}_修改版.png`),
-      )
-      await plugin.app.vault.createBinary(newPath, modifiedBinary)
-      await plugin.app.vault.process(note.file, (content) => {
-        let out = content
-        for (const target of request.image.linkTargets) out = out.split(target).join(newPath)
-        return out
-      })
-      new Notice(`✅ 已生成修改版并替换文章引用:${newPath}`, 10000)
+      })) as { imageUrl?: string }
+      imageUrl = data.imageUrl ?? ''
+      if (!imageUrl) throw new Error('服务端没有返回修改后的图片')
+    } catch (error) {
+      new Notice(`❌ 修改配图:${error instanceof Error ? error.message : String(error)}`, 10000)
+      return
+    } finally {
+      working.hide()
     }
 
-    const promptFile = request.image.file.parent
-      ? plugin.app.vault.getAbstractFileByPath(`${request.image.file.parent.path}/AI霖子正文配图_PROMPTS.md`)
-      : null
-    if (promptFile instanceof TFile && data.prompt) {
-      await plugin.app.vault.append(
-        promptFile,
-        `\n\n---\n\n## 单图修改 · ${request.image.file.name}\n\n- 修改要求:${request.instruction}\n- 文字白名单:${request.exactText.join(' / ') || '无'}\n\n### 修改提示词\n\n${data.prompt}\n`,
-      )
+    const decision = await new IllustrationEditPreviewModal(
+      plugin.app,
+      plugin.app.vault.getResourcePath(request.image.file),
+      imageUrl,
+    ).result
+    if (decision === 'retry') continue
+    if (decision !== 'replace') {
+      new Notice('已保留原图，当前笔记没有改变')
+      return
     }
-  } catch (error) {
-    new Notice(`❌ 修改配图:${error instanceof Error ? error.message : String(error)}`, 10000)
-  } finally {
-    working.hide()
+
+    try {
+      const originalBinary = await plugin.app.vault.readBinary(request.image.file)
+      const modifiedBinary = await fetchImageBinary(imageUrl)
+      if (request.image.file.extension.toLowerCase() === 'png') {
+        const parent = request.image.file.parent?.path ?? ''
+        const backupPath = uniqueVaultPath(
+          plugin,
+          normalizePath(
+            `${parent ? `${parent}/` : ''}${request.image.file.basename}_修改前_${timestampForFilename()}.png`,
+          ),
+        )
+        await plugin.app.vault.createBinary(backupPath, originalBinary)
+        await plugin.app.vault.modifyBinary(request.image.file, modifiedBinary)
+        new Notice(`✅ 已替换「${request.image.file.name}」\n原图备份:${backupPath}`, 10000)
+      } else {
+        const parent = request.image.file.parent?.path ?? ''
+        const newPath = uniqueVaultPath(
+          plugin,
+          normalizePath(`${parent ? `${parent}/` : ''}${request.image.file.basename}_修改版.png`),
+        )
+        await plugin.app.vault.createBinary(newPath, modifiedBinary)
+        await plugin.app.vault.process(note.file, (content) => {
+          let out = content
+          for (const target of request.image.linkTargets) out = out.split(target).join(newPath)
+          return out
+        })
+        new Notice(`✅ 已确认修改版并替换文章引用:${newPath}`, 10000)
+      }
+      return
+    } catch (error) {
+      new Notice(`❌ 替换配图:${error instanceof Error ? error.message : String(error)}`, 10000)
+      return
+    }
   }
+}
+
+// ── 对话面板通用 AI 生图 ─────────────────────────────
+
+class AiImageGenerationModal extends Modal {
+  private instruction = ''
+  private ratio: '16:9' | '3:4' = '16:9'
+  private references: LocalImageReference[] = []
+  private imageUrl = ''
+  private savedPath = ''
+  private generating = false
+
+  constructor(private plugin: AiLinziPlugin) {
+    super(plugin.app)
+  }
+
+  onOpen() {
+    this.titleEl.setText('用 AI 生图')
+    this.render()
+  }
+
+  private render(): void {
+    this.contentEl.empty()
+    this.contentEl.createEl('p', {
+      text: '直接描述想生成或修改的图片。参考图是可选的：可以不传，也可以从 Vault 或电脑选择最多 3 张。',
+      cls: 'ai-linzi-plan-intro',
+    })
+
+    new Setting(this.contentEl)
+      .setName('图片要求')
+      .setDesc('有参考图时，可以用“图1、图2”说明分别参考什么。')
+      .addTextArea((input) => {
+        input.setValue(this.instruction).onChange((value) => (this.instruction = value))
+        input.inputEl.rows = 5
+        input.inputEl.placeholder = '例如：参考图1的人物和图2的构图，生成一张16:9横版图片；标题写成……'
+        input.inputEl.addClass('ai-linzi-full-width')
+        input.setDisabled(this.generating)
+      })
+
+    new Setting(this.contentEl)
+      .setName('图片比例')
+      .addDropdown((dropdown) => {
+        dropdown.addOption('16:9', '16:9 横版')
+        dropdown.addOption('3:4', '3:4 竖版')
+        dropdown.setValue(this.ratio).onChange((value) => {
+          this.ratio = value === '3:4' ? '3:4' : '16:9'
+        })
+        dropdown.setDisabled(this.generating)
+      })
+
+    const referenceSetting = new Setting(this.contentEl)
+      .setName('参考图（可选）')
+      .setDesc('按选择顺序编号为图1、图2、图3。')
+    referenceSetting
+      .addButton((button) =>
+        button
+          .setButtonText('选择 Vault 图片')
+          .setDisabled(this.generating)
+          .onClick(() => this.chooseVaultReference()),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText('选择电脑图片')
+          .setDisabled(this.generating)
+          .onClick(() => this.chooseComputerReferences()),
+      )
+    const referencesEl = this.contentEl.createDiv({ cls: 'ai-linzi-reference-list' })
+    renderReferenceGallery(referencesEl, this.references, (index) => {
+      if (this.generating) return
+      this.references.splice(index, 1)
+      this.render()
+    })
+
+    if (this.imageUrl) {
+      const result = this.contentEl.createDiv({ cls: 'ai-linzi-ai-image-result' })
+      result.createEl('strong', { text: '生成结果' })
+      result.createEl('img', { attr: { src: this.imageUrl, alt: 'AI 生成图片' } })
+    }
+
+    const actions = new Setting(this.contentEl)
+    actions.addButton((button) => button.setButtonText('关闭').onClick(() => this.close()))
+    if (this.imageUrl) {
+      actions
+        .addButton((button) =>
+          button
+            .setButtonText('保存到 Vault')
+            .setDisabled(this.generating)
+            .onClick(() => void this.saveToVault()),
+        )
+        .addButton((button) =>
+          button
+            .setButtonText('插入当前笔记')
+            .setDisabled(this.generating)
+            .onClick(() => void this.insertIntoCurrentNote()),
+        )
+    }
+    actions.addButton((button) =>
+      button
+        .setButtonText(this.imageUrl ? '重新生成' : '用 AI 生图')
+        .setCta()
+        .setDisabled(this.generating)
+        .onClick(() => void this.generate()),
+    )
+    if (this.generating) {
+      this.contentEl.createEl('p', { text: 'AI 正在生成图片，请稍候…', cls: 'ai-linzi-plan-intro' })
+    }
+  }
+
+  private chooseVaultReference(): void {
+    if (this.references.length >= 3) {
+      new Notice('参考图最多 3 张')
+      return
+    }
+    new VaultImageSuggestModal(this.app, async (file) => {
+      try {
+        this.references.push({
+          name: file.name,
+          dataUrl: await imageFileToReferenceDataUrl(this.plugin, file),
+        })
+        this.render()
+      } catch (error) {
+        new Notice(`参考图读取失败：${error instanceof Error ? error.message : String(error)}`)
+      }
+    }).open()
+  }
+
+  private chooseComputerReferences(): void {
+    chooseComputerImages(3 - this.references.length, async (files) => {
+      for (const file of files) {
+        try {
+          this.references.push({ name: file.name, dataUrl: await browserImageToReferenceDataUrl(file) })
+        } catch (error) {
+          new Notice(`参考图读取失败：${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      this.render()
+    })
+  }
+
+  private async generate(): Promise<void> {
+    if (this.generating) return
+    if (this.instruction.trim().length < 2) {
+      new Notice('请先写清楚想生成什么图片')
+      return
+    }
+    this.generating = true
+    this.render()
+    const notice = new Notice('🎨 AI 正在生成图片…', 0)
+    try {
+      const data = (await this.plugin.api(AI_IMAGE_API, {
+        method: 'POST',
+        body: {
+          instruction: this.instruction.trim(),
+          ratio: this.ratio,
+          referenceImages: this.references.map((reference) => reference.dataUrl),
+        },
+      })) as { imageUrl?: string }
+      if (!data.imageUrl) throw new Error('服务端没有返回图片')
+      this.imageUrl = data.imageUrl
+      this.savedPath = ''
+    } catch (error) {
+      new Notice(`❌ AI 生图：${error instanceof Error ? error.message : String(error)}`, 10000)
+    } finally {
+      notice.hide()
+      this.generating = false
+      this.render()
+    }
+  }
+
+  private async ensureSaved(): Promise<string> {
+    if (this.savedPath) return this.savedPath
+    if (!this.imageUrl) throw new Error('还没有可保存的图片')
+    const folder = normalizePath(`${this.plugin.settings.outputFolder || 'AI霖子输出'}/AI生图`)
+    await ensureFolder(this.plugin, folder)
+    const title = sanitizeTitle(this.instruction).slice(0, 32) || 'AI生图'
+    const path = uniqueVaultPath(
+      this.plugin,
+      normalizePath(`${folder}/${today()}_${timestampForFilename()}_${title}.png`),
+    )
+    await this.plugin.app.vault.createBinary(path, await fetchImageBinary(this.imageUrl))
+    this.savedPath = path
+    return path
+  }
+
+  private async saveToVault(): Promise<void> {
+    try {
+      const path = await this.ensureSaved()
+      new Notice(`✅ 图片已保存：${path}`, 8000)
+    } catch (error) {
+      new Notice(`保存图片失败：${error instanceof Error ? error.message : String(error)}`, 8000)
+    }
+  }
+
+  private async insertIntoCurrentNote(): Promise<void> {
+    const file = this.plugin.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+    if (!file) {
+      new Notice('请先打开一篇笔记再插入图片')
+      return
+    }
+    try {
+      const path = await this.ensureSaved()
+      const markdownView = this.plugin.app.workspace
+        .getLeavesOfType('markdown')
+        .map((leaf) => leaf.view)
+        .find(
+          (view): view is MarkdownView =>
+            view instanceof MarkdownView && view.file?.path === file.path,
+        )
+      const embed = `![[${path}]]`
+      if (markdownView) {
+        markdownView.editor.replaceSelection(`\n${embed}\n`)
+      } else {
+        await this.plugin.app.vault.process(file, (content) => `${content.trimEnd()}\n\n${embed}\n`)
+      }
+      new Notice(`✅ 图片已插入「${file.basename}」`)
+    } catch (error) {
+      new Notice(`插入图片失败：${error instanceof Error ? error.message : String(error)}`, 8000)
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty()
+  }
+}
+
+export async function runAiImageGeneration(plugin: AiLinziPlugin): Promise<void> {
+  new AiImageGenerationModal(plugin).open()
 }
