@@ -577,6 +577,78 @@ interface IllustrationGenerateResult {
   requestId?: string
 }
 
+interface SavedIllustrationJob {
+  notePath: string
+  articleFingerprint: string
+  articleTitle: string
+  count: number
+  pendingPlan: IllustrationPlan
+  updatedAt: number
+}
+
+const ILLUSTRATION_JOB_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+function illustrationJobsPath(plugin: AiLinziPlugin): string {
+  return `${plugin.manifest.dir ?? `.obsidian/plugins/${plugin.manifest.id}`}/illustration-jobs.json`
+}
+
+function illustrationArticleFingerprint(article: string): string {
+  const normalized = article
+    .replace(/!\[\[[^\]]+\]\]/g, '')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  let hash = 2166136261
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `${normalized.length}-${(hash >>> 0).toString(36)}`
+}
+
+async function loadIllustrationJobs(plugin: AiLinziPlugin): Promise<SavedIllustrationJob[]> {
+  try {
+    const raw = await plugin.app.vault.adapter.read(illustrationJobsPath(plugin))
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    const cutoff = Date.now() - ILLUSTRATION_JOB_MAX_AGE_MS
+    return parsed.filter(
+      (item): item is SavedIllustrationJob =>
+        Boolean(item) &&
+        typeof item === 'object' &&
+        typeof (item as SavedIllustrationJob).notePath === 'string' &&
+        typeof (item as SavedIllustrationJob).articleFingerprint === 'string' &&
+        typeof (item as SavedIllustrationJob).updatedAt === 'number' &&
+        (item as SavedIllustrationJob).updatedAt >= cutoff,
+    )
+  } catch {
+    return []
+  }
+}
+
+async function writeIllustrationJobs(
+  plugin: AiLinziPlugin,
+  jobs: SavedIllustrationJob[],
+): Promise<void> {
+  try {
+    await plugin.app.vault.adapter.write(illustrationJobsPath(plugin), JSON.stringify(jobs.slice(-20), null, 2))
+  } catch (error) {
+    console.warn('[ai-linzi] illustration resume state could not be saved', error)
+  }
+}
+
+async function saveIllustrationJob(plugin: AiLinziPlugin, job: SavedIllustrationJob): Promise<void> {
+  const jobs = (await loadIllustrationJobs(plugin)).filter((item) => item.notePath !== job.notePath)
+  jobs.push({ ...job, updatedAt: Date.now() })
+  await writeIllustrationJobs(plugin, jobs)
+}
+
+async function clearIllustrationJob(plugin: AiLinziPlugin, notePath: string): Promise<void> {
+  const jobs = await loadIllustrationJobs(plugin)
+  const next = jobs.filter((item) => item.notePath !== notePath)
+  if (next.length !== jobs.length) await writeIllustrationJobs(plugin, next)
+}
+
 function illustrationFailureMessages(result: IllustrationGenerateResult | null): string[] {
   const failures = result?.failures
   if (!failures) return []
@@ -640,6 +712,49 @@ class IllustrationPlanModal extends Modal {
   }
 }
 
+class IllustrationResumeModal extends Modal {
+  private submitted = false
+  private resolve!: (value: 'resume' | 'restart' | null) => void
+  readonly result: Promise<'resume' | 'restart' | null>
+
+  constructor(app: App, private remaining: number) {
+    super(app)
+    this.result = new Promise((resolve) => (this.resolve = resolve))
+    this.open()
+  }
+
+  onOpen() {
+    this.titleEl.setText('继续上次未完成的配图?')
+    this.contentEl.createEl('p', {
+      text: `检测到这篇文章还有 ${this.remaining} 张图片未完成。继续补图不会重新生成方案，也不会重做已经成功的图片。`,
+      cls: 'ai-linzi-plan-intro',
+    })
+    new Setting(this.contentEl)
+      .addButton((button) =>
+        button.setButtonText('重新规划').onClick(() => {
+          this.submitted = true
+          this.resolve('restart')
+          this.close()
+        }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText('继续补图')
+          .setCta()
+          .onClick(() => {
+            this.submitted = true
+            this.resolve('resume')
+            this.close()
+          }),
+      )
+  }
+
+  onClose() {
+    if (!this.submitted) this.resolve(null)
+    this.contentEl.empty()
+  }
+}
+
 function uniqueVaultPath(plugin: AiLinziPlugin, desired: string): string {
   if (!plugin.app.vault.getAbstractFileByPath(desired)) return desired
   const dot = desired.lastIndexOf('.')
@@ -649,25 +764,6 @@ function uniqueVaultPath(plugin: AiLinziPlugin, desired: string): string {
     const candidate = `${base}_${i}${ext}`
     if (!plugin.app.vault.getAbstractFileByPath(candidate)) return candidate
   }
-}
-
-function planMarkdown(plan: IllustrationPlan): string {
-  const blocks = ['# 极简小清新手绘配图方案', '', '> 画面统一使用极简线条人偶，只保留经确认的必要文字。']
-  if (plan.cover) {
-    blocks.push('', `## 00 · 封面 · ${plan.cover.title}`, '', `- 核心意思：${plan.cover.coreIdea}`, `- 画面：${plan.cover.concept}`)
-  }
-  plan.images.forEach((item, index) => {
-    blocks.push(
-      '',
-      `## ${String(index + 1).padStart(2, '0')} · ${item.title}`,
-      '',
-      `- 放置位置：${item.anchor}`,
-      `- 核心意思：${item.coreIdea}`,
-      `- 画面大字：${item.labels.length ? item.labels.map((x) => `\`${x}\``).join('、') : '无'}`,
-      `- 构图：${item.concept}`,
-    )
-  })
-  return blocks.join('\n').trim() + '\n'
 }
 
 export async function runArticleIllustration(plugin: AiLinziPlugin) {
@@ -682,44 +778,75 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     new Notice(`文章只有 ${article.length} 字——配图需要至少 300 字的成稿`)
     return
   }
-  const input = await new PromptModal(plugin.app, '文章配图 · 极简小清新手绘', '先生成配图方案', [
-    {
-      key: 'count',
-      label: '正文插图几张?(2-5)',
-      desc: '会额外规划 1 张封面。先免费查看每张图的核心意思、放置位置和画面文字；确认后才生图并扣积分。',
-      initial: '3',
-    },
-  ]).result
-  if (!input) return
-  const count = Math.min(5, Math.max(2, parseInt(input.count) || 3))
+  const fingerprint = illustrationArticleFingerprint(article)
+  const resumable = (await loadIllustrationJobs(plugin)).find(
+    (job) => job.notePath === note.file.path && job.articleFingerprint === fingerprint,
+  )
+  let count = 3
+  let confirmed: IllustrationPlan | null = null
+  let planning: Notice | null = null
 
-  const planning = new Notice('🤖 正在读文章并规划配图点…', 0)
   try {
-    const planData = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
-      method: 'POST',
-      body: { article: clip(article, 20_000, '文章'), articleTitle, count, mode: 'plan' },
-    })) as {
-      plan?: IllustrationPlan
-      estimatedCredits?: number
-    }
-    planning.hide()
-    if (!planData.plan || (!planData.plan.cover && planData.plan.images.length === 0)) {
-      throw new Error('没有规划出有效配图点')
-    }
-    const confirmed = await new IllustrationPlanModal(plugin.app, planData.plan, planData.estimatedCredits).result
-    if (!confirmed) {
-      new Notice('已取消，没有生成图片，也没有扣生图积分')
-      return
+    if (resumable) {
+      const remaining = resumable.pendingPlan.images.length + (resumable.pendingPlan.cover ? 1 : 0)
+      const choice = await new IllustrationResumeModal(plugin.app, remaining).result
+      if (!choice) return
+      if (choice === 'resume') {
+        count = resumable.count
+        confirmed = resumable.pendingPlan
+        new Notice(`继续补齐上次未完成的 ${remaining} 张图片，不重新生成方案`, 5000)
+      } else {
+        await clearIllustrationJob(plugin, note.file.path)
+      }
     }
 
-    // 方案先落盘：即使 Seedream 本轮全部连接失败，用户仍能保留已确认的方案，
-    // 客服也能据此定位问题，不会出现“方案明明够了却什么都没留下”。
+    if (!confirmed) {
+      const input = await new PromptModal(plugin.app, '文章配图 · 极简小清新手绘', '先生成配图方案', [
+        {
+          key: 'count',
+          label: '正文插图几张?(2-5)',
+          desc: '会额外规划 1 张封面。先免费查看每张图的核心意思、放置位置和画面文字；确认后才生图并扣积分。',
+          initial: '3',
+        },
+      ]).result
+      if (!input) return
+      count = Math.min(5, Math.max(2, parseInt(input.count) || 3))
+
+      planning = new Notice('🤖 正在读文章并规划配图点…', 0)
+      const planData = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
+        method: 'POST',
+        body: { article: clip(article, 20_000, '文章'), articleTitle, count, mode: 'plan' },
+      })) as {
+        plan?: IllustrationPlan
+        estimatedCredits?: number
+      }
+      planning.hide()
+      planning = null
+      if (!planData.plan || (!planData.plan.cover && planData.plan.images.length === 0)) {
+        throw new Error('没有规划出有效配图点')
+      }
+      confirmed = await new IllustrationPlanModal(plugin.app, planData.plan, planData.estimatedCredits).result
+      if (!confirmed) {
+        new Notice('已取消，没有生成图片，也没有扣生图积分')
+        return
+      }
+    }
+
+    // 方案只存插件目录中的短期恢复状态，不写进用户正文或输出文件夹。
+    // 生图连接波动后再次运行本技能，会直接续跑剩余图片，不重新规划。
+    await saveIllustrationJob(plugin, {
+      notePath: note.file.path,
+      articleFingerprint: fingerprint,
+      articleTitle,
+      count,
+      pendingPlan: confirmed,
+      updatedAt: Date.now(),
+    })
+
     const folder = normalizePath(
       `${plugin.settings.outputFolder || 'AI霖子输出'}/公众号文章/配图/${today()}_${sanitizeTitle(note.file.basename)}`,
     )
     await ensureFolder(plugin, folder)
-    const planPath = uniqueVaultPath(plugin, normalizePath(`${folder}/AI霖子正文配图_方案.md`))
-    await plugin.app.vault.create(planPath, planMarkdown(confirmed))
 
     const generating = new Notice('🤖 AI霖子正在生成文章配图…（多张高清图约需 2—8 分钟，可继续使用 Obsidian，请勿退出）', 0)
     let pendingPlan: IllustrationPlan = confirmed
@@ -748,6 +875,14 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
         }
         if (result.status !== 'partial' || !result.failedPlan) break
         pendingPlan = result.failedPlan
+        await saveIllustrationJob(plugin, {
+          notePath: note.file.path,
+          articleFingerprint: fingerprint,
+          articleTitle,
+          count,
+          pendingPlan,
+          updatedAt: Date.now(),
+        })
       }
     } finally {
       generating.hide()
@@ -766,7 +901,9 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     if (actualTotal === 0) {
       const reason = illustrationFailureMessages(lastResult).slice(0, 2).join('；')
       const supportId = lastResult?.requestId ? `（问题编号：${lastResult.requestId}）` : ''
-      throw new Error(`${reason || '图片生成服务本轮没有返回可用图片，请稍后重试'}${supportId}。配图方案已保存：${planPath}`)
+      throw new Error(
+        `${reason || '图片生成服务本轮没有返回可用图片，请稍后重试'}${supportId}。未完成任务已保留，再次运行“文章配图”可直接继续补图。`,
+      )
     }
 
     // 封面单独处理:存 00_封面,插到文章最顶部(发草稿箱时自动成为封面)
@@ -799,14 +936,15 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       if (coverPath) out = insertCoverEmbed(out, coverPath)
       return out
     })
+    if (complete) await clearIllustrationJob(plugin, note.file.path)
     new Notice(
       complete
-        ? `✅ 已按确认方案生成 ${actualTotal} 张图片：${coverPath ? '1 张封面 + ' : ''}${saved.length} 张正文插图(${hits} 张按段落定位)\n配图方案已保存:${planPath}`
-        : `⚠️ 已保留并插入 ${actualTotal}/${expectedTotal} 张可用图片，缺失 ${expectedTotal - actualTotal} 张在三轮自动补图后仍未生成。${illustrationFailureMessages(lastResult).length ? `原因：${illustrationFailureMessages(lastResult).slice(0, 2).join('；')}。` : ''}${lastResult?.requestId ? `问题编号：${lastResult.requestId}。` : ''}成功图不会丢失或重复生成。\n配图方案已保存:${planPath}`,
+        ? `✅ 已生成 ${actualTotal} 张图片：${coverPath ? '1 张封面 + ' : ''}${saved.length} 张正文插图(${hits} 张按段落定位)`
+        : `⚠️ 已保留并插入 ${actualTotal}/${expectedTotal} 张可用图片，缺失 ${expectedTotal - actualTotal} 张在三轮自动补图后仍未生成。${illustrationFailureMessages(lastResult).length ? `原因：${illustrationFailureMessages(lastResult).slice(0, 2).join('；')}。` : ''}${lastResult?.requestId ? `问题编号：${lastResult.requestId}。` : ''}成功图不会丢失或重复生成；再次运行“文章配图”可继续补齐。`,
       complete ? 10000 : 14000,
     )
   } catch (e) {
-    planning.hide()
+    planning?.hide()
     new Notice(`❌ 文章配图:${e instanceof Error ? e.message : String(e)}`, 10000)
   }
 }
