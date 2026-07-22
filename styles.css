@@ -115,6 +115,10 @@
   font-size: var(--font-ui-small);
 }
 
+.ai-linzi-full-width {
+  width: 100%;
+}
+
 .ai-linzi-send {
   align-self: flex-end;
   background: var(--interactive-accent);

@@ -207,12 +207,12 @@ class PromptModal extends Modal {
         s.addTextArea((t) => {
           t.setValue(this.values[f.key]).onChange((v) => (this.values[f.key] = v))
           t.inputEl.rows = 4
-          t.inputEl.style.width = '100%'
+          t.inputEl.addClass('ai-linzi-full-width')
         })
       } else {
         s.addText((t) => {
           t.setValue(this.values[f.key]).onChange((v) => (this.values[f.key] = v))
-          t.inputEl.style.width = '100%'
+          t.inputEl.addClass('ai-linzi-full-width')
         })
       }
     }
@@ -270,7 +270,7 @@ export async function runTopicRadar(plugin: AiLinziPlugin) {
   try {
     const material = stripFrontmatter(note.text)
     const context = audience ? `这批选题主要写给:${audience}。\n\n参考素材:\n${material}` : material
-    const text = await plugin.apiText('/api/skills/topic-radar', {
+    const text = await plugin.apiText('/api/plugin/v1/skills/topic-radar', {
       method: 'gap',
       context: clip(context, LIMITS.TOPIC_RADAR_CONTEXT_MAX, '笔记素材'),
     })
@@ -304,7 +304,7 @@ export async function runWechatWriter(plugin: AiLinziPlugin) {
 
   const n = runningNotice('公众号写作')
   try {
-    const text = await plugin.apiText('/api/skills/wechat-writer', {
+    const text = await plugin.apiText('/api/plugin/v1/skills/wechat-writer', {
       topic: input.topic.trim().slice(0, LIMITS.WECHAT_TOPIC_MAX),
       material: clip(stripFrontmatter(note.text), LIMITS.WECHAT_MATERIAL_MAX, '笔记素材'),
     })
@@ -345,7 +345,7 @@ export async function runDistribute(plugin: AiLinziPlugin) {
 
   const n = runningNotice('多平台分发')
   try {
-    const data = (await plugin.api('/api/skills/wechat-distribute', {
+    const data = (await plugin.api('/api/plugin/v1/skills/wechat-distribute', {
       method: 'POST',
       body: { article: clip(article, LIMITS.DISTRIBUTE_ARTICLE_MAX, '文章') },
     })) as {
@@ -397,7 +397,7 @@ export async function runSalesReview(plugin: AiLinziPlugin) {
 
   const n = runningNotice('谈单复盘')
   try {
-    const text = await plugin.apiText('/api/skills/sales-review', {
+    const text = await plugin.apiText('/api/plugin/v1/skills/sales-review', {
       transcript: clip(transcript, LIMITS.SALES_REVIEW_TRANSCRIPT_MAX, '逐字稿'),
       background: input.background.trim() || undefined,
     })
@@ -448,7 +448,7 @@ class KbConfirmModal extends Modal {
       .addTextArea((t) => {
         t.setValue(this.summary).onChange((v) => (this.summary = v))
         t.inputEl.rows = 10
-        t.inputEl.style.width = '100%'
+        t.inputEl.addClass('ai-linzi-full-width')
       })
     new Setting(this.contentEl).addButton((b) =>
       b
@@ -479,7 +479,7 @@ export async function feedKnowledge(plugin: AiLinziPlugin) {
   const n = new Notice('🤖 AI 正在阅读笔记、推荐章节…', 0)
   let suggested: { sectionKey?: string; summary?: string }
   try {
-    suggested = (await plugin.api('/api/me/knowledge/suggest-section', {
+    suggested = (await plugin.api('/api/plugin/v1/knowledge/suggest-section', {
       method: 'POST',
       body: {
         text: clip(stripFrontmatter(note.text), LIMITS.KB_SUGGEST_TEXT_MAX, '笔记内容'),
@@ -501,7 +501,7 @@ export async function feedKnowledge(plugin: AiLinziPlugin) {
 
   try {
     const data = (await plugin.api(
-      `/api/me/knowledge/sections/${confirmed.sectionKey}/append`,
+      `/api/plugin/v1/knowledge/sections/${confirmed.sectionKey}/append`,
       { method: 'POST', body: { content: confirmed.content } },
     )) as { mode?: string; sectionTitle?: string; newChars?: number; mergedChars?: number }
     const title = data.sectionTitle ?? confirmed.sectionKey
@@ -528,9 +528,13 @@ async function fetchImageBinary(url: string): Promise<ArrayBuffer> {
     for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i)
     return u.buffer
   }
-  const r = await requestUrl({ url, throw: false })
-  if (r.status !== 200 || !r.arrayBuffer) throw new Error(`图片下载失败(${r.status})`)
-  return r.arrayBuffer
+  let lastStatus = 0
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const r = await requestUrl({ url, throw: false })
+    lastStatus = r.status
+    if (r.status === 200 && r.arrayBuffer) return r.arrayBuffer
+  }
+  throw new Error(`图片下载失败(${lastStatus || '网络异常'})`)
 }
 
 async function ensureFolder(plugin: AiLinziPlugin, folder: string): Promise<void> {
@@ -564,6 +568,25 @@ interface IllustrationGenerateResult {
   images?: (IllustrationPlanItem & { imageUrl: string })[]
   failedCount?: number
   failedPlan?: IllustrationPlan | null
+  failures?:
+    | string[]
+    | {
+        cover?: string | null
+        images?: { anchor?: string; title?: string; reason?: string }[]
+      }
+  requestId?: string
+}
+
+function illustrationFailureMessages(result: IllustrationGenerateResult | null): string[] {
+  const failures = result?.failures
+  if (!failures) return []
+  if (Array.isArray(failures)) return failures.filter(Boolean)
+  const messages: string[] = []
+  if (failures.cover) messages.push(`封面：${failures.cover}`)
+  for (const item of failures.images ?? []) {
+    if (item.reason) messages.push(`${item.title || item.anchor || '正文插图'}：${item.reason}`)
+  }
+  return messages
 }
 
 class IllustrationPlanModal extends Modal {
@@ -689,7 +712,16 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       return
     }
 
-    const generating = runningNotice('文章配图')
+    // 方案先落盘：即使 Seedream 本轮全部连接失败，用户仍能保留已确认的方案，
+    // 客服也能据此定位问题，不会出现“方案明明够了却什么都没留下”。
+    const folder = normalizePath(
+      `${plugin.settings.outputFolder || 'AI霖子输出'}/公众号文章/配图/${today()}_${sanitizeTitle(note.file.basename)}`,
+    )
+    await ensureFolder(plugin, folder)
+    const planPath = uniqueVaultPath(plugin, normalizePath(`${folder}/AI霖子正文配图_方案.md`))
+    await plugin.app.vault.create(planPath, planMarkdown(confirmed))
+
+    const generating = new Notice('🤖 AI霖子正在生成文章配图…（多张高清图约需 2—8 分钟，可继续使用 Obsidian，请勿退出）', 0)
     let pendingPlan: IllustrationPlan = confirmed
     let generatedCover: IllustrationGenerateResult['cover'] = null
     const generatedImages = new Map<string, NonNullable<IllustrationGenerateResult['images']>[number]>()
@@ -731,12 +763,11 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     const expectedTotal = confirmed.images.length + (confirmed.cover ? 1 : 0)
     const actualTotal = imgs.length + (data.cover ? 1 : 0)
     const complete = imgs.length === confirmed.images.length && Boolean(data.cover) === Boolean(confirmed.cover)
-    if (actualTotal === 0) throw new Error('本轮图片均未通过意图/文字质检，请稍后重试')
-
-    const folder = normalizePath(
-      `${plugin.settings.outputFolder || 'AI霖子输出'}/公众号文章/配图/${today()}_${sanitizeTitle(note.file.basename)}`,
-    )
-    await ensureFolder(plugin, folder)
+    if (actualTotal === 0) {
+      const reason = illustrationFailureMessages(lastResult).slice(0, 2).join('；')
+      const supportId = lastResult?.requestId ? `（问题编号：${lastResult.requestId}）` : ''
+      throw new Error(`${reason || '图片生成服务本轮没有返回可用图片，请稍后重试'}${supportId}。配图方案已保存：${planPath}`)
+    }
 
     // 封面单独处理:存 00_封面,插到文章最顶部(发草稿箱时自动成为封面)
     let coverPath: string | null = null
@@ -760,9 +791,6 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       saved.push({ path, anchor: imgs[i].anchor })
     }
 
-    const planPath = uniqueVaultPath(plugin, normalizePath(`${folder}/AI霖子正文配图_方案.md`))
-    await plugin.app.vault.create(planPath, planMarkdown(confirmed))
-
     let hits = 0
     await plugin.app.vault.process(note.file, (content) => {
       const r = insertEmbeds(content, saved)
@@ -774,7 +802,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     new Notice(
       complete
         ? `✅ 已按确认方案生成 ${actualTotal} 张图片：${coverPath ? '1 张封面 + ' : ''}${saved.length} 张正文插图(${hits} 张按段落定位)\n配图方案已保存:${planPath}`
-        : `⚠️ 已保留并插入 ${actualTotal}/${expectedTotal} 张通过质检的图片，缺失 ${expectedTotal - actualTotal} 张在三轮自动补图后仍未通过。成功图不会丢失或重复生成；请稍后再次执行配图补齐。\n配图方案已保存:${planPath}`,
+        : `⚠️ 已保留并插入 ${actualTotal}/${expectedTotal} 张可用图片，缺失 ${expectedTotal - actualTotal} 张在三轮自动补图后仍未生成。${illustrationFailureMessages(lastResult).length ? `原因：${illustrationFailureMessages(lastResult).slice(0, 2).join('；')}。` : ''}${lastResult?.requestId ? `问题编号：${lastResult.requestId}。` : ''}成功图不会丢失或重复生成。\n配图方案已保存:${planPath}`,
       complete ? 10000 : 14000,
     )
   } catch (e) {
@@ -886,7 +914,7 @@ class IllustrationEditModal extends Modal {
       .addTextArea((input) => {
         input.setValue(instruction).onChange((value) => (instruction = value))
         input.inputEl.rows = 3
-        input.inputEl.style.width = '100%'
+        input.inputEl.addClass('ai-linzi-full-width')
       })
 
     new Setting(this.contentEl)
@@ -894,7 +922,7 @@ class IllustrationEditModal extends Modal {
       .setDesc('用 / 分隔，最多 5 组。系统会在出图后逐字识别，不通过就自动重试。')
       .addText((input) => {
         input.setValue(exactText).onChange((value) => (exactText = value))
-        input.inputEl.style.width = '100%'
+        input.inputEl.addClass('ai-linzi-full-width')
       })
 
     refreshPreview()

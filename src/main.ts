@@ -112,6 +112,7 @@ interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
 
 const DEFAULT_TOKEN_SECRET_ID = 'ai-linzi-api-token'
 const DEFAULT_WECHAT_SECRET_ID = 'ai-linzi-wechat-app-secret'
+const OFFICIAL_SERVER_URL = 'https://chat.alinalinzi.com'
 
 const VIEW_TYPE_CHAT = 'ai-linzi-chat'
 
@@ -279,10 +280,19 @@ export default class AiLinziPlugin extends Plugin {
     const raw = ((await this.loadData()) ?? {}) as LegacyAiLinziSettings
     const { token: legacyToken, wechatAppSecret: legacyWechatSecret, ...safeSettings } = raw
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
+    let migrated = false
+    // 学员正式版只连接 AI霖子官方后端，避免误按第三方教程把连接密钥和笔记
+    // 发送到陌生服务器。localhost 仅保留给本机开发联调。
+    if (
+      this.settings.serverUrl !== OFFICIAL_SERVER_URL &&
+      !/^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\/?$/i.test(this.settings.serverUrl)
+    ) {
+      this.settings.serverUrl = OFFICIAL_SERVER_URL
+      migrated = true
+    }
 
     // v0.6.0：首次启动自动把旧 data.json 里的明文密钥迁到 Obsidian SecretStorage，
     // 随后立刻重写 data.json，只留下 SecretStorage 条目名。
-    let migrated = false
     if (legacyToken?.trim()) {
       const id = this.settings.tokenSecretId || DEFAULT_TOKEN_SECRET_ID
       this.app.secretStorage.setSecret(id, legacyToken.trim())
@@ -449,7 +459,8 @@ export default class AiLinziPlugin extends Plugin {
           : timeout
             ? '生成时间超过服务上限。系统没有写入残缺图片，也不会扣本轮配图积分，请稍后重试。'
             : `请求失败(${res.status})`
-      throw new Error(msg)
+      const supportId = typeof data.requestId === 'string' ? `（问题编号：${data.requestId}）` : ''
+      throw new Error(`${msg}${supportId}`)
     }
     return data
   }
@@ -478,8 +489,9 @@ export default class AiLinziPlugin extends Plugin {
     if (res.status >= 400) {
       let msg = `请求失败(${res.status})`
       try {
-        const data = JSON.parse(res.text) as { error?: string }
+        const data = JSON.parse(res.text) as { error?: string; requestId?: string }
         if (typeof data.error === 'string') msg = data.error
+        if (typeof data.requestId === 'string') msg += `（问题编号：${data.requestId}）`
       } catch {
         /* 非 JSON 错误体 */
       }
@@ -789,7 +801,7 @@ class ChatView extends ItemView {
       } else if (streamed?.kind === 'ok') {
         answer = streamed.text
       } else {
-        const data = await this.plugin.api('/api/plugin/chat', {
+        const data = await this.plugin.api('/api/plugin/v1/chat', {
           method: 'POST',
           body: {
             messages: this.messages,
@@ -866,7 +878,7 @@ class ChatView extends ItemView {
     const token = this.plugin.getApiToken()
     if (!token) return '⚠️ 请先在设置里选择或新建 AI霖子连接密钥'
     const res = await requestUrl({
-      url: `${serverUrl.replace(/\/+$/, '')}/api/skills/wechat-interview`,
+      url: `${serverUrl.replace(/\/+$/, '')}/api/plugin/v1/skills/wechat-interview`,
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -902,7 +914,7 @@ class ChatView extends ItemView {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
     if (!token) return { kind: 'bizError', message: '请先在设置里选择或新建 AI霖子连接密钥' }
-    const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/api/plugin/chat`, {
+    const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/api/plugin/v1/chat`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -1143,21 +1155,12 @@ class AiLinziSettingTab extends PluginSettingTab {
     containerEl.empty()
 
     new Setting(containerEl)
-      .setName('服务器地址')
-      .setDesc('默认已是 AI霖子 官方地址,一般不需要修改')
-      .addText((t) =>
-        t
-          .setPlaceholder('http://localhost:3000')
-          .setValue(this.plugin.settings.serverUrl)
-          .onChange(async (v) => {
-            this.plugin.settings.serverUrl = v.trim()
-            await this.plugin.saveSettings()
-          }),
-      )
+      .setName('AI霖子云端服务')
+      .setDesc('已安全连接官方服务 chat.alinalinzi.com；学员版无需修改服务器地址')
 
     new Setting(containerEl)
-      .setName('API Token')
-      .setDesc('在 AI霖子 网页「我的 → 连接中心」生成密钥，再在这里新建一个安全条目并粘贴。插件设置只保存条目名，不再把密钥明文写进 data.json。换电脑后重新生成或重新填写即可。')
+      .setName('连接 AI霖子账号')
+      .setDesc('先在 AI霖子 网页「我的 → 连接中心」生成连接密钥，再在这里新建安全条目并粘贴。插件只保存安全条目名；换电脑后重新绑定即可。')
       .addComponent((el) =>
         new SecretComponent(this.app, el)
           .setValue(this.plugin.settings.tokenSecretId)
@@ -1165,6 +1168,15 @@ class AiLinziSettingTab extends PluginSettingTab {
             this.plugin.settings.tokenSecretId = v.trim()
             await this.plugin.saveSettings()
           }),
+      )
+
+    new Setting(containerEl)
+      .setName('获取连接密钥')
+      .setDesc('打开 AI霖子账号的连接中心')
+      .addButton((button) =>
+        button.setButtonText('打开连接中心').onClick(() => {
+          window.open(`${OFFICIAL_SERVER_URL}/connections`)
+        }),
       )
 
     new Setting(containerEl)

@@ -109,7 +109,7 @@ class UpdateWechatStatusModal extends Modal {
       .setDesc('填写后可从看板直接打开已发布文章')
       .addText((input) => {
         input.setPlaceholder('https://mp.weixin.qq.com/s/...').setValue(url).onChange((value) => (url = value.trim()))
-        input.inputEl.style.width = '100%'
+        input.inputEl.addClass('ai-linzi-full-width')
       })
     new Setting(this.contentEl)
       .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
