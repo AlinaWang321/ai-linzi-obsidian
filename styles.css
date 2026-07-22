@@ -173,6 +173,17 @@
   word-break: break-word;
 }
 
+/* Obsidian 的侧边栏默认偏向面板交互；对话正文必须恢复原生拖选与 ⌘C 复制。 */
+.ai-linzi-msg-body,
+.ai-linzi-msg-body * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+.ai-linzi-msg-body {
+  cursor: text;
+}
+
 .ai-linzi-msg-user .ai-linzi-msg-body {
   background: var(--interactive-accent);
   color: var(--text-on-accent);

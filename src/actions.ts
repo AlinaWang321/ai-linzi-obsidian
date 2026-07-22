@@ -1114,7 +1114,8 @@ function findArticleImages(plugin: AiLinziPlugin, noteFile: TFile, noteText: str
 
 function splitExactText(value: string): string[] {
   const out: string[] = []
-  for (const raw of value.split(/[\n/／、，,|｜]+/)) {
+  // 界面明确约定用“/”分隔。中文顿号和逗号可能属于需要逐字保留的完整标题，不能拆散。
+  for (const raw of value.split(/[\n/／|｜]+/)) {
     const text = raw.trim().replace(/^[「『“‘"']+|[」』”’"']+$/g, '')
     if (text.length < 2 || text.length > 20 || out.includes(text)) continue
     out.push(text)

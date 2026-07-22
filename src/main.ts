@@ -923,7 +923,10 @@ class ChatView extends ItemView {
         return
       }
       const noteContext = await this.currentNoteContext()
-      const noteEdit = Boolean(noteContext && isNoteEditIntent(text))
+      // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
+      // 图片修改会在 AI 回复下方显示专用入口，先预览候选图再由用户确认替换。
+      const illustrationEdit = isArticleIllustrationEditIntent(text)
+      const noteEdit = Boolean(noteContext && !illustrationEdit && isNoteEditIntent(text))
       // M3:优先流式(fetch 纯文本流,逐块显示);CORS/网络不支持时自动回落非流式;
       // 业务错误(积分不足/tier/限流)不回落不重发,直接显示。
       let answer: string
@@ -1134,7 +1137,8 @@ class ChatView extends ItemView {
         const skillResult = extractPluginSkillSuggestions(text, previousUserText)
         const cleanText = skillResult.cleanText
         const patch = parseNotePatch(cleanText)
-        const editReply = this.mode === 'chat' && isNoteEditIntent(previousUserText)
+        const illustrationEdit = isArticleIllustrationEditIntent(previousUserText)
+        const editReply = this.mode === 'chat' && !illustrationEdit && isNoteEditIntent(previousUserText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
         if (patch) this.renderPatchCards(row, patch)
         // 每条 AI 回复都能一键落盘——内容留在用户自己的 Obsidian 里才是关键(Alina 2026-07-21)

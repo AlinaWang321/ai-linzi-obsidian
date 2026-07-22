@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
+import { readFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 
 const require = createRequire(import.meta.url)
@@ -34,6 +35,10 @@ assert.equal(local.suggestions[0].slug, 'article-illustration')
 
 const automatic = suggest.extractPluginSkillSuggestions('我来帮你处理。', '这张封面的标题写错了，帮我修正')
 assert.equal(automatic.suggestions[0].slug, 'article-illustration')
+const firstImageEdit = '把我第一张图片的标题改成：一键撰写、配图、排版、发布公众号'
+assert.equal(suggest.isArticleIllustrationEditIntent(firstImageEdit), true)
+assert.equal(suggest.extractPluginSkillSuggestions('可以修改。', firstImageEdit).suggestions[0].slug, 'article-illustration')
+assert.deepEqual(suggest.extractExactTextHints(firstImageEdit), ['一键撰写、配图、排版、发布公众号'])
 assert.equal(suggest.isArticleIllustrationEditIntent('我想调整商业模式'), false)
 assert.equal(suggest.isArticleIllustrationIntent('帮我看看咨询简报'), false)
 assert.deepEqual(
@@ -44,5 +49,8 @@ assert.deepEqual(
 const unknown = suggest.extractPluginSkillSuggestions('答复\n<<<推荐技能 made-up-skill>>>', '普通问题')
 assert.equal(unknown.cleanText, '答复')
 assert.deepEqual(unknown.suggestions, [])
+
+const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
+assert.match(styles, /\.ai-linzi-msg-body \*[\s\S]*?user-select: text !important/, '对话文字必须支持鼠标拖选复制')
 
 console.log('plugin skill suggestion regression tests passed')

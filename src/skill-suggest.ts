@@ -38,12 +38,12 @@ const HANGING_RE = /\n?<{1,3}(?:\s*推?荐?技?能?[\s　]*[a-z0-9-]*)?$/
 
 export function isArticleIllustrationIntent(text: string): boolean {
   return /(?:文章配图|正文配图|插图|图片|封面)/.test(text) &&
-    /(?:生成|生图|做图|配图|插图|加图|加入|插入|修改|改图|重做|重新生成|替换|错字|写错|去掉|删除)/.test(text)
+    (/(?:生成|生图|做图|配图|插图|加图|加入|插入)/.test(text) || isArticleIllustrationEditIntent(text))
 }
 
 export function isArticleIllustrationEditIntent(text: string): boolean {
   return /(?:配图|插图|图片|封面)/.test(text) &&
-    /(?:修改|改一下|改图|重做|重新生成|替换|错字|写错|不对|去掉|删除|修正|校对)/.test(text)
+    /(?:修改|改一下|改图|改成|改为|换成|换为|换掉|调整|重做|重新生成|替换|错字|写错|不对|去掉|移除|删除|修正|校对)/.test(text)
 }
 
 export function extractExactTextHints(text: string): string[] {
@@ -53,6 +53,9 @@ export function extractExactTextHints(text: string): string[] {
     if (clean.length >= 2 && clean.length <= 20 && !hints.includes(clean)) hints.push(clean)
   }
   for (const match of text.matchAll(/[「“‘"]([^」”’"]{2,20})[」”’"]/g)) add(match[1])
+  for (const match of text.matchAll(/(?:标题|文字|文案)?\s*(?:改成|改为|换成|换为|替换为)\s*[：:]?\s*([^\n。！？!?]{2,20})/g)) {
+    add(match[1])
+  }
   if (/AI\s*霖子/i.test(text)) add('AI霖子')
   return hints.slice(0, 5)
 }

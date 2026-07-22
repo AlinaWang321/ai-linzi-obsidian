@@ -5,9 +5,15 @@ const actions = readFileSync(new URL('../src/actions.ts', import.meta.url), 'utf
 const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
 
 assert.match(main, /🖼️ 用 AI 生图/)
+assert.match(
+  main,
+  /const illustrationEdit = isArticleIllustrationEditIntent\(text\)[\s\S]*?!illustrationEdit && isNoteEditIntent\(text\)/,
+  '修改图片的请求不能误送进正文局部补丁协议',
+)
 assert.match(actions, /\/api\/plugin\/v1\/images\/generate/)
 assert.match(actions, /参考图（可选）/)
 assert.match(actions, /确认替换原图/)
+assert.match(actions, /value\.split\(\/\[\\n\/／\|｜\]\+\//, '完整标题里的中文顿号不能被拆散')
 assert.match(actions, /decision !== 'replace'/)
 assert.ok(
   actions.indexOf("decision !== 'replace'") < actions.indexOf('modifyBinary(request.image.file'),
