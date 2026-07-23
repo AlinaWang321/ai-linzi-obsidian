@@ -658,7 +658,16 @@ export interface ChatIllustrationCandidate {
   instruction: string
   notePath: string
   articleTitle: string
+  /** 生图成功后自动保存的 Vault 路径；候选图关闭面板或重启后仍可恢复。 */
+  savedPath?: string
   insertedPath?: string
+}
+
+export type AiImageRatio = '16:9' | '3:4' | '1:1'
+
+export interface LocalImageReference {
+  name: string
+  dataUrl: string
 }
 
 interface SavedIllustrationJob {
@@ -888,6 +897,7 @@ export async function generateArticleIllustrationFromChat(
   plugin: AiLinziPlugin,
   instruction: string,
   note: { filename: string; text: string; path: string },
+  options?: { referenceImageDataUrl?: string; sessionId?: string },
 ): Promise<ChatIllustrationCandidate> {
   const prepared = prepareWechatArticle(note.text)
   const article = prepared.body
@@ -903,7 +913,11 @@ export async function generateArticleIllustrationFromChat(
       article: clip(article, 20_000, '文章'),
       articleTitle,
       mode: 'single',
-      single: { instruction: instruction.trim() },
+      sessionId: options?.sessionId,
+      single: {
+        instruction: instruction.trim(),
+        referenceImageDataUrl: options?.referenceImageDataUrl,
+      },
     },
   })) as {
     image?: { imageUrl?: string; anchor?: string; title?: string; coreIdea?: string }
@@ -944,21 +958,26 @@ export async function insertChatIllustrationIntoNote(
   if (initialAnchorCount > 1) {
     throw new Error(`当前笔记里有多处相同内容「${candidate.anchor}」，暂不自动插入以免放错位置`)
   }
-  const folder = normalizePath(
-    `${plugin.settings.outputFolder || 'AI霖子输出'}/公众号文章/配图/${today()}_${sanitizeTitle(file.basename)}`,
-  )
-  await ensureFolder(plugin, folder)
-  const path = uniqueVaultPath(
-    plugin,
-    normalizePath(
-      `${folder}/${today()}_${timestampForFilename()}_${sanitizeTitle(candidate.title) || '新增配图'}.png`,
-    ),
-  )
+  let path = candidate.savedPath
+  if (!path || !(plugin.app.vault.getAbstractFileByPath(path) instanceof TFile)) {
+    const folder = normalizePath(
+      `${plugin.settings.outputFolder || 'AI霖子输出'}/公众号文章/配图/${today()}_${sanitizeTitle(file.basename)}`,
+    )
+    await ensureFolder(plugin, folder)
+    path = uniqueVaultPath(
+      plugin,
+      normalizePath(
+        `${folder}/${today()}_${timestampForFilename()}_${sanitizeTitle(candidate.title) || '新增配图'}.png`,
+      ),
+    )
+  }
   const preview = insertEmbeds(current, [{ path, anchor: candidate.anchor }])
   if (preview.hits < 1) {
     throw new Error(`无法安全定位「${candidate.anchor}」，当前笔记没有改变`)
   }
-  await plugin.app.vault.createBinary(path, await fetchImageBinary(candidate.imageUrl))
+  if (!(plugin.app.vault.getAbstractFileByPath(path) instanceof TFile)) {
+    await plugin.app.vault.createBinary(path, await fetchImageBinary(candidate.imageUrl))
+  }
   await plugin.app.vault.process(file, (content) => {
     const anchorCount = content.split(candidate.anchor).length - 1
     if (anchorCount !== 1) throw new Error(`写入前文章发生变化，无法唯一定位「${candidate.anchor}」`)
@@ -1168,11 +1187,6 @@ interface IllustrationEditRequest {
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp'])
 
-interface LocalImageReference {
-  name: string
-  dataUrl: string
-}
-
 class VaultImageSuggestModal extends FuzzySuggestModal<TFile> {
   constructor(
     app: App,
@@ -1238,6 +1252,29 @@ function chooseComputerImages(
   }
   input.oncancel = () => input.remove()
   input.click()
+}
+
+/** 主对话生图模式沿用现有选图与压缩逻辑，不把本地路径上传到云端。 */
+export function chooseVaultAiImageReference(
+  plugin: AiLinziPlugin,
+  onChoose: (reference: LocalImageReference) => void | Promise<void>,
+): void {
+  new VaultImageSuggestModal(plugin.app, async (file) => {
+    await onChoose({ name: file.name, dataUrl: await imageFileToReferenceDataUrl(plugin, file) })
+  }).open()
+}
+
+export function chooseComputerAiImageReferences(
+  remaining: number,
+  onChoose: (references: LocalImageReference[]) => void | Promise<void>,
+): void {
+  chooseComputerImages(remaining, async (files) => {
+    const references: LocalImageReference[] = []
+    for (const file of files) {
+      references.push({ name: file.name, dataUrl: await browserImageToReferenceDataUrl(file) })
+    }
+    await onChoose(references)
+  })
 }
 
 function findArticleImages(plugin: AiLinziPlugin, noteFile: TFile, noteText: string): ArticleImageEntry[] {
@@ -1454,6 +1491,17 @@ async function imageFileToReferenceDataUrl(plugin: AiLinziPlugin, file: TFile): 
   )
 }
 
+export async function vaultImageToReferenceDataUrl(
+  plugin: AiLinziPlugin,
+  path: string,
+): Promise<string> {
+  const file = plugin.app.vault.getAbstractFileByPath(path)
+  if (!(file instanceof TFile) || !IMAGE_EXTENSIONS.has(file.extension.toLowerCase())) {
+    throw new Error('对话中的上一张图片已经移动或不存在')
+  }
+  return imageFileToReferenceDataUrl(plugin, file)
+}
+
 async function browserImageToReferenceDataUrl(file: File): Promise<string> {
   return imageBlobToReferenceDataUrl(file, `无法读取「${file.name}」`)
 }
@@ -1618,9 +1666,65 @@ export async function runArticleIllustrationEdit(plugin: AiLinziPlugin, initialI
 
 // ── 对话面板通用 AI 生图 ─────────────────────────────
 
+export async function generateAiImage(
+  plugin: AiLinziPlugin,
+  instruction: string,
+  ratio: AiImageRatio,
+  referenceImages: string[] = [],
+  sessionId?: string,
+): Promise<{ imageUrl: string; ratio: AiImageRatio }> {
+  const data = (await plugin.api(AI_IMAGE_API, {
+    method: 'POST',
+    body: {
+      instruction: instruction.trim(),
+      ratio,
+      referenceImages: referenceImages.slice(0, 3),
+      sessionId,
+    },
+  })) as { imageUrl?: string; ratio?: AiImageRatio }
+  if (!data.imageUrl) throw new Error('服务端没有返回图片')
+  return { imageUrl: data.imageUrl, ratio: data.ratio ?? ratio }
+}
+
+export async function saveAiImageToVault(
+  plugin: AiLinziPlugin,
+  imageUrl: string,
+  instruction: string,
+): Promise<string> {
+  const folder = normalizePath(`${plugin.settings.outputFolder || 'AI霖子输出'}/AI生图`)
+  await ensureFolder(plugin, folder)
+  const title = sanitizeTitle(instruction).slice(0, 32) || 'AI生图'
+  const path = uniqueVaultPath(
+    plugin,
+    normalizePath(`${folder}/${today()}_${timestampForFilename()}_${title}.png`),
+  )
+  await plugin.app.vault.createBinary(path, await fetchImageBinary(imageUrl))
+  return path
+}
+
+export async function insertSavedAiImageIntoCurrentNote(
+  plugin: AiLinziPlugin,
+  path: string,
+): Promise<void> {
+  const image = plugin.app.vault.getAbstractFileByPath(path)
+  if (!(image instanceof TFile)) throw new Error('对话中的图片已经移动或不存在')
+  const file = plugin.app.workspace.getActiveFile() ?? plugin.lastActiveFile
+  if (!file) throw new Error('请先打开一篇笔记再插入图片')
+  const markdownView = plugin.app.workspace
+    .getLeavesOfType('markdown')
+    .map((leaf) => leaf.view)
+    .find(
+      (view): view is MarkdownView =>
+        view instanceof MarkdownView && view.file?.path === file.path,
+    )
+  const embed = `![[${path}]]`
+  if (markdownView) markdownView.editor.replaceSelection(`\n${embed}\n`)
+  else await plugin.app.vault.process(file, (content) => `${content.trimEnd()}\n\n${embed}\n`)
+}
+
 class AiImageGenerationModal extends Modal {
   private instruction = ''
-  private ratio: '16:9' | '3:4' = '16:9'
+  private ratio: AiImageRatio = '16:9'
   private references: LocalImageReference[] = []
   private imageUrl = ''
   private savedPath = ''
@@ -1669,8 +1773,9 @@ class AiImageGenerationModal extends Modal {
         .addDropdown((dropdown) => {
           dropdown.addOption('16:9', '16:9 横版')
           dropdown.addOption('3:4', '3:4 竖版')
+          dropdown.addOption('1:1', '1:1 方图')
           dropdown.setValue(this.ratio).onChange((value) => {
-            this.ratio = value === '3:4' ? '3:4' : '16:9'
+            this.ratio = value === '3:4' || value === '1:1' ? value : '16:9'
           })
           dropdown.setDisabled(this.generating)
         })
@@ -1787,15 +1892,12 @@ class AiImageGenerationModal extends Modal {
         )
         this.imageUrl = this.articleCandidate.imageUrl
       } else {
-        const data = (await this.plugin.api(AI_IMAGE_API, {
-          method: 'POST',
-          body: {
-            instruction: this.instruction.trim(),
-            ratio: this.ratio,
-            referenceImages: this.references.map((reference) => reference.dataUrl),
-          },
-        })) as { imageUrl?: string }
-        if (!data.imageUrl) throw new Error('服务端没有返回图片')
+        const data = await generateAiImage(
+          this.plugin,
+          this.instruction,
+          this.ratio,
+          this.references.map((reference) => reference.dataUrl),
+        )
         this.imageUrl = data.imageUrl
         this.articleCandidate = null
       }

@@ -33,10 +33,13 @@ import {
   type ParsedNotePatch,
 } from './note-patch'
 import {
+  chooseComputerAiImageReferences,
+  chooseVaultAiImageReference,
   feedKnowledge,
+  generateAiImage,
   generateArticleIllustrationFromChat,
+  insertSavedAiImageIntoCurrentNote,
   insertChatIllustrationIntoNote,
-  runAiImageGeneration,
   runArticleIllustration,
   runArticleIllustrationEdit,
   runDistribute,
@@ -44,7 +47,11 @@ import {
   runTopicRadar,
   runWechatWriter,
   writeOutput,
+  saveAiImageToVault,
+  vaultImageToReferenceDataUrl,
+  type AiImageRatio,
   type ChatIllustrationCandidate,
+  type LocalImageReference,
 } from './actions'
 import {
   extractPluginSkillSuggestions,
@@ -129,6 +136,18 @@ interface WireMessage {
   parts: { type: 'text'; text: string }[]
   /** 只保存在插件本机历史；发送给主对话 API 时会被剥离。 */
   imageResult?: ChatIllustrationCandidate
+  /** 主对话生图模式的本地图片卡片；图片已自动落到用户 Vault，不上传本地路径。 */
+  aiImageResult?: ChatAiImageResult
+}
+
+interface ChatAiImageResult {
+  kind: 'ai-image'
+  imageUrl: string
+  savedPath: string
+  instruction: string
+  ratio: AiImageRatio
+  articleCandidate?: ChatIllustrationCandidate
+  insertedNotePath?: string
 }
 
 /** 本地保存的会话(存插件目录 conversations.json,升级/重启不丢) */
@@ -672,6 +691,11 @@ class ChatView extends ItemView {
   private messages: WireMessage[] = []
   private sessionId = newPluginSessionId()
   private attachNote: boolean
+  private imageMode = false
+  private imageRatio: AiImageRatio = '16:9'
+  private imageReferences: LocalImageReference[] = []
+  private activeImageMessageId = ''
+  private usePreviousImage = true
   private sending = false
   /** chat=日常对话;interview=访谈写作(多轮采访→成稿) */
   private mode: 'chat' | 'interview' = 'chat'
@@ -681,6 +705,12 @@ class ChatView extends ItemView {
   private inputEl!: HTMLTextAreaElement
   private sendBtn!: HTMLButtonElement
   private attachToggleEl!: HTMLInputElement
+  private imageToggleEl!: HTMLInputElement
+  private imageModeBtn!: HTMLButtonElement
+  private imageRatioEl!: HTMLSelectElement
+  private imageUsePreviousEl!: HTMLInputElement
+  private imageOptionsEl!: HTMLElement
+  private imageReferenceStatusEl!: HTMLElement
 
   constructor(leaf: WorkspaceLeaf, plugin: AiLinziPlugin) {
     super(leaf)
@@ -714,7 +744,10 @@ class ChatView extends ItemView {
       void this.persistNow() // 旧对话先落盘
       this.messages = []
       this.sessionId = newPluginSessionId()
+      this.activeImageMessageId = ''
+      this.usePreviousImage = true
       if (this.mode === 'interview') this.exitInterviewMode()
+      this.refreshImageModeUi()
       this.renderMessages()
     }
 
@@ -751,11 +784,8 @@ class ChatView extends ItemView {
     }
     const kbBtn = actionsRow.createEl('button', { text: '📚 存入知识库', cls: 'ai-linzi-action-btn' })
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
-    const imageBtn = actionsRow.createEl('button', { text: '🖼️ 用 AI 生图', cls: 'ai-linzi-action-btn' })
-    imageBtn.onclick = () => void (async () => {
-      const noteContext = await this.currentNoteContext()
-      await runAiImageGeneration(this.plugin, noteContext)
-    })()
+    this.imageModeBtn = actionsRow.createEl('button', { text: '🖼️ 用 AI 生图', cls: 'ai-linzi-action-btn' })
+    this.imageModeBtn.onclick = () => this.setImageMode(!this.imageMode)
     const dashboardBtn = actionsRow.createEl('button', { text: '📊 内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
     actionsRow.createSpan({ text: '技能是否使用当前笔记，以弹窗说明为准', cls: 'ai-linzi-actions-hint' })
@@ -766,8 +796,56 @@ class ChatView extends ItemView {
     this.attachToggleEl.checked = this.attachNote
     this.attachToggleEl.onchange = () => {
       this.attachNote = this.attachToggleEl.checked
+      this.refreshImageModeUi()
     }
     label.createSpan({ text: ' 主对话带上当前笔记' })
+
+    const imageLabel = toggleRow.createEl('label', { cls: 'ai-linzi-toggle ai-linzi-image-toggle' })
+    this.imageToggleEl = imageLabel.createEl('input', { type: 'checkbox' })
+    this.imageToggleEl.checked = false
+    this.imageToggleEl.onchange = () => this.setImageMode(this.imageToggleEl.checked)
+    imageLabel.createSpan({ text: ' AI 生图模式' })
+
+    this.imageOptionsEl = footer.createDiv({ cls: 'ai-linzi-image-mode-options' })
+    this.imageOptionsEl.createSpan({ text: '图片比例' })
+    this.imageRatioEl = this.imageOptionsEl.createEl('select', { cls: 'dropdown' })
+    for (const [value, labelText] of [
+      ['16:9', '16:9 横版'],
+      ['3:4', '3:4 竖版'],
+      ['1:1', '1:1 方图'],
+    ] as const) {
+      this.imageRatioEl.createEl('option', { value, text: labelText })
+    }
+    this.imageRatioEl.value = this.imageRatio
+    this.imageRatioEl.onchange = () => {
+      const value = this.imageRatioEl.value
+      this.imageRatio = value === '3:4' || value === '1:1' ? value : '16:9'
+    }
+    const addReferenceBtn = this.imageOptionsEl.createEl('button', { text: '添加参考图' })
+    addReferenceBtn.onclick = (event) => {
+      const menu = new Menu()
+      menu.addItem((item) =>
+        item.setTitle('从 Vault 选择').setIcon('image').onClick(() => this.addVaultImageReference()),
+      )
+      menu.addItem((item) =>
+        item.setTitle('从电脑选择').setIcon('folder-open').onClick(() => this.addComputerImageReferences()),
+      )
+      menu.showAtMouseEvent(event)
+    }
+    const clearReferencesBtn = this.imageOptionsEl.createEl('button', { text: '清除参考图' })
+    clearReferencesBtn.onclick = () => {
+      this.imageReferences = []
+      this.refreshImageModeUi()
+    }
+    const previousLabel = this.imageOptionsEl.createEl('label', { cls: 'ai-linzi-image-previous-toggle' })
+    this.imageUsePreviousEl = previousLabel.createEl('input', { type: 'checkbox' })
+    this.imageUsePreviousEl.checked = this.usePreviousImage
+    this.imageUsePreviousEl.onchange = () => {
+      this.usePreviousImage = this.imageUsePreviousEl.checked
+      this.refreshImageModeUi()
+    }
+    previousLabel.createSpan({ text: ' 参考上一张图' })
+    this.imageReferenceStatusEl = this.imageOptionsEl.createSpan({ cls: 'ai-linzi-image-reference-status' })
 
     this.inputEl = footer.createEl('textarea', {
       cls: 'ai-linzi-input',
@@ -782,6 +860,8 @@ class ChatView extends ItemView {
 
     this.sendBtn = footer.createEl('button', { text: '发送', cls: 'ai-linzi-send' })
     this.sendBtn.onclick = () => void this.send()
+
+    this.refreshImageModeUi()
 
     this.renderMessages()
     // 恢复最近一次会话(升级/重启后不丢)
@@ -808,7 +888,15 @@ class ChatView extends ItemView {
     try {
       const [latestCloudSummary] = await this.plugin.loadCloudSessions()
       const cloudTime = latestCloudSummary ? Date.parse(latestCloudSummary.lastActivity) : 0
-      if (latestCloudSummary && (!latestLocal || cloudTime >= latestLocal.updatedAt)) {
+      const sameSession = Boolean(
+        latestCloudSummary && latestLocal
+        && normalizePluginSessionId(latestCloudSummary.sessionId) === normalizePluginSessionId(latestLocal.id),
+      )
+      const localHasImageCards = Boolean(
+        latestLocal?.messages.some((message) => message.aiImageResult || message.imageResult),
+      )
+      const preserveRicherLocalCopy = sameSession && localHasImageCards
+      if (latestCloudSummary && (!latestLocal || (cloudTime > latestLocal.updatedAt && !preserveRicherLocalCopy))) {
         const cloud = await this.plugin.loadCloudConvo(latestCloudSummary.sessionId)
         if (cloud?.messages.length) {
           this.loadConvo(cloud)
@@ -833,7 +921,66 @@ class ChatView extends ItemView {
       this.interviewBar.hide()
       this.inputEl.placeholder = '问 AI霖子 任何事…(Enter 发送,Shift+Enter 换行)'
     }
+    this.refreshImageModeUi()
     this.renderMessages()
+  }
+
+  private setImageMode(active: boolean): void {
+    if (this.mode === 'interview' && active) {
+      new Notice('请先结束访谈写作，再进入 AI 生图模式')
+      this.refreshImageModeUi()
+      return
+    }
+    this.imageMode = active
+    this.refreshImageModeUi()
+    if (active) this.inputEl.focus()
+  }
+
+  private refreshImageModeUi(): void {
+    if (!this.inputEl) return
+    this.imageToggleEl.checked = this.imageMode
+    this.imageModeBtn.toggleClass('is-active', this.imageMode)
+    this.imageModeBtn.setText(this.imageMode ? '✅ AI 生图模式' : '🖼️ 用 AI 生图')
+    this.imageOptionsEl.toggle(this.imageMode)
+    this.imageRatioEl.value = this.imageRatio
+    const hasPreviousImage = Boolean(this.latestImageModeResult())
+    this.imageUsePreviousEl.disabled = !hasPreviousImage
+    this.imageUsePreviousEl.checked = hasPreviousImage && this.usePreviousImage
+    this.imageReferenceStatusEl.setText(
+      this.imageReferences.length > 0
+        ? `已添加 ${this.imageReferences.length} 张参考图`
+        : hasPreviousImage && this.usePreviousImage
+          ? '下一轮会继续修改上一张图'
+          : '下一轮会生成一张新图',
+    )
+    this.inputEl.placeholder = this.imageMode
+      ? this.attachNote
+        ? '描述要给当前笔记生成的图片；下一轮可直接说怎么修改…'
+        : '描述要生成的图片；下一轮可直接说怎么修改…'
+      : '问 AI霖子 任何事…(Enter 发送,Shift+Enter 换行)'
+    this.sendBtn.setText(this.imageMode ? '生成图片' : '发送')
+  }
+
+  private addVaultImageReference(): void {
+    if (this.imageReferences.length >= 3) {
+      new Notice('参考图最多 3 张')
+      return
+    }
+    chooseVaultAiImageReference(this.plugin, (reference) => {
+      this.imageReferences.push(reference)
+      this.refreshImageModeUi()
+    })
+  }
+
+  private addComputerImageReferences(): void {
+    if (this.imageReferences.length >= 3) {
+      new Notice('参考图最多 3 张')
+      return
+    }
+    chooseComputerAiImageReferences(3 - this.imageReferences.length, (references) => {
+      this.imageReferences.push(...references)
+      this.refreshImageModeUi()
+    })
   }
 
   private async showHistoryMenu(): Promise<void> {
@@ -941,6 +1088,10 @@ class ChatView extends ItemView {
         await this.persistNow()
         return
       }
+      if (this.imageMode) {
+        await this.sendImageModePrompt(text)
+        return
+      }
       const noteContext = await this.currentNoteContext()
       // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
       // 图片修改会在 AI 回复下方显示专用入口，先预览候选图再由用户确认替换。
@@ -993,6 +1144,93 @@ class ChatView extends ItemView {
     } finally {
       this.sending = false
       this.sendBtn.disabled = false
+      this.renderMessages()
+    }
+  }
+
+  private latestImageModeResult(): { message: WireMessage; result: ChatAiImageResult } | null {
+    const preferred = this.activeImageMessageId
+      ? this.messages.find((message) => message.id === this.activeImageMessageId)
+      : undefined
+    if (preferred?.aiImageResult) return { message: preferred, result: preferred.aiImageResult }
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      const message = this.messages[index]
+      if (message.aiImageResult) return { message, result: message.aiImageResult }
+    }
+    return null
+  }
+
+  private async sendImageModePrompt(instruction: string): Promise<void> {
+    const message: WireMessage = {
+      id: uid(),
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'AI 正在生成图片…' }],
+    }
+    this.messages.push(message)
+    this.renderMessages()
+    const notice = new Notice('🎨 AI 正在生成图片…', 0)
+    try {
+      const previous = this.usePreviousImage ? this.latestImageModeResult() : null
+      const previousReference = previous
+        ? await vaultImageToReferenceDataUrl(this.plugin, previous.result.savedPath)
+        : undefined
+      const references = [
+        ...(previousReference ? [previousReference] : []),
+        ...this.imageReferences.map((reference) => reference.dataUrl),
+      ].slice(0, 3)
+      const noteContext = await this.currentNoteContext()
+      let imageUrl = ''
+      let ratio: AiImageRatio = this.imageRatio
+      let articleCandidate: ChatIllustrationCandidate | undefined
+      if (noteContext) {
+        articleCandidate = await generateArticleIllustrationFromChat(
+          this.plugin,
+          instruction,
+          noteContext,
+          { referenceImageDataUrl: references[0], sessionId: this.sessionId },
+        )
+        imageUrl = articleCandidate.imageUrl
+        ratio = '16:9'
+      } else {
+        const generated = await generateAiImage(
+          this.plugin,
+          instruction,
+          this.imageRatio,
+          references,
+          this.sessionId,
+        )
+        imageUrl = generated.imageUrl
+        ratio = generated.ratio
+      }
+      const savedPath = await saveAiImageToVault(this.plugin, imageUrl, instruction)
+      if (articleCandidate) articleCandidate.savedPath = savedPath
+      message.aiImageResult = {
+        kind: 'ai-image',
+        imageUrl,
+        savedPath,
+        instruction,
+        ratio,
+        articleCandidate,
+      }
+      message.parts = [{
+        type: 'text',
+        text: articleCandidate
+          ? `已结合当前笔记生成图片，并自动保存到 Vault。建议放在「${articleCandidate.anchor}」之后。继续输入要求可以修改这张图。`
+          : '图片已生成并自动保存到 Vault。继续输入要求可以修改这张图。',
+      }]
+      this.activeImageMessageId = message.id
+      // 新图成为后续修改的默认参考；用户仍可取消勾选来开启另一张新图。
+      this.usePreviousImage = true
+      this.imageReferences = []
+    } catch (error) {
+      message.parts = [{
+        type: 'text',
+        text: `⚠️ AI 生图失败：${error instanceof Error ? error.message : String(error)}`,
+      }]
+    } finally {
+      notice.hide()
+      await this.persistNow()
+      this.refreshImageModeUi()
       this.renderMessages()
     }
   }
@@ -1207,6 +1445,10 @@ class ChatView extends ItemView {
           this.renderChatIllustrationResult(row, m)
           continue
         }
+        if (m.aiImageResult) {
+          this.renderAiImageResult(row, m)
+          continue
+        }
         if (patch) this.renderPatchCards(row, patch)
         // 每条 AI 回复都能一键落盘——内容留在用户自己的 Obsidian 里才是关键(Alina 2026-07-21)
         if (text.trim().length > 0 && !text.startsWith('⚠️')) {
@@ -1281,6 +1523,63 @@ class ChatView extends ItemView {
       row.createDiv({ cls: 'ai-linzi-msg-body', text: 'AI霖子思考中…' })
     }
     this.listEl.scrollTop = this.listEl.scrollHeight
+  }
+
+  private renderAiImageResult(row: HTMLElement, message: WireMessage): void {
+    const result = message.aiImageResult
+    if (!result) return
+    const card = row.createDiv({ cls: 'ai-linzi-chat-image-result' })
+    const localFile = this.app.vault.getAbstractFileByPath(result.savedPath)
+    const src = localFile instanceof TFile
+      ? this.app.vault.getResourcePath(localFile)
+      : result.imageUrl
+    if (/^(?:app:|https?:\/\/|data:image\/)/i.test(src)) {
+      card.createEl('img', { attr: { src, alt: 'AI 生成图片' } })
+    } else {
+      card.createDiv({ text: '图片文件已经移动或不存在。', cls: 'ai-linzi-image-error' })
+    }
+    const meta = card.createDiv({ cls: 'ai-linzi-chat-image-meta' })
+    meta.createEl('strong', { text: `${result.ratio} · 已自动保存` })
+    meta.createEl('span', { text: result.savedPath })
+    if (result.articleCandidate) {
+      meta.createEl('span', { text: `建议放在「${result.articleCandidate.anchor}」之后` })
+    }
+    const actions = card.createDiv({ cls: 'ai-linzi-chat-image-actions' })
+    const continueBtn = actions.createEl('button', { text: '继续修改这张' })
+    continueBtn.onclick = () => {
+      this.activeImageMessageId = message.id
+      this.usePreviousImage = true
+      this.setImageMode(true)
+      this.inputEl.placeholder = '直接写修改要求，例如：标题缩小，人物移到右边…'
+      this.inputEl.focus()
+    }
+    const inserted = Boolean(result.articleCandidate?.insertedPath || result.insertedNotePath)
+    const insertBtn = actions.createEl('button', {
+      text: inserted ? '✅ 已插入当前笔记' : '插入当前笔记',
+      cls: 'ai-linzi-apply-patch',
+    })
+    insertBtn.disabled = inserted
+    insertBtn.onclick = async () => {
+      insertBtn.disabled = true
+      insertBtn.setText('正在插入…')
+      try {
+        if (result.articleCandidate) {
+          result.articleCandidate.insertedPath = await insertChatIllustrationIntoNote(
+            this.plugin,
+            result.articleCandidate,
+          )
+        } else {
+          await insertSavedAiImageIntoCurrentNote(this.plugin, result.savedPath)
+          result.insertedNotePath = (this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile)?.path || '已插入'
+        }
+        await this.persistNow()
+        this.renderMessages()
+      } catch (error) {
+        insertBtn.disabled = false
+        insertBtn.setText('插入当前笔记')
+        new Notice(`插入图片失败：${error instanceof Error ? error.message : String(error)}`, 9000)
+      }
+    }
   }
 
   private renderChatIllustrationResult(row: HTMLElement, message: WireMessage): void {

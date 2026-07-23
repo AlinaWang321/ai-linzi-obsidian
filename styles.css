@@ -212,6 +212,10 @@
 }
 
 .ai-linzi-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
 }
@@ -221,6 +225,48 @@
   align-items: center;
   gap: 4px;
   cursor: pointer;
+}
+
+.ai-linzi-action-btn.is-active {
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+}
+
+.ai-linzi-image-mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid rgba(0, 87, 255, 0.24);
+  border-radius: 8px;
+  background: rgba(0, 87, 255, 0.06);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-image-mode-options select,
+.ai-linzi-image-mode-options button {
+  min-height: 28px;
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-image-previous-toggle {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ai-linzi-image-previous-toggle:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ai-linzi-image-reference-status {
+  flex: 1 1 180px;
+  line-height: 1.4;
 }
 
 .ai-linzi-input {
@@ -393,6 +439,7 @@
 
 .ai-linzi-chat-image-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 7px;
   padding: 7px 11px 10px;
