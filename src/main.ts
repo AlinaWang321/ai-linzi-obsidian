@@ -63,6 +63,10 @@ import {
   ContentDashboardView,
   VIEW_TYPE_CONTENT_DASHBOARD,
 } from './content-dashboard'
+import {
+  AuthorizedContentModal,
+  type AuthorizedContentLimits,
+} from './content-selector'
 
 /** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -143,6 +147,14 @@ interface PluginCapabilities {
   apiVersion?: string
   tier?: MembershipTier
   features?: {
+    chat?: {
+      authorizedContent?: {
+        available?: boolean
+        maxFiles?: number
+        maxTotalChars?: number
+        maxPerFileChars?: number
+      }
+    }
     articleIllustration?: {
       customCharacterReferenceAvailable?: boolean
     }
@@ -755,6 +767,9 @@ class ChatView extends ItemView {
   private imageReferences: LocalImageReference[] = []
   private activeImageMessageId = ''
   private usePreviousImage = true
+  /** 只保存用户明确勾选的本地路径；正文不会写入会话历史或插件设置。 */
+  private authorizedContentPaths: string[] = []
+  private authorizedContentChars = 0
   private sending = false
   /** chat=日常对话;interview=访谈写作(多轮采访→成稿) */
   private mode: 'chat' | 'interview' = 'chat'
@@ -770,6 +785,8 @@ class ChatView extends ItemView {
   private imageUsePreviousEl!: HTMLInputElement
   private imageOptionsEl!: HTMLElement
   private imageReferenceStatusEl!: HTMLElement
+  private authorizedContentBtn!: HTMLButtonElement
+  private authorizedContentStatusEl!: HTMLElement
 
   constructor(leaf: WorkspaceLeaf, plugin: AiLinziPlugin) {
     super(leaf)
@@ -805,6 +822,7 @@ class ChatView extends ItemView {
       this.sessionId = newPluginSessionId()
       this.activeImageMessageId = ''
       this.usePreviousImage = true
+      this.clearAuthorizedContent()
       if (this.mode === 'interview') this.exitInterviewMode()
       this.refreshImageModeUi()
       this.renderMessages()
@@ -845,6 +863,11 @@ class ChatView extends ItemView {
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
     this.imageModeBtn = actionsRow.createEl('button', { text: '🖼️ 用 AI 生图', cls: 'ai-linzi-action-btn' })
     this.imageModeBtn.onclick = () => void this.setImageMode(!this.imageMode)
+    this.authorizedContentBtn = actionsRow.createEl('button', {
+      text: '📎 选择内容',
+      cls: 'ai-linzi-action-btn',
+    })
+    this.authorizedContentBtn.onclick = () => void this.openAuthorizedContentSelector()
     const dashboardBtn = actionsRow.createEl('button', { text: '📊 内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
     actionsRow.createSpan({ text: '技能是否使用当前笔记，以弹窗说明为准', cls: 'ai-linzi-actions-hint' })
@@ -864,6 +887,11 @@ class ChatView extends ItemView {
     this.imageToggleEl.checked = false
     this.imageToggleEl.onchange = () => void this.setImageMode(this.imageToggleEl.checked)
     imageLabel.createSpan({ text: ' AI 生图模式' })
+
+    this.authorizedContentStatusEl = footer.createDiv({
+      cls: 'ai-linzi-authorized-content-status',
+    })
+    this.refreshAuthorizedContentUi()
 
     this.imageOptionsEl = footer.createDiv({ cls: 'ai-linzi-image-mode-options' })
     this.imageOptionsEl.createSpan({ text: '图片比例' })
@@ -975,6 +1003,7 @@ class ChatView extends ItemView {
   }
 
   private loadConvo(c: SavedConvo): void {
+    this.clearAuthorizedContent()
     this.messages = c.messages
     this.sessionId = normalizePluginSessionId(c.id)
     if (c.mode === 'interview' && this.mode !== 'interview') {
@@ -1137,6 +1166,107 @@ class ChatView extends ItemView {
     return { filename: file.name, text, path: file.path }
   }
 
+  private authorizedContentLimits(data?: PluginCapabilities): AuthorizedContentLimits {
+    const capability = data?.features?.chat?.authorizedContent
+    return {
+      maxFiles: capability?.maxFiles ?? 20,
+      maxTotalChars: capability?.maxTotalChars ?? 120_000,
+      maxPerFileChars: capability?.maxPerFileChars ?? 50_000,
+    }
+  }
+
+  private async openAuthorizedContentSelector(): Promise<void> {
+    if (this.mode === 'interview') {
+      new Notice('请先结束访谈写作，再选择多篇笔记或文件夹')
+      return
+    }
+    if (!(await this.plugin.requireProAccess('多笔记与文件夹授权'))) return
+    let capabilities: PluginCapabilities | undefined
+    try {
+      capabilities = await this.plugin.getCapabilities()
+    } catch {
+      // 权限刚刚已经通过；旧服务端暂时没有细分能力字段时使用客户端保守默认值。
+    }
+    const modal = new AuthorizedContentModal(
+      this.app,
+      this.authorizedContentPaths,
+      this.authorizedContentLimits(capabilities),
+    )
+    modal.open()
+    const selection = await modal.result
+    if (!selection) return
+    this.authorizedContentPaths = selection.paths
+    this.authorizedContentChars = selection.totalChars
+    this.refreshAuthorizedContentUi()
+  }
+
+  private clearAuthorizedContent(): void {
+    this.authorizedContentPaths = []
+    this.authorizedContentChars = 0
+    this.refreshAuthorizedContentUi()
+  }
+
+  private refreshAuthorizedContentUi(): void {
+    if (!this.authorizedContentBtn || !this.authorizedContentStatusEl) return
+    const count = this.authorizedContentPaths.length
+    this.authorizedContentBtn.setText(count > 0 ? `📎 已选 ${count} 篇` : '📎 选择内容')
+    this.authorizedContentBtn.toggleClass('is-active', count > 0)
+    this.authorizedContentStatusEl.empty()
+    this.authorizedContentStatusEl.toggle(count > 0)
+    if (count === 0) return
+    this.authorizedContentStatusEl.createSpan({
+      text:
+        `当前对话持续带上 ${count} 篇已授权笔记` +
+        (this.authorizedContentChars > 0
+          ? ` · ${this.authorizedContentChars.toLocaleString('zh-CN')} 字`
+          : ''),
+    })
+    const changeBtn = this.authorizedContentStatusEl.createEl('button', { text: '更换' })
+    changeBtn.onclick = () => void this.openAuthorizedContentSelector()
+    const clearBtn = this.authorizedContentStatusEl.createEl('button', { text: '清除' })
+    clearBtn.onclick = () => this.clearAuthorizedContent()
+  }
+
+  private async authorizedContentContext(
+    currentNotePath?: string,
+  ): Promise<{ items: { filename: string; path: string; text: string }[] } | undefined> {
+    if (this.authorizedContentPaths.length === 0) return undefined
+    const capabilities = await this.plugin.getCapabilities()
+    if (capabilities.tier !== 'pro' && capabilities.tier !== 'business') {
+      this.clearAuthorizedContent()
+      throw new Error('多笔记与文件夹授权是 Pro 及以上会员功能')
+    }
+    const limits = this.authorizedContentLimits(capabilities)
+    const items: { filename: string; path: string; text: string }[] = []
+    let totalChars = 0
+    for (const path of this.authorizedContentPaths) {
+      if (path === currentNotePath) continue
+      const file = this.app.vault.getAbstractFileByPath(path)
+      if (!(file instanceof TFile)) continue
+      const text = await this.app.vault.cachedRead(file)
+      if (!text.trim()) continue
+      if (text.length > limits.maxPerFileChars) {
+        throw new Error(
+          `《${file.basename}》超过单篇 ${limits.maxPerFileChars.toLocaleString('zh-CN')} 字上限，` +
+          '请拆分后再使用',
+        )
+      }
+      totalChars += text.length
+      if (totalChars > limits.maxTotalChars) {
+        throw new Error(
+          `已授权内容超过 ${limits.maxTotalChars.toLocaleString('zh-CN')} 字上限，请减少几篇后重试`,
+        )
+      }
+      items.push({ filename: file.name, path: file.path, text })
+    }
+    if (items.length > limits.maxFiles) {
+      throw new Error(`单次最多带上 ${limits.maxFiles} 篇笔记`)
+    }
+    this.authorizedContentChars = totalChars
+    this.refreshAuthorizedContentUi()
+    return items.length > 0 ? { items } : undefined
+  }
+
   /** 本地候选图片元数据绝不传给主对话；云端只收到标准 UIMessage。 */
   private messagesForApi(): WireMessage[] {
     return this.messages.map(({ id, role, parts }) => ({ id, role, parts }))
@@ -1164,6 +1294,7 @@ class ChatView extends ItemView {
         return
       }
       const noteContext = await this.currentNoteContext()
+      const authorizedContent = await this.authorizedContentContext(noteContext?.path)
       // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
       // 图片修改会在 AI 回复下方显示专用入口，先预览候选图再由用户确认替换。
       const illustrationEdit = isArticleIllustrationEditIntent(text)
@@ -1176,7 +1307,12 @@ class ChatView extends ItemView {
       let answer: string
       let streamed: { kind: 'ok'; text: string } | { kind: 'bizError'; message: string } | null
       try {
-        streamed = await this.sendStreaming(noteContext, noteEdit, singleIllustration)
+        streamed = await this.sendStreaming(
+          noteContext,
+          authorizedContent,
+          noteEdit,
+          singleIllustration,
+        )
       } catch {
         streamed = null
       }
@@ -1192,6 +1328,7 @@ class ChatView extends ItemView {
             sessionId: this.sessionId,
             stream: false,
             noteContext,
+            authorizedContent,
             noteEdit,
             noteImageIntent: singleIllustration,
           },
@@ -1342,6 +1479,7 @@ class ChatView extends ItemView {
   }
 
   enterInterviewMode() {
+    this.clearAuthorizedContent()
     this.mode = 'interview'
     this.messages = []
     this.sessionId = newPluginSessionId()
@@ -1352,6 +1490,7 @@ class ChatView extends ItemView {
   }
 
   exitInterviewMode() {
+    this.clearAuthorizedContent()
     this.mode = 'chat'
     this.messages = []
     this.sessionId = newPluginSessionId()
@@ -1419,6 +1558,9 @@ class ChatView extends ItemView {
    */
   private async sendStreaming(
     noteContext: { filename: string; text: string; path: string } | undefined,
+    authorizedContent:
+      | { items: { filename: string; path: string; text: string }[] }
+      | undefined,
     noteEdit: boolean,
     noteImageIntent: boolean,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
@@ -1437,6 +1579,7 @@ class ChatView extends ItemView {
         sessionId: this.sessionId,
         stream: 'text',
         noteContext,
+        authorizedContent,
         noteEdit,
         noteImageIntent,
       }),
