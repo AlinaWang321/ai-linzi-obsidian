@@ -899,6 +899,7 @@ async function configuredIllustrationCharacterReference(
 ): Promise<string | undefined> {
   const path = plugin.settings.illustrationCharacterReferencePath.trim()
   if (!path) return undefined
+  if (!(await plugin.hasProAccess())) return undefined
   const file = plugin.app.vault.getAbstractFileByPath(path)
   if (!(file instanceof TFile) || !IMAGE_EXTENSIONS.has(file.extension.toLowerCase())) {
     new Notice('专属人偶参考图已经移动或删除，本次将使用通用人偶。可在文章配图弹窗中重新选择。', 9000)
@@ -933,7 +934,7 @@ class IllustrationSetupModal extends Modal {
   onOpen() {
     this.titleEl.setText('文章配图 · 数量与专属人偶')
     this.contentEl.createEl('p', {
-      text: '专属人偶只需设置一次，之后封面和正文配图都会自动参考它；不设置则继续使用通用极简人偶。',
+      text: 'Pro 及以上会员可设置专属人偶；不设置或当前账户未开通时，继续使用通用极简人偶。',
       cls: 'ai-linzi-plan-intro',
     })
     let count = 3
@@ -948,13 +949,25 @@ class IllustrationSetupModal extends Modal {
       })
 
     const referenceSetting = new Setting(this.contentEl)
-      .setName('我的专属人偶（可选）')
-      .setDesc('参考人物外形、发型、服装配色和线条风格；每张图的动作、表情与场景仍按文章内容重新创作。')
+      .setName('我的专属人偶')
+      .setDesc('Pro 及以上会员可使用；参考人物外形、发型、服装配色和线条风格，每张图的动作、表情与场景仍按文章内容重新创作。')
     const preview = this.contentEl.createDiv({ cls: 'ai-linzi-character-reference-preview' })
+    let proAccess: boolean | null = null
     const refreshPreview = () => {
       preview.empty()
       const path = this.plugin.settings.illustrationCharacterReferencePath.trim()
       const file = path ? this.app.vault.getAbstractFileByPath(path) : null
+      if (proAccess === null) {
+        preview.createEl('strong', { text: '正在确认会员权益…' })
+        return
+      }
+      if (!proAccess) {
+        preview.createEl('strong', { text: '当前使用通用极简人偶' })
+        preview.createEl('span', {
+          text: path ? '专属人偶设置已保留，升级 Pro 后自动恢复。' : '升级 Pro 后可以设置自己的角色。',
+        })
+        return
+      }
       if (file instanceof TFile && IMAGE_EXTENSIONS.has(file.extension.toLowerCase())) {
         preview.createEl('img', {
           attr: { src: this.app.vault.getResourcePath(file), alt: '我的公众号配图专属人偶' },
@@ -969,7 +982,9 @@ class IllustrationSetupModal extends Modal {
     }
     referenceSetting
       .addButton((button) =>
-        button.setButtonText('选择 Vault 图片').onClick(() => {
+        button.setButtonText('选择 Vault 图片').onClick(async () => {
+          if (!(await this.plugin.requireProAccess('我的专属人偶'))) return
+          proAccess = true
           new VaultImageSuggestModal(this.app, async (file) => {
             await setIllustrationCharacterReference(this.plugin, file.path)
             refreshPreview()
@@ -977,7 +992,9 @@ class IllustrationSetupModal extends Modal {
         }),
       )
       .addButton((button) =>
-        button.setButtonText('从电脑上传').onClick(() => {
+        button.setButtonText('从电脑上传').onClick(async () => {
+          if (!(await this.plugin.requireProAccess('我的专属人偶'))) return
+          proAccess = true
           chooseComputerImages(1, async (files) => {
             const file = files[0]
             if (!file) return
@@ -1000,6 +1017,10 @@ class IllustrationSetupModal extends Modal {
       )
 
     refreshPreview()
+    void this.plugin.hasProAccess().then((allowed) => {
+      proAccess = allowed
+      refreshPreview()
+    })
     new Setting(this.contentEl)
       .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
       .addButton((button) =>
