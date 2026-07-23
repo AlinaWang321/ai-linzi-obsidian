@@ -780,7 +780,6 @@ class ChatView extends ItemView {
   private sendBtn!: HTMLButtonElement
   private attachToggleEl!: HTMLInputElement
   private imageToggleEl!: HTMLInputElement
-  private imageModeBtn!: HTMLButtonElement
   private imageRatioEl!: HTMLSelectElement
   private imageUsePreviousEl!: HTMLInputElement
   private imageOptionsEl!: HTMLElement
@@ -845,7 +844,7 @@ class ChatView extends ItemView {
 
     // 动作按钮行:技能与喂库的主入口(比正文右键菜单直观,对小白友好)
     const actionsRow = footer.createDiv({ cls: 'ai-linzi-actions' })
-    const skillBtn = actionsRow.createEl('button', { text: '⚡ 调用技能', cls: 'ai-linzi-action-btn' })
+    const skillBtn = actionsRow.createEl('button', { text: '调用技能', cls: 'ai-linzi-action-btn' })
     skillBtn.onclick = (evt: MouseEvent) => {
       const menu = new Menu()
       for (const c of SKILL_ACTIONS) {
@@ -859,18 +858,15 @@ class ChatView extends ItemView {
       }
       menu.showAtMouseEvent(evt)
     }
-    const kbBtn = actionsRow.createEl('button', { text: '📚 存入知识库', cls: 'ai-linzi-action-btn' })
+    const kbBtn = actionsRow.createEl('button', { text: '存入知识库', cls: 'ai-linzi-action-btn' })
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
-    this.imageModeBtn = actionsRow.createEl('button', { text: '🖼️ 用 AI 生图', cls: 'ai-linzi-action-btn' })
-    this.imageModeBtn.onclick = () => void this.setImageMode(!this.imageMode)
     this.authorizedContentBtn = actionsRow.createEl('button', {
-      text: '📎 选择内容',
+      text: '选择文件',
       cls: 'ai-linzi-action-btn',
     })
     this.authorizedContentBtn.onclick = () => void this.openAuthorizedContentSelector()
-    const dashboardBtn = actionsRow.createEl('button', { text: '📊 内容看板', cls: 'ai-linzi-action-btn' })
+    const dashboardBtn = actionsRow.createEl('button', { text: '内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
-    actionsRow.createSpan({ text: '技能是否使用当前笔记，以弹窗说明为准', cls: 'ai-linzi-actions-hint' })
 
     const toggleRow = footer.createDiv({ cls: 'ai-linzi-toggle-row' })
     const label = toggleRow.createEl('label', { cls: 'ai-linzi-toggle' })
@@ -1039,8 +1035,6 @@ class ChatView extends ItemView {
   private refreshImageModeUi(): void {
     if (!this.inputEl) return
     this.imageToggleEl.checked = this.imageMode
-    this.imageModeBtn.toggleClass('is-active', this.imageMode)
-    this.imageModeBtn.setText(this.imageMode ? '✅ AI 生图模式' : '🖼️ 用 AI 生图')
     this.imageOptionsEl.toggle(this.imageMode)
     this.imageRatioEl.value = this.imageRatio
     const hasPreviousImage = Boolean(this.latestImageModeResult())
@@ -1209,7 +1203,7 @@ class ChatView extends ItemView {
   private refreshAuthorizedContentUi(): void {
     if (!this.authorizedContentBtn || !this.authorizedContentStatusEl) return
     const count = this.authorizedContentPaths.length
-    this.authorizedContentBtn.setText(count > 0 ? `📎 已选 ${count} 篇` : '📎 选择内容')
+    this.authorizedContentBtn.setText(count > 0 ? `已选 ${count} 篇` : '选择文件')
     this.authorizedContentBtn.toggleClass('is-active', count > 0)
     this.authorizedContentStatusEl.empty()
     this.authorizedContentStatusEl.toggle(count > 0)
@@ -1395,10 +1389,14 @@ class ChatView extends ItemView {
           this.plugin,
           instruction,
           noteContext,
-          { referenceImageDataUrl: references[0], sessionId: this.sessionId },
+          {
+            referenceImageDataUrls: references,
+            sessionId: this.sessionId,
+            ratio: this.imageRatio,
+          },
         )
         imageUrl = articleCandidate.imageUrl
-        ratio = '16:9'
+        ratio = articleCandidate.ratio ?? this.imageRatio
       } else {
         const generated = await generateAiImage(
           this.plugin,
@@ -1848,6 +1846,7 @@ class ChatView extends ItemView {
         this.plugin,
         previous.instruction,
         { filename: file.name, text: await this.app.vault.cachedRead(file), path: file.path },
+        { ratio: previous.ratio ?? '16:9' },
       )
       const candidate = message.imageResult
       message.parts = [{

@@ -6,7 +6,6 @@
  */
 import {
   App,
-  FuzzySuggestModal,
   MarkdownView,
   Modal,
   Notice,
@@ -24,6 +23,7 @@ import {
 } from './article-format'
 import { extractExactTextHints } from './skill-suggest'
 import { canonicalContentFields } from './content-state'
+import { VaultImageBrowserModal } from './vault-image-browser'
 
 // ── 与服务端对齐的常量 ─────────────────────────────
 
@@ -652,6 +652,7 @@ interface IllustrationGenerateResult {
 /** 主对话根据当前笔记生成的单张候选配图。核心构图提示仍只存在私有后端。 */
 export interface ChatIllustrationCandidate {
   imageUrl: string
+  ratio?: AiImageRatio
   anchor: string
   title: string
   coreIdea: string
@@ -985,7 +986,7 @@ class IllustrationSetupModal extends Modal {
         button.setButtonText('选择 Vault 图片').onClick(async () => {
           if (!(await this.plugin.requireProAccess('我的专属人偶'))) return
           proAccess = true
-          new VaultImageSuggestModal(this.app, async (file) => {
+          new VaultImageBrowserModal(this.app, async (file) => {
             await setIllustrationCharacterReference(this.plugin, file.path)
             refreshPreview()
           }).open()
@@ -1056,7 +1057,12 @@ export async function generateArticleIllustrationFromChat(
   plugin: AiLinziPlugin,
   instruction: string,
   note: { filename: string; text: string; path: string },
-  options?: { referenceImageDataUrl?: string; sessionId?: string },
+  options?: {
+    referenceImageDataUrl?: string
+    referenceImageDataUrls?: string[]
+    sessionId?: string
+    ratio?: AiImageRatio
+  },
 ): Promise<ChatIllustrationCandidate> {
   const prepared = prepareWechatArticle(note.text)
   const article = prepared.body
@@ -1078,10 +1084,18 @@ export async function generateArticleIllustrationFromChat(
       single: {
         instruction: instruction.trim(),
         referenceImageDataUrl: options?.referenceImageDataUrl,
+        referenceImages: options?.referenceImageDataUrls?.slice(0, 3),
+        ratio: options?.ratio ?? '16:9',
       },
     },
   })) as {
-    image?: { imageUrl?: string; anchor?: string; title?: string; coreIdea?: string }
+    image?: {
+      imageUrl?: string
+      ratio?: AiImageRatio
+      anchor?: string
+      title?: string
+      coreIdea?: string
+    }
   }
   const image = data.image
   if (
@@ -1094,6 +1108,7 @@ export async function generateArticleIllustrationFromChat(
   }
   return {
     imageUrl: image.imageUrl,
+    ratio: image.ratio ?? options?.ratio ?? '16:9',
     anchor: image.anchor,
     title: image.title?.trim() || '新增配图',
     coreIdea: image.coreIdea?.trim() || '结合当前文章生成的配图',
@@ -1343,30 +1358,6 @@ interface IllustrationEditRequest {
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp'])
 
-class VaultImageSuggestModal extends FuzzySuggestModal<TFile> {
-  constructor(
-    app: App,
-    private onChoose: (file: TFile) => void | Promise<void>,
-  ) {
-    super(app)
-    this.setPlaceholder('搜索 Vault 里的图片…')
-  }
-
-  getItems(): TFile[] {
-    return this.app.vault
-      .getFiles()
-      .filter((file) => IMAGE_EXTENSIONS.has(file.extension.toLowerCase()))
-  }
-
-  getItemText(file: TFile): string {
-    return file.path
-  }
-
-  onChooseItem(file: TFile): void {
-    void this.onChoose(file)
-  }
-}
-
 function renderReferenceGallery(
   container: HTMLElement,
   references: LocalImageReference[],
@@ -1415,7 +1406,7 @@ export function chooseVaultAiImageReference(
   plugin: AiLinziPlugin,
   onChoose: (reference: LocalImageReference) => void | Promise<void>,
 ): void {
-  new VaultImageSuggestModal(plugin.app, async (file) => {
+  new VaultImageBrowserModal(plugin.app, async (file) => {
     await onChoose({ name: file.name, dataUrl: await imageFileToReferenceDataUrl(plugin, file) })
   }).open()
 }
@@ -1551,7 +1542,7 @@ class IllustrationEditModal extends Modal {
             new Notice('补充参考图最多 2 张')
             return
           }
-          new VaultImageSuggestModal(this.app, async (file) => {
+          new VaultImageBrowserModal(this.app, async (file) => {
             try {
               references.push({
                 name: file.name,
@@ -2006,7 +1997,7 @@ class AiImageGenerationModal extends Modal {
       new Notice('参考图最多 3 张')
       return
     }
-    new VaultImageSuggestModal(this.app, async (file) => {
+    new VaultImageBrowserModal(this.app, async (file) => {
       try {
         this.references.push({
           name: file.name,

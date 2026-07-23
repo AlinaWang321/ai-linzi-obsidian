@@ -1,4 +1,4 @@
-import { App, Modal, Notice, TFile } from 'obsidian'
+import { App, Modal, Notice, TFile, TFolder } from 'obsidian'
 
 export interface AuthorizedContentLimits {
   maxFiles: number
@@ -14,14 +14,18 @@ export interface AuthorizedContentSelection {
 /**
  * 用户主动授权的本地内容选择器。
  *
- * 搜索与勾选全部发生在用户自己的 Vault；只有最终确认的 Markdown 笔记正文会在发消息时
- * 随本轮请求发送。选择器不保存正文，也不会自动扫描或上传整个 Vault。
+ * 文件夹浏览、搜索与勾选全部发生在用户自己的 Vault；只有最终确认的 Markdown
+ * 笔记正文会在发消息时随本轮请求发送。选择器不保存正文，也不会自动上传整个 Vault。
  */
 export class AuthorizedContentModal extends Modal {
   private readonly files: TFile[]
+  private readonly folders: TFolder[]
   private readonly selected: Set<string>
+  private currentFolderPath = ''
   private searchText = ''
   private submitted = false
+  private folderTreeEl!: HTMLElement
+  private browserTitleEl!: HTMLElement
   private listEl!: HTMLElement
   private summaryEl!: HTMLElement
   private searchEl!: HTMLInputElement
@@ -38,6 +42,10 @@ export class AuthorizedContentModal extends Modal {
       .getMarkdownFiles()
       .slice()
       .sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'))
+    this.folders = app.vault
+      .getAllLoadedFiles()
+      .filter((entry): entry is TFolder => entry instanceof TFolder && entry.path.length > 0)
+      .sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'))
     const available = new Set(this.files.map((file) => file.path))
     this.selected = new Set(initialPaths.filter((path) => available.has(path)))
     this.result = new Promise((resolve) => (this.resolve = resolve))
@@ -45,60 +53,59 @@ export class AuthorizedContentModal extends Modal {
 
   onOpen(): void {
     this.modalEl.addClass('ai-linzi-content-selector-modal')
-    this.titleEl.setText('选择要交给 AI霖子的内容')
+    this.titleEl.setText('选择文件')
 
     this.contentEl.createDiv({
       cls: 'ai-linzi-content-selector-note',
       text:
-        `搜索和勾选只在你的 Obsidian 本地进行。确认后，最多 ${this.limits.maxFiles} 篇、` +
+        `像电脑文件管理器一样按 Vault 文件夹查找笔记。确认后，最多 ${this.limits.maxFiles} 篇、` +
         `合计 ${formatCharLimit(this.limits.maxTotalChars)}字的正文会供当前对话使用；` +
-        '新建对话或清除选择后即停止带入。',
+        '浏览和搜索均在本地完成，不消耗 AI 用量。',
     })
-
-    const folderRow = this.contentEl.createDiv({ cls: 'ai-linzi-content-selector-folder-row' })
-    const folderSelect = folderRow.createEl('select', {
-      cls: 'dropdown ai-linzi-content-selector-folder',
-      attr: { 'aria-label': '选择文件夹' },
-    })
-    for (const folder of this.folderOptions()) {
-      folderSelect.createEl('option', {
-        value: folder,
-        text: folder === '/' ? 'Vault 根目录（仅根目录笔记）' : folder,
-      })
-    }
-    const addFolderBtn = folderRow.createEl('button', { text: '添加整个文件夹' })
-    addFolderBtn.onclick = () => this.addFolder(folderSelect.value)
 
     const searchRow = this.contentEl.createDiv({ cls: 'ai-linzi-content-selector-search-row' })
     this.searchEl = searchRow.createEl('input', {
       type: 'search',
       cls: 'ai-linzi-content-selector-search',
       attr: {
-        placeholder: '按笔记标题或路径搜索（本地搜索，不消耗 AI 用量）',
-        'aria-label': '搜索笔记标题或路径',
+        placeholder: '搜索全部笔记的标题或路径',
+        'aria-label': '搜索全部笔记的标题或路径',
       },
     })
     this.searchEl.oninput = () => {
       this.searchText = this.searchEl.value.trim().toLocaleLowerCase()
-      this.renderList()
+      this.renderFiles()
     }
     const clearSearchBtn = searchRow.createEl('button', { text: '清除搜索' })
     clearSearchBtn.onclick = () => {
       this.searchText = ''
       this.searchEl.value = ''
-      this.renderList()
+      this.renderFiles()
       this.searchEl.focus()
     }
 
     this.summaryEl = this.contentEl.createDiv({ cls: 'ai-linzi-content-selector-summary' })
-    this.listEl = this.contentEl.createDiv({ cls: 'ai-linzi-content-selector-list' })
-    this.renderList()
+    const browser = this.contentEl.createDiv({ cls: 'ai-linzi-vault-browser' })
+    const folderPane = browser.createDiv({ cls: 'ai-linzi-vault-browser-folders' })
+    folderPane.createEl('strong', { text: 'Vault 文件夹' })
+    this.folderTreeEl = folderPane.createDiv({ cls: 'ai-linzi-vault-browser-folder-tree' })
+
+    const filePane = browser.createDiv({ cls: 'ai-linzi-vault-browser-files' })
+    const fileHeader = filePane.createDiv({ cls: 'ai-linzi-vault-browser-file-header' })
+    this.browserTitleEl = fileHeader.createEl('strong')
+    const addFolderBtn = fileHeader.createEl('button', { text: '添加当前文件夹' })
+    addFolderBtn.title = '选择当前文件夹及所有子文件夹中的 Markdown 笔记'
+    addFolderBtn.onclick = () => this.addCurrentFolder()
+    this.listEl = filePane.createDiv({ cls: 'ai-linzi-content-selector-list' })
+
+    this.renderFolders()
+    this.renderFiles()
 
     const footer = this.contentEl.createDiv({ cls: 'ai-linzi-content-selector-footer' })
     const clearBtn = footer.createEl('button', { text: '清空选择' })
     clearBtn.onclick = () => {
       this.selected.clear()
-      this.renderList()
+      this.renderFiles()
     }
     const cancelBtn = footer.createEl('button', { text: '取消' })
     cancelBtn.onclick = () => this.close()
@@ -111,65 +118,83 @@ export class AuthorizedContentModal extends Modal {
     this.searchEl.focus()
   }
 
-  private folderOptions(): string[] {
-    const folders = new Set<string>(['/'])
-    for (const file of this.files) {
-      const parts = file.path.split('/')
-      parts.pop()
-      for (let index = 1; index <= parts.length; index++) {
-        folders.add(parts.slice(0, index).join('/'))
-      }
+  private renderFolders(): void {
+    if (!this.folderTreeEl) return
+    this.folderTreeEl.empty()
+    this.renderFolderButton('', 'Vault', 0)
+    for (const folder of this.folders) {
+      const depth = folder.path ? folder.path.split('/').length : 0
+      this.renderFolderButton(folder.path, folder.name, depth)
     }
-    return [...folders].sort((left, right) => {
-      if (left === '/') return -1
-      if (right === '/') return 1
-      return left.localeCompare(right, 'zh-CN')
-    })
   }
 
-  private addFolder(folder: string): void {
-    const matches = this.files.filter((file) => {
-      if (folder === '/') return !file.path.includes('/')
-      return file.path.startsWith(`${folder}/`)
+  private renderFolderButton(path: string, label: string, depth: number): void {
+    const button = this.folderTreeEl.createEl('button', {
+      cls: 'ai-linzi-vault-browser-folder',
     })
+    button.style.setProperty('--folder-depth', String(depth))
+    button.toggleClass('is-active', path === this.currentFolderPath)
+    const count = this.files.filter((file) => isInsideFolder(file, path)).length
+    button.createSpan({ text: `${path ? '📁' : '🗂️'} ${label}` })
+    button.createSpan({ text: String(count), cls: 'ai-linzi-vault-browser-count' })
+    button.onclick = () => {
+      this.currentFolderPath = path
+      this.searchText = ''
+      this.searchEl.value = ''
+      this.renderFolders()
+      this.renderFiles()
+    }
+  }
+
+  private addCurrentFolder(): void {
+    const matches = this.files.filter((file) => isInsideFolder(file, this.currentFolderPath))
     if (matches.length === 0) {
-      new Notice('这个文件夹里没有 Markdown 笔记')
+      new Notice('这个文件夹及其子文件夹里没有 Markdown 笔记')
       return
     }
     const additions = matches.filter((file) => !this.selected.has(file.path))
+    if (additions.length === 0) {
+      new Notice(`「${folderLabel(this.currentFolderPath)}」中的笔记已经全部选中`)
+      return
+    }
     if (this.selected.size + additions.length > this.limits.maxFiles) {
       new Notice(
-        `这个文件夹有 ${matches.length} 篇笔记，超过单次最多 ${this.limits.maxFiles} 篇。` +
-        '请先搜索关键词，再勾选本次真正需要的笔记。',
-        7000,
+        `「${folderLabel(this.currentFolderPath)}」共有 ${matches.length} 篇笔记，` +
+        `超过单次最多 ${this.limits.maxFiles} 篇。请进入子文件夹或逐篇勾选。`,
+        8000,
       )
       return
     }
     for (const file of additions) this.selected.add(file.path)
-    this.renderList()
+    new Notice(`已添加「${folderLabel(this.currentFolderPath)}」中的 ${additions.length} 篇笔记`)
+    this.renderFiles()
   }
 
   private visibleFiles(): TFile[] {
-    if (!this.searchText) return this.files.slice(0, 200)
-    return this.files
-      .filter((file) => file.path.toLocaleLowerCase().includes(this.searchText))
-      .slice(0, 200)
+    if (this.searchText) {
+      return this.files.filter((file) =>
+        file.path.toLocaleLowerCase().includes(this.searchText),
+      )
+    }
+    return this.files.filter((file) => (file.parent?.path ?? '') === this.currentFolderPath)
   }
 
-  private renderList(): void {
+  private renderFiles(): void {
     this.summaryEl?.setText(
-      `已选 ${this.selected.size}/${this.limits.maxFiles} 篇` +
-      (this.files.length > 200 && !this.searchText
-        ? ` · Vault 共 ${this.files.length} 篇，当前先显示前 200 篇，可搜索定位`
-        : ''),
+      `已选 ${this.selected.size}/${this.limits.maxFiles} 篇 · Vault 共 ${this.files.length} 篇`,
     )
     if (!this.listEl) return
-    this.listEl.empty()
     const visible = this.visibleFiles()
+    this.browserTitleEl.setText(
+      this.searchText ? `搜索结果（${visible.length}）` : folderLabel(this.currentFolderPath),
+    )
+    this.listEl.empty()
     if (visible.length === 0) {
       this.listEl.createDiv({
         cls: 'ai-linzi-content-selector-empty',
-        text: '没有找到匹配的 Markdown 笔记',
+        text: this.searchText
+          ? '没有找到匹配的 Markdown 笔记'
+          : '这个文件夹没有直接存放 Markdown 笔记，可进入左侧子文件夹查看',
       })
       return
     }
@@ -185,9 +210,11 @@ export class AuthorizedContentModal extends Modal {
         }
         if (checkbox.checked) this.selected.add(file.path)
         else this.selected.delete(file.path)
-        this.renderList()
+        this.renderFiles()
       }
-      row.createSpan({ text: file.path })
+      const meta = row.createDiv({ cls: 'ai-linzi-content-selector-file-meta' })
+      meta.createSpan({ text: file.basename, cls: 'ai-linzi-content-selector-file-name' })
+      meta.createSpan({ text: file.path, cls: 'ai-linzi-content-selector-file-path' })
     }
   }
 
@@ -228,6 +255,15 @@ export class AuthorizedContentModal extends Modal {
     if (!this.submitted) this.resolve(null)
     this.contentEl.empty()
   }
+}
+
+function isInsideFolder(file: TFile, folderPath: string): boolean {
+  if (!folderPath) return true
+  return file.path.startsWith(`${folderPath}/`)
+}
+
+function folderLabel(path: string): string {
+  return path ? `📁 ${path}` : '🗂️ Vault 根目录'
 }
 
 function formatCharLimit(value: number): string {
