@@ -4,8 +4,12 @@ import { readFileSync } from 'node:fs'
 const actions = readFileSync(new URL('../src/actions.ts', import.meta.url), 'utf8')
 const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
 
-assert.match(main, /🖼️ 用 AI 生图/)
 assert.match(main, /AI 生图模式/)
+assert.doesNotMatch(main, /🖼️ 用 AI 生图/, '顶部不应再保留与生图模式勾选重复的按钮')
+assert.match(main, /text: '调用技能'/)
+assert.match(main, /text: '存入知识库'/)
+assert.match(main, /text: '选择文件'/)
+assert.match(main, /text: '内容看板'/)
 assert.match(main, /requireProAccess\('AI 生图模式'\)/)
 assert.match(main, /“\$\{featureName\}”是 Pro 及以上会员功能/)
 assert.match(main, /CAPABILITIES_CACHE_TTL_MS = 5 \* 60 \* 1000/)
@@ -29,6 +33,13 @@ assert.match(actions, /export type AiImageRatio = '16:9' \| '3:4' \| '1:1'/)
 assert.match(actions, /export async function saveAiImageToVault/)
 assert.match(actions, /sessionId/)
 assert.match(actions, /mode: 'single'/, '当前笔记补图必须走插件专用单图接口')
+assert.match(actions, /ratio: options\?\.ratio \?\? '16:9'/)
+assert.match(actions, /referenceImages: options\?\.referenceImageDataUrls\?\.slice\(0, 3\)/)
+assert.match(
+  main,
+  /generateArticleIllustrationFromChat\([\s\S]*?referenceImageDataUrls: references[\s\S]*?ratio: this\.imageRatio[\s\S]*?ratio = articleCandidate\.ratio \?\? this\.imageRatio/,
+  '结合当前笔记生图也必须传递用户选择的比例',
+)
 assert.match(main, /noteImageIntent: singleIllustration/)
 assert.match(main, /generateArticleIllustrationFromChat/)
 assert.match(main, /imageResult/)
