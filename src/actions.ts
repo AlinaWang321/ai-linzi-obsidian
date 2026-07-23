@@ -28,7 +28,6 @@ import { canonicalContentFields } from './content-state'
 // ── 与服务端对齐的常量 ─────────────────────────────
 
 const LIMITS = {
-  TOPIC_RADAR_CONTEXT_MAX: 2_000,
   WECHAT_MATERIAL_MAX: 10_000,
   WECHAT_TOPIC_MAX: 5_000,
   SALES_REVIEW_TRANSCRIPT_MIN: 500,
@@ -250,6 +249,72 @@ class PromptModal extends Modal {
   }
 }
 
+interface TopicRadarOptions {
+  audience: string
+  useCurrentNote: boolean
+}
+
+/** 选题雷达默认只使用云端定位与知识库；当前笔记必须由用户在本弹窗主动授权。 */
+class TopicRadarModal extends Modal {
+  private audience: string
+  private useCurrentNote = false
+  private submitted = false
+  private resolve!: (value: TopicRadarOptions | null) => void
+  readonly result: Promise<TopicRadarOptions | null>
+
+  constructor(app: App, defaultAudience: string, private noteName?: string) {
+    super(app)
+    this.audience = defaultAudience
+    this.result = new Promise((resolve) => (this.resolve = resolve))
+    this.open()
+  }
+
+  onOpen() {
+    this.titleEl.setText('选题雷达')
+
+    new Setting(this.contentEl)
+      .setName('这批选题主要写给谁看？（选填）')
+      .setDesc('例：想做副业的职场女性。留空则 AI 按你的定位与知识库自动判断。')
+      .addText((text) => {
+        text.setValue(this.audience).onChange((value) => (this.audience = value))
+        text.inputEl.addClass('ai-linzi-full-width')
+      })
+
+    new Setting(this.contentEl)
+      .setName('使用当前笔记作为选题素材')
+      .setDesc(
+        this.noteName
+          ? `当前笔记：${this.noteName}。默认关闭，只有主动打开后才会读取并发送。`
+          : '当前没有打开可用的笔记；本次将根据你的定位与知识库生成选题。',
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(false)
+          .setDisabled(!this.noteName)
+          .onChange((value) => (this.useCurrentNote = value)),
+      )
+
+    new Setting(this.contentEl).addButton((button) =>
+      button
+        .setButtonText('生成选题')
+        .setCta()
+        .onClick(() => {
+          this.submitted = true
+          this.resolve({
+            audience: this.audience.trim(),
+            useCurrentNote: this.useCurrentNote,
+          })
+          this.close()
+        }),
+    )
+  }
+
+  onClose() {
+    if (!this.submitted) this.resolve(null)
+    this.contentEl.empty()
+  }
+}
+
 /** 运行中提示(技能调用 30-120s,给个持续状态) */
 function runningNotice(label: string): Notice {
   return new Notice(`🤖 AI霖子「${label}」生成中…(约 1-2 分钟,请勿关闭 Obsidian)`, 0)
@@ -258,38 +323,34 @@ function runningNotice(label: string): Notice {
 // ── 四个技能动作 ────────────────────────────────────
 
 export async function runTopicRadar(plugin: AiLinziPlugin) {
-  const note = await getActiveNote(plugin)
-  if (!note) return
-  // 赛道/定位不再问——AI霖子服务端本来就带着用户档案和知识库(2026-07-21 Alina 反馈)。
-  // 只问受众(选填):写给谁看,留空则按定位自动判断。
-  const input = await new PromptModal(plugin.app, '选题雷达 · 从当前笔记提炼选题', '生成选题', [
-    {
-      key: 'audience',
-      label: '这批选题主要写给谁看?(选填)',
-      desc: '例:想做副业的职场女性。留空则 AI 按你的定位与知识库自动判断。',
-      initial: plugin.settings.defaultNiche,
-    },
-  ]).result
+  const activeFile = plugin.app.workspace.getActiveFile() ?? plugin.lastActiveFile
+  const input = await new TopicRadarModal(
+    plugin.app,
+    plugin.settings.defaultNiche,
+    activeFile?.name,
+  ).result
   if (!input) return
 
-  const audience = input.audience.trim()
+  const audience = input.audience
   plugin.settings.defaultNiche = audience
   await plugin.saveSettings()
 
+  const note = input.useCurrentNote ? await getActiveNote(plugin) : null
+  if (input.useCurrentNote && !note) return
+
   const n = runningNotice('选题雷达')
   try {
-    const material = stripFrontmatter(note.text)
-    const context = audience ? `这批选题主要写给:${audience}。\n\n参考素材:\n${material}` : material
     const text = await plugin.apiText('/api/plugin/v1/skills/topic-radar', {
       method: 'gap',
-      context: clip(context, LIMITS.TOPIC_RADAR_CONTEXT_MAX, '笔记素材'),
+      niche: audience || undefined,
+      sourceMaterial: note ? stripFrontmatter(note.text) : undefined,
     })
     await writeOutput(plugin, {
       skill: '选题雷达',
       platform: '通用',
-      title: `选题雷达_${note.file.basename}`,
+      title: `选题雷达_${note?.file.basename || audience || '定位与知识库'}`,
       body: text,
-      sourceNote: note.file,
+      sourceNote: note?.file,
     })
     new Notice('✅ 选题已生成并落盘')
   } catch (e) {
