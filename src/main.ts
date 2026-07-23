@@ -63,7 +63,7 @@ export const SKILL_ACTIONS: {
   name: string
   fn: (p: AiLinziPlugin) => Promise<void>
 }[] = [
-  { id: 'topic-radar', name: '选题雷达:从当前笔记提炼选题', fn: runTopicRadar },
+  { id: 'topic-radar', name: '选题雷达:结合定位与知识库生成选题', fn: runTopicRadar },
   { id: 'wechat-writer', name: '公众号写作:当前笔记作素材', fn: runWechatWriter },
   {
     id: 'interview',
@@ -758,7 +758,7 @@ class ChatView extends ItemView {
     })()
     const dashboardBtn = actionsRow.createEl('button', { text: '📊 内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
-    actionsRow.createSpan({ text: '技能作用于当前打开的笔记', cls: 'ai-linzi-actions-hint' })
+    actionsRow.createSpan({ text: '技能是否使用当前笔记，以弹窗说明为准', cls: 'ai-linzi-actions-hint' })
 
     const toggleRow = footer.createDiv({ cls: 'ai-linzi-toggle-row' })
     const label = toggleRow.createEl('label', { cls: 'ai-linzi-toggle' })
@@ -767,7 +767,7 @@ class ChatView extends ItemView {
     this.attachToggleEl.onchange = () => {
       this.attachNote = this.attachToggleEl.checked
     }
-    label.createSpan({ text: ' 带上当前笔记' })
+    label.createSpan({ text: ' 主对话带上当前笔记' })
 
     this.inputEl = footer.createEl('textarea', {
       cls: 'ai-linzi-input',
