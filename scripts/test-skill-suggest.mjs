@@ -68,8 +68,13 @@ assert.deepEqual(unknown.suggestions, [])
 
 const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
 assert.match(styles, /\.ai-linzi-msg-body \*[\s\S]*?user-select: text !important/, '对话文字必须支持鼠标拖选复制')
+assert.match(styles, /\.ai-linzi-msg-body[\s\S]*?-webkit-app-region: no-drag/, '消息正文不能被侧边栏拖拽区域吞掉')
 
 const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
+assert.match(main, /enableMessageTextSelection\(body\)/, '每条对话消息都必须启用原生文字选择')
+assert.match(main, /navigator\.clipboard\.writeText\(selectedText\)/, '选中文字后必须支持右键复制')
+assert.match(main, /articleIllustrationEditOffer/, '整篇配图完成后必须在右侧对话保留单图修改入口')
+assert.match(main, /修改某一张配图/, '单图修改按钮文案必须直接可理解')
 const actionsStart = main.indexOf('export const SKILL_ACTIONS')
 const actionsEnd = main.indexOf('// ── 设置', actionsStart)
 const actions = main.slice(actionsStart, actionsEnd)

@@ -850,10 +850,12 @@ class IllustrationResumeModal extends Modal {
 }
 
 class IllustrationCompleteModal extends Modal {
+  private handedOff = false
+
   constructor(
     app: App,
     private summary: string,
-    private onEdit: () => void,
+    private onComplete: () => void,
   ) {
     super(app)
   }
@@ -862,23 +864,23 @@ class IllustrationCompleteModal extends Modal {
     this.titleEl.setText('文章配图已写入当前笔记')
     this.contentEl.createEl('p', { text: this.summary, cls: 'ai-linzi-plan-intro' })
     this.contentEl.createEl('p', {
-      text: '如果某一张图需要调整，可以先生成修改版，预览确认后再替换原图。',
+      text: '点击完成后先在正文中查看配图效果。右侧 AI霖子 对话区会保留“修改某一张配图”入口。',
       cls: 'ai-linzi-plan-intro',
     })
     new Setting(this.contentEl)
-      .addButton((button) => button.setButtonText('完成').onClick(() => this.close()))
       .addButton((button) =>
         button
-          .setButtonText('修改其中一张配图')
+          .setButtonText('完成并查看文章')
           .setCta()
-          .onClick(() => {
-            this.close()
-            this.onEdit()
-          }),
+          .onClick(() => this.close()),
       )
   }
 
   onClose() {
+    if (!this.handedOff) {
+      this.handedOff = true
+      this.onComplete()
+    }
     this.contentEl.empty()
   }
 }
@@ -1334,7 +1336,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       : `已保留并插入 ${actualTotal}/${expectedTotal} 张可用图片；剩余 ${expectedTotal - actualTotal} 张可再次运行“文章配图”继续补齐。`
     new Notice(`${complete ? '✅' : '⚠️'} ${completionSummary}`, complete ? 10000 : 14000)
     new IllustrationCompleteModal(plugin.app, completionSummary, () => {
-      void runArticleIllustrationEdit(plugin)
+      void plugin.offerArticleIllustrationEdit(note.file.path, completionSummary)
     }).open()
   } catch (e) {
     planning?.hide()

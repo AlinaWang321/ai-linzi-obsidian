@@ -173,6 +173,14 @@ interface WireMessage {
   imageResult?: ChatIllustrationCandidate
   /** 主对话生图模式的本地图片卡片；图片已自动落到用户 Vault，不上传本地路径。 */
   aiImageResult?: ChatAiImageResult
+  /** 整篇配图完成后的本地操作卡片；只保存目标笔记路径，不同步到云端。 */
+  articleIllustrationEditOffer?: ArticleIllustrationEditOffer
+}
+
+interface ArticleIllustrationEditOffer {
+  kind: 'article-illustration-edit-offer'
+  notePath: string
+  summary: string
 }
 
 interface ChatAiImageResult {
@@ -616,6 +624,19 @@ export default class AiLinziPlugin extends Plugin {
     workspace.revealLeaf(leaf)
   }
 
+  /**
+   * 整篇配图完成后，把“修改某一张配图”留在右侧对话区。
+   * 用户先关闭完成弹窗查看正文效果，再随时回来选择具体图片，不再被弹窗挡住文章。
+   */
+  async offerArticleIllustrationEdit(notePath: string, summary: string): Promise<void> {
+    await this.activateChatView()
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]
+    const view = leaf?.view
+    if (view instanceof ChatView) {
+      await view.addArticleIllustrationEditOffer(notePath, summary)
+    }
+  }
+
   /** 进入访谈写作模式(SKILL_ACTIONS 菜单入口) */
   async startInterview() {
     await this.activateChatView()
@@ -969,6 +990,28 @@ class ChatView extends ItemView {
       updatedAt: Date.now(),
       messages: this.messages,
     })
+  }
+
+  async addArticleIllustrationEditOffer(notePath: string, summary: string): Promise<void> {
+    const previous = this.messages.at(-1)?.articleIllustrationEditOffer
+    if (previous?.notePath === notePath && previous.summary === summary) return
+    this.messages.push({
+      id: uid(),
+      role: 'assistant',
+      parts: [
+        {
+          type: 'text',
+          text: '配图已经写入文章。请先在正文里查看整体效果；需要调整时，可以从这里选择并修改其中一张。',
+        },
+      ],
+      articleIllustrationEditOffer: {
+        kind: 'article-illustration-edit-offer',
+        notePath,
+        summary,
+      },
+    })
+    await this.persistNow()
+    this.renderMessages()
   }
 
   private async restoreLatest(): Promise<void> {
@@ -1638,6 +1681,7 @@ class ChatView extends ItemView {
         cls: `ai-linzi-msg ai-linzi-msg-${m.role}`,
       })
       const body = row.createDiv({ cls: 'ai-linzi-msg-body' })
+      this.enableMessageTextSelection(body)
       const text = m.parts.map((p) => p.text).join('')
       if (m.role === 'assistant') {
         let previousUserText = ''
@@ -1653,6 +1697,10 @@ class ChatView extends ItemView {
         const illustrationEdit = isArticleIllustrationEditIntent(previousUserText)
         const editReply = this.mode === 'chat' && !illustrationEdit && isNoteEditIntent(previousUserText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
+        if (m.articleIllustrationEditOffer) {
+          this.renderArticleIllustrationEditOffer(row, m.articleIllustrationEditOffer)
+          continue
+        }
         if (m.imageResult) {
           this.renderChatIllustrationResult(row, m)
           continue
@@ -1732,9 +1780,62 @@ class ChatView extends ItemView {
     }
     if (thinking) {
       const row = this.listEl.createDiv({ cls: 'ai-linzi-msg ai-linzi-msg-assistant' })
-      row.createDiv({ cls: 'ai-linzi-msg-body', text: 'AI霖子思考中…' })
+      const body = row.createDiv({ cls: 'ai-linzi-msg-body', text: 'AI霖子思考中…' })
+      this.enableMessageTextSelection(body)
     }
     this.listEl.scrollTop = this.listEl.scrollHeight
+  }
+
+  private enableMessageTextSelection(body: HTMLElement): void {
+    // Obsidian 侧边面板会监听拖拽与右键事件。阻止事件继续冒泡，但不 preventDefault，
+    // 浏览器仍会执行原生文字选择；选中文字后提供明确的右键“复制”菜单。
+    body.addEventListener('pointerdown', (event) => event.stopPropagation())
+    body.addEventListener('mousedown', (event) => event.stopPropagation())
+    body.addEventListener('selectstart', (event) => event.stopPropagation())
+    body.addEventListener('contextmenu', (event) => {
+      const selection = window.getSelection()
+      const selectedText = selection?.toString() ?? ''
+      const anchorInside = Boolean(selection?.anchorNode && body.contains(selection.anchorNode))
+      const focusInside = Boolean(selection?.focusNode && body.contains(selection.focusNode))
+      if (!selectedText || (!anchorInside && !focusInside)) return
+      event.preventDefault()
+      event.stopPropagation()
+      const menu = new Menu()
+      menu.addItem((item) =>
+        item
+          .setTitle('复制')
+          .setIcon('copy')
+          .onClick(async () => {
+            await navigator.clipboard.writeText(selectedText)
+            new Notice('已复制选中的文字')
+          }),
+      )
+      menu.showAtMouseEvent(event)
+    })
+  }
+
+  private renderArticleIllustrationEditOffer(
+    row: HTMLElement,
+    offer: ArticleIllustrationEditOffer,
+  ): void {
+    const card = row.createDiv({ cls: 'ai-linzi-illustration-edit-offer' })
+    card.createDiv({ text: offer.summary, cls: 'ai-linzi-illustration-edit-summary' })
+    const button = card.createEl('button', {
+      text: '🖼️ 修改某一张配图',
+      cls: 'ai-linzi-apply-patch',
+    })
+    button.onclick = async () => {
+      const target = this.app.vault.getAbstractFileByPath(offer.notePath)
+      if (!(target instanceof TFile)) {
+        new Notice('原文章已经移动或删除，请打开要修改的文章后重试')
+        return
+      }
+      const active = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+      if (active?.path !== target.path) {
+        await this.app.workspace.getLeaf('tab').openFile(target)
+      }
+      await runArticleIllustrationEdit(this.plugin)
+    }
   }
 
   private renderAiImageResult(row: HTMLElement, message: WireMessage): void {

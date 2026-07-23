@@ -182,6 +182,8 @@
 
 .ai-linzi-msg-body {
   cursor: text;
+  -webkit-app-region: no-drag;
+  touch-action: pan-y;
 }
 
 .ai-linzi-msg-user .ai-linzi-msg-body {
@@ -201,6 +203,22 @@
 
 .ai-linzi-msg-assistant .ai-linzi-msg-body p:last-child {
   margin-bottom: 0;
+}
+
+.ai-linzi-illustration-edit-offer {
+  align-self: stretch;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-primary);
+}
+
+.ai-linzi-illustration-edit-summary {
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
 }
 
 .ai-linzi-footer {
