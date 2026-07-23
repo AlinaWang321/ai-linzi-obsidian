@@ -79,7 +79,7 @@ export const SKILL_ACTIONS: {
   },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
   { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
-  { id: 'illustration', name: '文章配图:极简小清新手绘(先看方案再生图)', fn: runArticleIllustration },
+  { id: 'illustration', name: '文章配图:可使用你的专属人偶(先看方案再生图)', fn: runArticleIllustration },
   { id: 'wechat-copy', name: '公众号排版:一键复制(去后台粘贴)', fn: async (p) => copyWechatFormatted(p) },
   { id: 'wechat-draft', name: '发到公众号草稿箱(自动传图,需配置AppID)', fn: async (p) => sendToWechatDraft(p) },
   { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
@@ -95,6 +95,8 @@ interface AiLinziSettings {
   attachNoteDefault: boolean
   /** 技能产出落盘的文件夹(相对 vault 根) */
   outputFolder: string
+  /** 公众号一键配图使用的专属人偶参考图，只保存用户 Vault 内的路径 */
+  illustrationCharacterReferencePath: string
   /** 选题雷达默认受众(跑一次后自动记住;历史key沿用defaultNiche兼容旧设置) */
   defaultNiche: string
   /** 上次自动检查更新的时间戳(约每20小时一次) */
@@ -111,6 +113,7 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   tokenSecretId: '',
   attachNoteDefault: true,
   outputFolder: 'AI霖子输出',
+  illustrationCharacterReferencePath: '',
   defaultNiche: '',
   wechatAppId: '',
   wechatAppSecretId: '',
