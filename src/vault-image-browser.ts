@@ -6,6 +6,8 @@ const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp'])
 export class VaultImageBrowserModal extends Modal {
   private readonly files: TFile[]
   private readonly folders: TFolder[]
+  private readonly foldersByParent: Map<string, TFolder[]>
+  private readonly expandedFolders = new Set<string>([''])
   private currentFolderPath = ''
   private searchText = ''
   private folderTreeEl!: HTMLElement
@@ -26,6 +28,7 @@ export class VaultImageBrowserModal extends Modal {
       .getAllLoadedFiles()
       .filter((entry): entry is TFolder => entry instanceof TFolder && entry.path.length > 0)
       .sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'))
+    this.foldersByParent = groupFoldersByParent(this.folders)
   }
 
   onOpen(): void {
@@ -71,23 +74,46 @@ export class VaultImageBrowserModal extends Modal {
   private renderFolders(): void {
     this.folderTreeEl.empty()
     this.renderFolderButton('', 'Vault', 0)
-    for (const folder of this.folders) {
-      const depth = folder.path ? folder.path.split('/').length : 0
+    if (this.expandedFolders.has('')) this.renderFolderChildren('', 1)
+  }
+
+  private renderFolderChildren(parentPath: string, depth: number): void {
+    for (const folder of this.foldersByParent.get(parentPath) ?? []) {
       this.renderFolderButton(folder.path, folder.name, depth)
+      if (this.expandedFolders.has(folder.path)) {
+        this.renderFolderChildren(folder.path, depth + 1)
+      }
     }
   }
 
   private renderFolderButton(path: string, label: string, depth: number): void {
+    const hasChildren = (this.foldersByParent.get(path)?.length ?? 0) > 0
+    const expanded = hasChildren && this.expandedFolders.has(path)
     const button = this.folderTreeEl.createEl('button', {
       cls: 'ai-linzi-vault-browser-folder',
     })
     button.style.setProperty('--folder-depth', String(depth))
     button.toggleClass('is-active', path === this.currentFolderPath)
+    if (hasChildren) button.setAttr('aria-expanded', String(expanded))
+    button.setAttr(
+      'aria-label',
+      `${label}${hasChildren ? `，${expanded ? '点击收起' : '点击展开'}` : ''}`,
+    )
     const count = this.files.filter((file) => isInsideFolder(file, path)).length
-    button.createSpan({ text: `${path ? '📁' : '🗂️'} ${label}` })
+    const main = button.createSpan({ cls: 'ai-linzi-vault-browser-folder-main' })
+    main.createSpan({
+      text: hasChildren ? (expanded ? '▾' : '▸') : '',
+      cls: 'ai-linzi-vault-browser-chevron',
+    })
+    main.createSpan({ text: path ? (expanded ? '📂' : '📁') : '🗂️' })
+    main.createSpan({ text: label, cls: 'ai-linzi-vault-browser-folder-label' })
     button.createSpan({ text: String(count), cls: 'ai-linzi-vault-browser-count' })
     button.onclick = () => {
       this.currentFolderPath = path
+      if (hasChildren) {
+        if (expanded) this.expandedFolders.delete(path)
+        else this.expandedFolders.add(path)
+      }
       this.searchText = ''
       this.searchEl.value = ''
       this.renderFolders()
@@ -101,7 +127,9 @@ export class VaultImageBrowserModal extends Modal {
         file.path.toLocaleLowerCase().includes(this.searchText),
       )
     }
-    return this.files.filter((file) => (file.parent?.path ?? '') === this.currentFolderPath)
+    return this.files.filter(
+      (file) => normalizeFolderPath(file.parent?.path ?? '') === this.currentFolderPath,
+    )
   }
 
   private renderImages(): void {
@@ -150,4 +178,19 @@ export class VaultImageBrowserModal extends Modal {
 function isInsideFolder(file: TFile, folderPath: string): boolean {
   if (!folderPath) return true
   return file.path.startsWith(`${folderPath}/`)
+}
+
+function groupFoldersByParent(folders: TFolder[]): Map<string, TFolder[]> {
+  const grouped = new Map<string, TFolder[]>()
+  for (const folder of folders) {
+    const parentPath = normalizeFolderPath(folder.parent?.path ?? '')
+    const siblings = grouped.get(parentPath) ?? []
+    siblings.push(folder)
+    grouped.set(parentPath, siblings)
+  }
+  return grouped
+}
+
+function normalizeFolderPath(path: string): string {
+  return path === '/' ? '' : path
 }
