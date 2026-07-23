@@ -131,6 +131,9 @@ const DEFAULT_WECHAT_SECRET_ID = 'ai-linzi-wechat-app-secret'
 const OFFICIAL_SERVER_URL = 'https://chat.alinalinzi.com'
 
 const VIEW_TYPE_CHAT = 'ai-linzi-chat'
+const CHAT_SEND_SHORTCUT_HINT = 'Enter 换行 · Mac：⌘ + Enter / Windows：Ctrl + Enter 发送'
+const CHAT_INPUT_PLACEHOLDER = '问 AI霖子任何事…'
+const INTERVIEW_INPUT_PLACEHOLDER = '先告诉 AI 你想写什么方向（一句话），它会开始采访你…'
 
 // 与服务端 chat-core UIMessage 对齐的最小结构
 interface WireMessage {
@@ -852,16 +855,22 @@ class ChatView extends ItemView {
 
     this.inputEl = footer.createEl('textarea', {
       cls: 'ai-linzi-input',
-      attr: { placeholder: '问 AI霖子 任何事…(Enter 发送,Shift+Enter 换行)' },
+      attr: { placeholder: CHAT_INPUT_PLACEHOLDER },
     })
     this.inputEl.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey) && !ev.isComposing) {
         ev.preventDefault()
         void this.send()
       }
     })
 
-    this.sendBtn = footer.createEl('button', { text: '发送', cls: 'ai-linzi-send' })
+    const sendRow = footer.createDiv({ cls: 'ai-linzi-send-row' })
+    sendRow.createSpan({ text: CHAT_SEND_SHORTCUT_HINT, cls: 'ai-linzi-send-hint' })
+    this.sendBtn = sendRow.createEl('button', {
+      text: '发送',
+      cls: 'ai-linzi-send',
+      attr: { title: CHAT_SEND_SHORTCUT_HINT, 'aria-label': `发送消息，${CHAT_SEND_SHORTCUT_HINT}` },
+    })
     this.sendBtn.onclick = () => void this.send()
 
     this.refreshImageModeUi()
@@ -918,11 +927,11 @@ class ChatView extends ItemView {
     if (c.mode === 'interview' && this.mode !== 'interview') {
       this.mode = 'interview'
       this.interviewBar.show()
-      this.inputEl.placeholder = '先告诉 AI 你想写什么方向(一句话),它会开始采访你…'
+      this.inputEl.placeholder = INTERVIEW_INPUT_PLACEHOLDER
     } else if (c.mode === 'chat' && this.mode === 'interview') {
       this.mode = 'chat'
       this.interviewBar.hide()
-      this.inputEl.placeholder = '问 AI霖子 任何事…(Enter 发送,Shift+Enter 换行)'
+      this.inputEl.placeholder = CHAT_INPUT_PLACEHOLDER
     }
     this.refreshImageModeUi()
     this.renderMessages()
@@ -960,7 +969,7 @@ class ChatView extends ItemView {
       ? this.attachNote
         ? '描述要给当前笔记生成的图片；下一轮可直接说怎么修改…'
         : '描述要生成的图片；下一轮可直接说怎么修改…'
-      : '问 AI霖子 任何事…(Enter 发送,Shift+Enter 换行)'
+      : CHAT_INPUT_PLACEHOLDER
     this.sendBtn.setText(this.imageMode ? '生成图片' : '发送')
   }
 
@@ -1278,7 +1287,7 @@ class ChatView extends ItemView {
     this.messages = []
     this.sessionId = newPluginSessionId()
     this.interviewBar.show()
-    this.inputEl.placeholder = '先告诉 AI 你想写什么方向(一句话),它会开始采访你…'
+    this.inputEl.placeholder = INTERVIEW_INPUT_PLACEHOLDER
     this.renderMessages()
     new Notice('✍️ 已进入访谈写作:先说你想写的方向', 5000)
   }
@@ -1288,7 +1297,7 @@ class ChatView extends ItemView {
     this.messages = []
     this.sessionId = newPluginSessionId()
     this.interviewBar.hide()
-    this.inputEl.placeholder = '问 AI霖子 任何事…(Enter 发送,Shift+Enter 换行)'
+    this.inputEl.placeholder = CHAT_INPUT_PLACEHOLDER
     this.renderMessages()
   }
 

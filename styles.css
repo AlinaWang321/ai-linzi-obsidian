@@ -281,9 +281,21 @@
 }
 
 .ai-linzi-send {
-  align-self: flex-end;
   background: var(--interactive-accent);
   color: var(--text-on-accent);
+}
+
+.ai-linzi-send-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ai-linzi-send-hint {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.35;
 }
 
 .ai-linzi-send:disabled {
