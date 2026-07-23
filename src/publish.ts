@@ -115,7 +115,8 @@ export function styleHtml(html: string): string {
     .replaceAll('<ul>', `<ul style="margin:0 0 20px;padding-left:1.4em;color:${T.ink};font-size:16px;line-height:1.85;">`)
     .replaceAll('<ol>', `<ol style="margin:0 0 20px;padding-left:1.4em;color:${T.ink};font-size:16px;line-height:1.85;">`)
     .replaceAll('<li>', `<li style="margin:0 0 8px;">`)
-    .replaceAll('<strong>', `<strong style="color:${T.navy};font-weight:700;">`)
+    // 正文金句与大标题统一使用品牌亮蓝；普通正文仍保留深色，避免整页过亮。
+    .replaceAll('<strong>', `<strong style="color:${T.blueBright};font-weight:700;">`)
     .replaceAll('<hr>', `<hr style="margin:32px auto;border:none;border-top:1px solid ${T.line};width:100%;">`)
     .replaceAll('<code>', `<code style="padding:2px 5px;border-radius:4px;background:#eef4ff;color:${T.navy};font-size:14px;">`)
     .replace(/<a href="([^"]*)"([^>]*)>/g, `<a href="$1"$2 style="color:${T.linkBlue};font-weight:700;text-decoration:underline;text-decoration-color:${T.yellow};text-underline-offset:3px;word-break:break-all;">`)

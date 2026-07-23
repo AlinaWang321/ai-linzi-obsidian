@@ -111,7 +111,7 @@ assert.doesNotMatch(html, /标题候选|这是摘要|<script|alert\(/)
 assert.match(html, /example\.com\/body\.png/)
 assert.match(
   html,
-  /<strong style="color:#1f3f7c;font-weight:700;">真正值得加粗的是这一节的核心判断。<\/strong>/,
+  /<strong style="color:#0057FF;font-weight:700;">真正值得加粗的是这一节的核心判断。<\/strong>/,
 )
 
 const historicBody = `![[attachments/2026.07.22_00_封面_测试.png]]

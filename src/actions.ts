@@ -882,6 +882,144 @@ class IllustrationCompleteModal extends Modal {
   }
 }
 
+interface IllustrationSetupResult {
+  count: number
+}
+
+async function setIllustrationCharacterReference(
+  plugin: AiLinziPlugin,
+  path: string,
+): Promise<void> {
+  plugin.settings.illustrationCharacterReferencePath = path
+  await plugin.saveSettings()
+}
+
+async function configuredIllustrationCharacterReference(
+  plugin: AiLinziPlugin,
+): Promise<string | undefined> {
+  const path = plugin.settings.illustrationCharacterReferencePath.trim()
+  if (!path) return undefined
+  const file = plugin.app.vault.getAbstractFileByPath(path)
+  if (!(file instanceof TFile) || !IMAGE_EXTENSIONS.has(file.extension.toLowerCase())) {
+    new Notice('专属人偶参考图已经移动或删除，本次将使用通用人偶。可在文章配图弹窗中重新选择。', 9000)
+    return undefined
+  }
+  return imageFileToReferenceDataUrl(plugin, file)
+}
+
+async function saveComputerCharacterReference(plugin: AiLinziPlugin, file: File): Promise<string> {
+  const reference = await browserImageToReferenceDataUrl(file)
+  const folder = normalizePath(`${plugin.settings.outputFolder || 'AI霖子输出'}/品牌素材`)
+  await ensureFolder(plugin, folder)
+  const path = uniqueVaultPath(
+    plugin,
+    normalizePath(`${folder}/${today()}_${timestampForFilename()}_公众号配图专属人偶.jpg`),
+  )
+  await plugin.app.vault.createBinary(path, await fetchImageBinary(reference))
+  return path
+}
+
+class IllustrationSetupModal extends Modal {
+  private submitted = false
+  private resolve!: (value: IllustrationSetupResult | null) => void
+  readonly result: Promise<IllustrationSetupResult | null>
+
+  constructor(private plugin: AiLinziPlugin) {
+    super(plugin.app)
+    this.result = new Promise((resolve) => (this.resolve = resolve))
+    this.open()
+  }
+
+  onOpen() {
+    this.titleEl.setText('文章配图 · 数量与专属人偶')
+    this.contentEl.createEl('p', {
+      text: '专属人偶只需设置一次，之后封面和正文配图都会自动参考它；不设置则继续使用通用极简人偶。',
+      cls: 'ai-linzi-plan-intro',
+    })
+    let count = 3
+    new Setting(this.contentEl)
+      .setName('正文插图数量')
+      .setDesc('会额外生成 1 张公众号封面；确认配图方案后才开始生图。')
+      .addDropdown((dropdown) => {
+        for (let value = 2; value <= 5; value++) dropdown.addOption(String(value), `${value} 张`)
+        dropdown.setValue(String(count)).onChange((value) => {
+          count = Math.min(5, Math.max(2, Number.parseInt(value, 10) || 3))
+        })
+      })
+
+    const referenceSetting = new Setting(this.contentEl)
+      .setName('我的专属人偶（可选）')
+      .setDesc('参考人物外形、发型、服装配色和线条风格；每张图的动作、表情与场景仍按文章内容重新创作。')
+    const preview = this.contentEl.createDiv({ cls: 'ai-linzi-character-reference-preview' })
+    const refreshPreview = () => {
+      preview.empty()
+      const path = this.plugin.settings.illustrationCharacterReferencePath.trim()
+      const file = path ? this.app.vault.getAbstractFileByPath(path) : null
+      if (file instanceof TFile && IMAGE_EXTENSIONS.has(file.extension.toLowerCase())) {
+        preview.createEl('img', {
+          attr: { src: this.app.vault.getResourcePath(file), alt: '我的公众号配图专属人偶' },
+        })
+        const meta = preview.createDiv()
+        meta.createEl('strong', { text: '已启用我的专属人偶' })
+        meta.createEl('span', { text: file.path })
+      } else {
+        preview.createEl('strong', { text: path ? '原参考图已移动或删除' : '当前使用通用极简人偶' })
+        preview.createEl('span', { text: path ? '请重新选择一张图片。' : '以后随时可以在这里设置自己的角色。' })
+      }
+    }
+    referenceSetting
+      .addButton((button) =>
+        button.setButtonText('选择 Vault 图片').onClick(() => {
+          new VaultImageSuggestModal(this.app, async (file) => {
+            await setIllustrationCharacterReference(this.plugin, file.path)
+            refreshPreview()
+          }).open()
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText('从电脑上传').onClick(() => {
+          chooseComputerImages(1, async (files) => {
+            const file = files[0]
+            if (!file) return
+            try {
+              const path = await saveComputerCharacterReference(this.plugin, file)
+              await setIllustrationCharacterReference(this.plugin, path)
+              refreshPreview()
+              new Notice('✅ 专属人偶已保存到你的 Vault，以后一键配图会自动使用')
+            } catch (error) {
+              new Notice(`专属人偶保存失败：${error instanceof Error ? error.message : String(error)}`, 9000)
+            }
+          })
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText('恢复通用人偶').onClick(async () => {
+          await setIllustrationCharacterReference(this.plugin, '')
+          refreshPreview()
+        }),
+      )
+
+    refreshPreview()
+    new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
+      .addButton((button) =>
+        button
+          .setButtonText('下一步：生成配图方案')
+          .setCta()
+          .onClick(() => {
+            this.submitted = true
+            this.resolve({ count })
+            this.close()
+          }),
+      )
+  }
+
+  onClose() {
+    if (!this.submitted) this.resolve(null)
+    this.contentEl.empty()
+  }
+}
+
 function uniqueVaultPath(plugin: AiLinziPlugin, desired: string): string {
   if (!plugin.app.vault.getAbstractFileByPath(desired)) return desired
   const dot = desired.lastIndexOf('.')
@@ -907,6 +1045,7 @@ export async function generateArticleIllustrationFromChat(
   const articleTitle =
     prepared.titleCandidates[0]?.trim() ||
     note.filename.replace(/\.md$/i, '').replace(/^\d{4}[.-]\d{1,2}[.-]\d{1,2}_?/, '').trim()
+  const characterReferenceImageDataUrl = await configuredIllustrationCharacterReference(plugin)
   const data = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
     method: 'POST',
     body: {
@@ -914,6 +1053,7 @@ export async function generateArticleIllustrationFromChat(
       articleTitle,
       mode: 'single',
       sessionId: options?.sessionId,
+      characterReferenceImageDataUrl,
       single: {
         instruction: instruction.trim(),
         referenceImageDataUrl: options?.referenceImageDataUrl,
@@ -1023,16 +1163,9 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     }
 
     if (!confirmed) {
-      const input = await new PromptModal(plugin.app, '文章配图 · 极简小清新手绘', '先生成配图方案', [
-        {
-          key: 'count',
-          label: '正文插图几张?(2-5)',
-          desc: '会额外规划 1 张封面。先查看每张图的核心意思、放置位置和画面文字，确认后才开始生图。',
-          initial: '3',
-        },
-      ]).result
-      if (!input) return
-      count = Math.min(5, Math.max(2, parseInt(input.count) || 3))
+      const setup = await new IllustrationSetupModal(plugin).result
+      if (!setup) return
+      count = setup.count
 
       planning = new Notice('🤖 正在读文章并规划配图点…', 0)
       const planData = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
@@ -1070,6 +1203,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     await ensureFolder(plugin, folder)
 
     const generating = new Notice('🤖 AI霖子正在生成文章配图…（多张高清图约需 2—8 分钟，可继续使用 Obsidian，请勿退出）', 0)
+    const characterReferenceImageDataUrl = await configuredIllustrationCharacterReference(plugin)
     let pendingPlan: IllustrationPlan = confirmed
     let generatedCover: IllustrationGenerateResult['cover'] = null
     const generatedImages = new Map<string, NonNullable<IllustrationGenerateResult['images']>[number]>()
@@ -1087,6 +1221,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
             count,
             mode: 'generate',
             plan: pendingPlan,
+            characterReferenceImageDataUrl,
           },
         })) as IllustrationGenerateResult
         lastResult = result
@@ -1594,12 +1729,14 @@ export async function runArticleIllustrationEdit(plugin: AiLinziPlugin, initialI
     let imageUrl = ''
     try {
       const imageDataUrl = await imageFileToReferenceDataUrl(plugin, request.image.file)
+      const characterReferenceImageDataUrl = await configuredIllustrationCharacterReference(plugin)
       const article = prepareWechatArticle(note.text).body
       const data = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
         method: 'POST',
         body: {
           article: clip(article, 20_000, '文章'),
           mode: 'edit',
+          characterReferenceImageDataUrl,
           edit: {
             imageDataUrl,
             instruction: request.instruction,
