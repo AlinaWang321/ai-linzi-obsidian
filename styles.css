@@ -403,7 +403,23 @@
   font-weight: 650;
 }
 
-.ai-linzi-vault-browser-folder > span:first-child {
+.ai-linzi-vault-browser-folder-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+}
+
+.ai-linzi-vault-browser-chevron {
+  width: 12px;
+  flex: 0 0 12px;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-align: center;
+}
+
+.ai-linzi-vault-browser-folder-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
