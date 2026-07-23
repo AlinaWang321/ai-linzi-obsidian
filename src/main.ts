@@ -134,6 +134,23 @@ const VIEW_TYPE_CHAT = 'ai-linzi-chat'
 const CHAT_SEND_SHORTCUT_HINT = 'Enter 换行 · Mac：⌘ + Enter / Windows：Ctrl + Enter 发送'
 const CHAT_INPUT_PLACEHOLDER = '问 AI霖子任何事…'
 const INTERVIEW_INPUT_PLACEHOLDER = '先告诉 AI 你想写什么方向（一句话），它会开始采访你…'
+const CAPABILITIES_CACHE_TTL_MS = 5 * 60 * 1000
+
+type MembershipTier = 'starter' | 'pro' | 'business'
+
+interface PluginCapabilities {
+  studentNo?: string
+  apiVersion?: string
+  tier?: MembershipTier
+  features?: {
+    articleIllustration?: {
+      customCharacterReferenceAvailable?: boolean
+    }
+    aiImage?: {
+      available?: boolean
+    }
+  }
+}
 
 // 与服务端 chat-core UIMessage 对齐的最小结构
 interface WireMessage {
@@ -365,6 +382,7 @@ function extractTextFromSSE(raw: string): { text: string; error?: string } {
 
 export default class AiLinziPlugin extends Plugin {
   settings: AiLinziSettings = DEFAULT_SETTINGS
+  private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
   /**
    * 最近一次激活的笔记。侧边面板(对话)获得焦点时 getActiveFile() 会返回 null,
    * 面板上的「调用技能/存入知识库」按钮靠这个记录知道用户"当前开着哪篇笔记"。
@@ -638,6 +656,41 @@ export default class AiLinziPlugin extends Plugin {
     return data
   }
 
+  async getCapabilities(force = false): Promise<PluginCapabilities> {
+    const now = Date.now()
+    if (
+      !force &&
+      this.capabilitiesCache &&
+      now - this.capabilitiesCache.loadedAt < CAPABILITIES_CACHE_TTL_MS
+    ) {
+      return this.capabilitiesCache.data
+    }
+    const data = (await this.api('/api/plugin/v1/capabilities')) as PluginCapabilities
+    this.capabilitiesCache = { data, loadedAt: now }
+    return data
+  }
+
+  async hasProAccess(force = false): Promise<boolean> {
+    try {
+      const data = await this.getCapabilities(force)
+      return data.tier === 'pro' || data.tier === 'business'
+    } catch {
+      return false
+    }
+  }
+
+  async requireProAccess(featureName: string): Promise<boolean> {
+    try {
+      const data = await this.getCapabilities()
+      if (data.tier === 'pro' || data.tier === 'business') return true
+      new Notice(`“${featureName}”是 Pro 及以上会员功能，请升级会员后使用。`, 7000)
+      return false
+    } catch {
+      new Notice('暂时无法确认会员权益，请先在设置中测试连接后重试。', 7000)
+      return false
+    }
+  }
+
   /**
    * 调用返回纯文本流的技能路由(toTextStreamResponse)。
    * requestUrl 会把流缓冲成完整文本;错误时这些路由返回 JSON,这里解析出友好文案。
@@ -677,7 +730,7 @@ export default class AiLinziPlugin extends Plugin {
 
   async testConnection() {
     try {
-      const data = await this.api('/api/plugin/v1/capabilities')
+      const data = await this.getCapabilities(true)
       new Notice(
         `✅ 已连接 AI霖子\n学号:${data.studentNo}\ntier:${data.tier}\n插件 API:v${data.apiVersion}`,
         6000,
@@ -791,7 +844,7 @@ class ChatView extends ItemView {
     const kbBtn = actionsRow.createEl('button', { text: '📚 存入知识库', cls: 'ai-linzi-action-btn' })
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
     this.imageModeBtn = actionsRow.createEl('button', { text: '🖼️ 用 AI 生图', cls: 'ai-linzi-action-btn' })
-    this.imageModeBtn.onclick = () => this.setImageMode(!this.imageMode)
+    this.imageModeBtn.onclick = () => void this.setImageMode(!this.imageMode)
     const dashboardBtn = actionsRow.createEl('button', { text: '📊 内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
     actionsRow.createSpan({ text: '技能是否使用当前笔记，以弹窗说明为准', cls: 'ai-linzi-actions-hint' })
@@ -809,7 +862,7 @@ class ChatView extends ItemView {
     const imageLabel = toggleRow.createEl('label', { cls: 'ai-linzi-toggle ai-linzi-image-toggle' })
     this.imageToggleEl = imageLabel.createEl('input', { type: 'checkbox' })
     this.imageToggleEl.checked = false
-    this.imageToggleEl.onchange = () => this.setImageMode(this.imageToggleEl.checked)
+    this.imageToggleEl.onchange = () => void this.setImageMode(this.imageToggleEl.checked)
     imageLabel.createSpan({ text: ' AI 生图模式' })
 
     this.imageOptionsEl = footer.createDiv({ cls: 'ai-linzi-image-mode-options' })
@@ -937,15 +990,21 @@ class ChatView extends ItemView {
     this.renderMessages()
   }
 
-  private setImageMode(active: boolean): void {
+  private async setImageMode(active: boolean): Promise<boolean> {
     if (this.mode === 'interview' && active) {
       new Notice('请先结束访谈写作，再进入 AI 生图模式')
       this.refreshImageModeUi()
-      return
+      return false
+    }
+    if (active && !(await this.plugin.requireProAccess('AI 生图模式'))) {
+      this.imageMode = false
+      this.refreshImageModeUi()
+      return false
     }
     this.imageMode = active
     this.refreshImageModeUi()
     if (active) this.inputEl.focus()
+    return true
   }
 
   private refreshImageModeUi(): void {
@@ -1558,10 +1617,10 @@ class ChatView extends ItemView {
     }
     const actions = card.createDiv({ cls: 'ai-linzi-chat-image-actions' })
     const continueBtn = actions.createEl('button', { text: '继续修改这张' })
-    continueBtn.onclick = () => {
+    continueBtn.onclick = async () => {
       this.activeImageMessageId = message.id
       this.usePreviousImage = true
-      this.setImageMode(true)
+      if (!(await this.setImageMode(true))) return
       this.inputEl.placeholder = '直接写修改要求，例如：标题缩小，人物移到右边…'
       this.inputEl.focus()
     }
