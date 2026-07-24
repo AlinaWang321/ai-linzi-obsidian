@@ -33,7 +33,7 @@
 - 公众号 AppSecret
 - 本地插件设置与会话缓存（不是主对话唯一副本）
 
-敏感凭证使用 Obsidian `SecretStorage`，`data.json` 只保存 SecretStorage 条目名。设备损坏或更换后，AI霖子 Token 应在连接中心撤销旧密钥并生成新密钥；公众号 AppSecret 应从公众号后台重新填写或重置。
+敏感凭证使用 Obsidian `SecretStorage`。设置页只让用户粘贴密钥值，不显示也不要求填写 SecretStorage 条目名或密钥 ID；内部使用固定的隐藏条目名，`data.json` 不保存密钥明文。设备损坏或更换后，AI霖子 Token 应在连接中心撤销旧密钥并生成新密钥；公众号 AppSecret 应从公众号后台重新填写或重置。
 
 ## GitHub 只保存什么
 

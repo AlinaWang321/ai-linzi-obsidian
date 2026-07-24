@@ -16,7 +16,6 @@ import {
   Notice,
   Plugin,
   PluginSettingTab,
-  SecretComponent,
   Setting,
   TFile,
   WorkspaceLeaf,
@@ -93,7 +92,7 @@ export const SKILL_ACTIONS: {
 
 interface AiLinziSettings {
   serverUrl: string
-  /** SecretStorage 中保存 AI霖子连接密钥的条目名，不保存密钥明文 */
+  /** SecretStorage 的内部条目名，仅用于兼容旧设置；不得在学员界面中暴露 */
   tokenSecretId: string
   /** 「带上当前笔记」开关的默认值 */
   attachNoteDefault: boolean
@@ -489,31 +488,61 @@ export default class AiLinziPlugin extends Plugin {
       migrated = true
     }
 
-    // v0.6.0：首次启动自动把旧 data.json 里的明文密钥迁到 Obsidian SecretStorage，
-    // 随后立刻重写 data.json，只留下 SecretStorage 条目名。
-    if (legacyToken?.trim()) {
-      const id = this.settings.tokenSecretId || DEFAULT_TOKEN_SECRET_ID
-      this.app.secretStorage.setSecret(id, legacyToken.trim())
-      this.settings.tokenSecretId = id
+    // 学员只需要粘贴密钥值。SecretStorage 的条目名是实现细节，统一迁移到
+    // 两个固定且不在界面暴露的内部 ID。固定条目已有值时优先保留，避免旧
+    // 自定义条目中的过期值覆盖用户刚更新的密钥。
+    const previousTokenId = this.settings.tokenSecretId.trim()
+    const fixedToken = this.app.secretStorage.getSecret(DEFAULT_TOKEN_SECRET_ID)?.trim() ?? ''
+    const previousToken =
+      previousTokenId && previousTokenId !== DEFAULT_TOKEN_SECRET_ID
+        ? this.app.secretStorage.getSecret(previousTokenId)?.trim() ?? ''
+        : ''
+    const tokenToKeep = fixedToken || legacyToken?.trim() || previousToken
+    if (tokenToKeep && tokenToKeep !== fixedToken) {
+      this.app.secretStorage.setSecret(DEFAULT_TOKEN_SECRET_ID, tokenToKeep)
+    }
+    if (legacyToken !== undefined) migrated = true
+    if (this.settings.tokenSecretId !== DEFAULT_TOKEN_SECRET_ID) {
+      this.settings.tokenSecretId = DEFAULT_TOKEN_SECRET_ID
       migrated = true
     }
-    if (legacyWechatSecret?.trim()) {
-      const id = this.settings.wechatAppSecretId || DEFAULT_WECHAT_SECRET_ID
-      this.app.secretStorage.setSecret(id, legacyWechatSecret.trim())
-      this.settings.wechatAppSecretId = id
+
+    const previousWechatId = this.settings.wechatAppSecretId.trim()
+    const fixedWechat = this.app.secretStorage.getSecret(DEFAULT_WECHAT_SECRET_ID)?.trim() ?? ''
+    const previousWechat =
+      previousWechatId && previousWechatId !== DEFAULT_WECHAT_SECRET_ID
+        ? this.app.secretStorage.getSecret(previousWechatId)?.trim() ?? ''
+        : ''
+    const wechatToKeep = fixedWechat || legacyWechatSecret?.trim() || previousWechat
+    if (wechatToKeep && wechatToKeep !== fixedWechat) {
+      this.app.secretStorage.setSecret(DEFAULT_WECHAT_SECRET_ID, wechatToKeep)
+    }
+    if (legacyWechatSecret !== undefined) migrated = true
+    if (this.settings.wechatAppSecretId !== DEFAULT_WECHAT_SECRET_ID) {
+      this.settings.wechatAppSecretId = DEFAULT_WECHAT_SECRET_ID
       migrated = true
     }
     if (migrated) await this.saveSettings()
   }
 
   getApiToken(): string {
-    const id = this.settings.tokenSecretId.trim()
-    return id ? this.app.secretStorage.getSecret(id)?.trim() ?? '' : ''
+    return this.app.secretStorage.getSecret(DEFAULT_TOKEN_SECRET_ID)?.trim() ?? ''
+  }
+
+  async setApiToken(value: string): Promise<void> {
+    this.app.secretStorage.setSecret(DEFAULT_TOKEN_SECRET_ID, value.trim())
+    this.settings.tokenSecretId = DEFAULT_TOKEN_SECRET_ID
+    await this.saveSettings()
   }
 
   getWechatAppSecret(): string {
-    const id = this.settings.wechatAppSecretId.trim()
-    return id ? this.app.secretStorage.getSecret(id)?.trim() ?? '' : ''
+    return this.app.secretStorage.getSecret(DEFAULT_WECHAT_SECRET_ID)?.trim() ?? ''
+  }
+
+  async setWechatAppSecret(value: string): Promise<void> {
+    this.app.secretStorage.setSecret(DEFAULT_WECHAT_SECRET_ID, value.trim())
+    this.settings.wechatAppSecretId = DEFAULT_WECHAT_SECRET_ID
+    await this.saveSettings()
   }
 
   // ── 会话本地持久化(独立文件,不进 data.json 防设置写放大) ──
@@ -1566,7 +1595,7 @@ class ChatView extends ItemView {
   private async sendInterview(): Promise<string> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
-    if (!token) return '⚠️ 请先在设置里选择或新建 AI霖子连接密钥'
+    if (!token) return '⚠️ 请先在设置里粘贴 AI霖子连接密钥'
     const res = await requestUrl({
       url: `${serverUrl.replace(/\/+$/, '')}/api/plugin/v1/skills/wechat-interview`,
       method: 'POST',
@@ -1607,7 +1636,7 @@ class ChatView extends ItemView {
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
-    if (!token) return { kind: 'bizError', message: '请先在设置里选择或新建 AI霖子连接密钥' }
+    if (!token) return { kind: 'bizError', message: '请先在设置里粘贴 AI霖子连接密钥' }
     const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/api/plugin/v1/chat`, {
       method: 'POST',
       headers: {
@@ -2047,16 +2076,18 @@ class AiLinziSettingTab extends PluginSettingTab {
       .setDesc('已安全连接官方服务 chat.alinalinzi.com；学员版无需修改服务器地址')
 
     new Setting(containerEl)
-      .setName('连接 AI霖子账号')
-      .setDesc('先在 AI霖子 网页「我的 → 连接中心」生成连接密钥，再在这里新建安全条目并粘贴。插件只保存安全条目名；换电脑后重新绑定即可。')
-      .addComponent((el) =>
-        new SecretComponent(this.app, el)
-          .setValue(this.plugin.settings.tokenSecretId)
-          .onChange(async (v) => {
-            this.plugin.settings.tokenSecretId = v.trim()
-            await this.plugin.saveSettings()
-          }),
-      )
+      .setName('AI霖子连接密钥')
+      .setDesc('在 AI霖子网页「我的 → 连接中心」生成后，直接粘贴到这里。无需填写密钥名称或 ID。')
+      .addText((input) => {
+        input.inputEl.type = 'password'
+        input.inputEl.autocomplete = 'off'
+        input
+          .setPlaceholder('粘贴网页端生成的连接密钥')
+          .setValue(this.plugin.getApiToken())
+          .onChange(async (value) => {
+            await this.plugin.setApiToken(value)
+          })
+      })
 
     new Setting(containerEl)
       .setName('获取连接密钥')
@@ -2107,15 +2138,17 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('公众号 AppSecret')
-      .setDesc('在公众号后台获取后，新建一个安全条目并粘贴。data.json 只保存条目名；密钥保留在当前设备的 Obsidian SecretStorage。换设备时需要重新填写。')
-      .addComponent((el) =>
-        new SecretComponent(this.app, el)
-          .setValue(this.plugin.settings.wechatAppSecretId)
-          .onChange(async (v) => {
-            this.plugin.settings.wechatAppSecretId = v.trim()
-            await this.plugin.saveSettings()
-          }),
-      )
+      .setDesc('从公众号后台复制后直接粘贴到这里，无需填写密钥名称或 ID。密钥只保存在当前设备的 Obsidian 安全存储中。')
+      .addText((input) => {
+        input.inputEl.type = 'password'
+        input.inputEl.autocomplete = 'off'
+        input
+          .setPlaceholder('粘贴公众号 AppSecret')
+          .setValue(this.plugin.getWechatAppSecret())
+          .onChange(async (value) => {
+            await this.plugin.setWechatAppSecret(value)
+          })
+      })
 
     new Setting(containerEl)
       .setName('文末品牌小卡')
