@@ -66,6 +66,13 @@ import {
   AuthorizedContentModal,
   type AuthorizedContentLimits,
 } from './content-selector'
+import {
+  WorkflowEditorModal,
+  WorkflowManagerModal,
+  WorkflowRunModal,
+  buildWorkflowRunPrompt,
+  type SavedWorkflow,
+} from './workflows'
 
 /** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -98,6 +105,8 @@ interface AiLinziSettings {
   attachNoteDefault: boolean
   /** 技能产出落盘的文件夹(相对 vault 根) */
   outputFolder: string
+  /** 用户自己创建的工作流文件夹；工作流是用户资产，保存在 Vault 而非插件隐藏目录 */
+  workflowFolder: string
   /** 公众号一键配图使用的专属人偶参考图，只保存用户 Vault 内的路径 */
   illustrationCharacterReferencePath: string
   /** 选题雷达默认受众(跑一次后自动记住;历史key沿用defaultNiche兼容旧设置) */
@@ -116,6 +125,7 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   tokenSecretId: '',
   attachNoteDefault: true,
   outputFolder: 'AI霖子输出',
+  workflowFolder: 'AI霖子工作流',
   illustrationCharacterReferencePath: '',
   defaultNiche: '',
   wechatAppId: '',
@@ -357,6 +367,12 @@ function newPluginSessionId(): string {
   return normalizePluginSessionId(uid())
 }
 
+function isWorkflowDesignIntent(text: string): boolean {
+  return /(?:帮我|为我|一起)?(?:设计|整理|形成|创建|编写|完善).{0,12}(?:工作流|SOP|固定流程|自动化流程)|(?:工作流|SOP).{0,12}(?:怎么做|如何做|设计|整理|形成|创建|编写|完善)/i.test(
+    text,
+  )
+}
+
 function compareVersions(left: string, right: string): number {
   const parse = (value: string) => value.split('.').map((part) => Number.parseInt(part, 10) || 0)
   const a = parse(left)
@@ -447,7 +463,18 @@ export default class AiLinziPlugin extends Plugin {
       callback: () => this.activateContentDashboard(),
     })
 
-    // ── M2:四技能 + 喂库(笔记即输入);三入口共用 SKILL_ACTIONS ──
+    this.addCommand({
+      id: 'manage-workflows',
+      name: '打开我的工作流',
+      callback: async () => {
+        await this.activateChatView()
+        const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]
+        const view = leaf?.view
+        if (view instanceof ChatView) view.openWorkflowManager()
+      },
+    })
+
+    // ── M2:技能 + 喂库(笔记即输入);三入口共用 SKILL_ACTIONS ──
     for (const c of SKILL_ACTIONS) {
       this.addCommand({ id: c.id, name: c.name, callback: () => void c.fn(this) })
     }
@@ -906,6 +933,13 @@ class ChatView extends ItemView {
             .onClick(() => void c.fn(this.plugin)),
         )
       }
+      menu.addSeparator()
+      menu.addItem((item) =>
+        item
+          .setTitle('我的工作流：创建、运行和管理')
+          .setIcon('repeat-2')
+          .onClick(() => this.openWorkflowManager()),
+      )
       menu.showAtMouseEvent(evt)
     }
     const kbBtn = actionsRow.createEl('button', { text: '存入知识库', cls: 'ai-linzi-action-btn' })
@@ -1264,6 +1298,60 @@ class ChatView extends ItemView {
     this.authorizedContentPaths = selection.paths
     this.authorizedContentChars = selection.totalChars
     this.refreshAuthorizedContentUi()
+  }
+
+  openWorkflowManager(): void {
+    if (this.mode === 'interview') {
+      new Notice('请先结束访谈写作，再运行个人工作流')
+      return
+    }
+    new WorkflowManagerModal(
+      this.app,
+      this.plugin.settings.workflowFolder,
+      async (workflow) => this.runWorkflow(workflow),
+    ).open()
+  }
+
+  private async runWorkflow(workflow: SavedWorkflow): Promise<void> {
+    if (this.sending) {
+      new Notice('当前回复还在生成，请完成后再运行工作流')
+      return
+    }
+    const activeFile = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+    const contextParts = [
+      this.attachNote && activeFile ? `当前笔记：${activeFile.name}` : '当前笔记：未带上',
+      this.authorizedContentPaths.length > 0
+        ? `已选择文件：${this.authorizedContentPaths.length} 篇`
+        : '已选择文件：0 篇',
+    ]
+    const modal = new WorkflowRunModal(this.app, workflow, contextParts.join(' · '))
+    modal.open()
+    const extraInstruction = await modal.result
+    if (extraInstruction === null) return
+    if (this.imageMode) {
+      this.imageMode = false
+      this.refreshImageModeUi()
+    }
+    this.inputEl.value = buildWorkflowRunPrompt(workflow, extraInstruction)
+    await this.send()
+  }
+
+  private async saveConversationRequestAsWorkflow(
+    previousUserText: string,
+    assistantText: string,
+  ): Promise<void> {
+    const useDesignedWorkflow = isWorkflowDesignIntent(previousUserText)
+    const modal = new WorkflowEditorModal(
+      this.app,
+      this.plugin.settings.workflowFolder,
+      {
+        initialName: previousUserText.replace(/\s+/g, ' ').slice(0, 24),
+        initialInstruction: useDesignedWorkflow ? assistantText : previousUserText,
+      },
+    )
+    modal.open()
+    const workflow = await modal.result
+    if (workflow) new Notice(`✅ 已保存为个人工作流「${workflow.name}」`)
   }
 
   private clearAuthorizedContent(): void {
@@ -1777,6 +1865,15 @@ class ChatView extends ItemView {
             })
             new Notice(`✅ 已存为笔记:${f.basename}`)
           }
+          if (previousUserText.trim()) {
+            const workflowBtn = bar.createEl('button', {
+              text: isWorkflowDesignIntent(previousUserText)
+                ? '🔁 保存这套工作流'
+                : '🔁 保存为工作流',
+            })
+            workflowBtn.onclick = () =>
+              void this.saveConversationRequestAsWorkflow(previousUserText, patch?.displayText ?? cleanText)
+          }
           if (!patch && editReply) {
             const unavailableBtn = bar.createEl('button', { text: '⚠️ 未识别到可安全应用的修改' })
             unavailableBtn.disabled = true
@@ -2107,6 +2204,19 @@ class AiLinziSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.outputFolder)
           .onChange(async (v) => {
             this.plugin.settings.outputFolder = v.trim() || 'AI霖子输出'
+            await this.plugin.saveSettings()
+          }),
+      )
+
+    new Setting(containerEl)
+      .setName('我的工作流保存到文件夹')
+      .setDesc('学员自己创建的固定工作流会作为 Markdown 保存在 Vault，可随 Vault 备份或同步')
+      .addText((t) =>
+        t
+          .setPlaceholder('AI霖子工作流')
+          .setValue(this.plugin.settings.workflowFolder)
+          .onChange(async (v) => {
+            this.plugin.settings.workflowFolder = v.trim() || 'AI霖子工作流'
             await this.plugin.saveSettings()
           }),
       )
