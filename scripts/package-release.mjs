@@ -19,7 +19,9 @@ for (const name of ['manifest.json', 'main.js', 'styles.css']) {
 // 文件内容仍是完整的中文安装说明。
 await copyFile(join(root, 'docs/安装说明.md'), join(pluginDir, 'INSTALL.md'))
 await mkdir(join(pluginDir, 'img'), { recursive: true })
-await copyFile(join(root, 'docs/img/install-location.png'), join(pluginDir, 'img/install-location.png'))
+for (const imageName of ['install-location.png', 'connection-key-location.png']) {
+  await copyFile(join(root, 'docs/img', imageName), join(pluginDir, 'img', imageName))
+}
 
 execFileSync('zip', ['-q', '-r', archive, 'ai-linzi'], { cwd: dist })
 console.log(`AI霖子 Obsidian 插件 v${manifest.version} 安装包：${archive}`)
