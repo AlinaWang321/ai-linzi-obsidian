@@ -170,6 +170,9 @@ interface PluginCapabilities {
         maxSources?: number
         maxExcerptChars?: number
         maxTotalChars?: number
+        supportedExtensions?: string[]
+        ocr?: boolean
+        legacyDoc?: boolean
       }
     }
     articleIllustration?: {
@@ -964,7 +967,7 @@ class ChatView extends ItemView {
     const vaultSearchLabel = toggleRow.createEl('label', {
       cls: 'ai-linzi-toggle ai-linzi-vault-search-toggle',
       attr: {
-        title: '在本机搜索整个 Vault，只把与本轮问题相关的少量片段交给 AI',
+        title: '在本机搜索 Markdown、TXT、PDF 和 DOCX，只把相关的少量片段交给 AI',
       },
     })
     this.vaultSearchToggleEl = vaultSearchLabel.createEl('input', { type: 'checkbox' })
@@ -1967,7 +1970,7 @@ class ChatView extends ItemView {
     panel.createSpan({ text: '本轮在 Vault 中找到：', cls: 'ai-linzi-vault-sources-label' })
     for (const source of unique) {
       const button = panel.createEl('button', {
-        text: source.filename.replace(/\.md$/i, ''),
+        text: source.filename.replace(/\.(?:md|txt|pdf|docx)$/i, ''),
         attr: {
           title: source.path,
           'aria-label': `打开来源笔记 ${source.filename}`,
@@ -2287,7 +2290,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('默认智能搜索 Vault')
-      .setDesc('在你的电脑本地查找相关笔记，只把与本轮问题最相关的少量片段交给 AI；不会上传整个 Vault')
+      .setDesc('在你的电脑本地搜索 Markdown、TXT、可复制文字的 PDF 和 DOCX，只把相关的少量片段交给 AI；不会上传整个 Vault')
       .addToggle((t) =>
         t.setValue(this.plugin.settings.vaultSearchDefault).onChange(async (v) => {
           this.plugin.settings.vaultSearchDefault = v

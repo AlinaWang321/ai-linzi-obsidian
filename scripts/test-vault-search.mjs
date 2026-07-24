@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
+import { readFile } from 'node:fs/promises'
 
 const bundled = await build({
   entryPoints: ['src/vault-search-core.ts'],
@@ -62,5 +63,13 @@ assert.deepEqual(
   ['私人日记', '财务资料'],
 )
 assert.equal(core.isVaultSearchPathExcluded('私人日记/今天.md', ['私人日记']), true)
+
+const localSearch = await readFile(new URL('../src/vault-search.ts', import.meta.url), 'utf8')
+assert.match(localSearch, /\.getFiles\(\)/)
+assert.match(localSearch, /isLocalSearchExtension\(file\.extension\)/)
+assert.match(localSearch, /extractPdfText/)
+assert.match(localSearch, /extractDocxText/)
+assert.match(localSearch, /decodePlainText/)
+assert.match(localSearch, /binaryFiles\.length; offset \+= 2/)
 
 console.log('vault search tests passed')
