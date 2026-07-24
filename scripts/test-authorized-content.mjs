@@ -7,7 +7,7 @@ const selector = await readFile(new URL('../src/content-selector.ts', import.met
 assert.match(main, /private authorizedContentPaths: string\[\] = \[\]/)
 assert.match(main, /requireProAccess\('多笔记与文件夹授权'\)/)
 assert.match(main, /authorizedContent = await this\.authorizedContentContext\(noteContext\?\.path\)/)
-assert.match(main, /authorizedContent,\s*noteEdit/)
+assert.match(main, /authorizedContent,\s*vaultSearch: vaultSearch\.context,\s*noteEdit/)
 assert.match(main, /private loadConvo[\s\S]*?this\.clearAuthorizedContent\(\)/)
 assert.match(main, /enterInterviewMode\(\)[\s\S]*?this\.clearAuthorizedContent\(\)/)
 assert.match(main, /exitInterviewMode\(\)[\s\S]*?this\.clearAuthorizedContent\(\)/)

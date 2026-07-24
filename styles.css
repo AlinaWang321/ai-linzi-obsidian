@@ -611,6 +611,28 @@
   gap: 10px;
 }
 
+.ai-linzi-send-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ai-linzi-attachment-btn {
+  flex: 0 0 auto;
+  min-width: 32px;
+  min-height: 30px;
+  padding: 3px 7px;
+  border-radius: 8px;
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-attachment-btn.is-active {
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+}
+
 .ai-linzi-send-hint {
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
@@ -623,9 +645,35 @@
 
 .ai-linzi-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
   gap: 6px;
+}
+
+.ai-linzi-vault-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin: 7px 0 2px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-vault-sources-label {
+  margin-right: 1px;
+}
+
+.ai-linzi-vault-sources button {
+  min-height: 26px;
+  max-width: 210px;
+  padding: 2px 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ai-linzi-action-btn {

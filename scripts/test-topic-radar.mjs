@@ -11,6 +11,7 @@ assert.doesNotMatch(actions, /TOPIC_RADAR_CONTEXT_MAX/)
 assert.doesNotMatch(actions, /const note = await getActiveNote\(plugin\)[\s\S]{0,200}选题雷达/)
 assert.match(main, /主对话带上当前笔记/)
 assert.doesNotMatch(main, /技能是否使用当前笔记，以弹窗说明为准/)
-assert.match(main, /text: '选择文件'/)
+assert.match(main, /title: '精确选择文件或文件夹（Pro）'/)
+assert.match(main, /text: ' 智能搜索 Vault'/)
 
 console.log('topic radar note opt-in tests passed')

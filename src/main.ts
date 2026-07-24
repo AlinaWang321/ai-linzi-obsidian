@@ -66,6 +66,11 @@ import {
   AuthorizedContentModal,
   type AuthorizedContentLimits,
 } from './content-selector'
+import { LocalVaultSearch } from './vault-search'
+import {
+  normalizeVaultFolderExclusions,
+  type VaultSearchResult,
+} from './vault-search-core'
 
 /** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -96,6 +101,10 @@ interface AiLinziSettings {
   tokenSecretId: string
   /** 「带上当前笔记」开关的默认值 */
   attachNoteDefault: boolean
+  /** 主对话默认在本机 Vault 中检索相关笔记；只发送命中的少量片段 */
+  vaultSearchDefault: boolean
+  /** 本地智能检索始终忽略的文件夹，一行一个；隐私标记与隐藏目录另有硬排除 */
+  vaultSearchExcludedFolders: string
   /** 技能产出落盘的文件夹(相对 vault 根) */
   outputFolder: string
   /** 公众号一键配图使用的专属人偶参考图，只保存用户 Vault 内的路径 */
@@ -115,6 +124,8 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   serverUrl: 'https://chat.alinalinzi.com',
   tokenSecretId: '',
   attachNoteDefault: true,
+  vaultSearchDefault: true,
+  vaultSearchExcludedFolders: '',
   outputFolder: 'AI霖子输出',
   illustrationCharacterReferencePath: '',
   defaultNiche: '',
@@ -153,6 +164,13 @@ interface PluginCapabilities {
         maxTotalChars?: number
         maxPerFileChars?: number
       }
+      vaultSearch?: {
+        available?: boolean
+        localOnly?: boolean
+        maxSources?: number
+        maxExcerptChars?: number
+        maxTotalChars?: number
+      }
     }
     articleIllustration?: {
       customCharacterReferenceAvailable?: boolean
@@ -174,6 +192,22 @@ interface WireMessage {
   aiImageResult?: ChatAiImageResult
   /** 整篇配图完成后的本地操作卡片；只保存目标笔记路径，不同步到云端。 */
   articleIllustrationEditOffer?: ArticleIllustrationEditOffer
+  /** 本地 Vault 检索来源；只保存在插件本机历史，messagesForApi 会剥离。 */
+  vaultSources?: VaultMessageSource[]
+}
+
+interface VaultMessageSource {
+  sourceId: string
+  filename: string
+  path: string
+}
+
+function toVaultMessageSource(result: VaultSearchResult): VaultMessageSource {
+  return {
+    sourceId: result.sourceId,
+    filename: result.filename,
+    path: result.path,
+  }
 }
 
 interface ArticleIllustrationEditOffer {
@@ -401,6 +435,7 @@ function extractTextFromSSE(raw: string): { text: string; error?: string } {
 
 export default class AiLinziPlugin extends Plugin {
   settings: AiLinziSettings = DEFAULT_SETTINGS
+  readonly vaultSearch = new LocalVaultSearch(this.app)
   private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
   /**
    * 最近一次激活的笔记。侧边面板(对话)获得焦点时 getActiveFile() 会返回 null,
@@ -812,6 +847,7 @@ class ChatView extends ItemView {
   private messages: WireMessage[] = []
   private sessionId = newPluginSessionId()
   private attachNote: boolean
+  private vaultSearchEnabled: boolean
   private imageMode = false
   private imageRatio: AiImageRatio = '16:9'
   private imageReferences: LocalImageReference[] = []
@@ -829,6 +865,7 @@ class ChatView extends ItemView {
   private inputEl!: HTMLTextAreaElement
   private sendBtn!: HTMLButtonElement
   private attachToggleEl!: HTMLInputElement
+  private vaultSearchToggleEl!: HTMLInputElement
   private imageToggleEl!: HTMLInputElement
   private imageRatioEl!: HTMLSelectElement
   private imageUsePreviousEl!: HTMLInputElement
@@ -841,6 +878,7 @@ class ChatView extends ItemView {
     super(leaf)
     this.plugin = plugin
     this.attachNote = plugin.settings.attachNoteDefault
+    this.vaultSearchEnabled = plugin.settings.vaultSearchDefault
   }
 
   getViewType() {
@@ -910,11 +948,6 @@ class ChatView extends ItemView {
     }
     const kbBtn = actionsRow.createEl('button', { text: '存入知识库', cls: 'ai-linzi-action-btn' })
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
-    this.authorizedContentBtn = actionsRow.createEl('button', {
-      text: '选择文件',
-      cls: 'ai-linzi-action-btn',
-    })
-    this.authorizedContentBtn.onclick = () => void this.openAuthorizedContentSelector()
     const dashboardBtn = actionsRow.createEl('button', { text: '内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
 
@@ -927,6 +960,19 @@ class ChatView extends ItemView {
       this.refreshImageModeUi()
     }
     label.createSpan({ text: ' 主对话带上当前笔记' })
+
+    const vaultSearchLabel = toggleRow.createEl('label', {
+      cls: 'ai-linzi-toggle ai-linzi-vault-search-toggle',
+      attr: {
+        title: '在本机搜索整个 Vault，只把与本轮问题相关的少量片段交给 AI',
+      },
+    })
+    this.vaultSearchToggleEl = vaultSearchLabel.createEl('input', { type: 'checkbox' })
+    this.vaultSearchToggleEl.checked = this.vaultSearchEnabled
+    this.vaultSearchToggleEl.onchange = () => {
+      this.vaultSearchEnabled = this.vaultSearchToggleEl.checked
+    }
+    vaultSearchLabel.createSpan({ text: ' 智能搜索 Vault' })
 
     const imageLabel = toggleRow.createEl('label', { cls: 'ai-linzi-toggle ai-linzi-image-toggle' })
     this.imageToggleEl = imageLabel.createEl('input', { type: 'checkbox' })
@@ -992,7 +1038,17 @@ class ChatView extends ItemView {
     })
 
     const sendRow = footer.createDiv({ cls: 'ai-linzi-send-row' })
-    sendRow.createSpan({ text: CHAT_SEND_SHORTCUT_HINT, cls: 'ai-linzi-send-hint' })
+    const sendMeta = sendRow.createDiv({ cls: 'ai-linzi-send-meta' })
+    this.authorizedContentBtn = sendMeta.createEl('button', {
+      text: '📎',
+      cls: 'ai-linzi-attachment-btn',
+      attr: {
+        title: '精确选择文件或文件夹（Pro）',
+        'aria-label': '精确选择文件或文件夹',
+      },
+    })
+    this.authorizedContentBtn.onclick = () => void this.openAuthorizedContentSelector()
+    sendMeta.createSpan({ text: CHAT_SEND_SHORTCUT_HINT, cls: 'ai-linzi-send-hint' })
     this.sendBtn = sendRow.createEl('button', {
       text: '发送',
       cls: 'ai-linzi-send',
@@ -1056,7 +1112,10 @@ class ChatView extends ItemView {
       const localHasImageCards = Boolean(
         latestLocal?.messages.some((message) => message.aiImageResult || message.imageResult),
       )
-      const preserveRicherLocalCopy = sameSession && localHasImageCards
+      const localHasVaultSources = Boolean(
+        latestLocal?.messages.some((message) => (message.vaultSources?.length ?? 0) > 0),
+      )
+      const preserveRicherLocalCopy = sameSession && (localHasImageCards || localHasVaultSources)
       if (latestCloudSummary && (!latestLocal || (cloudTime > latestLocal.updatedAt && !preserveRicherLocalCopy))) {
         const cloud = await this.plugin.loadCloudConvo(latestCloudSummary.sessionId)
         if (cloud?.messages.length) {
@@ -1275,7 +1334,13 @@ class ChatView extends ItemView {
   private refreshAuthorizedContentUi(): void {
     if (!this.authorizedContentBtn || !this.authorizedContentStatusEl) return
     const count = this.authorizedContentPaths.length
-    this.authorizedContentBtn.setText(count > 0 ? `已选 ${count} 篇` : '选择文件')
+    this.authorizedContentBtn.setText(count > 0 ? `📎 ${count}` : '📎')
+    this.authorizedContentBtn.setAttr(
+      'aria-label',
+      count > 0 ? `已精确选择 ${count} 篇笔记，点击更换` : '精确选择文件或文件夹',
+    )
+    this.authorizedContentBtn.title =
+      count > 0 ? `已精确选择 ${count} 篇笔记，点击更换` : '精确选择文件或文件夹（Pro）'
     this.authorizedContentBtn.toggleClass('is-active', count > 0)
     this.authorizedContentStatusEl.empty()
     this.authorizedContentStatusEl.toggle(count > 0)
@@ -1333,6 +1398,67 @@ class ChatView extends ItemView {
     return items.length > 0 ? { items } : undefined
   }
 
+  private vaultSearchLimits(data?: PluginCapabilities): {
+    maxSources: number
+    maxExcerptChars: number
+    maxTotalChars: number
+  } {
+    const capability = data?.features?.chat?.vaultSearch
+    return {
+      maxSources: capability?.maxSources ?? 6,
+      maxExcerptChars: capability?.maxExcerptChars ?? 1_200,
+      maxTotalChars: capability?.maxTotalChars ?? 7_200,
+    }
+  }
+
+  private async vaultSearchContext(
+    query: string,
+    currentNotePath?: string,
+  ): Promise<{
+    context:
+      | {
+          query: string
+          items: { sourceId: string; filename: string; excerpt: string }[]
+        }
+      | undefined
+    sources: VaultMessageSource[]
+  }> {
+    // 精确选择文件/文件夹时，以用户明确划定的资料范围为准，避免额外混入其他笔记。
+    if (!this.vaultSearchEnabled || this.authorizedContentPaths.length > 0) {
+      return { context: undefined, sources: [] }
+    }
+    let capabilities: PluginCapabilities | undefined
+    try {
+      capabilities = await this.plugin.getCapabilities()
+      if (capabilities.features?.chat?.vaultSearch?.available === false) {
+        return { context: undefined, sources: [] }
+      }
+    } catch {
+      // 旧服务端暂时没有能力字段时仍按客户端保守上限搜索；v1 路由会再次校验。
+    }
+    const results = await this.plugin.vaultSearch.search(query, {
+      ...this.vaultSearchLimits(capabilities),
+      excludedFolders: normalizeVaultFolderExclusions(
+        this.plugin.settings.vaultSearchExcludedFolders,
+      ),
+      excludedPaths: currentNotePath ? [currentNotePath] : [],
+    })
+    return {
+      context:
+        results.length > 0
+          ? {
+              query,
+              items: results.map((result) => ({
+                sourceId: result.sourceId,
+                filename: result.filename,
+                excerpt: result.excerpt,
+              })),
+            }
+          : undefined,
+      sources: results.map(toVaultMessageSource),
+    }
+  }
+
   /** 本地候选图片元数据绝不传给主对话；云端只收到标准 UIMessage。 */
   private messagesForApi(): WireMessage[] {
     return this.messages.map(({ id, role, parts }) => ({ id, role, parts }))
@@ -1368,6 +1494,10 @@ class ChatView extends ItemView {
       const noteEdit = Boolean(
         noteContext && !illustrationEdit && !singleIllustration && isNoteEditIntent(text),
       )
+      const vaultSearch =
+        noteEdit || singleIllustration || illustrationEdit
+          ? { context: undefined, sources: [] }
+          : await this.vaultSearchContext(text, noteContext?.path)
       // M3:优先流式(fetch 纯文本流,逐块显示);CORS/网络不支持时自动回落非流式;
       // 业务错误(积分不足/tier/限流)不回落不重发,直接显示。
       let answer: string
@@ -1376,6 +1506,7 @@ class ChatView extends ItemView {
         streamed = await this.sendStreaming(
           noteContext,
           authorizedContent,
+          vaultSearch.context,
           noteEdit,
           singleIllustration,
         )
@@ -1395,13 +1526,19 @@ class ChatView extends ItemView {
             stream: false,
             noteContext,
             authorizedContent,
+            vaultSearch: vaultSearch.context,
             noteEdit,
             noteImageIntent: singleIllustration,
           },
         })
         answer = typeof data.text === 'string' ? data.text : '(空响应)'
       }
-      this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: answer }] })
+      this.messages.push({
+        id: uid(),
+        role: 'assistant',
+        parts: [{ type: 'text', text: answer }],
+        vaultSources: vaultSearch.sources,
+      })
       await this.persistNow()
       if (singleIllustration && noteContext && !answer.startsWith('⚠️')) {
         await this.generateChatIllustration(text, noteContext)
@@ -1631,6 +1768,12 @@ class ChatView extends ItemView {
     authorizedContent:
       | { items: { filename: string; path: string; text: string }[] }
       | undefined,
+    vaultSearch:
+      | {
+          query: string
+          items: { sourceId: string; filename: string; excerpt: string }[]
+        }
+      | undefined,
     noteEdit: boolean,
     noteImageIntent: boolean,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
@@ -1650,6 +1793,7 @@ class ChatView extends ItemView {
         stream: 'text',
         noteContext,
         authorizedContent,
+        vaultSearch,
         noteEdit,
         noteImageIntent,
       }),
@@ -1726,6 +1870,7 @@ class ChatView extends ItemView {
         const illustrationEdit = isArticleIllustrationEditIntent(previousUserText)
         const editReply = this.mode === 'chat' && !illustrationEdit && isNoteEditIntent(previousUserText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
+        if ((m.vaultSources?.length ?? 0) > 0) this.renderVaultSources(row, m.vaultSources ?? [])
         if (m.articleIllustrationEditOffer) {
           this.renderArticleIllustrationEditOffer(row, m.articleIllustrationEditOffer)
           continue
@@ -1813,6 +1958,25 @@ class ChatView extends ItemView {
       this.enableMessageTextSelection(body)
     }
     this.listEl.scrollTop = this.listEl.scrollHeight
+  }
+
+  private renderVaultSources(row: HTMLElement, sources: VaultMessageSource[]): void {
+    const unique = [...new Map(sources.map((source) => [source.path, source])).values()]
+    if (unique.length === 0) return
+    const panel = row.createDiv({ cls: 'ai-linzi-vault-sources' })
+    panel.createSpan({ text: '本轮在 Vault 中找到：', cls: 'ai-linzi-vault-sources-label' })
+    for (const source of unique) {
+      const button = panel.createEl('button', {
+        text: source.filename.replace(/\.md$/i, ''),
+        attr: {
+          title: source.path,
+          'aria-label': `打开来源笔记 ${source.filename}`,
+        },
+      })
+      button.onclick = () => {
+        void this.app.workspace.openLinkText(source.path, '', false)
+      }
+    }
   }
 
   private enableMessageTextSelection(body: HTMLElement): void {
@@ -2120,6 +2284,31 @@ class AiLinziSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings()
         }),
       )
+
+    new Setting(containerEl)
+      .setName('默认智能搜索 Vault')
+      .setDesc('在你的电脑本地查找相关笔记，只把与本轮问题最相关的少量片段交给 AI；不会上传整个 Vault')
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.vaultSearchDefault).onChange(async (v) => {
+          this.plugin.settings.vaultSearchDefault = v
+          await this.plugin.saveSettings()
+        }),
+      )
+
+    new Setting(containerEl)
+      .setName('Vault 搜索排除文件夹')
+      .setDesc('选填，一行一个 Vault 相对路径。隐藏目录、废纸篓和名称含「㊙️」的笔记始终不会被搜索')
+      .addTextArea((input) => {
+        input.inputEl.rows = 3
+        input
+          .setPlaceholder('例如：私人日记\n财务资料')
+          .setValue(this.plugin.settings.vaultSearchExcludedFolders)
+          .onChange(async (value) => {
+            this.plugin.settings.vaultSearchExcludedFolders = value
+            this.plugin.vaultSearch.clear()
+            await this.plugin.saveSettings()
+          })
+      })
 
     new Setting(containerEl).setName('公众号发布(选配)').setHeading()
 
