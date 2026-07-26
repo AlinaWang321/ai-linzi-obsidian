@@ -2,6 +2,8 @@ export interface VaultSearchDocument {
   path: string
   filename: string
   text: string
+  /** Obsidian file mtime；仅在本地用于“今天/最新”检索，不会发送到服务器。 */
+  mtime?: number
 }
 
 export interface VaultSearchOptions {
@@ -10,6 +12,8 @@ export interface VaultSearchOptions {
   maxTotalChars?: number
   excludedFolders?: string[]
   excludedPaths?: string[]
+  /** 仅用于可重复测试；生产环境默认使用当前设备时间。 */
+  nowMs?: number
 }
 
 export interface VaultSearchResult {
@@ -113,6 +117,7 @@ export function searchVaultDocuments(
   const excludedPathSet = new Set((options.excludedPaths ?? []).map(normalizePath))
   const terms = buildSearchTerms(query)
   const queryPhrase = normalizeText(query).replace(/\s+/g, ' ')
+  const querySignals = buildQuerySignals(query, options.nowMs ?? Date.now())
   const eligible = documents.filter(
     (doc) =>
       !excludedPathSet.has(normalizePath(doc.path)) &&
@@ -130,9 +135,27 @@ export function searchVaultDocuments(
     }
     docFrequency.set(term, count)
   }
+  const rarePathTerms = terms.filter((term) => {
+    if (term.length < 2 || GENERIC_QUERY_WORDS.has(term)) return false
+    let pathCount = 0
+    for (const doc of prepared) {
+      if (doc.title.includes(term) || doc.path.includes(term)) pathCount += 1
+    }
+    return pathCount > 0 && pathCount <= Math.max(2, Math.ceil(eligible.length * 0.01))
+  })
 
   const ranked = prepared
-    .map((doc) => scoreDocument(doc, terms, queryPhrase, docFrequency, eligible.length))
+    .map((doc) =>
+      scoreDocument(
+        doc,
+        terms,
+        queryPhrase,
+        docFrequency,
+        eligible.length,
+        rarePathTerms,
+        querySignals,
+      ),
+    )
     .filter((item): item is ScoredDocument => Boolean(item && item.score >= 2.2))
     .sort((left, right) => right.score - left.score || left.doc.path.localeCompare(right.doc.path))
 
@@ -171,7 +194,7 @@ interface PreparedDocument {
 function prepareDocument(doc: VaultSearchDocument): PreparedDocument {
   return {
     doc,
-    title: normalizeText(doc.filename.replace(/\.md$/i, '')),
+    title: normalizeText(doc.filename.replace(/\.(?:md|txt|pdf|docx)$/i, '')),
     path: normalizeText(doc.path),
     headings: normalizeText(
       doc.text
@@ -189,6 +212,8 @@ function scoreDocument(
   queryPhrase: string,
   docFrequency: Map<string, number>,
   totalDocs: number,
+  rarePathTerms: string[],
+  querySignals: QuerySignals,
 ): ScoredDocument | null {
   const { doc, title, path, headings, body } = prepared
   let score = 0
@@ -213,8 +238,79 @@ function scoreDocument(
   // A note that covers several distinct parts of the request should outrank a
   // broadly related note whose title only repeats the topic keyword.
   score += matchedTerms * matchedTerms * 1.25
+  // 人名、项目名等稀有词如果明确出现在文件名/路径里，应优先于正文里反复出现
+  // “总结、咨询、逐字稿”等泛词的旧材料。
+  if (rarePathTerms.length > 0) {
+    const rarePathMatches = rarePathTerms.filter(
+      (term) => title.includes(term) || path.includes(term),
+    ).length
+    if (rarePathMatches > 0) score += 180
+    else score -= 40
+  }
+  if (querySignals.todayOrLatest) {
+    if (querySignals.localDateTokens.some((token) => path.includes(token))) {
+      score += 520
+    } else if (isSameLocalDay(doc.mtime, querySignals.nowMs)) {
+      score += 300
+    } else if (isRecent(doc.mtime, querySignals.nowMs, 3)) {
+      score += 90
+    }
+  }
+  if (querySignals.rawFolder && /(?:^|\/)(?:\d+_)?raw(?:\/|$)/i.test(doc.path)) {
+    score += 80
+  }
+  if (querySignals.extension && doc.filename.toLocaleLowerCase().endsWith(`.${querySignals.extension}`)) {
+    score += 90
+  }
 
   return score > 0 ? { doc, score } : null
+}
+
+interface QuerySignals {
+  todayOrLatest: boolean
+  rawFolder: boolean
+  extension?: 'md' | 'txt' | 'pdf' | 'docx'
+  nowMs: number
+  localDateTokens: string[]
+}
+
+function buildQuerySignals(query: string, nowMs: number): QuerySignals {
+  const normalized = normalizeText(query)
+  const now = new Date(nowMs)
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  const extension = normalized.match(/(?:^|[\s.])(md|txt|pdf|docx)(?:$|[\s文件文档])/i)?.[1]
+    ?.toLocaleLowerCase() as QuerySignals['extension']
+  return {
+    todayOrLatest: /今天|今日|刚刚|刚才|最新|新加|新增|刚存|刚放|最近一份/.test(normalized),
+    rawFolder: /(?:^|[^a-z])raw(?:[^a-z]|$)|原始资料|原始文件/.test(normalized),
+    extension,
+    nowMs,
+    localDateTokens: [
+      `${year}${month}${day}`,
+      `${year}-${month}-${day}`,
+      `${year}.${month}.${day}`,
+      `${year}/${month}/${day}`,
+    ],
+  }
+}
+
+function isSameLocalDay(mtime: number | undefined, nowMs: number): boolean {
+  if (!Number.isFinite(mtime)) return false
+  const left = new Date(mtime as number)
+  const right = new Date(nowMs)
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  )
+}
+
+function isRecent(mtime: number | undefined, nowMs: number, days: number): boolean {
+  if (!Number.isFinite(mtime)) return false
+  const age = nowMs - (mtime as number)
+  return age >= 0 && age <= days * 24 * 60 * 60 * 1_000
 }
 
 function buildExcerpt(text: string, terms: string[], maxChars: number): string {

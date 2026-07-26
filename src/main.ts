@@ -1969,8 +1969,10 @@ class ChatView extends ItemView {
     const panel = row.createDiv({ cls: 'ai-linzi-vault-sources' })
     panel.createSpan({ text: '本轮在 Vault 中找到：', cls: 'ai-linzi-vault-sources-label' })
     for (const source of unique) {
+      const extension = source.filename.match(/\.([^.]+)$/)?.[1]?.toLocaleUpperCase()
+      const basename = source.filename.replace(/\.(?:md|txt|pdf|docx)$/i, '')
       const button = panel.createEl('button', {
-        text: source.filename.replace(/\.(?:md|txt|pdf|docx)$/i, ''),
+        text: extension ? `${basename} · ${extension}` : source.filename,
         attr: {
           title: source.path,
           'aria-label': `打开来源笔记 ${source.filename}`,

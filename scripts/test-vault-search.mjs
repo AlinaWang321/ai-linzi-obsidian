@@ -58,6 +58,36 @@ assert.equal(limited.length, 1)
 assert.equal(limited[0].path, '内容素材/高客单产品案例.md')
 assert.ok(limited[0].excerpt.length <= 240)
 
+const transcriptNow = new Date(2026, 6, 24, 18, 0, 0).getTime()
+const transcriptResults = core.searchVaultDocuments(
+  '总结今天跟雷琼的咨询逐字稿，在raw文件夹里',
+  [
+    {
+      path: '01_Raw/课程与密训逐字稿/2025.05_运营逐字稿.txt',
+      filename: '2025.05_运营逐字稿.txt',
+      text: '咨询逐字稿需要从 Raw 文件夹整理，总结咨询内容并更新工作流。'.repeat(80),
+      mtime: new Date(2025, 4, 10).getTime(),
+    },
+    {
+      path: '01_Raw/学员商业私教咨询逐字稿/2026.07/20260724133543-雷琼老师第二次商业私教课-逐字稿文本-1.txt',
+      filename: '20260724133543-雷琼老师第二次商业私教课-逐字稿文本-1.txt',
+      text: '今天与雷琼老师讨论第二次商业私教课，包含定位、产品和下一步行动。',
+      mtime: new Date(2026, 6, 24, 16, 51, 15).getTime(),
+    },
+    {
+      path: '01_Raw/学员商业私教咨询逐字稿/2026.03/20260312-雷琼老师第一次咨询-逐字稿.txt',
+      filename: '20260312-雷琼老师第一次咨询-逐字稿.txt',
+      text: '雷琼老师第一次咨询逐字稿，讨论初始定位。',
+      mtime: new Date(2026, 2, 12).getTime(),
+    },
+  ],
+  { nowMs: transcriptNow },
+)
+assert.equal(
+  transcriptResults[0]?.path,
+  '01_Raw/学员商业私教咨询逐字稿/2026.07/20260724133543-雷琼老师第二次商业私教课-逐字稿文本-1.txt',
+)
+
 assert.deepEqual(
   core.normalizeVaultFolderExclusions(' 私人日记\n财务资料,私人日记 '),
   ['私人日记', '财务资料'],
