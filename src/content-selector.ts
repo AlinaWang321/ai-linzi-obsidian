@@ -1,21 +1,24 @@
 import { App, Modal, Notice, TFile, TFolder } from 'obsidian'
+import { isLocalSearchExtension } from './local-document-text'
+import { readLocalDocumentText } from './long-document'
 
 export interface AuthorizedContentLimits {
   maxFiles: number
   maxTotalChars: number
   maxPerFileChars: number
+  longDocumentAvailable: boolean
+  longDocumentMaxChars: number
 }
 
-export interface AuthorizedContentSelection {
-  paths: string[]
-  totalChars: number
-}
+export type AuthorizedContentSelection =
+  | { mode: 'chat'; paths: string[]; totalChars: number }
+  | { mode: 'long-document'; path: string; totalChars: number }
 
 /**
  * 用户主动授权的本地内容选择器。
  *
- * 文件夹浏览、搜索与勾选全部发生在用户自己的 Vault；只有最终确认的 Markdown
- * 笔记正文会在发消息时随本轮请求发送。选择器不保存正文，也不会自动上传整个 Vault。
+ * 文件夹浏览、搜索与勾选全部发生在用户自己的 Vault；普通文件只有最终确认的正文会随
+ * 本轮请求发送，长文任务则在用户发出任务后按段处理。选择器不保存正文，也不会自动上传整个 Vault。
  */
 export class AuthorizedContentModal extends Modal {
   private readonly files: TFile[]
@@ -41,7 +44,8 @@ export class AuthorizedContentModal extends Modal {
   ) {
     super(app)
     this.files = app.vault
-      .getMarkdownFiles()
+      .getFiles()
+      .filter((file) => isLocalSearchExtension(file.extension))
       .slice()
       .sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'))
     this.folders = app.vault
@@ -61,9 +65,9 @@ export class AuthorizedContentModal extends Modal {
     this.contentEl.createDiv({
       cls: 'ai-linzi-content-selector-note',
       text:
-        `像电脑文件管理器一样按 Vault 文件夹查找笔记。确认后，最多 ${this.limits.maxFiles} 篇、` +
+        `像电脑文件管理器一样按 Vault 文件夹查找 MD、TXT、PDF 和 DOCX。普通对话最多 ${this.limits.maxFiles} 份、` +
         `合计 ${formatCharLimit(this.limits.maxTotalChars)}字的正文会供当前对话使用；` +
-        '浏览和搜索均在本地完成，不消耗 AI 用量。',
+        '单选长文件可切换为“长文任务”。浏览、提取和切分均在本地完成。',
     })
 
     const searchRow = this.contentEl.createDiv({ cls: 'ai-linzi-content-selector-search-row' })
@@ -71,8 +75,8 @@ export class AuthorizedContentModal extends Modal {
       type: 'search',
       cls: 'ai-linzi-content-selector-search',
       attr: {
-        placeholder: '搜索全部笔记的标题或路径',
-        'aria-label': '搜索全部笔记的标题或路径',
+        placeholder: '搜索全部文件的标题或路径',
+        'aria-label': '搜索全部文件的标题或路径',
       },
     })
     this.searchEl.oninput = () => {
@@ -97,7 +101,7 @@ export class AuthorizedContentModal extends Modal {
     const fileHeader = filePane.createDiv({ cls: 'ai-linzi-vault-browser-file-header' })
     this.browserTitleEl = fileHeader.createEl('strong')
     const addFolderBtn = fileHeader.createEl('button', { text: '添加当前文件夹' })
-    addFolderBtn.title = '选择当前文件夹及所有子文件夹中的 Markdown 笔记'
+    addFolderBtn.title = '选择当前文件夹及所有子文件夹中的支持文件'
     addFolderBtn.onclick = () => this.addCurrentFolder()
     this.listEl = filePane.createDiv({ cls: 'ai-linzi-content-selector-list' })
 
@@ -117,6 +121,14 @@ export class AuthorizedContentModal extends Modal {
       cls: 'mod-cta',
     })
     confirmBtn.onclick = () => void this.confirm()
+    if (this.limits.longDocumentAvailable) {
+      const longBtn = footer.createEl('button', {
+        text: '作为长文任务处理',
+        cls: 'mod-cta ai-linzi-long-document-button',
+      })
+      longBtn.title = '一次选择一份长逐字稿或长文档，发送任务后自动分段处理'
+      longBtn.onclick = () => void this.confirmLongDocument()
+    }
 
     this.searchEl.focus()
   }
@@ -175,24 +187,24 @@ export class AuthorizedContentModal extends Modal {
   private addCurrentFolder(): void {
     const matches = this.files.filter((file) => isInsideFolder(file, this.currentFolderPath))
     if (matches.length === 0) {
-      new Notice('这个文件夹及其子文件夹里没有 Markdown 笔记')
+      new Notice('这个文件夹及其子文件夹里没有支持的文件')
       return
     }
     const additions = matches.filter((file) => !this.selected.has(file.path))
     if (additions.length === 0) {
-      new Notice(`「${folderLabel(this.currentFolderPath)}」中的笔记已经全部选中`)
+      new Notice(`「${folderLabel(this.currentFolderPath)}」中的文件已经全部选中`)
       return
     }
     if (this.selected.size + additions.length > this.limits.maxFiles) {
       new Notice(
-        `「${folderLabel(this.currentFolderPath)}」共有 ${matches.length} 篇笔记，` +
-        `超过单次最多 ${this.limits.maxFiles} 篇。请进入子文件夹或逐篇勾选。`,
+        `「${folderLabel(this.currentFolderPath)}」共有 ${matches.length} 份文件，` +
+        `超过单次最多 ${this.limits.maxFiles} 份。请进入子文件夹或逐份勾选。`,
         8000,
       )
       return
     }
     for (const file of additions) this.selected.add(file.path)
-    new Notice(`已添加「${folderLabel(this.currentFolderPath)}」中的 ${additions.length} 篇笔记`)
+    new Notice(`已添加「${folderLabel(this.currentFolderPath)}」中的 ${additions.length} 份文件`)
     this.renderFiles()
   }
 
@@ -209,7 +221,7 @@ export class AuthorizedContentModal extends Modal {
 
   private renderFiles(): void {
     this.summaryEl?.setText(
-      `已选 ${this.selected.size}/${this.limits.maxFiles} 篇 · Vault 共 ${this.files.length} 篇`,
+      `已选 ${this.selected.size}/${this.limits.maxFiles} 份 · Vault 共 ${this.files.length} 份支持文件`,
     )
     if (!this.listEl) return
     const visible = this.visibleFiles()
@@ -221,8 +233,8 @@ export class AuthorizedContentModal extends Modal {
       this.listEl.createDiv({
         cls: 'ai-linzi-content-selector-empty',
         text: this.searchText
-          ? '没有找到匹配的 Markdown 笔记'
-          : '这个文件夹没有直接存放 Markdown 笔记，可进入左侧子文件夹查看',
+          ? '没有找到匹配的 MD、TXT、PDF 或 DOCX'
+          : '这个文件夹没有直接存放支持的文件，可进入左侧子文件夹查看',
       })
       return
     }
@@ -233,7 +245,7 @@ export class AuthorizedContentModal extends Modal {
       checkbox.onchange = () => {
         if (checkbox.checked && this.selected.size >= this.limits.maxFiles) {
           checkbox.checked = false
-          new Notice(`单次最多选择 ${this.limits.maxFiles} 篇笔记`)
+          new Notice(`单次最多选择 ${this.limits.maxFiles} 份文件`)
           return
         }
         if (checkbox.checked) this.selected.add(file.path)
@@ -241,21 +253,30 @@ export class AuthorizedContentModal extends Modal {
         this.renderFiles()
       }
       const meta = row.createDiv({ cls: 'ai-linzi-content-selector-file-meta' })
-      meta.createSpan({ text: file.basename, cls: 'ai-linzi-content-selector-file-name' })
+      meta.createSpan({
+        text: `${file.basename} · ${file.extension.toLocaleUpperCase()}`,
+        cls: 'ai-linzi-content-selector-file-name',
+      })
       meta.createSpan({ text: file.path, cls: 'ai-linzi-content-selector-file-path' })
     }
   }
 
   private async confirm(): Promise<void> {
     if (this.selected.size === 0) {
-      new Notice('请至少选择一篇笔记')
+      new Notice('请至少选择一份文件')
       return
     }
     let totalChars = 0
     for (const path of this.selected) {
       const file = this.app.vault.getAbstractFileByPath(path)
       if (!(file instanceof TFile)) continue
-      const text = await this.app.vault.cachedRead(file)
+      let text: string
+      try {
+        text = (await readLocalDocumentText(this.app, file, this.limits.maxPerFileChars, 'chat')).text
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : String(error), 8000)
+        return
+      }
       if (text.length > this.limits.maxPerFileChars) {
         new Notice(
           `《${file.basename}》有 ${text.length.toLocaleString('zh-CN')} 字，超过单篇上限 ` +
@@ -275,8 +296,33 @@ export class AuthorizedContentModal extends Modal {
       return
     }
     this.submitted = true
-    this.resolve({ paths: [...this.selected], totalChars })
+    this.resolve({ mode: 'chat', paths: [...this.selected], totalChars })
     this.close()
+  }
+
+  private async confirmLongDocument(): Promise<void> {
+    if (this.selected.size !== 1) {
+      new Notice('长文任务一次只处理一份文件，请只勾选一份逐字稿或长文档')
+      return
+    }
+    const [path] = this.selected
+    const file = this.app.vault.getAbstractFileByPath(path)
+    if (!(file instanceof TFile)) {
+      new Notice('没有找到这份文件，请重新选择')
+      return
+    }
+    try {
+      const document = await readLocalDocumentText(
+        this.app,
+        file,
+        this.limits.longDocumentMaxChars,
+      )
+      this.submitted = true
+      this.resolve({ mode: 'long-document', path: file.path, totalChars: document.totalChars })
+      this.close()
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : String(error), 9000)
+    }
   }
 
   onClose(): void {

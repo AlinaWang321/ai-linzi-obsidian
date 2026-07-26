@@ -66,6 +66,14 @@ import {
   AuthorizedContentModal,
   type AuthorizedContentLimits,
 } from './content-selector'
+import {
+  LONG_DOCUMENT_DEFAULT_CHUNK_CHARS,
+  LONG_DOCUMENT_DEFAULT_MAX_CHARS,
+  LONG_DOCUMENT_DEFAULT_MAX_CHUNKS,
+  readLocalDocumentText,
+  splitLongDocument,
+  type LongDocumentChunk,
+} from './long-document'
 import { LocalVaultSearch } from './vault-search'
 import {
   normalizeVaultFolderExclusions,
@@ -164,6 +172,13 @@ interface PluginCapabilities {
         maxTotalChars?: number
         maxPerFileChars?: number
       }
+      longDocument?: {
+        available?: boolean
+        maxChars?: number
+        chunkChars?: number
+        maxChunks?: number
+        supportedExtensions?: string[]
+      }
       vaultSearch?: {
         available?: boolean
         localOnly?: boolean
@@ -203,6 +218,21 @@ interface VaultMessageSource {
   sourceId: string
   filename: string
   path: string
+}
+
+interface LongDocumentTaskState {
+  taskId: string
+  path: string
+  filename: string
+  mtime: number
+  size: number
+  instruction: string
+  totalChars: number
+  chunks: LongDocumentChunk[]
+  summaries: string[]
+  nextIndex: number
+  stage: 'processing' | 'synthesizing' | 'paused'
+  error?: string
 }
 
 function toVaultMessageSource(result: VaultSearchResult): VaultMessageSource {
@@ -859,6 +889,10 @@ class ChatView extends ItemView {
   /** 只保存用户明确勾选的本地路径；正文不会写入会话历史或插件设置。 */
   private authorizedContentPaths: string[] = []
   private authorizedContentChars = 0
+  /** 长文原文与分段只驻留在当前 Obsidian 进程内，不写 data.json 或会话历史。 */
+  private longDocumentPath = ''
+  private longDocumentChars = 0
+  private longDocumentTask: LongDocumentTaskState | null = null
   private sending = false
   /** chat=日常对话;interview=访谈写作(多轮采访→成稿) */
   private mode: 'chat' | 'interview' = 'chat'
@@ -1296,10 +1330,26 @@ class ChatView extends ItemView {
 
   private authorizedContentLimits(data?: PluginCapabilities): AuthorizedContentLimits {
     const capability = data?.features?.chat?.authorizedContent
+    const longDocument = data?.features?.chat?.longDocument
     return {
       maxFiles: capability?.maxFiles ?? 20,
       maxTotalChars: capability?.maxTotalChars ?? 120_000,
       maxPerFileChars: capability?.maxPerFileChars ?? 50_000,
+      longDocumentAvailable: longDocument?.available ?? false,
+      longDocumentMaxChars: longDocument?.maxChars ?? LONG_DOCUMENT_DEFAULT_MAX_CHARS,
+    }
+  }
+
+  private longDocumentLimits(data?: PluginCapabilities): {
+    maxChars: number
+    chunkChars: number
+    maxChunks: number
+  } {
+    const capability = data?.features?.chat?.longDocument
+    return {
+      maxChars: capability?.maxChars ?? LONG_DOCUMENT_DEFAULT_MAX_CHARS,
+      chunkChars: capability?.chunkChars ?? LONG_DOCUMENT_DEFAULT_CHUNK_CHARS,
+      maxChunks: capability?.maxChunks ?? LONG_DOCUMENT_DEFAULT_MAX_CHUNKS,
     }
   }
 
@@ -1317,43 +1367,70 @@ class ChatView extends ItemView {
     }
     const modal = new AuthorizedContentModal(
       this.app,
-      this.authorizedContentPaths,
+      this.longDocumentPath ? [this.longDocumentPath] : this.authorizedContentPaths,
       this.authorizedContentLimits(capabilities),
     )
     modal.open()
     const selection = await modal.result
     if (!selection) return
-    this.authorizedContentPaths = selection.paths
-    this.authorizedContentChars = selection.totalChars
+    this.longDocumentTask = null
+    if (selection.mode === 'long-document') {
+      this.authorizedContentPaths = []
+      this.authorizedContentChars = 0
+      this.longDocumentPath = selection.path
+      this.longDocumentChars = selection.totalChars
+      new Notice('已进入长文任务：请在对话框写清楚要完成什么工作，然后发送')
+    } else {
+      this.longDocumentPath = ''
+      this.longDocumentChars = 0
+      this.authorizedContentPaths = selection.paths
+      this.authorizedContentChars = selection.totalChars
+    }
     this.refreshAuthorizedContentUi()
   }
 
   private clearAuthorizedContent(): void {
     this.authorizedContentPaths = []
     this.authorizedContentChars = 0
+    this.longDocumentPath = ''
+    this.longDocumentChars = 0
+    this.longDocumentTask = null
     this.refreshAuthorizedContentUi()
   }
 
   private refreshAuthorizedContentUi(): void {
     if (!this.authorizedContentBtn || !this.authorizedContentStatusEl) return
     const count = this.authorizedContentPaths.length
-    this.authorizedContentBtn.setText(count > 0 ? `📎 ${count}` : '📎')
+    const isLongDocument = Boolean(this.longDocumentPath)
+    this.authorizedContentBtn.setText(isLongDocument ? '📄' : count > 0 ? `📎 ${count}` : '📎')
     this.authorizedContentBtn.setAttr(
       'aria-label',
-      count > 0 ? `已精确选择 ${count} 篇笔记，点击更换` : '精确选择文件或文件夹',
+      isLongDocument
+        ? '已选择长文任务，点击更换'
+        : count > 0
+          ? `已精确选择 ${count} 份文件，点击更换`
+          : '精确选择文件或文件夹',
     )
     this.authorizedContentBtn.title =
-      count > 0 ? `已精确选择 ${count} 篇笔记，点击更换` : '精确选择文件或文件夹（Pro）'
-    this.authorizedContentBtn.toggleClass('is-active', count > 0)
+      isLongDocument
+        ? '已选择长文任务，点击更换'
+        : count > 0
+          ? `已精确选择 ${count} 份文件，点击更换`
+          : '精确选择文件或文件夹（Pro）'
+    this.authorizedContentBtn.toggleClass('is-active', isLongDocument || count > 0)
     this.authorizedContentStatusEl.empty()
-    this.authorizedContentStatusEl.toggle(count > 0)
-    if (count === 0) return
+    this.authorizedContentStatusEl.toggle(isLongDocument || count > 0)
+    if (!isLongDocument && count === 0) return
     this.authorizedContentStatusEl.createSpan({
-      text:
-        `当前对话持续带上 ${count} 篇已授权笔记` +
-        (this.authorizedContentChars > 0
-          ? ` · ${this.authorizedContentChars.toLocaleString('zh-CN')} 字`
-          : ''),
+      text: isLongDocument
+        ? `长文任务 · ${this.longDocumentPath.split('/').at(-1) ?? this.longDocumentPath}` +
+          (this.longDocumentChars > 0
+            ? ` · ${this.longDocumentChars.toLocaleString('zh-CN')} 字`
+            : '')
+        : `当前对话持续带上 ${count} 份已授权文件` +
+          (this.authorizedContentChars > 0
+            ? ` · ${this.authorizedContentChars.toLocaleString('zh-CN')} 字`
+            : ''),
     })
     const changeBtn = this.authorizedContentStatusEl.createEl('button', { text: '更换' })
     changeBtn.onclick = () => void this.openAuthorizedContentSelector()
@@ -1377,7 +1454,7 @@ class ChatView extends ItemView {
       if (path === currentNotePath) continue
       const file = this.app.vault.getAbstractFileByPath(path)
       if (!(file instanceof TFile)) continue
-      const text = await this.app.vault.cachedRead(file)
+      const text = (await readLocalDocumentText(this.app, file, limits.maxPerFileChars, 'chat')).text
       if (!text.trim()) continue
       if (text.length > limits.maxPerFileChars) {
         throw new Error(
@@ -1427,7 +1504,7 @@ class ChatView extends ItemView {
     sources: VaultMessageSource[]
   }> {
     // 精确选择文件/文件夹时，以用户明确划定的资料范围为准，避免额外混入其他笔记。
-    if (!this.vaultSearchEnabled || this.authorizedContentPaths.length > 0) {
+    if (!this.vaultSearchEnabled || this.authorizedContentPaths.length > 0 || this.longDocumentPath) {
       return { context: undefined, sources: [] }
     }
     let capabilities: PluginCapabilities | undefined
@@ -1486,6 +1563,10 @@ class ChatView extends ItemView {
       }
       if (this.imageMode) {
         await this.sendImageModePrompt(text)
+        return
+      }
+      if (this.longDocumentPath) {
+        await this.startLongDocumentTask(text)
         return
       }
       const noteContext = await this.currentNoteContext()
@@ -1550,16 +1631,155 @@ class ChatView extends ItemView {
       const msg = e instanceof Error ? e.message : String(e)
       new Notice(`AI霖子:${msg}`, 6000)
       // 失败的那条用户消息保留在输入历史里,方便重试
-      this.messages.push({
-        id: uid(),
-        role: 'assistant',
-        parts: [{ type: 'text', text: `⚠️ ${msg}` }],
-      })
+      if (!this.longDocumentTask) {
+        this.messages.push({
+          id: uid(),
+          role: 'assistant',
+          parts: [{ type: 'text', text: `⚠️ ${msg}` }],
+        })
+      }
     } finally {
       this.sending = false
       this.sendBtn.disabled = false
       this.renderMessages()
     }
+  }
+
+  private async startLongDocumentTask(instruction: string): Promise<void> {
+    const capabilities = await this.plugin.getCapabilities(true)
+    if (capabilities.tier !== 'pro' && capabilities.tier !== 'business') {
+      throw new Error('长文任务是 Pro 及以上会员功能')
+    }
+    if (capabilities.features?.chat?.longDocument?.available !== true) {
+      throw new Error('服务器暂未开放长文任务，请更新插件或稍后重试')
+    }
+    const file = this.app.vault.getAbstractFileByPath(this.longDocumentPath)
+    if (!(file instanceof TFile)) throw new Error('选中的长文档已经移动或删除，请重新选择')
+    const limits = this.longDocumentLimits(capabilities)
+    const document = await readLocalDocumentText(this.app, file, limits.maxChars)
+    const chunks = splitLongDocument(document.text, limits.chunkChars, limits.maxChunks)
+    if (chunks.length === 0) throw new Error('这份文件没有可处理的正文')
+    this.longDocumentTask = {
+      taskId: uid(),
+      path: file.path,
+      filename: file.name,
+      mtime: file.stat.mtime,
+      size: file.stat.size,
+      instruction,
+      totalChars: document.totalChars,
+      chunks,
+      summaries: [],
+      nextIndex: 0,
+      stage: 'processing',
+    }
+    this.renderMessages()
+    await this.processLongDocumentTask()
+  }
+
+  private async processLongDocumentTask(): Promise<void> {
+    const task = this.longDocumentTask
+    if (!task) return
+    const file = this.app.vault.getAbstractFileByPath(task.path)
+    if (!(file instanceof TFile) || file.stat.mtime !== task.mtime || file.stat.size !== task.size) {
+      task.stage = 'paused'
+      task.error = '原文件在处理中发生了变化。为避免合并错版本，请取消后重新选择这份文件。'
+      this.renderMessages()
+      throw new Error(task.error)
+    }
+    try {
+      task.stage = 'processing'
+      task.error = undefined
+      while (task.nextIndex < task.chunks.length) {
+        const chunk = task.chunks[task.nextIndex]
+        this.renderMessages()
+        const data = await this.plugin.api('/api/plugin/v1/long-document', {
+          method: 'POST',
+          body: {
+            phase: 'chunk',
+            taskId: task.taskId,
+            sessionId: this.sessionId,
+            instruction: task.instruction,
+            filename: task.filename,
+            chunkIndex: chunk.index,
+            chunkCount: task.chunks.length,
+            text: chunk.text,
+          },
+        })
+        const summary = typeof data.summary === 'string' ? data.summary.trim() : ''
+        if (!summary) throw new Error(`第 ${chunk.index + 1} 段没有返回有效结果`)
+        task.summaries[chunk.index] = summary
+        task.nextIndex = chunk.index + 1
+      }
+
+      task.stage = 'synthesizing'
+      this.renderMessages()
+      const data = await this.plugin.api('/api/plugin/v1/long-document', {
+        method: 'POST',
+        body: {
+          phase: 'final',
+          taskId: task.taskId,
+          sessionId: this.sessionId,
+          instruction: task.instruction,
+          filename: task.filename,
+          totalChars: task.totalChars,
+          summaries: task.summaries.map((summary, index) => ({ index, summary })),
+        },
+      })
+      const answer = typeof data.text === 'string' ? data.text.trim() : ''
+      if (!answer) throw new Error('长文合并没有返回有效结果')
+      this.messages.push({
+        id: uid(),
+        role: 'assistant',
+        parts: [{ type: 'text', text: answer }],
+        vaultSources: [{
+          sourceId: `long-document:${task.path}`,
+          filename: task.filename,
+          path: task.path,
+        }],
+      })
+      this.longDocumentTask = null
+      this.longDocumentPath = ''
+      this.longDocumentChars = 0
+      this.refreshAuthorizedContentUi()
+      await this.persistNow()
+      new Notice('✅ 长文任务已完成，结果已保留在当前对话，可直接存为笔记', 7000)
+    } catch (error) {
+      task.stage = 'paused'
+      task.error = error instanceof Error ? error.message : String(error)
+      this.renderMessages()
+      throw error
+    }
+  }
+
+  private async resumeLongDocumentTask(): Promise<void> {
+    if (!this.longDocumentTask || this.sending) return
+    this.sending = true
+    this.sendBtn.disabled = true
+    try {
+      await this.processLongDocumentTask()
+    } catch (error) {
+      new Notice(`长文任务仍未完成：${error instanceof Error ? error.message : String(error)}`, 8000)
+    } finally {
+      this.sending = false
+      this.sendBtn.disabled = false
+      this.renderMessages()
+    }
+  }
+
+  private cancelLongDocumentTask(): void {
+    const task = this.longDocumentTask
+    if (!task || this.sending) return
+    this.longDocumentTask = null
+    this.longDocumentPath = ''
+    this.longDocumentChars = 0
+    this.refreshAuthorizedContentUi()
+    this.messages.push({
+      id: uid(),
+      role: 'assistant',
+      parts: [{ type: 'text', text: `已取消《${task.filename}》的长文任务，没有生成残缺结果。` }],
+    })
+    void this.persistNow()
+    this.renderMessages()
   }
 
   private latestImageModeResult(): { message: WireMessage; result: ChatAiImageResult } | null {
@@ -1955,12 +2175,47 @@ class ChatView extends ItemView {
         body.setText(text)
       }
     }
-    if (thinking) {
+    if (this.longDocumentTask) this.renderLongDocumentProgress(this.longDocumentTask)
+    if (thinking && !this.longDocumentTask) {
       const row = this.listEl.createDiv({ cls: 'ai-linzi-msg ai-linzi-msg-assistant' })
       const body = row.createDiv({ cls: 'ai-linzi-msg-body', text: 'AI霖子思考中…' })
       this.enableMessageTextSelection(body)
     }
     this.listEl.scrollTop = this.listEl.scrollHeight
+  }
+
+  private renderLongDocumentProgress(task: LongDocumentTaskState): void {
+    const row = this.listEl.createDiv({
+      cls: 'ai-linzi-msg ai-linzi-msg-assistant ai-linzi-long-document-progress',
+    })
+    const body = row.createDiv({ cls: 'ai-linzi-msg-body' })
+    const completed = Math.min(task.nextIndex, task.chunks.length)
+    const title =
+      task.stage === 'synthesizing'
+        ? '正在合并全部段落并完成你的任务…'
+        : task.stage === 'paused'
+          ? `长文任务暂停在 ${completed}/${task.chunks.length} 段`
+          : `正在处理长文档 ${completed + 1}/${task.chunks.length} 段…`
+    body.createEl('strong', { text: title })
+    body.createDiv({
+      text: `${task.filename} · ${task.totalChars.toLocaleString('zh-CN')} 字`,
+      cls: 'ai-linzi-long-document-meta',
+    })
+    const progress = body.createEl('progress', {
+      cls: 'ai-linzi-long-document-progress-bar',
+      attr: { max: String(task.chunks.length + 1) },
+    })
+    progress.value = task.stage === 'synthesizing' ? task.chunks.length : completed
+    if (task.error) {
+      body.createDiv({ text: task.error, cls: 'ai-linzi-long-document-error' })
+    }
+    if (task.stage === 'paused') {
+      const actions = body.createDiv({ cls: 'ai-linzi-msg-actions' })
+      const resumeBtn = actions.createEl('button', { text: '继续处理', cls: 'mod-cta' })
+      resumeBtn.onclick = () => void this.resumeLongDocumentTask()
+      const cancelBtn = actions.createEl('button', { text: '取消任务' })
+      cancelBtn.onclick = () => this.cancelLongDocumentTask()
+    }
   }
 
   private renderVaultSources(row: HTMLElement, sources: VaultMessageSource[]): void {

@@ -274,6 +274,35 @@
   font-size: var(--font-ui-smaller);
 }
 
+.ai-linzi-long-document-button {
+  background: #0057ff;
+  color: #fff;
+}
+
+.ai-linzi-long-document-progress .ai-linzi-msg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-left: 3px solid #0057ff;
+}
+
+.ai-linzi-long-document-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-long-document-progress-bar {
+  width: 100%;
+  height: 8px;
+  accent-color: #0057ff;
+}
+
+.ai-linzi-long-document-error {
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  line-height: 1.45;
+}
+
 .ai-linzi-content-selector-modal {
   width: min(920px, calc(100vw - 32px));
 }
