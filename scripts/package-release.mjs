@@ -6,7 +6,7 @@ import { join } from 'node:path'
 const root = fileURLToPath(new URL('..', import.meta.url))
 const dist = join(root, 'dist')
 const pluginDir = join(dist, 'ai-linzi')
-const archive = join(dist, 'ai-linzi-obsidian.zip')
+const archive = join(dist, 'ai-linzi.zip')
 const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'))
 
 await rm(dist, { recursive: true, force: true })
@@ -31,5 +31,21 @@ for (const imageName of ['install-location.png', 'connection-key-location.png'])
   await copyFile(join(root, 'docs/img', imageName), join(pluginDir, 'img', imageName))
 }
 
-execFileSync('zip', ['-q', '-r', archive, 'ai-linzi'], { cwd: dist })
+// ZIP 内平铺插件文件，并将压缩包命名为插件 ID。
+// Windows“全部解压”会自动创建与 ZIP 同名的 ai-linzi 文件夹；
+// 如果 ZIP 内再包一层 ai-linzi，就会得到 ai-linzi/ai-linzi，
+// Obsidian 只扫描 plugins 的第一层，因此无法发现插件。
+execFileSync('zip', ['-q', '-r', archive, '.'], { cwd: pluginDir })
+
+const archiveEntries = execFileSync('unzip', ['-Z1', archive], { encoding: 'utf8' })
+  .split(/\r?\n/)
+  .filter(Boolean)
+for (const requiredName of ['manifest.json', 'main.js', 'styles.css']) {
+  if (!archiveEntries.includes(requiredName)) {
+    throw new Error(`安装包根目录缺少 ${requiredName}`)
+  }
+}
+if (archiveEntries.some((name) => name.startsWith('ai-linzi/'))) {
+  throw new Error('安装包出现重复 ai-linzi 目录层级')
+}
 console.log(`AI霖子 Obsidian 插件 v${manifest.version} 安装包：${archive}`)

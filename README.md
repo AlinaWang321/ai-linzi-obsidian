@@ -110,6 +110,8 @@ npm test           # 写作结构 → 配图回写 → 公众号 HTML 回归测�
 
 - 团队测试版从 AI霖子网页版「连接中心」下载，安装说明同时打进安装包
 - 首次安装只需把解压后的 `ai-linzi` 文件夹放进 Vault 的 `.obsidian/plugins/`
+- 安装包使用 `ai-linzi.zip`，插件文件位于 ZIP 根目录；Windows“全部解压”后不会再形成 `ai-linzi-obsidian/ai-linzi/` 双层目录
+- 安装完成后应能直接看到 `.obsidian/plugins/ai-linzi/manifest.json`、`main.js` 和 `styles.css`
 - 后续更新走插件内一键更新（GitHub Release）；不覆盖笔记、历史或本地设置
 - 官方 Obsidian 插件市场审核通过后，再增加市场内一键安装入口
 

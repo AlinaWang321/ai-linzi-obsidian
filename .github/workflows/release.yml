@@ -26,4 +26,4 @@ jobs:
             main.js
             manifest.json
             styles.css
-            dist/ai-linzi-obsidian.zip
+            dist/ai-linzi.zip
