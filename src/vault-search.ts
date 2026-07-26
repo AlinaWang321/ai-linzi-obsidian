@@ -1,5 +1,6 @@
 import { App, TFile } from 'obsidian'
 import {
+  buildVaultLocalFact,
   isVaultSearchPathExcluded,
   searchVaultDocuments,
   type VaultSearchDocument,
@@ -21,6 +22,15 @@ interface CachedVaultDocument extends VaultSearchDocument {
   size: number
 }
 
+export interface LocalVaultSearchResponse {
+  results: VaultSearchResult[]
+  fact?: {
+    sourceId: string
+    filename: string
+    excerpt: string
+  }
+}
+
 /**
  * 只存在于当前 Obsidian 进程内的 Vault 文本缓存。
  *
@@ -38,14 +48,12 @@ export class LocalVaultSearch {
   async search(
     query: string,
     options: VaultSearchOptions = {},
-  ): Promise<VaultSearchResult[]> {
-    const excludedPathSet = new Set(options.excludedPaths ?? [])
+  ): Promise<LocalVaultSearchResponse> {
     const files = this.app.vault
       .getFiles()
       .filter(
         (file) =>
           isLocalSearchExtension(file.extension) &&
-          !excludedPathSet.has(file.path) &&
           !isVaultSearchPathExcluded(file.path),
       )
     const livePaths = new Set(files.map((file) => file.path))
@@ -65,11 +73,33 @@ export class LocalVaultSearch {
       const batch = binaryFiles.slice(offset, offset + 2)
       documents.push(...(await Promise.all(batch.map((file) => this.readDocument(file)))))
     }
-    return searchVaultDocuments(
-      query,
-      documents.filter((doc): doc is VaultSearchDocument => Boolean(doc)),
-      options,
+    const availableDocuments = documents.filter(
+      (doc): doc is VaultSearchDocument => Boolean(doc),
     )
+    // 聚合统计必须覆盖整个 Vault，不能因为当前笔记已另行附带就漏算这一场。
+    // 普通片段搜索仍由 searchVaultDocuments 使用 excludedPaths 去重。
+    const fact = buildVaultLocalFact(query, availableDocuments)
+    if (fact) {
+      const maxSources = Math.max(0, Math.min((options.maxSources ?? 6) - 1, 5))
+      const results = fact.matchedDocuments.slice(0, maxSources).map((doc, index) => ({
+        sourceId: `V${index + 2}`,
+        path: doc.path,
+        filename: doc.filename,
+        excerpt:
+          doc.text.trim().slice(0, 240) ||
+          '本地文件名与路径符合年月和咨询逐字稿统计条件。',
+        score: 1_000,
+      }))
+      return {
+        results,
+        fact: {
+          sourceId: 'V1',
+          filename: 'Vault 本地统计',
+          excerpt: fact.text,
+        },
+      }
+    }
+    return { results: searchVaultDocuments(query, availableDocuments, options) }
   }
 
   private async readDocument(file: TFile): Promise<VaultSearchDocument | null> {

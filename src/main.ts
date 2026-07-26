@@ -1517,23 +1517,27 @@ class ChatView extends ItemView {
     } catch {
       // 旧服务端暂时没有能力字段时仍按客户端保守上限搜索；v1 路由会再次校验。
     }
-    const results = await this.plugin.vaultSearch.search(query, {
+    const search = await this.plugin.vaultSearch.search(query, {
       ...this.vaultSearchLimits(capabilities),
       excludedPaths: currentNotePath ? [currentNotePath] : [],
     })
+    const items = [
+      ...(search.fact ? [search.fact] : []),
+      ...search.results.map((result) => ({
+        sourceId: result.sourceId,
+        filename: result.filename,
+        excerpt: result.excerpt,
+      })),
+    ]
     return {
       context:
-        results.length > 0
+        items.length > 0
           ? {
               query,
-              items: results.map((result) => ({
-                sourceId: result.sourceId,
-                filename: result.filename,
-                excerpt: result.excerpt,
-              })),
+              items,
             }
           : undefined,
-      sources: results.map(toVaultMessageSource),
+      sources: search.results.map(toVaultMessageSource),
     }
   }
 
@@ -2221,10 +2225,12 @@ class ChatView extends ItemView {
     if (unique.length === 0) return
     const panel = row.createDiv({ cls: 'ai-linzi-vault-sources' })
     panel.createSpan({ text: '本轮在 Vault 中找到：', cls: 'ai-linzi-vault-sources-label' })
+    const links = panel.createDiv({ cls: 'ai-linzi-vault-source-links' })
     for (const source of unique) {
       const extension = source.filename.match(/\.([^.]+)$/)?.[1]?.toLocaleUpperCase()
       const basename = source.filename.replace(/\.(?:md|txt|pdf|docx)$/i, '')
-      const button = panel.createEl('button', {
+      const button = links.createEl('button', {
+        cls: 'ai-linzi-vault-source-link',
         text: extension ? `${basename} · ${extension}` : source.filename,
         attr: {
           title: source.path,

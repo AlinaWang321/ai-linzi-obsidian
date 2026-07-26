@@ -92,7 +92,42 @@ assert.equal(
 assert.equal(core.isVaultSearchPathExcluded('㊙️财务/收入.md'), false)
 assert.equal(core.isVaultSearchPathExcluded('.obsidian/plugins/private.md'), true)
 assert.equal(core.isVaultSearchPathExcluded('trash/旧文章.md'), true)
+assert.equal(core.isVaultSearchPathExcluded('05_System/_sub-agent-summaries.md'), true)
+assert.equal(core.isVaultSearchPathExcluded('AGENTS.md'), true)
 assert.equal(core.isVaultSearchPathExcluded('私人日记/今天.md'), false)
+
+const monthlyFact = core.buildVaultLocalFact(
+  '2026年7月份我一共做了多少场咨询？',
+  [
+    {
+      path: '01_Raw/咨询逐字稿/2026.07/20260701103000-甲老师咨询-逐字稿文本-1.txt',
+      filename: '20260701103000-甲老师咨询-逐字稿文本-1.txt',
+      text: '第一场咨询的第一段。',
+    },
+    {
+      path: '01_Raw/咨询逐字稿/2026.07/20260701103000-甲老师咨询-逐字稿文本-2.txt',
+      filename: '20260701103000-甲老师咨询-逐字稿文本-2.txt',
+      text: '第一场咨询的第二段。',
+    },
+    {
+      path: '01_Raw/咨询逐字稿/2026.07/20260715140000-乙老师商业私教课-逐字稿.txt',
+      filename: '20260715140000-乙老师商业私教课-逐字稿.txt',
+      text: '第二场咨询。',
+    },
+    {
+      path: '01_Raw/课程逐字稿/2026.07/20260720-合伙人密训-逐字稿.txt',
+      filename: '20260720-合伙人密训-逐字稿.txt',
+      text: '课程，不是咨询。',
+    },
+    {
+      path: '01_Raw/咨询逐字稿/2026.06/20260630140000-丙老师咨询-逐字稿.txt',
+      filename: '20260630140000-丙老师咨询-逐字稿.txt',
+      text: '六月份咨询。',
+    },
+  ],
+)
+assert.equal(monthlyFact?.count, 2)
+assert.match(monthlyFact?.text ?? '', /2026年7月共有 2 场咨询逐字稿/)
 
 const localSearch = await readFile(new URL('../src/vault-search.ts', import.meta.url), 'utf8')
 assert.match(localSearch, /\.getFiles\(\)/)
@@ -101,5 +136,14 @@ assert.match(localSearch, /extractPdfText/)
 assert.match(localSearch, /extractDocxText/)
 assert.match(localSearch, /decodePlainText/)
 assert.match(localSearch, /binaryFiles\.length; offset \+= 2/)
+assert.match(localSearch, /sourceId: 'V1'/)
+assert.match(localSearch, /sourceId: `V\$\{index \+ 2\}`/)
+
+const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
+const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
+assert.match(main, /ai-linzi-vault-source-link/)
+assert.match(styles, /button\.ai-linzi-vault-source-link/)
+assert.match(styles, /color: #0057ff/)
+assert.match(styles, /border: 0/)
 
 console.log('vault search tests passed')
