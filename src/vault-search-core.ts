@@ -10,7 +10,6 @@ export interface VaultSearchOptions {
   maxSources?: number
   maxExcerptChars?: number
   maxTotalChars?: number
-  excludedFolders?: string[]
   excludedPaths?: string[]
   /** 仅用于可重复测试；生产环境默认使用当前设备时间。 */
   nowMs?: number
@@ -66,25 +65,13 @@ const NO_SEARCH_MESSAGES = new Set([
   'thank you',
 ])
 
-export function normalizeVaultFolderExclusions(value: string | string[]): string[] {
-  const raw = Array.isArray(value) ? value : value.split(/[\n,，]+/)
-  return [...new Set(
-    raw
-      .map((item) => normalizePath(item))
-      .filter(Boolean)
-      .map((item) => item.replace(/\/+$/, '')),
-  )]
-}
-
-export function isVaultSearchPathExcluded(path: string, excludedFolders: string[] = []): boolean {
+export function isVaultSearchPathExcluded(path: string): boolean {
   const normalized = normalizePath(path)
-  if (!normalized || normalized.includes('㊙️')) return true
+  if (!normalized) return true
   const segments = normalized.split('/')
   if (segments.some((segment) => segment.startsWith('.'))) return true
   if (segments.some((segment) => /^trash$/i.test(segment))) return true
-  return normalizeVaultFolderExclusions(excludedFolders).some(
-    (folder) => normalized === folder || normalized.startsWith(`${folder}/`),
-  )
+  return false
 }
 
 export function shouldSearchVault(query: string): boolean {
@@ -121,7 +108,7 @@ export function searchVaultDocuments(
   const eligible = documents.filter(
     (doc) =>
       !excludedPathSet.has(normalizePath(doc.path)) &&
-      !isVaultSearchPathExcluded(doc.path, options.excludedFolders) &&
+      !isVaultSearchPathExcluded(doc.path) &&
       Boolean(doc.text.trim()),
   )
   if (eligible.length === 0) return []

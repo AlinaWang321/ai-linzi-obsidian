@@ -46,7 +46,7 @@ export class LocalVaultSearch {
         (file) =>
           isLocalSearchExtension(file.extension) &&
           !excludedPathSet.has(file.path) &&
-          !isVaultSearchPathExcluded(file.path, options.excludedFolders),
+          !isVaultSearchPathExcluded(file.path),
       )
     const livePaths = new Set(files.map((file) => file.path))
     for (const path of this.cache.keys()) {

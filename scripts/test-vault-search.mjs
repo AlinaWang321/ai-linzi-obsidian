@@ -31,7 +31,7 @@ const docs = [
   {
     path: '㊙️财务/收入.md',
     filename: '收入.md',
-    text: '高客单产品定位收入记录。',
+    text: '内部年度预算秘密，只用于确认普通用户文章不会被名称符号排除。',
   },
   {
     path: '.obsidian/plugins/private.md',
@@ -43,16 +43,17 @@ const docs = [
 const results = core.searchVaultDocuments('帮我找张老师的高客单产品定位', docs)
 assert.ok(results.length >= 1)
 assert.equal(results[0].path, '客户咨询/张老师咨询记录.md')
-assert.ok(results.every((result) => !result.path.includes('㊙️')))
 assert.ok(results.every((result) => !result.path.startsWith('.obsidian/')))
 assert.ok(results[0].excerpt.includes('高客单产品定位'))
 assert.deepEqual(core.searchVaultDocuments('你好', docs), [])
+
+const privateNamedResults = core.searchVaultDocuments('内部年度预算秘密', docs)
+assert.equal(privateNamedResults[0]?.path, '㊙️财务/收入.md')
 
 const limited = core.searchVaultDocuments('高客单产品定位', docs, {
   maxSources: 1,
   maxExcerptChars: 240,
   maxTotalChars: 240,
-  excludedFolders: ['客户咨询'],
 })
 assert.equal(limited.length, 1)
 assert.equal(limited[0].path, '内容素材/高客单产品案例.md')
@@ -88,11 +89,10 @@ assert.equal(
   '01_Raw/学员商业私教咨询逐字稿/2026.07/20260724133543-雷琼老师第二次商业私教课-逐字稿文本-1.txt',
 )
 
-assert.deepEqual(
-  core.normalizeVaultFolderExclusions(' 私人日记\n财务资料,私人日记 '),
-  ['私人日记', '财务资料'],
-)
-assert.equal(core.isVaultSearchPathExcluded('私人日记/今天.md', ['私人日记']), true)
+assert.equal(core.isVaultSearchPathExcluded('㊙️财务/收入.md'), false)
+assert.equal(core.isVaultSearchPathExcluded('.obsidian/plugins/private.md'), true)
+assert.equal(core.isVaultSearchPathExcluded('trash/旧文章.md'), true)
+assert.equal(core.isVaultSearchPathExcluded('私人日记/今天.md'), false)
 
 const localSearch = await readFile(new URL('../src/vault-search.ts', import.meta.url), 'utf8')
 assert.match(localSearch, /\.getFiles\(\)/)

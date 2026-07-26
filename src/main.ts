@@ -75,10 +75,7 @@ import {
   type LongDocumentChunk,
 } from './long-document'
 import { LocalVaultSearch } from './vault-search'
-import {
-  normalizeVaultFolderExclusions,
-  type VaultSearchResult,
-} from './vault-search-core'
+import { type VaultSearchResult } from './vault-search-core'
 
 /** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -111,8 +108,6 @@ interface AiLinziSettings {
   attachNoteDefault: boolean
   /** 主对话默认在本机 Vault 中检索相关笔记；只发送命中的少量片段 */
   vaultSearchDefault: boolean
-  /** 本地智能检索始终忽略的文件夹，一行一个；隐私标记与隐藏目录另有硬排除 */
-  vaultSearchExcludedFolders: string
   /** 技能产出落盘的文件夹(相对 vault 根) */
   outputFolder: string
   /** 公众号一键配图使用的专属人偶参考图，只保存用户 Vault 内的路径 */
@@ -133,7 +128,6 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   tokenSecretId: '',
   attachNoteDefault: true,
   vaultSearchDefault: true,
-  vaultSearchExcludedFolders: '',
   outputFolder: 'AI霖子输出',
   illustrationCharacterReferencePath: '',
   defaultNiche: '',
@@ -146,6 +140,8 @@ interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
   /** v0.5.1 及以前曾把这两个敏感值明文写进 data.json，仅用于一次性迁移 */
   token?: string
   wechatAppSecret?: string
+  /** v0.6.21-v0.6.24 的手动排除列表；v0.6.25 起清理并停止生效 */
+  vaultSearchExcludedFolders?: string
 }
 
 const DEFAULT_TOKEN_SECRET_ID = 'ai-linzi-api-token'
@@ -543,9 +539,14 @@ export default class AiLinziPlugin extends Plugin {
 
   async loadSettings() {
     const raw = ((await this.loadData()) ?? {}) as LegacyAiLinziSettings
-    const { token: legacyToken, wechatAppSecret: legacyWechatSecret, ...safeSettings } = raw
+    const {
+      token: legacyToken,
+      wechatAppSecret: legacyWechatSecret,
+      vaultSearchExcludedFolders: legacyVaultSearchExcludedFolders,
+      ...safeSettings
+    } = raw
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
-    let migrated = false
+    let migrated = legacyVaultSearchExcludedFolders !== undefined
     // 学员正式版只连接 AI霖子官方后端，避免误按第三方教程把连接密钥和笔记
     // 发送到陌生服务器。localhost 仅保留给本机开发联调。
     if (
@@ -1518,9 +1519,6 @@ class ChatView extends ItemView {
     }
     const results = await this.plugin.vaultSearch.search(query, {
       ...this.vaultSearchLimits(capabilities),
-      excludedFolders: normalizeVaultFolderExclusions(
-        this.plugin.settings.vaultSearchExcludedFolders,
-      ),
       excludedPaths: currentNotePath ? [currentNotePath] : [],
     })
     return {
@@ -2547,28 +2545,13 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('默认智能搜索 Vault')
-      .setDesc('在你的电脑本地搜索 Markdown、TXT、可复制文字的 PDF 和 DOCX，只把相关的少量片段交给 AI；不会上传整个 Vault')
+      .setDesc('在你的电脑本地搜索 Vault 内全部正常的 Markdown、TXT、可复制文字的 PDF 和 DOCX，只把相关的少量片段交给 AI；不会上传整个 Vault')
       .addToggle((t) =>
         t.setValue(this.plugin.settings.vaultSearchDefault).onChange(async (v) => {
           this.plugin.settings.vaultSearchDefault = v
           await this.plugin.saveSettings()
         }),
       )
-
-    new Setting(containerEl)
-      .setName('Vault 搜索排除文件夹')
-      .setDesc('选填，一行一个 Vault 相对路径。隐藏目录、废纸篓和名称含「㊙️」的笔记始终不会被搜索')
-      .addTextArea((input) => {
-        input.inputEl.rows = 3
-        input
-          .setPlaceholder('例如：私人日记\n财务资料')
-          .setValue(this.plugin.settings.vaultSearchExcludedFolders)
-          .onChange(async (value) => {
-            this.plugin.settings.vaultSearchExcludedFolders = value
-            this.plugin.vaultSearch.clear()
-            await this.plugin.saveSettings()
-          })
-      })
 
     new Setting(containerEl).setName('公众号发布(选配)').setHeading()
 
