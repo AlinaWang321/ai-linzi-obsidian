@@ -383,7 +383,7 @@ export class ContentDashboardView extends ItemView {
     }
     button.disabled = true
     try {
-      await this.app.fileManager.processFrontMatter(file, (fm) => {
+      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
         fm['状态'] = result.status
         fm['内容类型'] = '公众号文章'
         fm['内容阶段'] = '已生成草稿'

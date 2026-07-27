@@ -407,7 +407,7 @@ const MAX_SAVED_CONVOS = 30
 const PLUGIN_SESSION_PREFIX = 'obsidian:'
 
 function uid(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return window.activeWindow.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
 /**
@@ -533,7 +533,7 @@ export default class AiLinziPlugin extends Plugin {
     this.addSettingTab(new AiLinziSettingTab(this.app, this))
   }
 
-  async onunload() {
+  onunload(): void {
     // Obsidian 官方规范:卸载时不 detach leaves(用户布局归用户)
   }
 
@@ -712,25 +712,25 @@ export default class AiLinziPlugin extends Plugin {
     const { workspace } = this.app
     const existing = workspace.getLeavesOfType(VIEW_TYPE_CHAT)
     if (existing.length > 0) {
-      workspace.revealLeaf(existing[0])
+      await workspace.revealLeaf(existing[0])
       return
     }
     const leaf = workspace.getRightLeaf(false)
     if (!leaf) return
     await leaf.setViewState({ type: VIEW_TYPE_CHAT, active: true })
-    workspace.revealLeaf(leaf)
+    await workspace.revealLeaf(leaf)
   }
 
   async activateContentDashboard() {
     const { workspace } = this.app
     const existing = workspace.getLeavesOfType(VIEW_TYPE_CONTENT_DASHBOARD)
     if (existing.length > 0) {
-      workspace.revealLeaf(existing[0])
+      await workspace.revealLeaf(existing[0])
       return
     }
     const leaf = workspace.getLeaf('tab')
     await leaf.setViewState({ type: VIEW_TYPE_CONTENT_DASHBOARD, active: true })
-    workspace.revealLeaf(leaf)
+    await workspace.revealLeaf(leaf)
   }
 
   /**

@@ -391,7 +391,7 @@ export async function runWechatWriter(plugin: AiLinziPlugin) {
     })
     const sourceFm = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter
     if (sourceFm?.['内容类型'] === '选题' || sourceFm?.['来源技能'] === '选题雷达') {
-      await plugin.app.fileManager.processFrontMatter(note.file, (fm) => {
+      await plugin.app.fileManager.processFrontMatter(note.file, (fm: Record<string, unknown>) => {
         fm['状态'] = '已生成草稿'
         fm['内容阶段'] = '已生成草稿'
         fm['关联文章'] = `[[${articleFile.basename}]]`
