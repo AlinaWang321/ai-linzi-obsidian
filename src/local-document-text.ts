@@ -141,7 +141,8 @@ function decodeXmlEntities(value: string): string {
 
 function cleanExtractedText(value: string, maxChars: number): string {
   return value
-    .replace(/\u0000/g, '')
+    .split(String.fromCharCode(0))
+    .join('')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')

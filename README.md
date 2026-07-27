@@ -1,4 +1,22 @@
-# AI霖子 Obsidian 插件
+# AI Linzi
+
+AI Linzi connects Alina's business coaching services to your local knowledge Vault. It provides sidebar chat, local Vault search, note-aware content creation, AI illustrations, long-document processing, and WeChat formatting and publishing.
+
+## Features
+
+- Chat with AI Linzi in a sidebar and optionally include the active note.
+- Search Markdown, TXT, text-based PDF, and DOCX files locally before sending only a few relevant excerpts to the service.
+- Create and edit content, process long documents, and save results back to the Vault.
+- Generate or revise article illustrations and save successful images locally.
+- Format WeChat articles and send them to a configured WeChat draft box.
+
+## Privacy and network access
+
+AI Linzi only sends the active note, selected documents, or small locally matched excerpts when the user explicitly enables or starts a cloud action. It does not upload the whole Vault and does not include third-party analytics. An AI Linzi account and connection key are required for cloud features. Notes and generated images remain in the user's Vault unless the user explicitly sends content to AI Linzi or WeChat services.
+
+This public plugin is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration are not included in this repository.
+
+## 中文说明
 
 把 AI霖子（Alina 方法论 + 学员长期记忆的商业军师）接进用户的 Obsidian 数字大脑。
 
@@ -7,6 +25,7 @@
 - **M1（已完成）**：安装、账号安全连接、测试连接、侧边栏流式对话和当前笔记上下文
 - **M2（已完成）**：技能调用、文章配图、公众号排版发布、内容看板、Vault 智能搜索和多文档选择
 - **M3（已完成）**：长逐字稿与长文档任务、本地 TXT/PDF/DOCX 提取、失败续跑和结果存为笔记
+- **v0.6.30**：修复官方市场自动审核阻塞项：市场描述改为兼容文本、作者网址改为可访问地址、README 补齐英文说明并统一标题、许可证改为 MIT；新增自动回归检查，防止后续版本再次出现相同问题。
 - **v0.6.29**：修复 GitHub Release 自动发布配置，确保正式安装文件按纯版本号标签稳定生成。
 - **v0.6.28**：完成 Obsidian 官方插件市场兼容整改。市场展示名使用 `AI Linzi`，插件内部继续显示「AI霖子」；版本更新交由 Obsidian 官方机制处理；本地对话缓存和配图续跑状态统一使用 Obsidian 插件数据 API；生产构建启用压缩。
 - **v0.6.27**：完成首批学员安装阶段收尾。安装说明补充 Windows/macOS、最低 Obsidian 版本和 Vault 本地搜索边界；连接中心统一使用「AI霖子连接密钥」名称；增加团队安装验收清单。
@@ -120,7 +139,7 @@ npm test           # 写作结构 → 配图回写 → 公众号 HTML 回归测�
 
 ## 重要披露
 
-- **许可证**：本仓库源码为安全与市场审核公开可见，但不是开源软件。仅允许安装并使用官方未修改版本；禁止复制、修改、二次发布、出售或用于开发竞争产品。详见 [`LICENSE`](LICENSE)。
+- **许可证**：本仓库中的公开插件薄客户端采用 [MIT License](LICENSE)。AI霖子名称与品牌素材、私有服务端、提示词、模型编排、计费系统、账号数据、知识库和课程内容不包含在本仓库中，也不因插件代码采用 MIT 而获得授权。
 - **账号与联网**：核心功能需要 AI霖子账号和连接密钥。只有用户主动发起对话、调用技能、喂入知识库、生成配图或发布公众号时，插件才会把该次操作所需的内容发送到 `https://chat.alinalinzi.com` 或相应的微信官方接口。
 - **账号权益**：部分 AI 功能需要有效的 AI霖子账号权益；账户状态与使用记录在 AI霖子网页版统一管理，插件界面不展示模型供应商或单次价格。
 - **本地文件访问**：开启「智能搜索 Vault」后，插件会在用户发送问题时临时在本机检索普通的 MD、TXT、可复制 PDF 和 DOCX，只发送少量匹配片段，不上传整个 Vault，也不建立云端全文索引。当前笔记、主动选择的整篇文档、修改当前笔记、覆盖图片和发布公众号仍需要用户主动勾选或确认。

@@ -429,7 +429,7 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
     if (!d.media_id) throw new Error(friendlyWxError(d.errcode, d.errmsg))
 
     // 回写状态到源笔记 frontmatter
-    await plugin.app.fileManager.processFrontMatter(note.file, (fm) => {
+    await plugin.app.fileManager.processFrontMatter(note.file, (fm: Record<string, unknown>) => {
       const now = new Date()
       const sentAt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
       fm['状态'] = '已发送公众号草稿箱'
