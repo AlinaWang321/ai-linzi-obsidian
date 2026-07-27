@@ -197,7 +197,7 @@ export class ContentDashboardView extends ItemView {
 
     const header = root.createDiv({ cls: 'ai-linzi-dashboard-header' })
     const heading = header.createDiv()
-    heading.createEl('h2', { text: '内容发布看板' })
+    heading.createDiv({ text: '内容发布看板', cls: 'ai-linzi-dashboard-title' })
     heading.createEl('p', {
       text: `内容来源：${normalizePath(this.plugin.settings.outputFolder || 'AI霖子输出')}（可在插件设置中修改）`,
     })

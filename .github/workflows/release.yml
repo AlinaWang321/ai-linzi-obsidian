@@ -3,7 +3,7 @@ name: Publish plugin release
 on:
   push:
     tags:
-      - 'v*'
+      - '*'
 
 permissions:
   contents: write
@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify release tag matches manifest version
+        run: node -e "const fs=require('fs'); const v=JSON.parse(fs.readFileSync('manifest.json','utf8')).version; if(process.env.GITHUB_REF_NAME!==v){console.error('Release tag must exactly match manifest version: '+v); process.exit(1)}"
       - uses: actions/setup-node@v4
         with:
           node-version: 20

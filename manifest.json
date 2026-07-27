@@ -1,9 +1,9 @@
 {
   "id": "ai-linzi",
-  "name": "AI霖子",
-  "version": "0.6.27",
+  "name": "AI Linzi",
+  "version": "0.6.28",
   "minAppVersion": "1.11.4",
-  "description": "把 AI霖子（你的 24 小时商业教练）接进 Obsidian 数字大脑：侧边栏对话、一键喂库、选题与内容创作、公众号排版发布，产出直接落盘。",
+  "description": "把 AI霖子接入 Obsidian 数字大脑，支持侧边栏对话、Vault 搜索、内容创作、文章配图、公众号排版与发布.",
   "author": "Alina霖子",
   "authorUrl": "https://www.alinalinzi.cn",
   "isDesktopOnly": true
