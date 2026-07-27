@@ -153,9 +153,8 @@ export class AuthorizedContentModal extends Modal {
     const hasChildren = (this.foldersByParent.get(path)?.length ?? 0) > 0
     const expanded = hasChildren && this.expandedFolders.has(path)
     const button = this.folderTreeEl.createEl('button', {
-      cls: 'ai-linzi-vault-browser-folder',
+      cls: `ai-linzi-vault-browser-folder ai-linzi-vault-browser-depth-${Math.min(depth, 8)}`,
     })
-    button.style.setProperty('--folder-depth', String(depth))
     button.toggleClass('is-active', path === this.currentFolderPath)
     if (hasChildren) button.setAttr('aria-expanded', String(expanded))
     button.setAttr(

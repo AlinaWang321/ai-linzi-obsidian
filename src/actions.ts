@@ -682,10 +682,6 @@ interface SavedIllustrationJob {
 
 const ILLUSTRATION_JOB_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
-function illustrationJobsPath(plugin: AiLinziPlugin): string {
-  return `${plugin.manifest.dir ?? `.obsidian/plugins/${plugin.manifest.id}`}/illustration-jobs.json`
-}
-
 function illustrationArticleFingerprint(article: string): string {
   const normalized = article
     .replace(/!\[\[[^\]]+\]\]/g, '')
@@ -701,23 +697,17 @@ function illustrationArticleFingerprint(article: string): string {
 }
 
 async function loadIllustrationJobs(plugin: AiLinziPlugin): Promise<SavedIllustrationJob[]> {
-  try {
-    const raw = await plugin.app.vault.adapter.read(illustrationJobsPath(plugin))
-    const parsed = JSON.parse(raw) as unknown
-    if (!Array.isArray(parsed)) return []
-    const cutoff = Date.now() - ILLUSTRATION_JOB_MAX_AGE_MS
-    return parsed.filter(
-      (item): item is SavedIllustrationJob =>
-        Boolean(item) &&
-        typeof item === 'object' &&
-        typeof (item as SavedIllustrationJob).notePath === 'string' &&
-        typeof (item as SavedIllustrationJob).articleFingerprint === 'string' &&
-        typeof (item as SavedIllustrationJob).updatedAt === 'number' &&
-        (item as SavedIllustrationJob).updatedAt >= cutoff,
-    )
-  } catch {
-    return []
-  }
+  const parsed = plugin.getIllustrationJobsData()
+  const cutoff = Date.now() - ILLUSTRATION_JOB_MAX_AGE_MS
+  return parsed.filter(
+    (item): item is SavedIllustrationJob =>
+      Boolean(item) &&
+      typeof item === 'object' &&
+      typeof (item as SavedIllustrationJob).notePath === 'string' &&
+      typeof (item as SavedIllustrationJob).articleFingerprint === 'string' &&
+      typeof (item as SavedIllustrationJob).updatedAt === 'number' &&
+      (item as SavedIllustrationJob).updatedAt >= cutoff,
+  )
 }
 
 async function writeIllustrationJobs(
@@ -725,9 +715,9 @@ async function writeIllustrationJobs(
   jobs: SavedIllustrationJob[],
 ): Promise<void> {
   try {
-    await plugin.app.vault.adapter.write(illustrationJobsPath(plugin), JSON.stringify(jobs.slice(-20), null, 2))
-  } catch (error) {
-    console.warn('[ai-linzi] illustration resume state could not be saved', error)
+    await plugin.setIllustrationJobsData(jobs)
+  } catch {
+    new Notice('配图任务状态暂时无法保存；请保持 Obsidian 打开并稍后重试', 7000)
   }
 }
 
@@ -1390,10 +1380,10 @@ function chooseComputerImages(
     return
   }
   const input = document.createElement('input')
+  input.addClass('ai-linzi-file-input')
   input.type = 'file'
   input.accept = 'image/png,image/jpeg,image/webp'
   input.multiple = remaining > 1
-  input.style.display = 'none'
   document.body.appendChild(input)
   input.onchange = () => {
     const files = Array.from(input.files ?? []).slice(0, remaining)

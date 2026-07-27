@@ -21,7 +21,6 @@ import {
   WorkspaceLeaf,
   requestUrl,
 } from 'obsidian'
-import { applyUpdate, autoCheck, checkLatest, type UpdateInfo } from './updater'
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
 import { prepareWechatArticle } from './article-format'
 import {
@@ -114,8 +113,6 @@ interface AiLinziSettings {
   illustrationCharacterReferencePath: string
   /** 选题雷达默认受众(跑一次后自动记住;历史key沿用defaultNiche兼容旧设置) */
   defaultNiche: string
-  /** 上次自动检查更新的时间戳(约每20小时一次) */
-  lastUpdateCheckAt?: number
   /** 公众号发布(选配):AppID 可留在普通设置，AppSecret 只存 SecretStorage */
   wechatAppId: string
   wechatAppSecretId: string
@@ -142,6 +139,8 @@ interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
   wechatAppSecret?: string
   /** v0.6.21-v0.6.24 的手动排除列表；v0.6.25 起清理并停止生效 */
   vaultSearchExcludedFolders?: string
+  /** v0.6.27 及以前的插件内更新检查时间；官方市场版不再使用 */
+  lastUpdateCheckAt?: number
 }
 
 const DEFAULT_TOKEN_SECRET_ID = 'ai-linzi-api-token'
@@ -255,13 +254,18 @@ interface ChatAiImageResult {
   insertedNotePath?: string
 }
 
-/** 本地保存的会话(存插件目录 conversations.json,升级/重启不丢) */
+/** 本地保存的会话（由 Obsidian Plugin.loadData/saveData 管理） */
 interface SavedConvo {
   id: string
   mode: 'chat' | 'interview'
   title: string
   updatedAt: number
   messages: WireMessage[]
+}
+
+interface AiLinziPluginData extends LegacyAiLinziSettings {
+  conversations?: SavedConvo[]
+  illustrationJobs?: unknown[]
 }
 
 interface CloudSessionSummary {
@@ -299,6 +303,7 @@ class ChatHistoryModal extends Modal {
 
   onOpen(): void {
     this.modalEl.addClass('ai-linzi-history-modal')
+    this.setTitle('插件对话历史')
     this.renderHistory()
   }
 
@@ -309,7 +314,6 @@ class ChatHistoryModal extends Modal {
   private renderHistory(): void {
     const { contentEl } = this
     contentEl.empty()
-    contentEl.createEl('h2', { text: '插件对话历史' })
     contentEl.createDiv({
       text: '这里只显示 AI霖子 Obsidian 插件产生的对话，不包含网页版和微信端历史。',
       cls: 'ai-linzi-history-note',
@@ -466,19 +470,15 @@ export default class AiLinziPlugin extends Plugin {
   settings: AiLinziSettings = DEFAULT_SETTINGS
   readonly vaultSearch = new LocalVaultSearch(this.app)
   private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
+  private savedConversations: SavedConvo[] = []
+  private savedIllustrationJobs: unknown[] = []
   /**
    * 最近一次激活的笔记。侧边面板(对话)获得焦点时 getActiveFile() 会返回 null,
    * 面板上的「调用技能/存入知识库」按钮靠这个记录知道用户"当前开着哪篇笔记"。
    */
   lastActiveFile: TFile | null = null
-  /** 启动检查发现的待装更新(设置页展示) */
-  pendingUpdate: UpdateInfo | null = null
-
   async onload() {
     await this.loadSettings()
-
-    // 启动 8s 后静默查一次更新(不阻塞加载;找到只提示,由用户在设置页确认)
-    window.setTimeout(() => void autoCheck(this), 8000)
 
     this.registerEvent(
       this.app.workspace.on('active-leaf-change', () => {
@@ -495,13 +495,13 @@ export default class AiLinziPlugin extends Plugin {
 
     this.addCommand({
       id: 'open-chat',
-      name: '打开 AI霖子 对话面板',
+      name: '打开对话面板',
       callback: () => this.activateChatView(),
     })
 
     this.addCommand({
       id: 'test-connection',
-      name: '测试与 AI霖子 的连接',
+      name: '测试连接',
       callback: () => this.testConnection(),
     })
 
@@ -538,15 +538,21 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   async loadSettings() {
-    const raw = ((await this.loadData()) ?? {}) as LegacyAiLinziSettings
+    const raw = ((await this.loadData()) ?? {}) as AiLinziPluginData
     const {
       token: legacyToken,
       wechatAppSecret: legacyWechatSecret,
       vaultSearchExcludedFolders: legacyVaultSearchExcludedFolders,
+      lastUpdateCheckAt: legacyLastUpdateCheckAt,
+      conversations,
+      illustrationJobs,
       ...safeSettings
     } = raw
+    this.savedConversations = Array.isArray(conversations) ? conversations : []
+    this.savedIllustrationJobs = Array.isArray(illustrationJobs) ? illustrationJobs : []
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
-    let migrated = legacyVaultSearchExcludedFolders !== undefined
+    let migrated =
+      legacyVaultSearchExcludedFolders !== undefined || legacyLastUpdateCheckAt !== undefined
     // 学员正式版只连接 AI霖子官方后端，避免误按第三方教程把连接密钥和笔记
     // 发送到陌生服务器。localhost 仅保留给本机开发联调。
     if (
@@ -614,41 +620,42 @@ export default class AiLinziPlugin extends Plugin {
     await this.saveSettings()
   }
 
-  // ── 会话本地持久化(独立文件,不进 data.json 防设置写放大) ──
-
-  private convosPath(): string {
-    return `${this.manifest.dir}/conversations.json`
-  }
+  // ── 会话与短期配图任务持久化（统一使用 Obsidian 插件数据 API） ──
 
   async loadConvos(): Promise<SavedConvo[]> {
-    try {
-      const raw = await this.app.vault.adapter.read(this.convosPath())
-      const list = JSON.parse(raw) as SavedConvo[]
-      // conversations.json 本来就只保存插件对话。旧版本的普通 UUID 在本机读取时
-      // 安全迁入 obsidian: 命名空间；无法辨认来源的旧云端 UUID 则不做迁移。
-      return Array.isArray(list)
-        ? list.map((convo) => ({ ...convo, id: normalizePluginSessionId(convo.id) }))
-        : []
-    } catch {
-      return []
-    }
+    return this.savedConversations.map((convo) => ({
+      ...convo,
+      id: normalizePluginSessionId(convo.id),
+    }))
   }
 
   async saveConvo(convo: SavedConvo): Promise<void> {
     const list = (await this.loadConvos()).filter((c) => c.id !== convo.id)
     list.unshift(convo)
     list.sort((a, b) => b.updatedAt - a.updatedAt)
-    await this.app.vault.adapter.write(this.convosPath(), JSON.stringify(list.slice(0, MAX_SAVED_CONVOS)))
+    this.savedConversations = list.slice(0, MAX_SAVED_CONVOS)
+    await this.saveSettings()
   }
 
   async deleteAllConvos(): Promise<void> {
-    await this.app.vault.adapter.write(this.convosPath(), '[]')
+    this.savedConversations = []
+    await this.saveSettings()
   }
 
   async deleteConvo(sessionId: string): Promise<void> {
     const targetId = normalizePluginSessionId(sessionId)
     const list = (await this.loadConvos()).filter((convo) => convo.id !== targetId)
-    await this.app.vault.adapter.write(this.convosPath(), JSON.stringify(list.slice(0, MAX_SAVED_CONVOS)))
+    this.savedConversations = list.slice(0, MAX_SAVED_CONVOS)
+    await this.saveSettings()
+  }
+
+  getIllustrationJobsData(): unknown[] {
+    return [...this.savedIllustrationJobs]
+  }
+
+  async setIllustrationJobsData(jobs: unknown[]): Promise<void> {
+    this.savedIllustrationJobs = jobs.slice(-20)
+    await this.saveSettings()
   }
 
   async loadCloudSessions(): Promise<CloudSessionSummary[]> {
@@ -694,7 +701,11 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   async saveSettings() {
-    await this.saveData(this.settings)
+    await this.saveData({
+      ...this.settings,
+      conversations: this.savedConversations,
+      illustrationJobs: this.savedIllustrationJobs,
+    } satisfies AiLinziPluginData)
   }
 
   async activateChatView() {
@@ -2631,31 +2642,6 @@ class AiLinziSettingTab extends PluginSettingTab {
         b.setButtonText('打开教程').onClick(() => {
           window.open('https://github.com/AlinaWang321/ai-linzi-obsidian/blob/master/docs/wechat-setup-guide.md')
         }),
-      )
-
-    new Setting(containerEl)
-      .setName(`插件更新(当前 v${this.plugin.manifest.version})`)
-      .setDesc(this.plugin.pendingUpdate ? `发现新版本 v${this.plugin.pendingUpdate.version}!` : '检查 GitHub 上是否有新版本,一键更新并自动重载')
-      .addButton((b) =>
-        b
-          .setButtonText(this.plugin.pendingUpdate ? `更新到 v${this.plugin.pendingUpdate.version}` : '检查并更新')
-          .setCta()
-          .onClick(async () => {
-            b.setDisabled(true)
-            try {
-              const info = this.plugin.pendingUpdate ?? (await checkLatest(this.plugin))
-              if (!info) {
-                new Notice('✅ 已经是最新版本')
-                return
-              }
-              new Notice(`开始更新到 v${info.version}…`)
-              await applyUpdate(this.plugin, info)
-            } catch (e) {
-              new Notice(`更新失败:${e instanceof Error ? e.message : String(e)}`, 8000)
-            } finally {
-              b.setDisabled(false)
-            }
-          }),
       )
 
     new Setting(containerEl)

@@ -430,7 +430,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  padding: 5px 7px 5px calc(7px + var(--folder-depth, 0) * 12px);
+  padding: 5px 7px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -438,6 +438,19 @@
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   text-align: left;
+}
+
+.ai-linzi-vault-browser-depth-1 { padding-inline-start: 19px; }
+.ai-linzi-vault-browser-depth-2 { padding-inline-start: 31px; }
+.ai-linzi-vault-browser-depth-3 { padding-inline-start: 43px; }
+.ai-linzi-vault-browser-depth-4 { padding-inline-start: 55px; }
+.ai-linzi-vault-browser-depth-5 { padding-inline-start: 67px; }
+.ai-linzi-vault-browser-depth-6 { padding-inline-start: 79px; }
+.ai-linzi-vault-browser-depth-7 { padding-inline-start: 91px; }
+.ai-linzi-vault-browser-depth-8 { padding-inline-start: 103px; }
+
+.ai-linzi-file-input {
+  display: none;
 }
 
 .ai-linzi-vault-browser-folder:hover,
@@ -1128,7 +1141,7 @@ button.ai-linzi-vault-source-link:focus-visible {
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.ai-linzi-dashboard-header h2 {
+.ai-linzi-dashboard-title {
   margin: 0;
   font-size: 24px;
   line-height: 1.3;
