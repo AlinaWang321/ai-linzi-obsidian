@@ -2093,36 +2093,43 @@ class ChatView extends ItemView {
   private renderMessages(thinking = false) {
     this.listEl.empty()
     if (this.messages.length === 0) {
+      // 空状态排版规范(2026-07-30 Alina 反馈):标题下所有文字进同一个 body 容器,
+      // 同字号、同行宽、同对齐;不允许再出现两套字号/宽度。
       const empty = this.listEl.createDiv({ cls: 'ai-linzi-empty' })
-      empty.createDiv({ text: '👋 我是 AI霖子' })
+      empty.createDiv({ text: '👋 我是 AI霖子', cls: 'ai-linzi-empty-title' })
+      const body = empty.createDiv({ cls: 'ai-linzi-empty-body' })
       if (!this.plugin.getApiToken()) {
         // 未连接:主动给三步引导,不让用户发了消息撞报错才发现没配密钥
-        empty.createDiv({
+        body.createDiv({
           text: '第一次使用,先完成连接(约 1 分钟):',
           cls: 'ai-linzi-empty-sub',
         })
-        const steps = empty.createEl('ol', { cls: 'ai-linzi-empty-steps' })
+        const steps = body.createEl('ol', { cls: 'ai-linzi-empty-steps' })
         steps.createEl('li', { text: '到 AI霖子网页版「连接中心」生成你的连接密钥' })
         steps.createEl('li', { text: '在插件设置页粘贴密钥,点「测试连接」' })
         steps.createEl('li', { text: '回到这里,说出第一句话' })
-        const btn = empty.createEl('button', {
+        const btn = body.createEl('button', {
           text: '打开插件设置',
           cls: 'ai-linzi-empty-btn',
         })
         btn.onclick = () => this.plugin.openPluginSettings()
       } else {
-        empty.createDiv({
+        body.createDiv({
           text: '开着某篇笔记问我,我可以结合它给你商业判断、内容建议和下一步行动。',
           cls: 'ai-linzi-empty-sub',
         })
         // 已连接:给新手三个一分钟能跑通的起手式(文案与真实 UI 控件名严格一致)
-        const starters = empty.createDiv({ cls: 'ai-linzi-empty-starters' })
+        const starters = body.createDiv({ cls: 'ai-linzi-empty-starters' })
         starters.createDiv({ text: '三个起手式:' })
         const ul = starters.createEl('ul')
         ul.createEl('li', { text: '勾选「主对话带上当前笔记」,让我基于这篇笔记给建议' })
         ul.createEl('li', { text: '点「调用技能」→ 选题雷达,把素材笔记变成 10 个选题' })
         ul.createEl('li', { text: '写好的核心笔记点「存入知识库」,让我长期记住你的定位' })
       }
+      const link = body.createDiv({ cls: 'ai-linzi-empty-link' })
+      link.createSpan({ text: '进入网页版 ' })
+      link.createEl('a', { text: 'chat.alinalinzi.com', href: 'https://chat.alinalinzi.com' })
+      link.createSpan({ text: ' 可注册账号、查看和充值积分' })
       return
     }
     for (let mi = 0; mi < this.messages.length; mi++) {
