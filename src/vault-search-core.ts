@@ -179,16 +179,18 @@ export function searchVaultDocuments(
 ): VaultSearchResult[] {
   if (!shouldSearchVault(query)) return []
   const maxSources = clampInt(options.maxSources, 1, 10, VAULT_SEARCH_DEFAULTS.maxSources)
+  // 天花板 2026-07-30 从 2000/12000 放宽到 4000/20000(Alina 拍板大幅放宽;
+  // 实际生效值由服务端 capabilities 下发,这里只是本地引擎的硬保护)
   const maxExcerptChars = clampInt(
     options.maxExcerptChars,
     240,
-    2_000,
+    4_000,
     VAULT_SEARCH_DEFAULTS.maxExcerptChars,
   )
   const maxTotalChars = clampInt(
     options.maxTotalChars,
     maxExcerptChars,
-    12_000,
+    20_000,
     VAULT_SEARCH_DEFAULTS.maxTotalChars,
   )
   const excludedPathSet = new Set((options.excludedPaths ?? []).map(normalizePath))

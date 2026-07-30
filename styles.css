@@ -1540,3 +1540,32 @@ button.ai-linzi-vault-source-link:focus-visible {
 .ai-linzi-empty-link {
   margin-top: 12px;
 }
+
+/* ── 对话直接创建笔记确认卡(v0.6.34) ── */
+.ai-linzi-create-note-card {
+  margin-top: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+.ai-linzi-create-note-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.ai-linzi-create-note-preview {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.ai-linzi-create-note-actions {
+  margin-top: 8px;
+}
+.ai-linzi-create-note-actions button {
+  cursor: pointer;
+}
+.ai-linzi-create-note-done {
+  font-size: 13px;
+}
