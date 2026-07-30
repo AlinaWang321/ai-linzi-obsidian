@@ -429,7 +429,12 @@ export class CockpitView extends ItemView {
     })
     const actions = header.createDiv({ cls: 'ai-linzi-cockpit-header-actions' })
     if (this.cloud) {
-      actions.createSpan({ text: `积分 ${this.cloud.balance.toLocaleString('zh-CN')}`, cls: 'ai-linzi-cockpit-pill' })
+      const credits = actions.createSpan({
+        text: `积分 ${this.cloud.balance.toLocaleString('zh-CN')}`,
+        cls: 'ai-linzi-cockpit-pill is-clickable',
+      })
+      credits.setAttribute('title', '点击打开网页版积分充值')
+      credits.onclick = () => window.open(`${this.plugin.settings.serverUrl.replace(/\/+$/, '')}/credits`)
     }
     const web = actions.createEl('button', { text: '打开网页版' })
     web.onclick = () => window.open(this.plugin.settings.serverUrl.replace(/\/+$/, ''))
