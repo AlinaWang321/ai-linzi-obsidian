@@ -19,6 +19,7 @@ import {
   Setting,
   TFile,
   WorkspaceLeaf,
+  normalizePath,
   requestUrl,
 } from 'obsidian'
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
@@ -52,6 +53,7 @@ import {
   type LocalImageReference,
 } from './actions'
 import { extractCreateNoteBlocks, type CreateNoteBlock } from './create-note'
+import { extractCreateFolderBlocks } from './create-folder'
 import {
   extractPluginSkillSuggestions,
   isArticleIllustrationEditIntent,
@@ -2186,6 +2188,49 @@ class ChatView extends ItemView {
     }
   }
 
+  /** 对话创建文件夹确认卡(v0.6.42):列出净化后的路径,点击才逐级创建,已存在跳过 */
+  private renderCreateFolderOffer(row: HTMLElement, folders: string[]) {
+    const card = row.createDiv({ cls: 'ai-linzi-create-note-card' })
+    card.createDiv({ text: `📁 待创建文件夹(${folders.length} 个):`, cls: 'ai-linzi-create-note-title' })
+    for (const path of folders) {
+      card.createDiv({ text: `· ${path}`, cls: 'ai-linzi-create-note-preview' })
+    }
+    const actionsRow = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
+    const createBtn = actionsRow.createEl('button', { text: `创建这 ${folders.length} 个文件夹` })
+    createBtn.onclick = () => {
+      createBtn.disabled = true
+      void (async () => {
+        let created = 0
+        let skipped = 0
+        try {
+          for (const path of folders) {
+            // 逐级确保父目录存在(vault.createFolder 不保证递归)
+            const segments = normalizePath(path).split('/')
+            let current = ''
+            let createdForPath = 0
+            for (const segment of segments) {
+              current = current ? `${current}/${segment}` : segment
+              if (this.app.vault.getAbstractFileByPath(current)) continue
+              await this.app.vault.createFolder(current)
+              createdForPath++
+            }
+            if (createdForPath > 0) created += createdForPath
+            else skipped++
+          }
+          card.empty()
+          card.createDiv({
+            cls: 'ai-linzi-create-note-done',
+            text: `✅ 已创建 ${created} 个文件夹${skipped > 0 ? `(${skipped} 个已存在,跳过)` : ''}`,
+          })
+          new Notice(`已创建 ${created} 个文件夹${skipped > 0 ? `,${skipped} 个已存在` : ''}`)
+        } catch (e) {
+          createBtn.disabled = false
+          new Notice(`创建失败:${(e as Error).message}`, 6000)
+        }
+      })()
+    }
+  }
+
   private renderMessages(thinking = false) {
     this.listEl.empty()
     if (this.messages.length === 0) {
@@ -2247,13 +2292,15 @@ class ChatView extends ItemView {
         const skillResult = extractPluginSkillSuggestions(text, previousUserText)
         // 对话直接创建笔记(v0.6.34):先剥标记块,确认卡在正文渲染后追加
         const createResult = extractCreateNoteBlocks(skillResult.cleanText)
-        const cleanText = createResult.cleanText
+        const folderResult = extractCreateFolderBlocks(createResult.cleanText)
+        const cleanText = folderResult.cleanText
         const patch = parseNotePatch(cleanText)
         const illustrationEdit = isArticleIllustrationEditIntent(previousUserText)
         const editReply = this.mode === 'chat' && !illustrationEdit && isNoteEditIntent(previousUserText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
         if ((m.vaultSources?.length ?? 0) > 0) this.renderVaultSources(row, m.vaultSources ?? [])
         if (createResult.blocks.length > 0) this.renderCreateNoteOffers(row, createResult.blocks)
+        if (folderResult.folders.length > 0) this.renderCreateFolderOffer(row, folderResult.folders)
         if (m.articleIllustrationEditOffer) {
           this.renderArticleIllustrationEditOffer(row, m.articleIllustrationEditOffer)
           continue
