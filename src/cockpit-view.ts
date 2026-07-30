@@ -61,8 +61,9 @@ interface LocalStats {
   noteDays: Set<string>
   publishDays: Set<string>
   weekPublished: number
-  streak: number
-  publishStreak: number
+  /** 本月有新建笔记的天数 / 本月有正式发布的天数(Alina 2026-07-30:统计本月总数,不做连续) */
+  monthNoteDays: number
+  monthPublishDays: number
   pipeline: { topic: number; draft: number; ready: number; monthPublished: number }
 }
 
@@ -145,19 +146,13 @@ export function scanLocalStats(plugin: AiLinziPlugin): LocalStats {
     }
   }
 
-  const streakOf = (days: Set<string>): number => {
+  const daysInMonth = (days: Set<string>): number => {
     let count = 0
-    for (let i = 0; ; i++) {
-      const day = localDate(Date.now() - i * 86400_000)
-      if (days.has(day)) count++
-      else if (i === 0) continue // 今天还没记/没发,不打断连续
-      else break
-      if (i > 400) break
-    }
+    for (const day of days) if (day.startsWith(monthPrefix)) count++
     return count
   }
-  const streak = streakOf(noteDays)
-  const publishStreak = streakOf(publishDays)
+  const monthNoteDays = daysInMonth(noteDays)
+  const monthPublishDays = daysInMonth(publishDays)
 
   inboxFiles.sort((a, b) => b.days - a.days)
   return {
@@ -169,8 +164,8 @@ export function scanLocalStats(plugin: AiLinziPlugin): LocalStats {
     noteDays,
     publishDays,
     weekPublished,
-    streak,
-    publishStreak,
+    monthNoteDays,
+    monthPublishDays,
     pipeline,
   }
 }
@@ -829,14 +824,14 @@ export class CockpitView extends ItemView {
     const legend = card.createDiv({ cls: 'ai-linzi-cockpit-legend' })
     legend.createSpan({ text: '● 发布', cls: 'is-pub' })
     legend.createSpan({ text: '● 记录', cls: 'is-note' })
-    const streak = legend.createSpan({ text: `🔥 连续记录 ${local.streak} 天`, cls: 'ai-linzi-cockpit-streak' })
-    streak.setAttribute('title', '连续记录 = 截至今天,每天都至少新建一条笔记的连续天数(今天还没记不打断)')
+    const noteDays = legend.createSpan({ text: `🔥 本月记录 ${local.monthNoteDays} 天`, cls: 'ai-linzi-cockpit-streak' })
+    noteDays.setAttribute('title', '本月有新建笔记的天数(按文件创建时间统计)')
     const pubLine = card.createDiv({ cls: 'ai-linzi-cockpit-legend' })
-    const pubStreak = pubLine.createSpan({
-      text: `📤 连续发布 ${local.publishStreak} 天`,
+    const pubDays = pubLine.createSpan({
+      text: `📤 本月发布 ${local.monthPublishDays} 天`,
       cls: 'ai-linzi-cockpit-streak',
     })
-    pubStreak.setAttribute('title', '连续发布 = 截至今天,每天都有内容正式发布的连续天数(按公众号发布日期统计)')
+    pubDays.setAttribute('title', '本月有内容正式发布的天数(按公众号发布日期统计)')
   }
 
   private renderBrain(grid: HTMLElement, local: LocalStats) {
