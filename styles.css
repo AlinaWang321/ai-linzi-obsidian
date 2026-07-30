@@ -1505,3 +1505,28 @@ button.ai-linzi-vault-source-link:focus-visible {
     border-top: 1px solid var(--background-modifier-border);
   }
 }
+
+/* ── 空状态上手引导(v0.6.31) ── */
+.ai-linzi-empty-steps {
+  margin: 8px 0 4px;
+  padding-left: 20px;
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.ai-linzi-empty-btn {
+  margin-top: 8px;
+  cursor: pointer;
+}
+.ai-linzi-empty-starters {
+  margin-top: 10px;
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.ai-linzi-empty-starters ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  line-height: 1.8;
+}

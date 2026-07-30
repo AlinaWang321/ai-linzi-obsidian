@@ -1,11 +1,11 @@
 /**
  * AI霖子 Obsidian 插件 · 学员内容工作流
  *
- * 已实现:设置页(服务器地址/Token/测试连接) + 侧边栏对话面板(可带当前笔记上下文)
- * M1 用非流式模式(requestUrl 绕 CORS,稳定优先);流式 fetch 升级排 M3。
- * 后续里程碑:一键喂库(M2)、四技能笔记即输入+落盘(M2)、内容看板(v1.5)。
+ * 已实现:侧边栏对话(流式+当前笔记+Vault 本地搜索+多笔记授权+长文任务+AI 生图)、
+ * 一键喂库、技能落盘、文章配图与单图修改、内容发布看板、公众号排版与草稿箱直发。
+ * (2026-07-30 修正本注释:原 M1/M2/M3 里程碑均已完成,旧注释已误导。)
  *
- * 服务端对应:webapp feature/obsidian-plugin 分支 /api/plugin/*
+ * 服务端对应:webapp /api/plugin/v1/*(版本协商与最低版本门禁见 api())
  */
 import {
   App,
@@ -152,6 +152,9 @@ const CHAT_SEND_SHORTCUT_HINT = 'Enter 换行 · Mac：⌘ + Enter / Windows：C
 const CHAT_INPUT_PLACEHOLDER = '问 AI霖子任何事…'
 const INTERVIEW_INPUT_PLACEHOLDER = '先告诉 AI 你想写什么方向（一句话），它会开始采访你…'
 const CAPABILITIES_CACHE_TTL_MS = 5 * 60 * 1000
+// 四处未连接报错共用同一句(2026-07-30 统一;旧版有「服务器地址和 Token」等三种矛盾说法)
+const NOT_CONNECTED_MSG =
+  '还没连接 AI霖子——请到插件设置页粘贴「AI霖子连接密钥」,并点一次「测试连接」。'
 
 type MembershipTier = 'starter' | 'pro' | 'business'
 
@@ -607,7 +610,17 @@ export default class AiLinziPlugin extends Plugin {
   async setApiToken(value: string): Promise<void> {
     this.app.secretStorage.setSecret(DEFAULT_TOKEN_SECRET_ID, value.trim())
     this.settings.tokenSecretId = DEFAULT_TOKEN_SECRET_ID
+    this.capabilitiesCache = null // 换密钥=换账号,旧权益缓存立即作废
     await this.saveSettings()
+  }
+
+  /** 打开本插件的设置页(空状态引导按钮用;Obsidian 未公开类型,窄接口断言) */
+  openPluginSettings(): void {
+    const app = this.app as unknown as {
+      setting?: { open: () => void; openTabById: (id: string) => void }
+    }
+    app.setting?.open()
+    app.setting?.openTabById(this.manifest.id)
   }
 
   getWechatAppSecret(): string {
@@ -759,7 +772,7 @@ export default class AiLinziPlugin extends Plugin {
     const { serverUrl } = this.settings
     const token = this.getApiToken()
     if (!serverUrl || !token) {
-      throw new Error('请先在设置里填写服务器地址和 Token')
+      throw new Error(NOT_CONNECTED_MSG)
     }
     const res = await requestUrl({
       url: `${serverUrl.replace(/\/+$/, '')}${path}`,
@@ -823,7 +836,11 @@ export default class AiLinziPlugin extends Plugin {
 
   async requireProAccess(featureName: string): Promise<boolean> {
     try {
-      const data = await this.getCapabilities()
+      let data = await this.getCapabilities()
+      if (data.tier !== 'pro' && data.tier !== 'business') {
+        // 缓存说无权益时强刷一次再判:网页端刚升级的会员不该被最长 5 分钟的旧缓存拦在门外
+        data = await this.getCapabilities(true)
+      }
       if (data.tier === 'pro' || data.tier === 'business') return true
       new Notice(`“${featureName}”是 Pro 及以上会员功能，请升级会员后使用。`, 7000)
       return false
@@ -841,7 +858,7 @@ export default class AiLinziPlugin extends Plugin {
     const { serverUrl } = this.settings
     const token = this.getApiToken()
     if (!serverUrl || !token) {
-      throw new Error('请先在设置里填写服务器地址和 Token')
+      throw new Error(NOT_CONNECTED_MSG)
     }
     const res = await requestUrl({
       url: `${serverUrl.replace(/\/+$/, '')}${path}`,
@@ -1968,7 +1985,7 @@ class ChatView extends ItemView {
   private async sendInterview(): Promise<string> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
-    if (!token) return '⚠️ 请先在设置里粘贴 AI霖子连接密钥'
+    if (!token) return `⚠️ ${NOT_CONNECTED_MSG}`
     const res = await requestUrl({
       url: `${serverUrl.replace(/\/+$/, '')}/api/plugin/v1/skills/wechat-interview`,
       method: 'POST',
@@ -2015,7 +2032,7 @@ class ChatView extends ItemView {
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
-    if (!token) return { kind: 'bizError', message: '请先在设置里粘贴 AI霖子连接密钥' }
+    if (!token) return { kind: 'bizError', message: NOT_CONNECTED_MSG }
     const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/api/plugin/v1/chat`, {
       method: 'POST',
       headers: {
@@ -2078,10 +2095,34 @@ class ChatView extends ItemView {
     if (this.messages.length === 0) {
       const empty = this.listEl.createDiv({ cls: 'ai-linzi-empty' })
       empty.createDiv({ text: '👋 我是 AI霖子' })
-      empty.createDiv({
-        text: '开着某篇笔记问我,我可以结合它给你商业判断、内容建议和下一步行动。',
-        cls: 'ai-linzi-empty-sub',
-      })
+      if (!this.plugin.getApiToken()) {
+        // 未连接:主动给三步引导,不让用户发了消息撞报错才发现没配密钥
+        empty.createDiv({
+          text: '第一次使用,先完成连接(约 1 分钟):',
+          cls: 'ai-linzi-empty-sub',
+        })
+        const steps = empty.createEl('ol', { cls: 'ai-linzi-empty-steps' })
+        steps.createEl('li', { text: '到 AI霖子网页版「连接中心」生成你的连接密钥' })
+        steps.createEl('li', { text: '在插件设置页粘贴密钥,点「测试连接」' })
+        steps.createEl('li', { text: '回到这里,说出第一句话' })
+        const btn = empty.createEl('button', {
+          text: '打开插件设置',
+          cls: 'ai-linzi-empty-btn',
+        })
+        btn.onclick = () => this.plugin.openPluginSettings()
+      } else {
+        empty.createDiv({
+          text: '开着某篇笔记问我,我可以结合它给你商业判断、内容建议和下一步行动。',
+          cls: 'ai-linzi-empty-sub',
+        })
+        // 已连接:给新手三个一分钟能跑通的起手式(文案与真实 UI 控件名严格一致)
+        const starters = empty.createDiv({ cls: 'ai-linzi-empty-starters' })
+        starters.createDiv({ text: '三个起手式:' })
+        const ul = starters.createEl('ul')
+        ul.createEl('li', { text: '勾选「主对话带上当前笔记」,让我基于这篇笔记给建议' })
+        ul.createEl('li', { text: '点「调用技能」→ 选题雷达,把素材笔记变成 10 个选题' })
+        ul.createEl('li', { text: '写好的核心笔记点「存入知识库」,让我长期记住你的定位' })
+      }
       return
     }
     for (let mi = 0; mi < this.messages.length; mi++) {

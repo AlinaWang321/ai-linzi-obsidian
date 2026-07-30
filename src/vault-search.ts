@@ -3,6 +3,7 @@ import {
   buildVaultLocalFact,
   isVaultSearchPathExcluded,
   searchVaultDocuments,
+  shouldSearchVault,
   type VaultSearchDocument,
   type VaultSearchOptions,
   type VaultSearchResult,
@@ -49,6 +50,10 @@ export class LocalVaultSearch {
     query: string,
     options: VaultSearchOptions = {},
   ): Promise<LocalVaultSearchResponse> {
+    // 短路:寒暄/超短输入不该触发全 Vault 扫描(大库的 PDF/DOCX 解析成本高,
+    // 新用户第一句「你好」尤其不能卡)。统计类问题词长足够,不会被误伤;
+    // searchVaultDocuments 内部同一判断保留作为纯函数的自我保护。
+    if (!shouldSearchVault(query)) return { results: [] }
     const files = this.app.vault
       .getFiles()
       .filter(
