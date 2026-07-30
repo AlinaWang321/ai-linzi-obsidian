@@ -120,10 +120,11 @@ interface AiLinziSettings {
   wechatAppSecretId: string
   /** 文末品牌小卡「排版与配图 · AI霖子」(默认开,可关) */
   brandFooter: boolean
-  /** 驾驶舱目录映射(相对 vault 根;留空=该卡不统计)。对外输出直接复用 outputFolder */
+  /** 驾驶舱目录映射(相对 vault 根;留空=该卡不统计)。默认 inbox/raw/wiki/output 四件套 */
   cockpitInboxFolder: string
   cockpitSourcesFolder: string
   cockpitKnowledgeFolder: string
+  cockpitOutputFolder: string
   /** 「AI霖子·今天的判断」按日缓存(免费但没必要一天生成多次) */
   cockpitJudgmentDate: string
   cockpitJudgmentText: string
@@ -140,9 +141,10 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   wechatAppId: '',
   wechatAppSecretId: '',
   brandFooter: true,
-  cockpitInboxFolder: '收件箱',
-  cockpitSourcesFolder: '原始素材',
-  cockpitKnowledgeFolder: '知识库',
+  cockpitInboxFolder: 'inbox',
+  cockpitSourcesFolder: 'raw',
+  cockpitKnowledgeFolder: 'wiki',
+  cockpitOutputFolder: 'output',
   cockpitJudgmentDate: '',
   cockpitJudgmentText: '',
 }
@@ -621,6 +623,19 @@ export default class AiLinziPlugin extends Plugin {
     if (this.settings.wechatAppSecretId !== DEFAULT_WECHAT_SECRET_ID) {
       this.settings.wechatAppSecretId = DEFAULT_WECHAT_SECRET_ID
       migrated = true
+    }
+    // 0.6.35→0.6.36:驾驶舱目录默认名从中文改为 inbox/raw/wiki/output(打卡营模板口径);
+    // 只迁移仍是旧默认值的设置,用户自定义过的不动
+    const cockpitFolderMigrations: [key: 'cockpitInboxFolder' | 'cockpitSourcesFolder' | 'cockpitKnowledgeFolder', old: string, next: string][] = [
+      ['cockpitInboxFolder', '收件箱', 'inbox'],
+      ['cockpitSourcesFolder', '原始素材', 'raw'],
+      ['cockpitKnowledgeFolder', '知识库', 'wiki'],
+    ]
+    for (const [key, oldValue, nextValue] of cockpitFolderMigrations) {
+      if (this.settings[key] === oldValue) {
+        this.settings[key] = nextValue
+        migrated = true
+      }
     }
     if (migrated) await this.saveSettings()
   }
@@ -2681,13 +2696,13 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).setName('一人公司驾驶舱 · 目录映射').setHeading()
     containerEl.createEl('p', {
-      text: '驾驶舱「第二大脑」按这三个文件夹统计目录分布(相对 vault 根,留空则不统计;「对外输出」复用上面的产出文件夹)。所有统计都在本机完成,不上传任何笔记内容。',
+      text: '驾驶舱「第二大脑」按这四个文件夹统计目录分布(相对 vault 根,留空则不统计)。所有统计都在本机完成,不上传任何笔记内容。',
       cls: 'setting-item-description',
     })
     const cockpitFolderSetting = (
       name: string,
       desc: string,
-      key: 'cockpitInboxFolder' | 'cockpitSourcesFolder' | 'cockpitKnowledgeFolder',
+      key: 'cockpitInboxFolder' | 'cockpitSourcesFolder' | 'cockpitKnowledgeFolder' | 'cockpitOutputFolder',
       placeholder: string,
     ) => {
       new Setting(containerEl)
@@ -2703,9 +2718,10 @@ class AiLinziSettingTab extends PluginSettingTab {
             }),
         )
     }
-    cockpitFolderSetting('收件箱文件夹', '随手记、待整理的内容先进这里;驾驶舱会提醒积压', 'cockpitInboxFolder', '收件箱')
-    cockpitFolderSetting('原始素材文件夹', '录音转写、聊天记录、灵感等原始输入', 'cockpitSourcesFolder', '原始素材')
-    cockpitFolderSetting('知识库文件夹', '整理后的方法论、案例、洞察', 'cockpitKnowledgeFolder', '知识库')
+    cockpitFolderSetting('收件箱 Inbox 文件夹', '随手记、待整理的内容先进这里;驾驶舱会提醒积压', 'cockpitInboxFolder', 'inbox')
+    cockpitFolderSetting('原始素材 Raw 文件夹', '录音转写、聊天记录、灵感等原始输入', 'cockpitSourcesFolder', 'raw')
+    cockpitFolderSetting('知识库 Wiki 文件夹', '整理后的方法论、案例、洞察', 'cockpitKnowledgeFolder', 'wiki')
+    cockpitFolderSetting('对外输出 Output 文件夹', '发出去的文章、笔记、交付物', 'cockpitOutputFolder', 'output')
 
     new Setting(containerEl)
       .setName('默认带上当前笔记')

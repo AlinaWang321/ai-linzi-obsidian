@@ -44,6 +44,7 @@ interface CloudDashboard {
   crm: CloudCrm | null
   crmReason: string | null
   tasks: CloudTask[]
+  overdueTasks?: CloudTask[]
   judgment: { text: string; date: string } | null
 }
 
@@ -86,13 +87,14 @@ export function scanLocalStats(plugin: AiLinziPlugin): LocalStats {
   const weekStart = startOfWeekMs(now)
   const monthPrefix = localDate(now.getTime()).slice(0, 7)
   const files = plugin.app.vault.getMarkdownFiles()
-  const { cockpitInboxFolder, cockpitSourcesFolder, cockpitKnowledgeFolder, outputFolder } = plugin.settings
+  const { cockpitInboxFolder, cockpitSourcesFolder, cockpitKnowledgeFolder, cockpitOutputFolder, outputFolder } =
+    plugin.settings
 
   const folders = [
-    { key: 'inbox', icon: '📥', name: '收件箱', path: normalizePath(cockpitInboxFolder || ''), count: 0 },
-    { key: 'sources', icon: '🎙', name: '原始素材', path: normalizePath(cockpitSourcesFolder || ''), count: 0 },
-    { key: 'knowledge', icon: '📚', name: '知识库', path: normalizePath(cockpitKnowledgeFolder || ''), count: 0 },
-    { key: 'output', icon: '🚀', name: '对外输出', path: normalizePath(outputFolder || ''), count: 0 },
+    { key: 'inbox', icon: '📥', name: '收件箱 Inbox', path: normalizePath(cockpitInboxFolder || ''), count: 0 },
+    { key: 'sources', icon: '🎙', name: '原始素材 Raw', path: normalizePath(cockpitSourcesFolder || ''), count: 0 },
+    { key: 'knowledge', icon: '📚', name: '知识库 Wiki', path: normalizePath(cockpitKnowledgeFolder || ''), count: 0 },
+    { key: 'output', icon: '🚀', name: '对外输出 Output', path: normalizePath(cockpitOutputFolder || ''), count: 0 },
   ]
 
   const noteDays = new Set<string>()
@@ -181,7 +183,7 @@ export class CockpitView extends ItemView {
   private cloudFetchedAt = 0
   private cloudError = ''
   private loading = false
-  private taskTab: 'week' | 'month' | 'quarter' = 'week'
+  private taskTab: 'week' | 'month' | 'quarter' | 'overdue' = 'week'
   private month = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
   private refreshTimer: number | null = null
 
@@ -288,6 +290,8 @@ export class CockpitView extends ItemView {
     if (this.cloud) {
       actions.createSpan({ text: `积分 ${this.cloud.balance.toLocaleString('zh-CN')}`, cls: 'ai-linzi-cockpit-pill' })
     }
+    const web = actions.createEl('button', { text: '打开网页版' })
+    web.onclick = () => window.open(this.plugin.settings.serverUrl.replace(/\/+$/, ''))
     const refresh = actions.createEl('button', { text: this.loading ? '刷新中…' : '⟳ 刷新' })
     refresh.disabled = this.loading
     refresh.onclick = () => void this.refreshCloud(true)
@@ -320,7 +324,7 @@ export class CockpitView extends ItemView {
       bubble.createDiv({ text: this.cloudError || '点右上角刷新，看看今天的判断。', cls: 'ai-linzi-cockpit-judge is-muted' })
     }
     const act = bubble.createDiv({ cls: 'ai-linzi-cockpit-bubble-act' })
-    const chat = act.createEl('button', { text: '和 AI霖子 聊聊今天怎么打 →', cls: 'mod-cta' })
+    const chat = act.createEl('button', { text: '和 AI霖子 聊聊', cls: 'mod-cta' })
     chat.onclick = () => void this.plugin.activateChatView()
   }
 
@@ -500,22 +504,29 @@ export class CockpitView extends ItemView {
       card.createDiv({ text: '连接 AI霖子 后，网页版任务会同步到这里。', cls: 'ai-linzi-cockpit-empty' })
       return
     }
+    const overdue = this.cloud?.overdueTasks ?? []
     const tabs = card.createDiv({ cls: 'ai-linzi-cockpit-tabs' })
-    const periods: { key: 'week' | 'month' | 'quarter'; label: string }[] = [
-      { key: 'week', label: '本周' },
-      { key: 'month', label: '本月' },
-      { key: 'quarter', label: '本季' },
+    const periods: { key: 'week' | 'month' | 'quarter' | 'overdue'; label: string; count: number }[] = [
+      { key: 'week', label: '本周', count: tasks.filter((t) => t.period === 'week' && t.status !== 'gave_up').length },
+      { key: 'month', label: '本月', count: tasks.filter((t) => t.period === 'month' && t.status !== 'gave_up').length },
+      { key: 'quarter', label: '本季', count: tasks.filter((t) => t.period === 'quarter' && t.status !== 'gave_up').length },
+      { key: 'overdue', label: '逾期', count: overdue.length },
     ]
     for (const p of periods) {
-      const count = tasks.filter((t) => t.period === p.key && t.status !== 'gave_up').length
-      const tab = tabs.createEl('button', { text: `${p.label} ${count}`, cls: 'ai-linzi-cockpit-tab' })
+      if (p.key === 'overdue' && p.count === 0) continue
+      const tab = tabs.createEl('button', { text: `${p.label} ${p.count}`, cls: 'ai-linzi-cockpit-tab' })
       tab.toggleClass('is-active', this.taskTab === p.key)
+      tab.toggleClass('is-warn', p.key === 'overdue')
       tab.onclick = () => {
         this.taskTab = p.key
         this.render()
       }
     }
-    const items = tasks.filter((t) => t.period === this.taskTab && t.status !== 'gave_up')
+    if (this.taskTab === 'overdue' && overdue.length === 0) this.taskTab = 'week'
+    const items =
+      this.taskTab === 'overdue'
+        ? overdue
+        : tasks.filter((t) => t.period === this.taskTab && t.status !== 'gave_up')
     if (items.length === 0) {
       card.createDiv({ text: this.loading ? '加载中…' : '这个周期还没有任务。去对话里让 AI霖子 帮你定几个。', cls: 'ai-linzi-cockpit-empty' })
       return
@@ -596,7 +607,7 @@ export class CockpitView extends ItemView {
     const configured = local.folders.filter((f) => f.path)
     if (configured.length === 0) {
       card.createDiv({
-        text: '在插件设置「驾驶舱目录」里指定 收件箱/原始素材/知识库 文件夹后，这里显示目录分布。',
+        text: '在插件设置「驾驶舱目录映射」里指定 inbox / raw / wiki / output 文件夹后，这里显示目录分布。',
         cls: 'ai-linzi-cockpit-empty',
       })
     } else {

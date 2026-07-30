@@ -1790,3 +1790,9 @@ button.ai-linzi-vault-source-link:focus-visible {
 .ai-linzi-cockpit-inbox-age { color: var(--text-faint); flex-shrink: 0; }
 .ai-linzi-cockpit-inbox-age.is-warn { color: var(--ck-danger); }
 .ai-linzi-cockpit-foot { font-size: 0.72em; color: var(--text-faint); margin-top: 4px; }
+.ai-linzi-cockpit-tab.is-warn { color: var(--ck-danger); }
+.ai-linzi-cockpit-tab.is-warn.is-active {
+  background: rgba(199, 92, 74, 0.12);
+  color: var(--ck-danger);
+  font-weight: 700;
+}
