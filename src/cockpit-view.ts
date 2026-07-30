@@ -279,7 +279,7 @@ export class CockpitView extends ItemView {
 
   private renderHeader(root: HTMLElement) {
     const header = root.createDiv({ cls: 'ai-linzi-cockpit-header' })
-    header.createDiv({ cls: 'ai-linzi-cockpit-avatar' })
+    header.createDiv({ cls: 'ai-linzi-cockpit-logo' })
     const heading = header.createDiv({ cls: 'ai-linzi-cockpit-heading' })
     heading.createDiv({ text: '一人公司驾驶舱', cls: 'ai-linzi-cockpit-title' })
     heading.createDiv({
