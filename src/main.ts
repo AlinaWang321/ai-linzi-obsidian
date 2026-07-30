@@ -62,6 +62,7 @@ import {
   ContentDashboardView,
   VIEW_TYPE_CONTENT_DASHBOARD,
 } from './content-dashboard'
+import { CockpitView, VIEW_TYPE_COCKPIT } from './cockpit-view'
 import {
   AuthorizedContentModal,
   type AuthorizedContentLimits,
@@ -119,6 +120,13 @@ interface AiLinziSettings {
   wechatAppSecretId: string
   /** 文末品牌小卡「排版与配图 · AI霖子」(默认开,可关) */
   brandFooter: boolean
+  /** 驾驶舱目录映射(相对 vault 根;留空=该卡不统计)。对外输出直接复用 outputFolder */
+  cockpitInboxFolder: string
+  cockpitSourcesFolder: string
+  cockpitKnowledgeFolder: string
+  /** 「AI霖子·今天的判断」按日缓存(免费但没必要一天生成多次) */
+  cockpitJudgmentDate: string
+  cockpitJudgmentText: string
 }
 
 const DEFAULT_SETTINGS: AiLinziSettings = {
@@ -132,6 +140,11 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   wechatAppId: '',
   wechatAppSecretId: '',
   brandFooter: true,
+  cockpitInboxFolder: '收件箱',
+  cockpitSourcesFolder: '原始素材',
+  cockpitKnowledgeFolder: '知识库',
+  cockpitJudgmentDate: '',
+  cockpitJudgmentText: '',
 }
 
 interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
@@ -493,9 +506,11 @@ export default class AiLinziPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE_CHAT, (leaf) => new ChatView(leaf, this))
     this.registerView(VIEW_TYPE_CONTENT_DASHBOARD, (leaf) => new ContentDashboardView(leaf, this))
+    this.registerView(VIEW_TYPE_COCKPIT, (leaf) => new CockpitView(leaf, this))
 
     this.addRibbonIcon('sparkles', 'AI霖子对话', () => this.activateChatView())
     this.addRibbonIcon('layout-dashboard', 'AI霖子内容发布看板', () => this.activateContentDashboard())
+    this.addRibbonIcon('gauge', '一人公司驾驶舱', () => this.activateCockpit())
 
     this.addCommand({
       id: 'open-chat',
@@ -513,6 +528,12 @@ export default class AiLinziPlugin extends Plugin {
       id: 'open-content-dashboard',
       name: '打开内容发布看板',
       callback: () => this.activateContentDashboard(),
+    })
+
+    this.addCommand({
+      id: 'open-cockpit',
+      name: '打开一人公司驾驶舱',
+      callback: () => this.activateCockpit(),
     })
 
     // ── M2:四技能 + 喂库(笔记即输入);三入口共用 SKILL_ACTIONS ──
@@ -744,6 +765,18 @@ export default class AiLinziPlugin extends Plugin {
     }
     const leaf = workspace.getLeaf('tab')
     await leaf.setViewState({ type: VIEW_TYPE_CONTENT_DASHBOARD, active: true })
+    await workspace.revealLeaf(leaf)
+  }
+
+  async activateCockpit() {
+    const { workspace } = this.app
+    const existing = workspace.getLeavesOfType(VIEW_TYPE_COCKPIT)
+    if (existing.length > 0) {
+      await workspace.revealLeaf(existing[0])
+      return
+    }
+    const leaf = workspace.getLeaf('tab')
+    await leaf.setViewState({ type: VIEW_TYPE_COCKPIT, active: true })
     await workspace.revealLeaf(leaf)
   }
 
@@ -2645,6 +2678,34 @@ class AiLinziSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings()
           }),
       )
+
+    new Setting(containerEl).setName('一人公司驾驶舱 · 目录映射').setHeading()
+    containerEl.createEl('p', {
+      text: '驾驶舱「第二大脑」按这三个文件夹统计目录分布(相对 vault 根,留空则不统计;「对外输出」复用上面的产出文件夹)。所有统计都在本机完成,不上传任何笔记内容。',
+      cls: 'setting-item-description',
+    })
+    const cockpitFolderSetting = (
+      name: string,
+      desc: string,
+      key: 'cockpitInboxFolder' | 'cockpitSourcesFolder' | 'cockpitKnowledgeFolder',
+      placeholder: string,
+    ) => {
+      new Setting(containerEl)
+        .setName(name)
+        .setDesc(desc)
+        .addText((t) =>
+          t
+            .setPlaceholder(placeholder)
+            .setValue(this.plugin.settings[key])
+            .onChange(async (v) => {
+              this.plugin.settings[key] = v.trim()
+              await this.plugin.saveSettings()
+            }),
+        )
+    }
+    cockpitFolderSetting('收件箱文件夹', '随手记、待整理的内容先进这里;驾驶舱会提醒积压', 'cockpitInboxFolder', '收件箱')
+    cockpitFolderSetting('原始素材文件夹', '录音转写、聊天记录、灵感等原始输入', 'cockpitSourcesFolder', '原始素材')
+    cockpitFolderSetting('知识库文件夹', '整理后的方法论、案例、洞察', 'cockpitKnowledgeFolder', '知识库')
 
     new Setting(containerEl)
       .setName('默认带上当前笔记')

@@ -1,24 +1,24 @@
 {
-  "name": "ai-linzi-obsidian-plugin",
-  "version": "0.6.34",
-  "description": "AI霖子 Obsidian 插件",
-  "license": "MIT",
-  "main": "main.js",
-  "scripts": {
-    "dev": "node esbuild.config.mjs",
-    "build": "tsc --noEmit && node esbuild.config.mjs production",
-    "package:release": "npm run build && node scripts/package-release.mjs",
-    "test": "node scripts/test-format.mjs && node scripts/test-note-patch.mjs && node scripts/test-skill-suggest.mjs && node scripts/test-content-state.mjs && node scripts/test-chat-scope.mjs && node scripts/test-chat-input.mjs && node scripts/test-secret-storage.mjs && node scripts/test-api-versioning.mjs && node scripts/test-topic-radar.mjs && node scripts/test-illustration-resume.mjs && node scripts/test-ai-image-flow.mjs && node scripts/test-authorized-content.mjs && node scripts/test-vault-search.mjs && node scripts/test-local-document-text.mjs && node scripts/test-long-document.mjs && node scripts/test-create-note.mjs && node scripts/test-marketplace-readiness.mjs"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "esbuild": "^0.24.0",
-    "obsidian": "^1.7.2",
-    "typescript": "^5.6.0"
-  },
-  "dependencies": {
-    "fflate": "^0.8.3",
-    "marked": "^18.0.7",
-    "pdfjs-dist": "^5.4.296"
-  }
+	"name": "ai-linzi-obsidian-plugin",
+	"version": "0.6.35",
+	"description": "AI霖子 Obsidian 插件",
+	"license": "MIT",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc --noEmit && node esbuild.config.mjs production",
+		"package:release": "npm run build && node scripts/package-release.mjs",
+		"test": "node scripts/test-format.mjs && node scripts/test-note-patch.mjs && node scripts/test-skill-suggest.mjs && node scripts/test-content-state.mjs && node scripts/test-chat-scope.mjs && node scripts/test-chat-input.mjs && node scripts/test-secret-storage.mjs && node scripts/test-api-versioning.mjs && node scripts/test-topic-radar.mjs && node scripts/test-illustration-resume.mjs && node scripts/test-ai-image-flow.mjs && node scripts/test-authorized-content.mjs && node scripts/test-vault-search.mjs && node scripts/test-local-document-text.mjs && node scripts/test-long-document.mjs && node scripts/test-create-note.mjs && node scripts/test-marketplace-readiness.mjs"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"esbuild": "^0.24.0",
+		"obsidian": "^1.7.2",
+		"typescript": "^5.6.0"
+	},
+	"dependencies": {
+		"fflate": "^0.8.3",
+		"marked": "^18.0.7",
+		"pdfjs-dist": "^5.4.296"
+	}
 }
