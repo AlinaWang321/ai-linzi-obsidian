@@ -262,6 +262,10 @@
   background: var(--interactive-accent);
 }
 
+.ai-linzi-authorized-content-status:empty {
+  display: none; /* 没选文件时不许渲染空蓝框(v0.6.33) */
+}
+
 .ai-linzi-authorized-content-status {
   display: flex;
   flex-wrap: wrap;

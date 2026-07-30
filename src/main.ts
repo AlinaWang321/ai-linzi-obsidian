@@ -1049,6 +1049,9 @@ class ChatView extends ItemView {
     this.authorizedContentStatusEl = footer.createDiv({
       cls: 'ai-linzi-authorized-content-status',
     })
+    // 初始必须显式隐藏:📎 按钮此时未创建,refreshAuthorizedContentUi 会因守卫早退,
+    // 不隐藏就会在输入框上方留一个空的蓝框(0.6.32 Alina 实测反馈)
+    this.authorizedContentStatusEl.toggle(false)
     this.refreshAuthorizedContentUi()
 
     this.imageOptionsEl = footer.createDiv({ cls: 'ai-linzi-image-mode-options' })
@@ -2120,7 +2123,7 @@ class ChatView extends ItemView {
         })
         // 已连接:给新手三个一分钟能跑通的起手式(文案与真实 UI 控件名严格一致)
         const starters = body.createDiv({ cls: 'ai-linzi-empty-starters' })
-        starters.createDiv({ text: '三个起手式:' })
+        starters.createDiv({ text: '3 个小技巧:' })
         const ul = starters.createEl('ul')
         ul.createEl('li', { text: '勾选「主对话带上当前笔记」,让我基于这篇笔记给建议' })
         ul.createEl('li', { text: '点「调用技能」→ 选题雷达,把素材笔记变成 10 个选题' })
