@@ -550,12 +550,16 @@ export async function feedKnowledge(plugin: AiLinziPlugin) {
   const n = new Notice('🤖 AI 正在阅读笔记、推荐章节…', 0)
   let suggested: { sectionKey?: string; summary?: string }
   try {
-    suggested = (await plugin.api('/api/plugin/v1/knowledge/suggest-section', {
+    const response = await plugin.api('/api/plugin/v1/knowledge/suggest-section', {
       method: 'POST',
       body: {
         text: clip(stripFrontmatter(note.text), LIMITS.KB_SUGGEST_TEXT_MAX, '笔记内容'),
       },
-    })) as { sectionKey?: string; summary?: string }
+    })
+    suggested = {
+      sectionKey: typeof response.sectionKey === 'string' ? response.sectionKey : undefined,
+      summary: typeof response.summary === 'string' ? response.summary : undefined,
+    }
   } catch (e) {
     n.hide()
     new Notice(`❌ 喂库:${e instanceof Error ? e.message : String(e)}`, 8000)
@@ -956,7 +960,7 @@ class IllustrationSetupModal extends Modal {
       }
       if (!proAccess) {
         preview.createEl('strong', { text: '当前使用通用极简人偶' })
-        preview.createEl('span', {
+        preview.createSpan({
           text: path ? '专属人偶设置已保留，升级 Pro 后自动恢复。' : '升级 Pro 后可以设置自己的角色。',
         })
         return
@@ -967,10 +971,10 @@ class IllustrationSetupModal extends Modal {
         })
         const meta = preview.createDiv()
         meta.createEl('strong', { text: '已启用我的专属人偶' })
-        meta.createEl('span', { text: file.path })
+        meta.createSpan({ text: file.path })
       } else {
         preview.createEl('strong', { text: path ? '原参考图已移动或删除' : '当前使用通用极简人偶' })
-        preview.createEl('span', { text: path ? '请重新选择一张图片。' : '以后随时可以在这里设置自己的角色。' })
+        preview.createSpan({ text: path ? '请重新选择一张图片。' : '以后随时可以在这里设置自己的角色。' })
       }
     }
     referenceSetting
@@ -1365,7 +1369,7 @@ function renderReferenceGallery(
     const card = grid.createDiv({ cls: 'ai-linzi-reference-card' })
     const image = card.createEl('img', { attr: { src: reference.dataUrl, alt: reference.name } })
     image.title = reference.name
-    card.createEl('span', { text: `图${index + 1} · ${reference.name}` })
+    card.createSpan({ text: `图${index + 1} · ${reference.name}` })
     const remove = card.createEl('button', { text: '移除', cls: 'ai-linzi-reference-remove' })
     remove.onclick = () => onRemove(index)
   })
@@ -1379,12 +1383,15 @@ function chooseComputerImages(
     new Notice('参考图数量已满')
     return
   }
-  const input = document.createElement('input')
-  input.addClass('ai-linzi-file-input')
-  input.type = 'file'
-  input.accept = 'image/png,image/jpeg,image/webp'
+  const input = createEl('input', {
+    cls: 'ai-linzi-file-input',
+    attr: {
+      type: 'file',
+      accept: 'image/png,image/jpeg,image/webp',
+    },
+  })
   input.multiple = remaining > 1
-  document.body.appendChild(input)
+  activeDocument.body.appendChild(input)
   input.onchange = () => {
     const files = Array.from(input.files ?? []).slice(0, remaining)
     void Promise.resolve(onChoose(files)).finally(() => input.remove())
@@ -1607,7 +1614,7 @@ async function imageBlobToReferenceDataUrl(blob: Blob, errorMessage: string): Pr
     const scale = Math.min(1, 1280 / image.naturalWidth, 1280 / image.naturalHeight)
     const width = Math.max(1, Math.round(image.naturalWidth * scale))
     const height = Math.max(1, Math.round(image.naturalHeight * scale))
-    const canvas = document.createElement('canvas')
+    const canvas = createEl('canvas')
     canvas.width = width
     canvas.height = height
     const ctx = canvas.getContext('2d')

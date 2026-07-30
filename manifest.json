@@ -1,9 +1,9 @@
 {
 	"id": "ai-linzi",
 	"name": "AI Linzi",
-	"version": "0.6.42",
+	"version": "0.6.43",
 	"minAppVersion": "1.11.4",
-	"description": "AI Linzi (AI霖子) business coach for Vault search, content creation, illustrations, long documents, and WeChat publishing.",
+	"description": "A business coach for local Vault search, content creation, illustrations, long documents, and WeChat publishing.",
 	"author": "Alina霖子",
 	"authorUrl": "https://alinalinzi.cn",
 	"isDesktopOnly": true

@@ -1,170 +1,58 @@
 # AI Linzi
 
-AI Linzi connects Alina's business coaching services to your local knowledge Vault. It provides sidebar chat, local Vault search, note-aware content creation, AI illustrations, long-document processing, and WeChat formatting and publishing.
+[简体中文说明](README.zh-CN.md)
+
+AI Linzi connects Alina's business coaching service to a local knowledge Vault. It provides sidebar chat, local search, note-aware content workflows, AI illustrations, long-document processing, and WeChat formatting and publishing.
 
 ## Features
 
 - Chat with AI Linzi in a sidebar and optionally include the active note.
-- Search Markdown, TXT, text-based PDF, and DOCX files locally before sending only a few relevant excerpts to the service.
-- Create and edit content, process long documents, and save results back to the Vault.
+- Search Markdown, TXT, text-based PDF, and DOCX files locally.
+- Send only a bounded set of relevant excerpts to the service.
+- Explicitly select complete documents for authorized long-document tasks.
+- Create new notes and folders after an in-app confirmation.
 - Generate or revise article illustrations and save successful images locally.
 - Format WeChat articles and send them to a configured WeChat draft box.
+- Review local content activity and authorized account data in the one-person-company cockpit.
+
+## Installation
+
+Install AI Linzi from the Obsidian community plugin directory when the listing is available:
+
+1. Open **Settings → Community plugins → Browse**.
+2. Search for **AI Linzi**.
+3. Select **Install**, then **Enable**.
+4. Open the AI Linzi settings tab and paste a connection key created at [chat.alinalinzi.com](https://chat.alinalinzi.com/connections).
+
+AI Linzi is currently desktop-only and requires Obsidian 1.11.4 or later.
 
 ## Privacy and network access
 
-AI Linzi only sends the active note, selected documents, or small locally matched excerpts when the user explicitly enables or starts a cloud action. It does not upload the whole Vault and does not include third-party analytics. An AI Linzi account and connection key are required for cloud features. Notes and generated images remain in the user's Vault unless the user explicitly sends content to AI Linzi or WeChat services.
+Local search scans supported files in memory on the user's device. It does not create a cloud index or upload the whole Vault. For a normal chat request, the plugin sends only the active note, explicitly authorized documents, or a bounded set of locally matched excerpts.
 
-This public plugin is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration are not included in this repository.
+The plugin reads or writes Vault files only for user-triggered actions such as including a note, saving a generated result, creating a confirmed note or folder, inserting an image, or publishing a WeChat draft. Connection keys and WeChat AppSecrets use Obsidian SecretStorage and are not written to plugin settings or logs.
 
-## 中文说明
+Generated images and local conversation cards remain in the Vault or Obsidian-managed local plugin data. Cloud history contains text only and excludes local paths and image data.
 
-把 AI霖子（Alina 方法论 + 学员长期记忆的商业军师）接进用户的 Obsidian 数字大脑。
+## Security and implementation notes
 
-## 功能路线
+- The public repository is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration remain on the AI Linzi service.
+- Vault enumeration powers user-enabled local search. Only bounded matched excerpts are transmitted.
+- Clipboard access occurs only after an explicit user copy action.
+- PDF.js is bundled for local extraction of text-based PDFs. It supplies the dynamic-code finding reported by automated static analysis; no remote script or CDN is used.
+- Streaming chat uses `fetch` because Obsidian's `requestUrl` API buffers the complete response and does not expose the response stream.
+- The official release contains only `main.js`, `manifest.json`, and `styles.css`. GitHub Actions generates build-provenance attestations for these assets.
 
-- **M1（已完成）**：安装、账号安全连接、测试连接、侧边栏流式对话和当前笔记上下文
-- **M2（已完成）**：技能调用、文章配图、公众号排版发布、内容看板、Vault 智能搜索和多文档选择
-- **M3（已完成）**：长逐字稿与长文档任务、本地 TXT/PDF/DOCX 提取、失败续跑和结果存为笔记
-- **v0.6.42**：**对话直接创建文件夹**：对 AI 霖子说「帮我搭好知识库框架」，对话中出现文件夹确认卡（默认推荐 inbox / raw / wiki / output 四件套，可自定义），点击一次全部创建（只新建、已存在自动跳过、绝不动现有内容），建好后一人公司驾驶舱「第二大脑」当场亮起。
-- **v0.6.41**：驾驶舱顶栏 logo 换为彩色完整版「自由人生教练」（蓝标 + LIFE COACH 金字，白底徽章，明暗主题通用）；顶栏「积分」变为可点击，直接跳转网页版积分充值页。
-- **v0.6.40**：驾驶舱顶栏改用完整「自由人生教练」横版 logo（海军蓝底白标，含中英文字样）；日历下两行统计从「连续记录/连续发布」改为「🔥 本月记录 X 天 / 📤 本月发布 X 天」（统计本月总天数，不再算连续）。
-- **v0.6.39**：驾驶舱反馈批三：合伙人学习进度移到页面最底部；交付泳道「转介绍」只统计渠道名含「转介绍」的客户（不再把「AI推荐」等渠道误算）；日历下新增「📤 连续发布 X 天」；任务空状态可点击跳转网页版制定计划；获客创作管线（选题/草稿/待发布/本月已发）可点击直接打开内容发布看板。
-- **v0.6.38**：驾驶舱反馈批二：日历任意一天可点击，弹框显示当天新建的笔记（可直接打开）＋ AI霖子云端当天动态（完成的任务、新客户、成交、咨询、当天生成的记忆，按天缓存）；获客泳道新增「获客渠道占比」饼图；销售漏斗首段改名「新增线索」，新增本月「咨询→成交」「线索→成交」两个转化率；合伙人专属「自由人生合伙人学习进度」五步进度条（教练班→积累 10 个付费客户→定位私教课→实操营→高客单行动营，付费客户数由 CRM 自动点亮，其余步骤点击标记）；日历「连续记录」加悬浮说明。
-- **v0.6.37**：驾驶舱顶栏图标换为「自由人生教练」蓝飞鸟 logo（气泡处保留 AI霖子 Q 版头像，避免形象重复）；第二大脑目录名列加宽，修复「对外输出 Output」显示不全。
-- **v0.6.36**：驾驶舱反馈批（Alina 实测）：气泡按钮改为「和 AI霖子 聊聊」；任务卡新增红色「逾期」标签页（跨周期未完成任务）；第二大脑目录默认名改为 inbox / raw / wiki / output（显示名中英并列，旧中文默认值自动迁移，自定义过的不动；「对外输出」改为独立 output 文件夹，不再复用技能产出文件夹）；右上角积分旁新增「打开网页版」按钮。
-- **v0.6.35**：**一人公司驾驶舱**：新视图（侧边栏仪表盘图标 / 命令「打开一人公司驾驶舱」）。AI霖子每天一句经营判断（免费、按日缓存）＋经营循环带（本周发布→线索→咨询→成交→交付→今年总营收）＋获客/销售/交付三大业务泳道（CRM 漏斗、沉默线索、客户待办、未来 7 天咨询）＋当前任务（周/月/季）＋日历（发布/记录圆点与连续记录）＋第二大脑（全库统计、目录分布、收件箱积压提醒）。本地统计全部在本机完成不上传；云端数据（CRM/任务/积分）打开时拉取、30 分钟缓存、纯读取不扣积分；CRM 需 Pro。设置新增「驾驶舱目录映射」（收件箱/原始素材/知识库，默认同名文件夹）。
-- **v0.6.34**：**对话直接创建笔记**：让 AI 霖子把整理结果存成新笔记时，对话中出现确认卡片（标题+预览），点击即写入输出文件夹（只新建不覆盖、frontmatter 标来源），卡片上可直接打开新文件。Vault 智能搜索大幅放宽：单条片段 1,200→4,000 字、合计 7,200→20,000 字、最多 6→8 条（成本仅片段注入对话模型的输入 token，约 ¥0.1/轮以内）。
-- **v0.6.33**：空状态文案「三个起手式」改为「3 个小技巧」；修复输入框上方的空蓝框（授权文件状态条在未选择任何文件时因初始化顺序漏出，现初始隐藏并加 `:empty` 双保险）。
-- **v0.6.32**：对话空状态排版统一（Alina 实测反馈）：标题下所有文字进同一容器，同字号、同行宽、同对齐；末尾新增网页版入口链接（chat.alinalinzi.com，注册账号/查看和充值积分）。
-- **v0.6.31**：新手上手引导：对话空状态在未连接时显示三步连接引导和「打开插件设置」按钮，已连接时显示三个起手式；四处「未连接」报错文案统一为同一句。寒暄和超短输入不再触发全 Vault 扫描（大库首句响应更快）。网页端升级会员后插件立即生效（无权益时强制刷新权益缓存；更换连接密钥即作废旧缓存）。开发文档与 v0.6.25 起「搜索 Vault 全部内容（含「㊙️」文件，有意设计）」的口径对齐。
-- **v0.6.30**：修复官方市场自动审核阻塞项：市场描述改为兼容文本、作者网址改为可访问地址、README 补齐英文说明并统一标题、许可证改为 MIT；新增自动回归检查，防止后续版本再次出现相同问题。
-- **v0.6.29**：修复 GitHub Release 自动发布配置，确保正式安装文件按纯版本号标签稳定生成。
-- **v0.6.28**：完成 Obsidian 官方插件市场兼容整改。市场展示名使用 `AI Linzi`，插件内部继续显示「AI霖子」；版本更新交由 Obsidian 官方机制处理；本地对话缓存和配图续跑状态统一使用 Obsidian 插件数据 API；生产构建启用压缩。
-- **v0.6.27**：完成首批学员安装阶段收尾。安装说明补充 Windows/macOS、最低 Obsidian 版本和 Vault 本地搜索边界；连接中心统一使用「AI霖子连接密钥」名称；增加团队安装验收清单。
-- **v0.6.26**：Vault 来源改为无边框的蓝色可点击文字，长文件名自动换行；新增“某年某月有多少场咨询”本地统计，按带日期的咨询/私教/测评/访谈/沟通逐字稿文件去重计算，不再让 AI 从前几条片段猜数量。`AGENTS.md`、`CLAUDE.md`、`_sub-agent-summaries.md` 等开发辅助文件不作为用户文章搜索。
-- **v0.6.25**：移除“Vault 搜索排除文件夹”设置，默认搜索 Vault 内全部正常的 MD、TXT、可复制 PDF 和 DOCX；旧版排除配置会自动清理。`.obsidian` 等隐藏系统目录和废纸篓不作为文章搜索；检索、解析与排序留在本机，每轮只把最终命中的少量相关片段交给 AI霖子回答。
-- **v0.6.24**：新增 Pro/Business 长逐字稿与长文档任务。用户明确选择一份 MD、TXT、可复制 PDF 或 DOCX 后，可在主对话自由描述任务；插件在本机提取和分段，逐段处理并显示进度，网络失败可从已完成段落继续，最终结果留在对话中并支持存为笔记。原文和分段断点不写入云端历史。
-- **v0.6.23**：修复“大型 Vault 中新 TXT 逐字稿被旧资料挤下去”的检索排序；识别人名、项目名、今天/最新、Raw 文件夹和文件类型，来源标签直接显示 MD/TXT/PDF/DOCX。只有短片段时不再假装已读完整文件，也不会从无关资料猜测用户本地工作流。
-- **v0.6.22**：Vault 智能搜索新增本地 TXT、可复制文字的 PDF 和 DOCX 正文提取；Markdown 一并保留。解析和排序全部使用用户电脑，不调用 OCR、向量 API 或额外模型；扫描版/加密 PDF、旧版 DOC、损坏或超大文件会安全跳过。
-- **v0.6.21**：主对话默认在用户电脑本地智能搜索整个 Vault，只把最多 6 条相关短片段交给 AI，不调用向量 API、不上传整个 Vault。回复下方显示可点击的来源笔记；原 Pro/Business 精确文件/文件夹选择保留为输入框旁的附件按钮。自 v0.6.25 起不再提供用户排除列表，全部正常文章都可被搜索。
-- **v0.6.20**：暂时下架“我的工作流”入口，保留当前笔记和“选择文件”等已验证能力；后续围绕 Vault 智能搜索重新设计。
-- **v0.6.19**：曾短期测试“我的工作流”MVP，已在 v0.6.20 下架，代码仍保留在 Git 历史中。
-- **v0.6.18**：AI霖子连接密钥和公众号 AppSecret 改为直接粘贴，隐藏容易混淆的 SecretStorage 条目 ID；已有密钥会自动迁移。
-- **v0.6.17**：公众号封面从源头按 2.35:1 生成，避免裁切后标题显示不全；配图完成后在右侧对话保留“修改某一张配图”入口；对话文字支持鼠标拖选并右键复制。
-- **v0.6.16**：把“选择文件”和 Vault 参考图窗口中的目录列表改成真正可展开、可收起的文件树；默认只展示一级目录，点击文件夹可展开子目录，再次点击即可收起，避免大型 Vault 一次列出全部目录。
-- **v0.6.15**：将“选择内容”改为“选择文件”，用 Vault 文件夹树浏览和勾选笔记，可一键添加当前文件夹及子文件夹；Vault 参考图也改为文件夹浏览和缩略图选择。移除顶部重复的“用 AI 生图”按钮，四个主入口固定同排；修复带当前笔记时图片比例被固定为横版，并保证交付文件为真正的 16:9、3:4 或 1:1。
-- **v0.6.14**：新增 Pro/Business“选择内容”：可在 Vault 内按标题/路径本地搜索、勾选多篇笔记或主动添加一个文件夹，供当前主对话连续处理；未确认内容不发送，新建/切换对话自动清除，服务端同步限制权限与总量。
-- **v0.6.13**：“我的专属人偶”和主对话“AI 生图模式”限定 Pro/Business；通用人偶的一键文章配图保持原有权益，会员判断由插件与私有服务端共同执行。
-- **v0.6.12**：主对话、访谈和 AI 生图输入统一为 Enter 换行；Mac 使用 `⌘ + Enter`、Windows/Linux 使用 `Ctrl + Enter` 发送，右下角始终保留发送按钮与快捷键提示。
-- **v0.6.11**：公众号一键配图可设置一次自己的专属人偶，后续封面、正文补图和单图修改自动沿用；正文金句统一为品牌亮蓝 `#0057FF`。
-- **v0.6.10**：将“用 AI 生图”迁入主对话，新增 1:1 方图；支持连续输入修改要求、选择上一张图继续修改，成功图片自动保存到 Vault 并随本地对话恢复。
-- **v0.6.9**：选题雷达默认只使用账号定位与知识库；当前笔记改为弹窗内主动勾选，不再受主对话开关误导，也不再在客户端截取前 2000 字。
-- **v0.6.8**：安装说明加入 macOS 隐藏文件夹与插件放置位置示范图，并随安装包一同提供。
-- **v0.6.7**：插件名、Obsidian 设置入口与安装指引统一改为中文「AI霖子」，学员可直接用中文搜索和识别。
-- **v0.6.6**：所有账号都可带上单篇当前笔记；公众号草稿箱补齐一句话摘要，独立封面不再重复进入正文，正文图片使用稳定图片块；文章封面统一生成并裁切为公众号头条封面比例；新增团队测试安装包与自动发布流程
-- **v0.6.5**：新增模型无关的「用 AI 生图」入口，支持可选参考图；主对话可识别“修改第一张图/改图片标题”等请求，修改版先预览、确认后才替换原图；对话文字支持鼠标拖选复制
-- **v0.6.4**：配图方案不再写入 Vault；失败任务保存在插件内部，重新运行可直接补齐剩余图片，不重新规划或重画成功图片
-- **v0.6.3**：全部插件能力统一走 `/api/plugin/v1/*`；配图不再把连接故障误报成“意图不清晰”，失败时显示真实原因和问题编号
-- **v0.6.2**：文章配图保留成功结果并自动只补缺失图片；新增插件 API v1 版本与兼容性检查
-- **v0.6.1+**：插件对话历史单向同步到云端；网页版可查看插件对话，插件只显示、单独删除或清空自己产生的对话
-- **v0.6**：主对话历史云端恢复（换电脑重新绑定账号后可继续查看；本机缓存只作离线兜底）
-- **v0.5**：内容发布看板（扫 vault frontmatter，在 Obsidian 内展示公众号流程、周月统计与日历）
-
-## 当前笔记局部修改（v0.4.6）
-
-- 在侧边栏明确要求修改当前文章时，AI 只返回发生变化的“原文 → 改为”卡片，不再重复整篇文章。
-- 点击「一键应用」后只精确替换这些位置；找不到原文或原文不唯一时会停止写入，避免误覆盖全文。
-- 「存为笔记」「更新当前笔记」等操作统一放在每条 AI 回复的最底部。
-
-> 当前版本面向桌面端 Obsidian。流式对话、公众号富文本剪贴板和公众号发布尚未完成移动端验收，因此暂不在手机端声明兼容。
-
-## 文章配图修改与质检（v0.4.6）
-
-- 主对话识别“配图错字 / 修改当前插图”等请求，回复底部直接出现可点击的「修改当前文章配图」。
-- 可选择笔记中的任意本地图片，参考原图只改这一张；成功后自动备份并覆盖原图。
-- 图片里的指定中文会在生图后自动 OCR 逐字验收，错字或乱码会自动重试，不合格的图片不会插回文章。
-- 配图方法参考 [Ian Xiaohei Illustrations](https://github.com/helloianneo/ian-xiaohei-illustrations) 的认知锚点、低科技隐喻和留白方法（MIT）；画面统一使用极简线条人偶。
-
-## 内容发布看板（v0.5.1）
-
-- 左侧功能区、命令面板或 AI霖子对话底部可打开「内容发布看板」。
-- 新选题保存到「产出文件夹/选题」，新公众号文章保存到「产出文件夹/公众号文章」。
-- 看板只读取设置中「产出内容保存到文件夹」范围内的笔记，再根据 `内容类型`、`平台`、`来源技能` 判断选题和公众号文章，不扫描学员整个 Vault。
-- 展示「选题 → 写公众号 → 配图排版 → 公众号草稿箱 → 公众号已发布」，每篇公众号文章都可以从看板手动修改状态。
-- 「配图排版」是根据文章是否真实包含本地配图计算出的操作步骤，不写入“已完成配图/已完成排版”状态。
-- 支持本周/本月选题、本周/本月草稿、本月公众号发布、累计发布统计，以及草稿/草稿箱/已发布日历。
-- 草稿箱文章可以在看板里填写发布日期与公众号链接，标记为正式发布。
-
-统一 frontmatter：
-
-- `内容阶段`：`待写选题` / `已生成草稿`
-- `公众号状态`：`未开始` / `已生成草稿` / `已发送公众号草稿箱` / `已正式发布`
-- `视频状态`：`未开始` / `已生成视频` / `视频已发布`
-- `小红书状态`：`未开始` / `已生成小红书图文` / `小红书已发布`
-
-公众号、视频、小红书采用独立状态字段，同一篇文章后续可以同时记录多个平台的进度。
-
-## 公众号一条龙工作流（v0.5.1）
-
-1. 用「公众号写作」或「原创访谈写作」生成文章。
-2. 保存时自动把候选标题和摘要收进 frontmatter，只把可发布正文留在正文区。
-3. 历史写法会自动归一为：`**PART 01**` 黄胶囊 + `## 金句小标题` 亮蓝大标题。
-4. 配图先给出放置位置、核心意思和 3–6 个结构节点/短批注，用户确认后才开始生图；封面从文章真实标题提炼完整大标题，不做半截截断。
-5. 图片始终插在 frontmatter 之后；发布前若有图片缺失会停止发送，不会静默丢图。
-6. 一键排版与一键发草稿箱共用同一份文章结构解析规则。
-
-配图默认使用极简小清新手绘人偶。Pro/Business 学员也可以在文章配图弹窗里从 Vault 选择或从电脑上传自己的专属人偶参考图；只需设置一次，之后封面、正文配图、主对话补图与单图修改都会自动沿用。参考图保存在学员自己的 Vault，插件设置只记录 Vault 路径。
-
-Pro/Business 的对话面板提供「AI 生图模式」：支持 16:9、3:4、1:1，可从 Vault 或电脑添加最多 3 张参考图。生成结果直接显示在主对话并自动保存到用户自己的 Vault；继续输入要求会默认参考上一张图，用户也可以指定某张历史图继续修改。勾选当前笔记时，图片会结合全文生成并在用户确认后插入对应位置。
-
-## 本地开发
-
-开发前必须完整阅读 [`docs/开发上下文.md`](docs/开发上下文.md)。其中的“公开插件只是薄客户端”和“插件历史单向同步”是不可放宽的安全边界。
+## Development
 
 ```bash
-npm install
-npm run dev        # watch 构建 main.js
-npm run build      # tsc 类型检查 + 产线构建
-npm test           # 写作结构 → 配图回写 → 公众号 HTML 回归测试
+npm ci
+npm run build
+npm test
 ```
 
-### 联调步骤
+Every release tag must exactly match the version in `manifest.json`. The release workflow builds from source, verifies the version, creates provenance attestations, and publishes the three files supported by Obsidian's plugin installer.
 
-1. 启动 AI霖子 webapp，`.env.local` 加：
-   ```
-   PLUGIN_DEV_TOKEN=<随便一串长随机字符串>
-   PLUGIN_DEV_STUDENT_NO=No.000
-   ```
-   起 dev server（localhost:3000）。
-2. 把本目录的 `manifest.json` / `main.js` / `styles.css` 拷进测试 vault 的
-   `.obsidian/plugins/ai-linzi/`，在 Obsidian 设置 → 第三方插件里启用。
-3. 插件设置：服务器地址 `http://localhost:3000`，Token 填 `PLUGIN_DEV_TOKEN` 的值，点「测试连接」。
+## License
 
-## 安装与发布形态
-
-- 团队测试版从 AI霖子网页版「连接中心」下载，安装说明同时打进安装包
-- 首次安装只需把解压后的 `ai-linzi` 文件夹放进 Vault 的 `.obsidian/plugins/`
-- 安装包使用 `ai-linzi.zip`，插件文件位于 ZIP 根目录；Windows“全部解压”后不会再形成 `ai-linzi-obsidian/ai-linzi/` 双层目录
-- 安装完成后应能直接看到 `.obsidian/plugins/ai-linzi/manifest.json`、`main.js` 和 `styles.css`
-- 官方市场审核通过后，通过 Obsidian「第三方插件 → 检查更新」安装新版
-- 审核通过前的手动安装用户，可从 AI霖子网页版连接中心重新下载最新版覆盖插件文件；不会覆盖笔记或账号云端对话
-
-## 重要披露
-
-- **许可证**：本仓库中的公开插件薄客户端采用 [MIT License](LICENSE)。AI霖子名称与品牌素材、私有服务端、提示词、模型编排、计费系统、账号数据、知识库和课程内容不包含在本仓库中，也不因插件代码采用 MIT 而获得授权。
-- **账号与联网**：核心功能需要 AI霖子账号和连接密钥。只有用户主动发起对话、调用技能、喂入知识库、生成配图或发布公众号时，插件才会把该次操作所需的内容发送到 `https://chat.alinalinzi.com` 或相应的微信官方接口。
-- **账号权益**：部分 AI 功能需要有效的 AI霖子账号权益；账户状态与使用记录在 AI霖子网页版统一管理，插件界面不展示模型供应商或单次价格。
-- **本地文件访问**：开启「智能搜索 Vault」后，插件会在用户发送问题时临时在本机检索普通的 MD、TXT、可复制 PDF 和 DOCX，只发送少量匹配片段，不上传整个 Vault，也不建立云端全文索引。当前笔记、主动选择的整篇文档、修改当前笔记、覆盖图片和发布公众号仍需要用户主动勾选或确认。
-- **数据与遥测**：插件不加入第三方客户端行为追踪或广告 SDK。账号、积分、知识库和主对话记录按 AI霖子服务的数据规则保存；用户笔记与配图默认留在自己的 Vault。隐私说明见 [AI霖子隐私政策](https://chat.alinalinzi.com/privacy)。
-
-## 安全约定
-
-- Token 与公众号 AppSecret 使用 Obsidian SecretStorage；设置页只需粘贴密钥值，内部安全条目名固定且不向学员显示。`data.json` 不保存密钥明文，旧版明文会在首次启动时自动迁移并清除
-- SecretStorage 属于当前设备与当前 Vault，不上传 GitHub、也不跨设备同步；换电脑后重新生成 Token、重新填写 AppSecret
-- 账号、积分、知识库和插件产生的主对话记录保存在 AI霖子云端，不依赖 Alina 的个人电脑；学员笔记与配图留在学员自己的 Vault
-- 插件历史只读取和删除 `obsidian:` 命名空间；每条插件对话可单独删除，也可清空全部插件历史。网页端和微信端对话不会同步回插件，也不会被这些操作删除
-- AI 默认只在设置的产出文件夹新建内容；只有用户明确点击「更新当前笔记」「一键应用」或确认覆盖图片时才修改原文件
-- 服务端真相源：AI霖子 webapp `main` 分支 `/api/plugin/v1/*`
-- 产品方案真相源：Obsidian `04_Output/方案文档/㊙️2026.07.19_8月数字大脑训练营与AI霖子Obsidian插件_整合定稿方案.md`
-
-完整边界见 [`docs/data-storage.md`](docs/data-storage.md)，开发约束见 [`docs/开发上下文.md`](docs/开发上下文.md)。
+[MIT](LICENSE)

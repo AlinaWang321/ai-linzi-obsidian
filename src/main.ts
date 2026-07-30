@@ -309,6 +309,72 @@ interface ChatHistoryEntry {
   convo?: SavedConvo
 }
 
+class ConfirmActionModal extends Modal {
+  private resolved = false
+
+  constructor(
+    app: App,
+    private readonly title: string,
+    private readonly message: string,
+    private readonly confirmLabel: string,
+    private readonly resolve: (confirmed: boolean) => void,
+    private readonly destructive = false,
+  ) {
+    super(app)
+  }
+
+  onOpen(): void {
+    this.setTitle(this.title)
+    for (const paragraph of this.message.split(/\n{2,}/)) {
+      this.contentEl.createEl('p', { text: paragraph.replace(/\n/g, ' ') })
+    }
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' })
+    const cancelButton = actions.createEl('button', { text: '取消' })
+    cancelButton.onclick = () => this.finish(false)
+    const confirmButton = actions.createEl('button', {
+      text: this.confirmLabel,
+      cls: this.destructive ? 'mod-warning' : 'mod-cta',
+    })
+    confirmButton.onclick = () => this.finish(true)
+  }
+
+  onClose(): void {
+    if (!this.resolved) {
+      this.resolved = true
+      this.resolve(false)
+    }
+    this.contentEl.empty()
+  }
+
+  private finish(confirmed: boolean): void {
+    if (this.resolved) return
+    this.resolved = true
+    this.resolve(confirmed)
+    this.close()
+  }
+}
+
+function confirmAction(
+  app: App,
+  options: {
+    title: string
+    message: string
+    confirmLabel: string
+    destructive?: boolean
+  },
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    new ConfirmActionModal(
+      app,
+      options.title,
+      options.message,
+      options.confirmLabel,
+      resolve,
+      options.destructive,
+    ).open()
+  })
+}
+
 /**
  * 插件历史管理窗口。每条会话的“打开”和“删除”分开，避免用户只能清空全部。
  * 删除回调仍由 ChatView 执行，以便同时收窄云端 obsidian: 会话与本机缓存。
@@ -388,9 +454,12 @@ class ChatHistoryModal extends Modal {
         cls: 'ai-linzi-history-delete',
       })
       deleteButton.onclick = async () => {
-        const confirmed = window.confirm(
-          `确定删除这条插件对话“${entry.title.slice(0, 30) || '未命名对话'}”吗？\n\n只会删除这一条 AI霖子 Obsidian 插件对话；其他插件对话、网页版和微信端对话都不受影响。删除后不可恢复。`,
-        )
+        const confirmed = await confirmAction(this.app, {
+          title: '删除插件对话',
+          message: `确定删除这条插件对话“${entry.title.slice(0, 30) || '未命名对话'}”吗？\n\n只会删除这一条 AI霖子 Obsidian 插件对话；其他插件对话、网页版和微信端对话都不受影响。删除后不可恢复。`,
+          confirmLabel: '删除',
+          destructive: true,
+        })
         if (!confirmed) return
         deleteButton.disabled = true
         try {
@@ -410,9 +479,12 @@ class ChatHistoryModal extends Modal {
       cls: 'ai-linzi-history-clear',
     })
     clearButton.onclick = async () => {
-      const confirmed = window.confirm(
-        '确定清空 AI霖子 Obsidian 插件产生的云端及本机历史吗？此操作不可恢复；网页版和微信端对话不会被删除，已「存为笔记」的成稿不受影响。',
-      )
+      const confirmed = await confirmAction(this.app, {
+        title: '清空全部插件对话',
+        message: '确定清空 AI霖子 Obsidian 插件产生的云端及本机历史吗？此操作不可恢复；网页版和微信端对话不会被删除，已「存为笔记」的成稿不受影响。',
+        confirmLabel: '清空全部',
+        destructive: true,
+      })
       if (!confirmed) return
       clearButton.disabled = true
       try {
@@ -989,6 +1061,7 @@ class ChatView extends ItemView {
   private imageToggleEl!: HTMLInputElement
   private imageRatioEl!: HTMLSelectElement
   private imageUsePreviousEl!: HTMLInputElement
+  private imageUsePreviousLabelEl!: HTMLLabelElement
   private imageOptionsEl!: HTMLElement
   private imageReferenceStatusEl!: HTMLElement
   private authorizedContentBtn!: HTMLButtonElement
@@ -1139,14 +1212,14 @@ class ChatView extends ItemView {
       this.imageReferences = []
       this.refreshImageModeUi()
     }
-    const previousLabel = this.imageOptionsEl.createEl('label', { cls: 'ai-linzi-image-previous-toggle' })
-    this.imageUsePreviousEl = previousLabel.createEl('input', { type: 'checkbox' })
+    this.imageUsePreviousLabelEl = this.imageOptionsEl.createEl('label', { cls: 'ai-linzi-image-previous-toggle' })
+    this.imageUsePreviousEl = this.imageUsePreviousLabelEl.createEl('input', { type: 'checkbox' })
     this.imageUsePreviousEl.checked = this.usePreviousImage
     this.imageUsePreviousEl.onchange = () => {
       this.usePreviousImage = this.imageUsePreviousEl.checked
       this.refreshImageModeUi()
     }
-    previousLabel.createSpan({ text: ' 参考上一张图' })
+    this.imageUsePreviousLabelEl.createSpan({ text: ' 参考上一张图' })
     this.imageReferenceStatusEl = this.imageOptionsEl.createSpan({ cls: 'ai-linzi-image-reference-status' })
 
     this.inputEl = footer.createEl('textarea', {
@@ -1293,6 +1366,7 @@ class ChatView extends ItemView {
     this.imageRatioEl.value = this.imageRatio
     const hasPreviousImage = Boolean(this.latestImageModeResult())
     this.imageUsePreviousEl.disabled = !hasPreviousImage
+    this.imageUsePreviousLabelEl.toggleClass('is-disabled', !hasPreviousImage)
     this.imageUsePreviousEl.checked = hasPreviousImage && this.usePreviousImage
     this.imageReferenceStatusEl.setText(
       this.imageReferences.length > 0
@@ -2365,9 +2439,11 @@ class ChatView extends ItemView {
                 new Notice('没有找到当前打开的笔记')
                 return
               }
-              const ok = window.confirm(
-                `将用这条回复替换笔记「${file.basename}」的正文(文档属性 frontmatter 保留)。\n\n改错了不用慌:笔记内可 ⌘Z 撤销,或 设置 → 文件恢复 里回滚历史版本。\n\n确定更新?`,
-              )
+              const ok = await confirmAction(this.app, {
+                title: '更新当前笔记',
+                message: `将用这条回复替换笔记「${file.basename}」的正文(文档属性 frontmatter 保留)。\n\n改错了不用慌:笔记内可 ⌘Z 撤销,或 设置 → 文件恢复 里回滚历史版本。`,
+                confirmLabel: '确认更新',
+              })
               if (!ok) return
               const article = prepareWechatArticle(text)
               await this.app.vault.process(file, (content) => {
@@ -2515,9 +2591,9 @@ class ChatView extends ItemView {
     }
     const meta = card.createDiv({ cls: 'ai-linzi-chat-image-meta' })
     meta.createEl('strong', { text: `${result.ratio} · 已自动保存` })
-    meta.createEl('span', { text: result.savedPath })
+    meta.createSpan({ text: result.savedPath })
     if (result.articleCandidate) {
-      meta.createEl('span', { text: `建议放在「${result.articleCandidate.anchor}」之后` })
+      meta.createSpan({ text: `建议放在「${result.articleCandidate.anchor}」之后` })
     }
     const actions = card.createDiv({ cls: 'ai-linzi-chat-image-actions' })
     const continueBtn = actions.createEl('button', { text: '继续修改这张' })
@@ -2570,7 +2646,7 @@ class ChatView extends ItemView {
     }
     const meta = card.createDiv({ cls: 'ai-linzi-chat-image-meta' })
     meta.createEl('strong', { text: candidate.title || '新增配图' })
-    meta.createEl('span', { text: `放在「${candidate.anchor}」之后` })
+    meta.createSpan({ text: `放在「${candidate.anchor}」之后` })
     const actions = card.createDiv({ cls: 'ai-linzi-chat-image-actions' })
     const insertBtn = actions.createEl('button', {
       text: candidate.insertedPath ? '✅ 已插入当前笔记' : '插入当前笔记',

@@ -33,8 +33,8 @@ const PLUGIN_SKILLS: Record<string, PluginSkillSuggestion> = {
   'wechat-interview': { slug: 'wechat-interview', label: '原创访谈写作', actionId: 'interview' },
 }
 
-const MARKER_RE = /<<<\s*推荐技能[\s　]+([a-z0-9-]+)\s*>>>/g
-const HANGING_RE = /\n?<{1,3}(?:\s*推?荐?技?能?[\s　]*[a-z0-9-]*)?$/
+const MARKER_RE = /<<<\s*推荐技能[\s\u3000]+([a-z0-9-]+)\s*>>>/g
+const HANGING_RE = /\n?<{1,3}(?:\s*推?荐?技?能?[\s\u3000]*[a-z0-9-]*)?$/
 
 export function isArticleIllustrationIntent(text: string): boolean {
   return /(?:文章配图|正文配图|配图|插图|图片|封面)/.test(text) &&

@@ -67,7 +67,12 @@ assert.equal(unknown.cleanText, '答复')
 assert.deepEqual(unknown.suggestions, [])
 
 const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
-assert.match(styles, /\.ai-linzi-msg-body \*[\s\S]*?user-select: text !important/, '对话文字必须支持鼠标拖选复制')
+assert.match(
+  styles,
+  /\.workspace-leaf-content\[data-type="ai-linzi-chat"\] \.ai-linzi-msg-body \*[\s\S]*?user-select: text/,
+  '对话文字必须支持鼠标拖选复制',
+)
+assert.doesNotMatch(styles, /user-select: text !important/, '对话文字选择不得依赖 !important')
 assert.match(styles, /\.ai-linzi-msg-body[\s\S]*?-webkit-app-region: no-drag/, '消息正文不能被侧边栏拖拽区域吞掉')
 
 const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')

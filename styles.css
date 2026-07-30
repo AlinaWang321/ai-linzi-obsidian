@@ -185,10 +185,10 @@
 }
 
 /* Obsidian 的侧边栏默认偏向面板交互；对话正文必须恢复原生拖选与 ⌘C 复制。 */
-.ai-linzi-msg-body,
-.ai-linzi-msg-body * {
-  -webkit-user-select: text !important;
-  user-select: text !important;
+.workspace-leaf-content[data-type="ai-linzi-chat"] .ai-linzi-msg-body,
+.workspace-leaf-content[data-type="ai-linzi-chat"] .ai-linzi-msg-body * {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .ai-linzi-msg-body {
@@ -635,7 +635,7 @@
   cursor: pointer;
 }
 
-.ai-linzi-image-previous-toggle:has(input:disabled) {
+.ai-linzi-image-previous-toggle.is-disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -749,7 +749,6 @@ button.ai-linzi-vault-source-link:hover,
 button.ai-linzi-vault-source-link:focus-visible {
   color: #0044cc;
   background: transparent;
-  text-decoration-thickness: 2px;
 }
 
 .ai-linzi-action-btn {
@@ -959,7 +958,6 @@ button.ai-linzi-vault-source-link:focus-visible {
   color: var(--text-muted);
   background: rgba(232, 77, 77, 0.09);
   text-decoration: line-through;
-  text-decoration-color: rgba(232, 77, 77, 0.55);
 }
 
 .ai-linzi-patch-new {
@@ -1849,6 +1847,7 @@ button.ai-linzi-vault-source-link:focus-visible {
   border: 2px solid var(--background-modifier-border);
   color: var(--text-faint);
 }
+.ai-linzi-cockpit-step-circle.is-clickable { cursor: pointer; }
 .ai-linzi-cockpit-step.is-done .ai-linzi-cockpit-step-circle {
   background: var(--ck-sea);
   border-color: var(--ck-sea);

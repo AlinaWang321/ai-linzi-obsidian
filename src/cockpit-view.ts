@@ -690,7 +690,7 @@ export class CockpitView extends ItemView {
         circle.setAttribute('title', '按 CRM 累计成交客户数自动点亮')
       } else {
         circle.setAttribute('title', done ? '点击取消标记' : '完成后点击标记')
-        circle.style.cursor = 'pointer'
+        circle.addClass('is-clickable')
         circle.onclick = () => {
           const next = new Set(this.plugin.settings.cockpitPartnerSteps)
           if (next.has(step.key)) next.delete(step.key)

@@ -16,10 +16,10 @@ const MAX_DOCX_XML_BYTES = 12 * 1024 * 1024
 // PDF.js normally loads a separate worker file. Obsidian community plugins are
 // distributed as one main.js, so expose the bundled worker handler as a local
 // fake worker. No CDN, remote script or server is involved.
-const pdfjsGlobal = globalThis as typeof globalThis & {
+const pdfjsWindow = activeWindow as Window & {
   pdfjsWorker?: { WorkerMessageHandler: typeof WorkerMessageHandler }
 }
-pdfjsGlobal.pdfjsWorker ??= { WorkerMessageHandler }
+pdfjsWindow.pdfjsWorker ??= { WorkerMessageHandler }
 
 export function isLocalSearchExtension(extension: string): boolean {
   return LOCAL_SEARCH_EXTENSIONS.has(extension.toLocaleLowerCase())

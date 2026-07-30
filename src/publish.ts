@@ -141,7 +141,7 @@ function brandFooterHtml(): string {
 export function mdToWechatHtml(mdRaw: string, imgHtml: (img: ImgRef) => string, withFooter = false): string {
   const prepared = prepareWechatArticle(mdRaw)
   const { md, imgs } = extractImages(prepared.body)
-  let html = marked.parse(md, { async: false }) as string
+  let html = marked.parse(md, { async: false })
   html = styleHtml(html)
   for (const img of imgs) {
     // 占位符被包进了 <p> 里,连壳一起换
@@ -399,8 +399,8 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
     }, plugin.settings.brandFooter)
 
     // 标题:frontmatter title > 去日期前缀的文件名
-    const frontmatter = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter as Record<string, unknown> | undefined
-    const fmTitle = frontmatter?.title as string | undefined
+    const frontmatter = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter
+    const fmTitle = typeof frontmatter?.title === 'string' ? frontmatter.title : undefined
     const title = (fmTitle ?? note.file.basename.replace(/^\d{4}\.\d{2}\.\d{2}_/, '')).slice(0, 60)
     // 极端历史稿若没有摘要且正文只有图片/标题，也至少用文章标题兜底，
     // 避免草稿箱出现完全空白摘要。
