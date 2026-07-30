@@ -62,6 +62,7 @@ interface LocalStats {
   publishDays: Set<string>
   weekPublished: number
   streak: number
+  publishStreak: number
   pipeline: { topic: number; draft: number; ready: number; monthPublished: number }
 }
 
@@ -144,14 +145,19 @@ export function scanLocalStats(plugin: AiLinziPlugin): LocalStats {
     }
   }
 
-  let streak = 0
-  for (let i = 0; ; i++) {
-    const day = localDate(Date.now() - i * 86400_000)
-    if (noteDays.has(day)) streak++
-    else if (i === 0) continue // 今天还没记,不打断连续记录
-    else break
-    if (i > 400) break
+  const streakOf = (days: Set<string>): number => {
+    let count = 0
+    for (let i = 0; ; i++) {
+      const day = localDate(Date.now() - i * 86400_000)
+      if (days.has(day)) count++
+      else if (i === 0) continue // 今天还没记/没发,不打断连续
+      else break
+      if (i > 400) break
+    }
+    return count
   }
+  const streak = streakOf(noteDays)
+  const publishStreak = streakOf(publishDays)
 
   inboxFiles.sort((a, b) => b.days - a.days)
   return {
@@ -164,6 +170,7 @@ export function scanLocalStats(plugin: AiLinziPlugin): LocalStats {
     publishDays,
     weekPublished,
     streak,
+    publishStreak,
     pipeline,
   }
 }
@@ -404,12 +411,13 @@ export class CockpitView extends ItemView {
     this.renderJudgment(root)
     this.renderLoop(root, local)
     this.renderLanes(root, local)
-    this.renderPartnerJourney(root)
 
     const grid = root.createDiv({ cls: 'ai-linzi-cockpit-grid' })
     this.renderTasks(grid)
     this.renderCalendar(grid, local)
     this.renderBrain(grid, local)
+
+    this.renderPartnerJourney(root)
 
     const foot = root.createDiv({ cls: 'ai-linzi-cockpit-foot' })
     foot.createSpan({ text: '🏠 本地 vault 实时统计(不上传) · ☁️ AI霖子云端(CRM/任务/积分)' })
@@ -538,7 +546,9 @@ export class CockpitView extends ItemView {
     } else {
       this.focusLine(grow, '今天最该做：发一篇内容，让陌生人找到你')
     }
-    const pipe = grow.createDiv({ cls: 'ai-linzi-cockpit-pipe' })
+    const pipe = grow.createDiv({ cls: 'ai-linzi-cockpit-pipe is-clickable' })
+    pipe.setAttribute('title', '点击打开内容发布看板')
+    pipe.onclick = () => void this.plugin.activateContentDashboard()
     const pipeNode = (n: number, t: string, hot = false) => {
       const el = pipe.createDiv({ cls: `ai-linzi-cockpit-pipe-node${hot ? ' is-hot' : ''}` })
       el.createDiv({ text: String(n), cls: 'ai-linzi-cockpit-pipe-num' })
@@ -612,8 +622,8 @@ export class CockpitView extends ItemView {
       row('其中已逾期', String(c.todos.overdue), c.todos.overdue > 0)
       row('未来 7 天已约咨询', String(c.upcomingConsults7d))
       row('本月咨询交付', `${c.thisMonth.consults} 次`)
-      const referral = Object.entries(c.channelCounts).find(([k]) => /转介绍|推荐/.test(k))
-      this.footLine(serve, referral ? `♻️ 交付养获客：${referral[0]} ${referral[1]} 人` : '♻️ 交付做好，下一单会自己来', `已完结 ${c.stageCounts['done'] ?? 0}`)
+      const referral = Object.entries(c.channelCounts).find(([k]) => k.includes('转介绍'))
+      this.footLine(serve, referral ? `♻️ 交付养获客：转介绍 ${referral[1]} 人` : '♻️ 交付做好，下一单会自己来', `已完结 ${c.stageCounts['done'] ?? 0}`)
     }
   }
 
@@ -749,7 +759,14 @@ export class CockpitView extends ItemView {
         ? overdue
         : tasks.filter((t) => t.period === this.taskTab && t.status !== 'gave_up')
     if (items.length === 0) {
-      card.createDiv({ text: this.loading ? '加载中…' : '这个周期还没有任务。去对话里让 AI霖子 帮你定几个。', cls: 'ai-linzi-cockpit-empty' })
+      if (this.loading) {
+        card.createDiv({ text: '加载中…', cls: 'ai-linzi-cockpit-empty' })
+      } else {
+        const empty = card.createDiv({ cls: 'ai-linzi-cockpit-empty' })
+        empty.createSpan({ text: '这个周期还没有任务。' })
+        const plan = empty.createSpan({ text: '去 AI霖子 网页版制定计划 →', cls: 'ai-linzi-cockpit-day-link' })
+        plan.onclick = () => window.open(`${this.plugin.settings.serverUrl.replace(/\/+$/, '')}/tasks`)
+      }
       return
     }
     for (const task of items.slice(0, 8)) {
@@ -814,6 +831,12 @@ export class CockpitView extends ItemView {
     legend.createSpan({ text: '● 记录', cls: 'is-note' })
     const streak = legend.createSpan({ text: `🔥 连续记录 ${local.streak} 天`, cls: 'ai-linzi-cockpit-streak' })
     streak.setAttribute('title', '连续记录 = 截至今天,每天都至少新建一条笔记的连续天数(今天还没记不打断)')
+    const pubLine = card.createDiv({ cls: 'ai-linzi-cockpit-legend' })
+    const pubStreak = pubLine.createSpan({
+      text: `📤 连续发布 ${local.publishStreak} 天`,
+      cls: 'ai-linzi-cockpit-streak',
+    })
+    pubStreak.setAttribute('title', '连续发布 = 截至今天,每天都有内容正式发布的连续天数(按公众号发布日期统计)')
   }
 
   private renderBrain(grid: HTMLElement, local: LocalStats) {

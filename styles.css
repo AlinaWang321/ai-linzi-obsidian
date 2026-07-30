@@ -1870,3 +1870,5 @@ button.ai-linzi-vault-source-link:focus-visible {
 .ai-linzi-cockpit-day-row.is-memory { color: var(--text-muted); }
 .ai-linzi-cockpit-day-link { cursor: pointer; color: var(--ck-sea); }
 .ai-linzi-cockpit-day-link:hover { text-decoration: underline; }
+.ai-linzi-cockpit-pipe.is-clickable { cursor: pointer; }
+.ai-linzi-cockpit-pipe.is-clickable:hover .ai-linzi-cockpit-pipe-node { background: var(--background-modifier-hover); }
