@@ -8,7 +8,7 @@
  * 「今天的判断」由服务端 Flash 生成(免费),按 serverDate 当日缓存在设置里,跨天才重新请求。
  * 设计稿真相源:Obsidian大脑 04_Output/方案文档/2026.07.30_一人公司驾驶舱_设计稿.html(v0.3)。
  */
-import { ItemView, Notice, TFile, WorkspaceLeaf, normalizePath } from 'obsidian'
+import { ItemView, Modal, Notice, TFile, WorkspaceLeaf, normalizePath } from 'obsidian'
 import type AiLinziPlugin from './main'
 import { boardLane, deriveContentRecord, isDashboardContentPath, type ContentRecord } from './content-state'
 
@@ -32,6 +32,7 @@ interface CloudCrm {
   stageLabels: { key: string; label: string }[]
   ytdAmount: number
   lifetimeAmount: number
+  lifetimeWonCustomers?: number
   todos: { open: number; overdue: number; items: { content: string; customerName: string; dueDate: string | null; overdue: boolean }[] }
   silent: { count: number; thresholdDays: number; items: { name: string; stage: string; days: number }[] }
   upcomingConsults7d: number
@@ -40,6 +41,7 @@ interface CloudDashboard {
   ok: boolean
   serverDate: string
   tier: string
+  line?: string
   balance: number
   crm: CloudCrm | null
   crmReason: string | null
@@ -178,6 +180,140 @@ const TASK_SOURCE_LABEL: Record<string, string> = {
   manager: '团队',
 }
 
+/** 漏斗阶段在驾驶舱里的显示名覆盖(只改展示,不动服务端 CRM 阶段名) */
+const FUNNEL_LABEL_OVERRIDE: Record<string, string> = { new: '新增线索' }
+
+/** 渠道饼图配色(水木光系循环) */
+const PIE_COLORS = ['#2E5A8F', '#3DB389', '#D4A50C', '#5C7BB0', '#C75C4A', '#8A7E74']
+
+/** 合伙人学习进度五步(顺序即旅程顺序;clients10 由 CRM 自动判定) */
+const PARTNER_STEPS: { key: string; label: string }[] = [
+  { key: 'coach', label: '潜力优势教练班' },
+  { key: 'clients10', label: '积累 10 个付费客户' },
+  { key: 'positioning', label: '商业定位私教课' },
+  { key: 'camp', label: '个人品牌实操营' },
+  { key: 'highticket', label: '高客单产品行动营' },
+]
+
+interface DayDetail {
+  ok: boolean
+  date: string
+  tasksDone: string[]
+  memories: { content: string; source: string }[]
+  crm: {
+    newCustomers: { name: string; stage: string }[]
+    deals: { customerName: string; amount: number }[]
+    consults: { customerName: string }[]
+  } | null
+}
+
+/** 日历某天弹框:本地当天笔记(即时) + 云端当天动态(懒加载) */
+class DayDetailModal extends Modal {
+  constructor(
+    private plugin: AiLinziPlugin,
+    private date: string,
+    private cache: Map<string, DayDetail>,
+  ) {
+    super(plugin.app)
+  }
+
+  onOpen() {
+    this.titleEl.setText(`${this.date} 这一天`)
+    this.modalEl.addClass('ai-linzi-cockpit-day-modal')
+    const root = this.contentEl
+    root.empty()
+
+    // ── 🏠 当天的笔记(创建于当天) ──
+    const localSection = root.createDiv()
+    localSection.createEl('h4', { text: '🏠 当天的笔记' })
+    const files = this.plugin.app.vault
+      .getMarkdownFiles()
+      .filter((f) => localDate(f.stat.ctime) === this.date)
+      .sort((a, b) => a.stat.ctime - b.stat.ctime)
+    if (files.length === 0) {
+      localSection.createDiv({ text: '这一天没有新建笔记。', cls: 'ai-linzi-cockpit-empty' })
+    } else {
+      for (const file of files.slice(0, 12)) {
+        const row = localSection.createDiv({ cls: 'ai-linzi-cockpit-day-row' })
+        const link = row.createSpan({ text: `📄 ${file.basename}`, cls: 'ai-linzi-cockpit-day-link' })
+        link.onclick = () => {
+          this.close()
+          void this.plugin.app.workspace.getLeaf('tab').openFile(file)
+        }
+      }
+      if (files.length > 12) {
+        localSection.createDiv({ text: `…还有 ${files.length - 12} 篇`, cls: 'ai-linzi-cockpit-empty' })
+      }
+    }
+
+    // ── ☁️ 云端动态(任务/CRM/记忆) ──
+    const cloudSection = root.createDiv()
+    cloudSection.createEl('h4', { text: '☁️ AI霖子记得的' })
+    const holder = cloudSection.createDiv()
+    const cached = this.cache.get(this.date)
+    if (cached) {
+      this.renderCloud(holder, cached)
+    } else if (!this.plugin.getApiToken()) {
+      holder.createDiv({ text: '连接 AI霖子 后，可以看到这一天的任务、客户动态和记忆。', cls: 'ai-linzi-cockpit-empty' })
+    } else {
+      holder.createDiv({ text: '加载中…', cls: 'ai-linzi-cockpit-empty' })
+      void this.plugin
+        .api(`/api/plugin/v1/dashboard/day?date=${this.date}`)
+        .then((data) => {
+          const detail = data as unknown as DayDetail
+          this.cache.set(this.date, detail)
+          holder.empty()
+          this.renderCloud(holder, detail)
+        })
+        .catch((e: unknown) => {
+          holder.empty()
+          holder.createDiv({
+            text: e instanceof Error ? e.message : '当日数据加载失败',
+            cls: 'ai-linzi-cockpit-empty',
+          })
+        })
+    }
+  }
+
+  private renderCloud(holder: HTMLElement, detail: DayDetail) {
+    let rendered = false
+    if (detail.tasksDone.length > 0) {
+      rendered = true
+      for (const title of detail.tasksDone) {
+        holder.createDiv({ text: `✅ 完成任务：${title}`, cls: 'ai-linzi-cockpit-day-row' })
+      }
+    }
+    if (detail.crm) {
+      for (const c of detail.crm.newCustomers) {
+        rendered = true
+        holder.createDiv({ text: `🆕 新客户：${c.name}`, cls: 'ai-linzi-cockpit-day-row' })
+      }
+      for (const d of detail.crm.deals) {
+        rendered = true
+        holder.createDiv({
+          text: `💰 成交：${d.customerName || '客户'} ¥${d.amount.toLocaleString('zh-CN')}`,
+          cls: 'ai-linzi-cockpit-day-row is-deal',
+        })
+      }
+      for (const c of detail.crm.consults) {
+        rendered = true
+        holder.createDiv({ text: `🎙 咨询：${c.customerName || '客户'}`, cls: 'ai-linzi-cockpit-day-row' })
+      }
+    }
+    for (const m of detail.memories) {
+      rendered = true
+      holder.createDiv({ text: `🧠 ${m.content}`, cls: 'ai-linzi-cockpit-day-row is-memory' })
+    }
+    if (!rendered) {
+      holder.createDiv({ text: '这一天云端没有记录。', cls: 'ai-linzi-cockpit-empty' })
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty()
+  }
+}
+
 export class CockpitView extends ItemView {
   private cloud: CloudDashboard | null = null
   private cloudFetchedAt = 0
@@ -186,6 +322,7 @@ export class CockpitView extends ItemView {
   private taskTab: 'week' | 'month' | 'quarter' | 'overdue' = 'week'
   private month = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
   private refreshTimer: number | null = null
+  private dayCache = new Map<string, DayDetail>()
 
   constructor(leaf: WorkspaceLeaf, private plugin: AiLinziPlugin) {
     super(leaf)
@@ -267,6 +404,7 @@ export class CockpitView extends ItemView {
     this.renderJudgment(root)
     this.renderLoop(root, local)
     this.renderLanes(root, local)
+    this.renderPartnerJourney(root)
 
     const grid = root.createDiv({ cls: 'ai-linzi-cockpit-grid' })
     this.renderTasks(grid)
@@ -410,12 +548,7 @@ export class CockpitView extends ItemView {
     pipeNode(local.pipeline.draft, '草稿')
     pipeNode(local.pipeline.ready, '待发布')
     pipeNode(local.pipeline.monthPublished, '本月已发', true)
-    if (crm) {
-      const channels = Object.entries(crm.channelCounts).sort((a, b) => b[1] - a[1]).slice(0, 3)
-      if (channels.length > 0) {
-        this.footLine(grow, '线索来源 Top', channels.map(([k, v]) => `${k} ${v}`).join(' · '))
-      }
-    }
+    if (crm) this.renderChannelPie(grow, crm.channelCounts)
 
     // ── 销售 · 木 ──
     const sell = lanes.createDiv({ cls: 'ai-linzi-cockpit-card ai-linzi-cockpit-lane is-jade' })
@@ -432,7 +565,8 @@ export class CockpitView extends ItemView {
       }
       const funnelStages = ['new', 'booked', 'consulted', 'won'] as const
       const max = Math.max(...funnelStages.map((s) => c.stageCounts[s] ?? 0), 1)
-      const labelOf = (key: string) => c.stageLabels.find((s) => s.key === key)?.label ?? key
+      const labelOf = (key: string) =>
+        FUNNEL_LABEL_OVERRIDE[key] ?? c.stageLabels.find((s) => s.key === key)?.label ?? key
       const funnel = sell.createDiv({ cls: 'ai-linzi-cockpit-funnel' })
       funnelStages.forEach((stage, index) => {
         const count = c.stageCounts[stage] ?? 0
@@ -443,6 +577,15 @@ export class CockpitView extends ItemView {
         bar.style.width = `${Math.max(6, Math.round((count / max) * 100))}%`
         row.createSpan({ text: String(count), cls: 'ai-linzi-cockpit-funnel-num' })
       })
+      const pct = (num: number, den: number) => (den > 0 ? `${Math.round((num / den) * 100)}%` : '—')
+      const conv = sell.createDiv({ cls: 'ai-linzi-cockpit-dlist' })
+      const convRow = (label: string, value: string) => {
+        const el = conv.createDiv({ cls: 'ai-linzi-cockpit-dlist-row' })
+        el.createSpan({ text: label })
+        el.createSpan({ text: value, cls: 'ai-linzi-cockpit-dlist-num' })
+      }
+      convRow('咨询→成交转化率(本月)', pct(c.thisMonth.deals, c.thisMonth.consults))
+      convRow('线索→成交转化率(本月)', pct(c.thisMonth.deals, c.thisMonth.new))
       const avg = c.thisMonth.deals > 0 ? fmtAmount(Math.round(c.thisMonth.amount / c.thisMonth.deals)) : '—'
       this.footLine(sell, '当前漏斗(在库客户)', `本月客单均价 ${avg}`)
     }
@@ -472,6 +615,84 @@ export class CockpitView extends ItemView {
       const referral = Object.entries(c.channelCounts).find(([k]) => /转介绍|推荐/.test(k))
       this.footLine(serve, referral ? `♻️ 交付养获客：${referral[0]} ${referral[1]} 人` : '♻️ 交付做好，下一单会自己来', `已完结 ${c.stageCounts['done'] ?? 0}`)
     }
+  }
+
+  /** 获客渠道占比饼图(CSS conic-gradient,本地渲染零依赖) */
+  private renderChannelPie(card: HTMLElement, channelCounts: Record<string, number>) {
+    const entries = Object.entries(channelCounts)
+      .filter(([, v]) => v > 0)
+      .sort((a, b) => b[1] - a[1])
+    if (entries.length === 0) return
+    const top = entries.slice(0, 5)
+    const restCount = entries.slice(5).reduce((sum, [, v]) => sum + v, 0)
+    const slices = restCount > 0 ? [...top, ['其他', restCount] as [string, number]] : top
+    const total = slices.reduce((sum, [, v]) => sum + v, 0)
+
+    const wrap = card.createDiv({ cls: 'ai-linzi-cockpit-pie-wrap' })
+    const pie = wrap.createDiv({ cls: 'ai-linzi-cockpit-pie' })
+    let acc = 0
+    const stops: string[] = []
+    slices.forEach(([, count], index) => {
+      const from = (acc / total) * 360
+      acc += count
+      const to = (acc / total) * 360
+      stops.push(`${PIE_COLORS[index % PIE_COLORS.length]} ${from.toFixed(1)}deg ${to.toFixed(1)}deg`)
+    })
+    pie.style.background = `conic-gradient(${stops.join(', ')})`
+    const legend = wrap.createDiv({ cls: 'ai-linzi-cockpit-pie-legend' })
+    legend.createDiv({ text: '获客渠道占比', cls: 'ai-linzi-cockpit-pie-title' })
+    slices.forEach(([name, count], index) => {
+      const row = legend.createDiv({ cls: 'ai-linzi-cockpit-pie-item' })
+      const chip = row.createSpan({ cls: 'ai-linzi-cockpit-pie-chip' })
+      chip.style.background = PIE_COLORS[index % PIE_COLORS.length]
+      row.createSpan({ text: name, cls: 'ai-linzi-cockpit-pie-name' })
+      row.createSpan({ text: `${Math.round((count / total) * 100)}%`, cls: 'ai-linzi-cockpit-pie-pct' })
+    })
+  }
+
+  /** 自由人生合伙人专属:学习旅程五步进度条(account_line=partner 才显示) */
+  private renderPartnerJourney(root: HTMLElement) {
+    if (this.cloud?.line !== 'partner') return
+    const card = root.createDiv({ cls: 'ai-linzi-cockpit-card' })
+    const head = card.createDiv({ cls: 'ai-linzi-cockpit-card-head' })
+    head.createSpan({ text: '自由人生合伙人学习进度', cls: 'ai-linzi-cockpit-card-title' })
+    head.createSpan({ text: '☁️ + 🏠', cls: 'ai-linzi-cockpit-src' })
+
+    const wonCustomers = this.cloud?.crm?.lifetimeWonCustomers ?? 0
+    const manualDone = new Set(this.plugin.settings.cockpitPartnerSteps)
+    const doneOf = (key: string) => (key === 'clients10' ? wonCustomers >= 10 : manualDone.has(key))
+    const currentIndex = PARTNER_STEPS.findIndex((s) => !doneOf(s.key))
+
+    const steps = card.createDiv({ cls: 'ai-linzi-cockpit-steps' })
+    PARTNER_STEPS.forEach((step, index) => {
+      const done = doneOf(step.key)
+      const isCurrent = index === currentIndex
+      const el = steps.createDiv({
+        cls: `ai-linzi-cockpit-step${done ? ' is-done' : ''}${isCurrent ? ' is-current' : ''}`,
+      })
+      const circle = el.createDiv({ cls: 'ai-linzi-cockpit-step-circle', text: done ? '✓' : String(index + 1) })
+      el.createDiv({ text: step.label, cls: 'ai-linzi-cockpit-step-label' })
+      if (step.key === 'clients10') {
+        el.createDiv({
+          text: `${Math.min(wonCustomers, 10)}/10${wonCustomers >= 10 ? ' 🎉' : ''}`,
+          cls: 'ai-linzi-cockpit-step-sub',
+        })
+        circle.setAttribute('title', '按 CRM 累计成交客户数自动点亮')
+      } else {
+        circle.setAttribute('title', done ? '点击取消标记' : '完成后点击标记')
+        circle.style.cursor = 'pointer'
+        circle.onclick = () => {
+          const next = new Set(this.plugin.settings.cockpitPartnerSteps)
+          if (next.has(step.key)) next.delete(step.key)
+          else next.add(step.key)
+          this.plugin.settings.cockpitPartnerSteps = [...next]
+          void this.plugin.saveSettings().then(() => {
+            new Notice(next.has(step.key) ? `✅ 已标记完成「${step.label}」` : `已取消「${step.label}」标记`)
+            this.render()
+          })
+        }
+      }
+    })
   }
 
   private laneHead(card: HTMLElement, name: string, en: string, big: string, cap: string) {
@@ -580,6 +801,9 @@ export class CockpitView extends ItemView {
       }
       const date = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
       if (date === today) cell.addClass('is-today')
+      cell.addClass('is-clickable')
+      cell.setAttribute('title', '点击看这一天做了什么')
+      cell.onclick = () => new DayDetailModal(this.plugin, date, this.dayCache).open()
       cell.createDiv({ text: String(day) })
       const dots = cell.createDiv({ cls: 'ai-linzi-cockpit-cal-dots' })
       if (local.publishDays.has(date)) dots.createSpan({ cls: 'ai-linzi-cockpit-dot is-pub' })
@@ -588,7 +812,8 @@ export class CockpitView extends ItemView {
     const legend = card.createDiv({ cls: 'ai-linzi-cockpit-legend' })
     legend.createSpan({ text: '● 发布', cls: 'is-pub' })
     legend.createSpan({ text: '● 记录', cls: 'is-note' })
-    legend.createSpan({ text: `🔥 连续记录 ${local.streak} 天`, cls: 'ai-linzi-cockpit-streak' })
+    const streak = legend.createSpan({ text: `🔥 连续记录 ${local.streak} 天`, cls: 'ai-linzi-cockpit-streak' })
+    streak.setAttribute('title', '连续记录 = 截至今天,每天都至少新建一条笔记的连续天数(今天还没记不打断)')
   }
 
   private renderBrain(grid: HTMLElement, local: LocalStats) {

@@ -128,6 +128,8 @@ interface AiLinziSettings {
   /** 「AI霖子·今天的判断」按日缓存(免费但没必要一天生成多次) */
   cockpitJudgmentDate: string
   cockpitJudgmentText: string
+  /** 合伙人学习进度里手动标记完成的步骤 key(clients10 由 CRM 自动判定不入此列表) */
+  cockpitPartnerSteps: string[]
 }
 
 const DEFAULT_SETTINGS: AiLinziSettings = {
@@ -147,6 +149,7 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   cockpitOutputFolder: 'output',
   cockpitJudgmentDate: '',
   cockpitJudgmentText: '',
+  cockpitPartnerSteps: [],
 }
 
 interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {

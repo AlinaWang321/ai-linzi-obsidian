@@ -1806,3 +1806,67 @@ button.ai-linzi-vault-source-link:focus-visible {
   background-position: center;
   flex-shrink: 0;
 }
+
+/* ── 驾驶舱 0.6.38:渠道饼图 / 合伙人学习进度 / 日历弹框 ── */
+.ai-linzi-cockpit-pie-wrap { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
+.ai-linzi-cockpit-pie { width: 84px; height: 84px; border-radius: 50%; flex-shrink: 0; }
+.ai-linzi-cockpit-pie-legend { flex: 1; min-width: 0; }
+.ai-linzi-cockpit-pie-title { font-size: 0.75em; font-weight: 700; color: var(--text-muted); margin-bottom: 4px; }
+.ai-linzi-cockpit-pie-item { display: flex; align-items: center; gap: 6px; font-size: 0.75em; padding: 1px 0; }
+.ai-linzi-cockpit-pie-chip { width: 8px; height: 8px; border-radius: 3px; flex-shrink: 0; }
+.ai-linzi-cockpit-pie-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; color: var(--text-muted); }
+.ai-linzi-cockpit-pie-pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.ai-linzi-cockpit-steps { display: flex; align-items: flex-start; margin-top: 6px; }
+.ai-linzi-cockpit-step { flex: 1; text-align: center; position: relative; padding: 0 4px; }
+.ai-linzi-cockpit-step::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: -50%;
+  width: 100%;
+  height: 2.5px;
+  background: var(--background-modifier-border);
+}
+.ai-linzi-cockpit-step:first-child::before { display: none; }
+.ai-linzi-cockpit-step.is-done::before { background: var(--ck-sea); }
+.ai-linzi-cockpit-step-circle {
+  position: relative;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  margin: 0 auto 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8em;
+  font-weight: 800;
+  background: var(--background-primary);
+  border: 2px solid var(--background-modifier-border);
+  color: var(--text-faint);
+}
+.ai-linzi-cockpit-step.is-done .ai-linzi-cockpit-step-circle {
+  background: var(--ck-sea);
+  border-color: var(--ck-sea);
+  color: #fff;
+}
+.ai-linzi-cockpit-step.is-current .ai-linzi-cockpit-step-circle {
+  border-color: var(--ck-gold);
+  color: var(--ck-gold-deep);
+  box-shadow: 0 0 0 3px rgba(245, 197, 24, 0.18);
+}
+.ai-linzi-cockpit-step-label { font-size: 0.72em; color: var(--text-muted); line-height: 1.35; }
+.ai-linzi-cockpit-step.is-done .ai-linzi-cockpit-step-label { color: var(--text-normal); }
+.ai-linzi-cockpit-step.is-current .ai-linzi-cockpit-step-label { color: var(--ck-gold-deep); font-weight: 700; }
+.ai-linzi-cockpit-step-sub { font-size: 0.68em; color: var(--ck-jade-deep); font-weight: 700; margin-top: 1px; }
+
+.ai-linzi-cockpit-cal-day.is-clickable { cursor: pointer; }
+.ai-linzi-cockpit-cal-day.is-clickable:hover { background: var(--background-modifier-hover); }
+.ai-linzi-cockpit-cal-day.is-today.is-clickable:hover { background: var(--ck-sea); }
+.ai-linzi-cockpit-day-modal h4 { margin: 12px 0 6px; font-size: 0.9em; }
+.ai-linzi-cockpit-day-row { font-size: 0.85em; padding: 3px 0; line-height: 1.5; }
+.ai-linzi-cockpit-day-row.is-deal { color: var(--ck-gold-deep); font-weight: 600; }
+.ai-linzi-cockpit-day-row.is-memory { color: var(--text-muted); }
+.ai-linzi-cockpit-day-link { cursor: pointer; color: var(--ck-sea); }
+.ai-linzi-cockpit-day-link:hover { text-decoration: underline; }
