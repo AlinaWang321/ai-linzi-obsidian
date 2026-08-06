@@ -64,6 +64,23 @@ const sent = state.deriveContentRecord({
 assert.equal(sent.wechatDraftDate, '2026-07-21')
 assert.equal(state.boardLane(sent), 'draftbox')
 
+const distributed = state.deriveContentRecord({
+  ...base,
+  frontmatter: {
+    内容类型: '公众号文章',
+    小红书状态: '已生成小红书图文',
+    小红书生成时间: '2026-07-22',
+    小红书笔记: 'AI霖子输出/小红书/测试.md',
+    小红书卡片目录: 'AI霖子输出/小红书/测试_卡片',
+    小红书卡片ZIP: 'AI霖子输出/小红书/测试_卡片/小红书卡片.zip',
+  },
+})
+assert.equal(distributed.xiaohongshuStatus, '已生成小红书图文')
+assert.equal(distributed.xiaohongshuGeneratedDate, '2026-07-22')
+assert.equal(distributed.xiaohongshuNotePath, 'AI霖子输出/小红书/测试.md')
+assert.equal(distributed.xiaohongshuCardFolder, 'AI霖子输出/小红书/测试_卡片')
+assert.equal(distributed.xiaohongshuZipPath, 'AI霖子输出/小红书/测试_卡片/小红书卡片.zip')
+
 const published = state.deriveContentRecord({
   ...base,
   path: '公众号文章/已发布/2026.07.21_测试.md',

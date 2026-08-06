@@ -36,6 +36,11 @@ export interface ContentRecord {
   wechatDraftDate: string
   wechatPublishedDate: string
   wechatUrl: string
+  xiaohongshuGeneratedDate: string
+  xiaohongshuPublishedDate: string
+  xiaohongshuNotePath: string
+  xiaohongshuCardFolder: string
+  xiaohongshuZipPath: string
   hasLocalImages: boolean
   modifiedAt: number
 }
@@ -161,6 +166,11 @@ export function deriveContentRecord(meta: RawContentMeta): ContentRecord | null 
     wechatDraftDate: normalizeDate(fm['公众号草稿箱时间']) || normalizeDate(fm['草稿箱时间']),
     wechatPublishedDate: normalizeDate(fm['公众号发布日期']) || normalizeDate(fm['发布日期']),
     wechatUrl: text(fm['公众号链接']) || text(fm['发布链接']),
+    xiaohongshuGeneratedDate: normalizeDate(fm['小红书生成时间']),
+    xiaohongshuPublishedDate: normalizeDate(fm['小红书发布日期']),
+    xiaohongshuNotePath: text(fm['小红书笔记']),
+    xiaohongshuCardFolder: text(fm['小红书卡片目录']),
+    xiaohongshuZipPath: text(fm['小红书卡片ZIP']),
     hasLocalImages: meta.hasLocalImages,
     modifiedAt: meta.modifiedAt,
   }

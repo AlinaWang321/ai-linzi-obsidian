@@ -24,6 +24,7 @@ import {
 import { extractExactTextHints } from './skill-suggest'
 import { canonicalContentFields } from './content-state'
 import { VaultImageBrowserModal } from './vault-image-browser'
+import { generateXhsCardPackage, XhsCardGalleryModal } from './xhs-cards'
 
 // ── 与服务端对齐的常量 ─────────────────────────────
 
@@ -97,6 +98,30 @@ async function getActiveNote(plugin: AiLinziPlugin): Promise<{ file: TFile; text
   return { file, text }
 }
 
+const XHS_SUMMARY_KEYS = ['摘要', '一句话摘要', 'summary', 'description', 'digest'] as const
+const XHS_CAPTION_KEYS = ['小红书配文', '小红书文案', '小红书正文', 'xhs_caption'] as const
+
+function sourceFrontmatterText(
+  plugin: AiLinziPlugin,
+  file: TFile,
+  keys: readonly string[],
+): string {
+  const frontmatter = plugin.app.metadataCache.getFileCache(file)?.frontmatter
+  for (const key of keys) {
+    const value = frontmatter?.[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+function sourceArticleSummary(plugin: AiLinziPlugin, file: TFile): string {
+  return sourceFrontmatterText(plugin, file, XHS_SUMMARY_KEYS)
+}
+
+function sourceXhsCaption(plugin: AiLinziPlugin, file: TFile): string {
+  return sourceFrontmatterText(plugin, file, XHS_CAPTION_KEYS) || sourceArticleSummary(plugin, file)
+}
+
 // ── 落盘 ─────────────────────────────────────────
 
 interface OutputSpec {
@@ -131,6 +156,8 @@ export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Prom
       ? `${rootFolder}/选题`
       : contentType === '公众号文章'
         ? `${rootFolder}/公众号文章`
+        : spec.platform === '小红书'
+          ? `${rootFolder}/小红书`
         : rootFolder,
   )
   await ensureFolder(plugin, folder)
@@ -156,6 +183,11 @@ export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Prom
         '小红书链接: ',
       ]
     : []
+  const sourceFm = spec.sourceNote
+    ? app.metadataCache.getFileCache(spec.sourceNote)?.frontmatter
+    : null
+  const sourceContentId =
+    typeof sourceFm?.['内容ID'] === 'string' ? sourceFm['内容ID'].trim() : ''
   const fm = [
     '---',
     `title: ${JSON.stringify(spec.title)}`,
@@ -166,7 +198,11 @@ export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Prom
     ...contentLines,
     spec.summary ? `摘要: ${JSON.stringify(spec.summary)}` : null,
     spec.titleCandidates?.length ? `候选标题: ${JSON.stringify(spec.titleCandidates.slice(0, 5))}` : null,
-    spec.sourceNote ? `关联笔记: "[[${spec.sourceNote.basename}]]"` : null,
+    spec.sourceNote
+      ? `关联笔记: ${JSON.stringify(`[[${spec.sourceNote.path}|${spec.sourceNote.basename}]]`)}`
+      : null,
+    spec.sourceNote ? `来源路径: ${JSON.stringify(spec.sourceNote.path)}` : null,
+    sourceContentId ? `来源内容ID: ${JSON.stringify(sourceContentId)}` : null,
     `发布日期: `,
     `发布链接: `,
     '---',
@@ -424,20 +460,83 @@ export async function runDistribute(plugin: AiLinziPlugin) {
       failed?: string[]
     }
     const platformOf: Record<string, string> = { xhs: '小红书', script: '口播', moments: '朋友圈' }
+    const xhsSummary = sourceArticleSummary(plugin, note.file)
+    let xhsPackage: Awaited<ReturnType<typeof generateXhsCardPackage>> | null = null
+    let xhsCardError = ''
     for (const r of data.results ?? []) {
-      await writeOutput(plugin, {
+      const outputFile = await writeOutput(plugin, {
         skill: '多平台分发',
         platform: platformOf[r.key] ?? r.label,
         title: `${r.label}_${note.file.basename}`,
         body: r.text,
+        summary: r.key === 'xhs' ? xhsSummary : undefined,
         sourceNote: note.file,
       })
+      if (r.key === 'xhs') {
+        try {
+          xhsPackage = await generateXhsCardPackage(plugin, {
+            sourceFile: note.file,
+            noteFile: outputFile,
+            markdown: article,
+            summary: xhsSummary,
+            caption: r.text,
+          })
+        } catch (error) {
+          xhsCardError = error instanceof Error ? error.message : String(error)
+        }
+      }
     }
     const okN = data.results?.length ?? 0
     const failMsg = data.failed?.length ? `;失败:${data.failed.join('/')}` : ''
-    new Notice(`✅ 分发完成:${okN} 个版本已落盘${failMsg}`, 8000)
+    const cardMsg = xhsPackage
+      ? `；小红书 ${xhsPackage.imagePaths.length} 张 3:4 卡片和 ZIP 已生成`
+      : xhsCardError
+        ? `；小红书文字已保留，但卡片生成失败：${xhsCardError}`
+        : ''
+    new Notice(`✅ 分发完成:${okN} 个版本已落盘${cardMsg}${failMsg}`, 10000)
+    if (xhsPackage) new XhsCardGalleryModal(plugin.app, xhsPackage).open()
   } catch (e) {
     new Notice(`❌ 多平台分发:${e instanceof Error ? e.message : String(e)}`, 8000)
+  } finally {
+    n.hide()
+  }
+}
+
+/**
+ * 完全本地的测试入口：不调用 AI、不消耗额度，直接把当前 Markdown 转成
+ * 小红书 3:4 图片。适合先检查分页、字体和视觉，再决定是否跑完整分发。
+ */
+export async function runXhsCards(plugin: AiLinziPlugin) {
+  const note = await getActiveNote(plugin)
+  if (!note) return
+  const markdown = stripFrontmatter(note.text)
+  if (markdown.length < LIMITS.DISTRIBUTE_ARTICLE_MIN) {
+    new Notice(`当前笔记只有 ${markdown.length} 字——生成卡片需要至少 100 字`)
+    return
+  }
+  const n = runningNotice('本地生成小红书 3:4 卡片')
+  try {
+    const summary = sourceArticleSummary(plugin, note.file)
+    const caption = sourceXhsCaption(plugin, note.file)
+    const outputFile = await writeOutput(plugin, {
+      skill: '小红书卡片',
+      platform: '小红书',
+      title: `小红书_${note.file.basename}`,
+      body: caption,
+      summary,
+      sourceNote: note.file,
+    })
+    const result = await generateXhsCardPackage(plugin, {
+      sourceFile: note.file,
+      noteFile: outputFile,
+      markdown,
+      summary,
+      caption,
+    })
+    new Notice(`✅ 已在本地生成 ${result.imagePaths.length} 张 1080×1440 PNG 和 ZIP`, 8000)
+    new XhsCardGalleryModal(plugin.app, result).open()
+  } catch (error) {
+    new Notice(`❌ 小红书卡片：${error instanceof Error ? error.message : String(error)}`, 8000)
   } finally {
     n.hide()
   }

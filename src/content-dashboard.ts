@@ -1,6 +1,6 @@
 import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian'
 import type AiLinziPlugin from './main'
-import { runArticleIllustration, runTopicRadar, runWechatWriter } from './actions'
+import { runArticleIllustration, runDistribute, runTopicRadar, runWechatWriter } from './actions'
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
 import {
   boardLane,
@@ -256,6 +256,14 @@ export class ContentDashboardView extends ItemView {
         value: records.filter((r) => isDateInRange(r.wechatPublishedDate, monthStart, nextMonth)).length,
       },
       { label: '累计公众号发布', value: records.filter((r) => r.wechatStatus === '已正式发布').length },
+      {
+        label: '本月小红书生成',
+        value: records.filter((r) => isDateInRange(r.xiaohongshuGeneratedDate, monthStart, nextMonth)).length,
+      },
+      {
+        label: '累计小红书发布',
+        value: records.filter((r) => r.xiaohongshuStatus === '小红书已发布').length,
+      },
     ]
     const row = root.createDiv({ cls: 'ai-linzi-dashboard-stats' })
     for (const stat of stats) {
@@ -303,6 +311,15 @@ export class ContentDashboardView extends ItemView {
       text: `${lane === 'published' ? '发布' : lane === 'draftbox' ? '发送' : '创建'}：${shortDate(date)} · ${record.sourceSkill}`,
       cls: 'ai-linzi-dashboard-card-meta',
     })
+    const channels = card.createDiv({ cls: 'ai-linzi-dashboard-channels' })
+    this.channelPill(channels, '公众号', record.wechatStatus, record.wechatStatus === '已正式发布')
+    this.channelPill(
+      channels,
+      '小红书',
+      record.xiaohongshuStatus,
+      record.xiaohongshuStatus === '小红书已发布',
+    )
+    this.channelPill(channels, '视频', record.videoStatus, record.videoStatus === '视频已发布')
     const actions = card.createDiv({ cls: 'ai-linzi-dashboard-card-actions' })
     if (lane === 'topic') {
       this.actionButton(actions, '开始写作', record, () => runWechatWriter(this.plugin))
@@ -325,12 +342,43 @@ export class ContentDashboardView extends ItemView {
       }
     }
     if (record.kind === '公众号文章') {
+      if (record.xiaohongshuStatus === '未开始') {
+        this.actionButton(actions, '生成分发包', record, () => runDistribute(this.plugin))
+      } else {
+        const openXhs = actions.createEl('button', { text: '打开小红书' })
+        openXhs.onclick = (event) => {
+          event.stopPropagation()
+          void this.openXiaohongshu(record)
+        }
+        if (record.xiaohongshuStatus !== '小红书已发布') {
+          const publishXhs = actions.createEl('button', { text: '标记小红书已发布' })
+          publishXhs.onclick = (event) => {
+            event.stopPropagation()
+            void this.markXiaohongshuPublished(record, publishXhs)
+          }
+        }
+      }
       const statusButton = actions.createEl('button', { text: '修改状态' })
       statusButton.onclick = (event) => {
         event.stopPropagation()
         void this.updateWechatStatus(record, statusButton)
       }
     }
+  }
+
+  private channelPill(
+    parent: HTMLElement,
+    label: string,
+    status: string,
+    published: boolean,
+  ) {
+    const active = status !== '未开始'
+    const pill = parent.createDiv({
+      cls: `ai-linzi-dashboard-channel${active ? ' is-active' : ''}${published ? ' is-published' : ''}`,
+      attr: { title: `${label}：${status}` },
+    })
+    pill.createSpan({ text: label })
+    pill.createSpan({ text: published ? '已发布' : active ? '已生成' : '未开始' })
   }
 
   private actionButton(
@@ -367,6 +415,51 @@ export class ContentDashboardView extends ItemView {
     this.plugin.lastActiveFile = file
     await this.app.workspace.getLeaf('tab').openFile(file)
     return file
+  }
+
+  private async openXiaohongshu(record: ContentRecord) {
+    const file = record.xiaohongshuNotePath
+      ? this.app.vault.getAbstractFileByPath(record.xiaohongshuNotePath)
+      : null
+    if (!(file instanceof TFile)) {
+      new Notice(
+        record.xiaohongshuCardFolder
+          ? `卡片已生成在：${record.xiaohongshuCardFolder}`
+          : '没有找到关联的小红书笔记，请重新生成分发包',
+        7000,
+      )
+      return
+    }
+    this.plugin.lastActiveFile = file
+    await this.app.workspace.getLeaf('tab').openFile(file)
+  }
+
+  private async markXiaohongshuPublished(record: ContentRecord, button: HTMLButtonElement) {
+    const file = this.app.vault.getAbstractFileByPath(record.filePath)
+    if (!(file instanceof TFile)) {
+      new Notice('这篇内容的笔记已经不存在')
+      return
+    }
+    button.disabled = true
+    try {
+      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+        fm['小红书状态'] = '小红书已发布'
+        fm['小红书发布日期'] = isoToday()
+      })
+      if (record.xiaohongshuNotePath) {
+        const xhsFile = this.app.vault.getAbstractFileByPath(record.xiaohongshuNotePath)
+        if (xhsFile instanceof TFile) {
+          await this.app.fileManager.processFrontMatter(xhsFile, (fm: Record<string, unknown>) => {
+            fm['小红书状态'] = '小红书已发布'
+            fm['小红书发布日期'] = isoToday()
+          })
+        }
+      }
+      new Notice('✅ 已标记小红书发布；这一步只记录状态，不会自动发布到平台')
+      this.render()
+    } finally {
+      button.disabled = false
+    }
   }
 
   private async updateWechatStatus(
