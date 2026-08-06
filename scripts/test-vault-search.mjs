@@ -94,6 +94,8 @@ assert.equal(core.isVaultSearchPathExcluded('.obsidian/plugins/private.md'), tru
 assert.equal(core.isVaultSearchPathExcluded('trash/旧文章.md'), true)
 assert.equal(core.isVaultSearchPathExcluded('05_System/_sub-agent-summaries.md'), true)
 assert.equal(core.isVaultSearchPathExcluded('AGENTS.md'), true)
+assert.equal(core.isVaultSearchPathExcluded('system/skills/咨询简报.md'), true)
+assert.equal(core.isVaultSearchPathExcluded('system/skills/咨询简报/SKILL.md'), true)
 assert.equal(core.isVaultSearchPathExcluded('私人日记/今天.md'), false)
 
 const monthlyFact = core.buildVaultLocalFact(

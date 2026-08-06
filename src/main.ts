@@ -80,6 +80,12 @@ import {
 } from './long-document'
 import { LocalVaultSearch } from './vault-search'
 import { type VaultSearchResult } from './vault-search-core'
+import {
+  formatLocalSkillList,
+  isLocalSkillListIntent,
+  type LocalSkillOutput,
+} from './local-skill-core'
+import { LocalSkillRegistry } from './local-skills'
 
 /** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -209,6 +215,13 @@ interface PluginCapabilities {
         supportedExtensions?: string[]
         ocr?: boolean
         legacyDoc?: boolean
+      }
+      localSkills?: {
+        available?: boolean
+        localOnly?: boolean
+        maxContentChars?: number
+        requiresExplicitInvocation?: boolean
+        persistsInHistory?: boolean
       }
     }
     articleIllustration?: {
@@ -1038,6 +1051,7 @@ class ChatView extends ItemView {
   private sessionId = newPluginSessionId()
   private attachNote: boolean
   private vaultSearchEnabled: boolean
+  private localSkills: LocalSkillRegistry
   private imageMode = false
   private imageRatio: AiImageRatio = '16:9'
   private imageReferences: LocalImageReference[] = []
@@ -1074,6 +1088,7 @@ class ChatView extends ItemView {
     this.plugin = plugin
     this.attachNote = plugin.settings.attachNoteDefault
     this.vaultSearchEnabled = plugin.settings.vaultSearchDefault
+    this.localSkills = new LocalSkillRegistry(plugin.app)
   }
 
   getViewType() {
@@ -1145,6 +1160,12 @@ class ChatView extends ItemView {
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
     const dashboardBtn = actionsRow.createEl('button', { text: '内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
+    const localSkillsBtn = actionsRow.createEl('button', {
+      text: '本地 Skills',
+      cls: 'ai-linzi-action-btn',
+      attr: { title: '查看 system/skills/ 中的本地 Skill' },
+    })
+    localSkillsBtn.onclick = (event: MouseEvent) => void this.showLocalSkillsMenu(event)
 
     const toggleRow = footer.createDiv({ cls: 'ai-linzi-toggle-row' })
     const label = toggleRow.createEl('label', { cls: 'ai-linzi-toggle' })
@@ -1259,6 +1280,27 @@ class ChatView extends ItemView {
     this.renderMessages()
     // 恢复最近一次会话(升级/重启后不丢)
     void this.restoreLatest()
+  }
+
+  private async showLocalSkillsMenu(event: MouseEvent): Promise<void> {
+    const skills = await this.localSkills.list()
+    if (skills.length === 0) {
+      new Notice('没有找到本地 Skill。请先把技能文件放进 system/skills/。', 5000)
+      return
+    }
+    const menu = new Menu()
+    for (const skill of skills) {
+      menu.addItem((item) =>
+        item
+          .setTitle(skill.description ? `${skill.name} · ${skill.description}` : skill.name)
+          .setIcon('sparkles')
+          .onClick(() => {
+            this.inputEl.value = `用${skill.name}技能处理当前笔记`
+            this.inputEl.focus()
+          }),
+      )
+    }
+    menu.showAtMouseEvent(event)
   }
 
   /** 每轮对话后自动保存;消息为空不存 */
@@ -1656,6 +1698,7 @@ class ChatView extends ItemView {
   private async vaultSearchContext(
     query: string,
     currentNotePath?: string,
+    extraExcludedPaths: string[] = [],
   ): Promise<{
     context:
       | {
@@ -1680,7 +1723,10 @@ class ChatView extends ItemView {
     }
     const search = await this.plugin.vaultSearch.search(query, {
       ...this.vaultSearchLimits(capabilities),
-      excludedPaths: currentNotePath ? [currentNotePath] : [],
+      excludedPaths: [
+        ...(currentNotePath ? [currentNotePath] : []),
+        ...extraExcludedPaths,
+      ],
     })
     const items = [
       ...(search.fact ? [search.fact] : []),
@@ -1732,19 +1778,70 @@ class ChatView extends ItemView {
         await this.startLongDocumentTask(text)
         return
       }
+      if (isLocalSkillListIntent(text)) {
+        const skills = await this.localSkills.list()
+        this.messages.push({
+          id: uid(),
+          role: 'assistant',
+          parts: [{ type: 'text', text: formatLocalSkillList(skills) }],
+        })
+        await this.persistNow()
+        return
+      }
+      const localSkillMatch = await this.localSkills.resolve(text)
+      if (localSkillMatch.kind === 'missing') {
+        throw new Error(
+          '没有找到你点名的本地 Skill。可以说「查看本地 Skills」，或检查文件是否在 system/skills/。',
+        )
+      }
+      if (localSkillMatch.kind === 'ambiguous') {
+        throw new Error(
+          `有多个本地 Skill 同时匹配：${localSkillMatch.skills
+            .map((skill) => skill.name)
+            .join('、')}。请说出完整技能名后重试。`,
+        )
+      }
+      const localSkill =
+        localSkillMatch.kind === 'matched' ? localSkillMatch.skill : undefined
       const noteContext = await this.currentNoteContext()
+      if (localSkill?.output === 'update-current-note' && !noteContext) {
+        throw new Error(
+          `本地 Skill《${localSkill.name}》需要修改当前笔记。请打开目标笔记并勾选「主对话带上当前笔记」。`,
+        )
+      }
       const authorizedContent = await this.authorizedContentContext(noteContext?.path)
       // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
       // 图片修改会在 AI 回复下方显示专用入口，先预览候选图再由用户确认替换。
       const illustrationEdit = isArticleIllustrationEditIntent(text)
       const singleIllustration = Boolean(noteContext && isSingleArticleIllustrationIntent(text))
-      const noteEdit = Boolean(
+      const directNoteEdit = Boolean(
         noteContext && !illustrationEdit && !singleIllustration && isNoteEditIntent(text),
       )
+      const noteEdit =
+        directNoteEdit ||
+        Boolean(
+          noteContext &&
+            !illustrationEdit &&
+            !singleIllustration &&
+            localSkill?.output === 'update-current-note',
+        )
       const vaultSearch =
         noteEdit || singleIllustration || illustrationEdit
           ? { context: undefined, sources: [] }
-          : await this.vaultSearchContext(text, noteContext?.path)
+          : await this.vaultSearchContext(
+              text,
+              noteContext?.path,
+              localSkill ? [localSkill.path] : [],
+            )
+      const localSkillRequest = localSkill
+        ? {
+            name: localSkill.name,
+            description: localSkill.description,
+            output: localSkill.output,
+            content: localSkill.content,
+          }
+        : undefined
+      if (localSkill) new Notice(`正在调用本地 Skill：${localSkill.name}`, 4000)
       // M3:优先流式(fetch 纯文本流,逐块显示);CORS/网络不支持时自动回落非流式;
       // 业务错误(积分不足/tier/限流)不回落不重发,直接显示。
       let answer: string
@@ -1753,6 +1850,7 @@ class ChatView extends ItemView {
         streamed = await this.sendStreaming(
           noteContext,
           authorizedContent,
+          localSkillRequest,
           vaultSearch.context,
           noteEdit,
           singleIllustration,
@@ -1776,6 +1874,7 @@ class ChatView extends ItemView {
             vaultSearch: vaultSearch.context,
             noteEdit,
             noteImageIntent: singleIllustration,
+            localSkill: localSkillRequest,
           },
         })
         answer = typeof data.text === 'string' ? data.text : '(空响应)'
@@ -2154,6 +2253,14 @@ class ChatView extends ItemView {
     authorizedContent:
       | { items: { filename: string; path: string; text: string }[] }
       | undefined,
+    localSkill:
+      | {
+          name: string
+          description: string
+          output: LocalSkillOutput
+          content: string
+        }
+      | undefined,
     vaultSearch:
       | {
           query: string
@@ -2182,6 +2289,7 @@ class ChatView extends ItemView {
         vaultSearch,
         noteEdit,
         noteImageIntent,
+        localSkill,
       }),
     })
     if (!res.ok) {

@@ -77,6 +77,9 @@ const NO_SEARCH_MESSAGES = new Set([
 export function isVaultSearchPathExcluded(path: string): boolean {
   const normalized = normalizePath(path)
   if (!normalized) return true
+  const lower = normalized.toLocaleLowerCase()
+  // 本地 Skill 有独立的显式调用通道，不能再被普通 Vault 搜索截成资料片段误送。
+  if (lower === 'system/skills' || lower.startsWith('system/skills/')) return true
   const segments = normalized.split('/')
   if (segments.some((segment) => segment.startsWith('.'))) return true
   if (segments.some((segment) => /^trash$/i.test(segment))) return true
