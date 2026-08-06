@@ -16,6 +16,12 @@ assert.equal(core.isLocalSkillPath('system/skills/咨询简报/SKILL.md'), true)
 assert.equal(core.isLocalSkillPath('System/Skills/咨询简报/skill.md'), true)
 assert.equal(core.isLocalSkillPath('system/skills/两层/目录/SKILL.md'), false)
 assert.equal(core.isLocalSkillPath('05_System/Skills/咨询简报/SKILL.md'), false)
+assert.equal(
+  core.isLocalSkillPath('05_System/AI工作流/consultation-brief/SKILL.md', '05_System/AI工作流'),
+  true,
+)
+assert.equal(core.normalizeLocalSkillRoot('05_System/AI工作流/'), '05_System/AI工作流')
+assert.equal(core.normalizeLocalSkillRoot('../.obsidian'), 'system/skills')
 
 const consultation = core.buildLocalSkillDescriptor('system/skills/咨询简报/SKILL.md', {
   name: '咨询简报',
@@ -34,6 +40,22 @@ assert.ok(weekly)
 assert.equal(consultation.output, 'create-note')
 assert.equal(weekly.output, 'update-current-note')
 assert.deepEqual(weekly.triggers, ['每周经营复盘', '周复盘', '经营复盘'])
+
+const portable = core.buildLocalSkillDescriptor(
+  'system/skills/weekly-review/SKILL.md',
+  {
+    name: 'weekly-review',
+    description: '根据一周记录完成经营复盘',
+  },
+  '# 每周经营复盘\n\n## AI霖子输出方式\ncreate-note',
+)
+assert.ok(portable)
+assert.equal(portable.output, 'create-note')
+assert.equal(portable.displayName, '每周经营复盘')
+assert.equal(
+  core.matchLocalSkillInvocation('用每周经营复盘技能整理当前笔记', [portable]).kind,
+  'matched',
+)
 
 assert.equal(
   core.matchLocalSkillInvocation('用咨询简报技能处理当前笔记', [consultation, weekly]).skill

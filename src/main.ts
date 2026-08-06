@@ -56,6 +56,10 @@ import {
 import { extractCreateNoteBlocks, type CreateNoteBlock } from './create-note'
 import { extractCreateFolderBlocks } from './create-folder'
 import {
+  extractCreateLocalSkillBlocks,
+  type CreateLocalSkillBlock,
+} from './create-local-skill'
+import {
   extractPluginSkillSuggestions,
   isArticleIllustrationEditIntent,
   isSingleArticleIllustrationIntent,
@@ -83,6 +87,7 @@ import { type VaultSearchResult } from './vault-search-core'
 import {
   formatLocalSkillList,
   isLocalSkillListIntent,
+  normalizeLocalSkillRoot,
   type LocalSkillOutput,
 } from './local-skill-core'
 import { LocalSkillRegistry } from './local-skills'
@@ -135,6 +140,8 @@ interface AiLinziSettings {
   cockpitSourcesFolder: string
   cockpitKnowledgeFolder: string
   cockpitOutputFolder: string
+  /** 用户指定的本地 AI 工作流 / SOP 根目录(相对 vault 根) */
+  localSkillsFolder: string
   /** 「AI霖子·今天的判断」按日缓存(免费但没必要一天生成多次) */
   cockpitJudgmentDate: string
   cockpitJudgmentText: string
@@ -157,6 +164,7 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   cockpitSourcesFolder: 'raw',
   cockpitKnowledgeFolder: 'wiki',
   cockpitOutputFolder: 'output',
+  localSkillsFolder: 'system/skills',
   cockpitJudgmentDate: '',
   cockpitJudgmentText: '',
   cockpitPartnerSteps: [],
@@ -1088,7 +1096,10 @@ class ChatView extends ItemView {
     this.plugin = plugin
     this.attachNote = plugin.settings.attachNoteDefault
     this.vaultSearchEnabled = plugin.settings.vaultSearchDefault
-    this.localSkills = new LocalSkillRegistry(plugin.app)
+    this.localSkills = new LocalSkillRegistry(
+      plugin.app,
+      () => plugin.settings.localSkillsFolder,
+    )
   }
 
   getViewType() {
@@ -1163,7 +1174,7 @@ class ChatView extends ItemView {
     const localSkillsBtn = actionsRow.createEl('button', {
       text: '本地 Skills',
       cls: 'ai-linzi-action-btn',
-      attr: { title: '查看 system/skills/ 中的本地 Skill' },
+      attr: { title: `查看 ${this.localSkills.root()}/ 中的本地 Skill` },
     })
     localSkillsBtn.onclick = (event: MouseEvent) => void this.showLocalSkillsMenu(event)
 
@@ -1285,17 +1296,21 @@ class ChatView extends ItemView {
   private async showLocalSkillsMenu(event: MouseEvent): Promise<void> {
     const skills = await this.localSkills.list()
     if (skills.length === 0) {
-      new Notice('没有找到本地 Skill。请先把技能文件放进 system/skills/。', 5000)
+      new Notice(`没有找到本地 Skill。请先把技能文件放进 ${this.localSkills.root()}/。`, 5000)
       return
     }
     const menu = new Menu()
     for (const skill of skills) {
       menu.addItem((item) =>
         item
-          .setTitle(skill.description ? `${skill.name} · ${skill.description}` : skill.name)
+          .setTitle(
+            skill.description
+              ? `${skill.displayName} · ${skill.description}`
+              : skill.displayName,
+          )
           .setIcon('sparkles')
           .onClick(() => {
-            this.inputEl.value = `用${skill.name}技能处理当前笔记`
+            this.inputEl.value = `用${skill.displayName}技能处理当前笔记`
             this.inputEl.focus()
           }),
       )
@@ -1727,6 +1742,7 @@ class ChatView extends ItemView {
         ...(currentNotePath ? [currentNotePath] : []),
         ...extraExcludedPaths,
       ],
+      excludedFolders: [this.localSkills.root()],
     })
     const items = [
       ...(search.fact ? [search.fact] : []),
@@ -1783,7 +1799,7 @@ class ChatView extends ItemView {
         this.messages.push({
           id: uid(),
           role: 'assistant',
-          parts: [{ type: 'text', text: formatLocalSkillList(skills) }],
+          parts: [{ type: 'text', text: formatLocalSkillList(skills, this.localSkills.root()) }],
         })
         await this.persistNow()
         return
@@ -1791,13 +1807,14 @@ class ChatView extends ItemView {
       const localSkillMatch = await this.localSkills.resolve(text)
       if (localSkillMatch.kind === 'missing') {
         throw new Error(
-          '没有找到你点名的本地 Skill。可以说「查看本地 Skills」，或检查文件是否在 system/skills/。',
+          `没有找到你点名的本地 Skill。可以说「查看本地 Skills」，` +
+            `或检查文件是否在 ${this.localSkills.root()}/。`,
         )
       }
       if (localSkillMatch.kind === 'ambiguous') {
         throw new Error(
           `有多个本地 Skill 同时匹配：${localSkillMatch.skills
-            .map((skill) => skill.name)
+            .map((skill) => skill.displayName)
             .join('、')}。请说出完整技能名后重试。`,
         )
       }
@@ -2331,6 +2348,61 @@ class ChatView extends ItemView {
     return { kind: 'ok', text: full }
   }
 
+  /**
+   * 对话创建本地 Skill 确认卡(v0.6.47)：
+   * - 目标目录只来自本机设置，不接受模型路径；
+   * - 固定写成 `<root>/<portable-name>/SKILL.md`；
+   * - 只新建、不覆盖，已存在时要求用户换名。
+   */
+  private renderCreateLocalSkillOffers(row: HTMLElement, blocks: CreateLocalSkillBlock[]) {
+    for (const block of blocks) {
+      const root = this.localSkills.root()
+      const filePath = normalizePath(`${root}/${block.name}/SKILL.md`)
+      const card = row.createDiv({ cls: 'ai-linzi-create-note-card' })
+      card.createDiv({
+        text: `🧩 待创建 AI 工作流:${block.name}`,
+        cls: 'ai-linzi-create-note-title',
+      })
+      card.createDiv({ text: block.description, cls: 'ai-linzi-create-note-preview' })
+      card.createDiv({
+        text: `保存位置:${filePath}`,
+        cls: 'ai-linzi-create-note-preview',
+      })
+      const actionsRow = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
+      const createBtn = actionsRow.createEl('button', { text: '创建 SKILL.md' })
+      createBtn.onclick = () => {
+        createBtn.disabled = true
+        void (async () => {
+          try {
+            if (this.app.vault.getAbstractFileByPath(filePath)) {
+              throw new Error(`已存在 ${filePath}，为避免覆盖请让 AI 换一个 Skill 名称`)
+            }
+            const parent = filePath.split('/').slice(0, -1)
+            let current = ''
+            for (const segment of parent) {
+              current = current ? `${current}/${segment}` : segment
+              if (this.app.vault.getAbstractFileByPath(current)) continue
+              await this.app.vault.createFolder(current)
+            }
+            const file = await this.app.vault.create(filePath, block.content)
+            card.empty()
+            const done = card.createDiv({ cls: 'ai-linzi-create-note-done' })
+            done.createSpan({ text: '✅ 已创建:' })
+            const link = done.createEl('a', { text: file.path, href: '#' })
+            link.onclick = (event) => {
+              event.preventDefault()
+              void this.app.workspace.openLinkText(file.path, '', false)
+            }
+            new Notice(`已创建本地 Skill:${file.path}`, 6000)
+          } catch (error) {
+            createBtn.disabled = false
+            new Notice(`创建失败:${(error as Error).message}`, 7000)
+          }
+        })()
+      }
+    }
+  }
+
   /** 「对话直接创建笔记」确认卡(v0.6.34):点击才落盘;writeOutput 保证白名单文件夹/日期前缀/只新建不覆盖 */
   private renderCreateNoteOffers(row: HTMLElement, blocks: CreateNoteBlock[]) {
     for (const block of blocks) {
@@ -2474,8 +2546,11 @@ class ChatView extends ItemView {
           }
         }
         const skillResult = extractPluginSkillSuggestions(text, previousUserText)
+        // 对话创建本地 Skill(v0.6.47)：先剥整个 Skill 块，避免其中的协议示例
+        // 被后续“新建笔记/文件夹”解析器误当成独立写入动作。
+        const localSkillCreateResult = extractCreateLocalSkillBlocks(skillResult.cleanText)
         // 对话直接创建笔记(v0.6.34):先剥标记块,确认卡在正文渲染后追加
-        const createResult = extractCreateNoteBlocks(skillResult.cleanText)
+        const createResult = extractCreateNoteBlocks(localSkillCreateResult.cleanText)
         const folderResult = extractCreateFolderBlocks(createResult.cleanText)
         const cleanText = folderResult.cleanText
         const patch = parseNotePatch(cleanText)
@@ -2483,6 +2558,9 @@ class ChatView extends ItemView {
         const editReply = this.mode === 'chat' && !illustrationEdit && isNoteEditIntent(previousUserText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
         if ((m.vaultSources?.length ?? 0) > 0) this.renderVaultSources(row, m.vaultSources ?? [])
+        if (localSkillCreateResult.blocks.length > 0) {
+          this.renderCreateLocalSkillOffers(row, localSkillCreateResult.blocks)
+        }
         if (createResult.blocks.length > 0) this.renderCreateNoteOffers(row, createResult.blocks)
         if (folderResult.folders.length > 0) this.renderCreateFolderOffer(row, folderResult.folders)
         if (m.articleIllustrationEditOffer) {
@@ -2932,7 +3010,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).setName('一人公司驾驶舱 · 目录映射').setHeading()
     containerEl.createEl('p', {
-      text: '驾驶舱「第二大脑」按这四个文件夹统计目录分布(相对 vault 根,留空则不统计)。所有统计都在本机完成,不上传任何笔记内容。',
+      text: '前四项用于驾驶舱「第二大脑」统计；最后一项指定 AI 工作流目录。路径都相对 Vault 根，所有扫描与写入都在本机完成。',
       cls: 'setting-item-description',
     })
     const cockpitFolderSetting = (
@@ -2958,6 +3036,19 @@ class AiLinziSettingTab extends PluginSettingTab {
     cockpitFolderSetting('原始素材 Raw 文件夹', '录音转写、聊天记录、灵感等原始输入', 'cockpitSourcesFolder', 'raw')
     cockpitFolderSetting('知识库 Wiki 文件夹', '整理后的方法论、案例、洞察', 'cockpitKnowledgeFolder', 'wiki')
     cockpitFolderSetting('对外输出 Output 文件夹', '发出去的文章、笔记、交付物', 'cockpitOutputFolder', 'output')
+    new Setting(containerEl)
+      .setName('AI 工作流 / SOP 文件夹')
+      .setDesc('存放可被 AI霖子调用的 Skills；支持「技能名.md」或标准「技能名/SKILL.md」，也可在对话中让 AI 生成后确认写入')
+      .addText((text) =>
+        text
+          .setPlaceholder('system/skills')
+          .setValue(this.plugin.settings.localSkillsFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.localSkillsFolder = normalizeLocalSkillRoot(value)
+            this.plugin.vaultSearch.clear()
+            await this.plugin.saveSettings()
+          }),
+      )
 
     new Setting(containerEl)
       .setName('默认带上当前笔记')

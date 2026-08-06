@@ -11,6 +11,8 @@ export interface VaultSearchOptions {
   maxExcerptChars?: number
   maxTotalChars?: number
   excludedPaths?: string[]
+  /** 整个文件夹树不参与普通 Vault 搜索，例如用户指定的本地 Skills 根目录。 */
+  excludedFolders?: string[]
   /** 仅用于可重复测试；生产环境默认使用当前设备时间。 */
   nowMs?: number
 }
@@ -86,6 +88,16 @@ export function isVaultSearchPathExcluded(path: string): boolean {
   const filename = segments.at(-1)?.toLocaleLowerCase() ?? ''
   if (['_sub-agent-summaries.md', 'agents.md', 'claude.md'].includes(filename)) return true
   return false
+}
+
+export function isPathInsideFolder(path: string, folder: string): boolean {
+  const normalizedPath = normalizePath(path).toLocaleLowerCase()
+  const normalizedFolder = normalizePath(folder).toLocaleLowerCase()
+  return Boolean(
+    normalizedPath &&
+      normalizedFolder &&
+      (normalizedPath === normalizedFolder || normalizedPath.startsWith(`${normalizedFolder}/`)),
+  )
 }
 
 /**
@@ -197,12 +209,14 @@ export function searchVaultDocuments(
     VAULT_SEARCH_DEFAULTS.maxTotalChars,
   )
   const excludedPathSet = new Set((options.excludedPaths ?? []).map(normalizePath))
+  const excludedFolders = (options.excludedFolders ?? []).map(normalizePath).filter(Boolean)
   const terms = buildSearchTerms(query)
   const queryPhrase = normalizeText(query).replace(/\s+/g, ' ')
   const querySignals = buildQuerySignals(query, options.nowMs ?? Date.now())
   const eligible = documents.filter(
     (doc) =>
       !excludedPathSet.has(normalizePath(doc.path)) &&
+      !excludedFolders.some((folder) => isPathInsideFolder(doc.path, folder)) &&
       !isVaultSearchPathExcluded(doc.path) &&
       Boolean(doc.text.trim()),
   )

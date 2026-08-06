@@ -1,6 +1,7 @@
 import { App, TFile } from 'obsidian'
 import {
   buildVaultLocalFact,
+  isPathInsideFolder,
   isVaultSearchPathExcluded,
   searchVaultDocuments,
   shouldSearchVault,
@@ -54,12 +55,14 @@ export class LocalVaultSearch {
     // 新用户第一句「你好」尤其不能卡)。统计类问题词长足够,不会被误伤;
     // searchVaultDocuments 内部同一判断保留作为纯函数的自我保护。
     if (!shouldSearchVault(query)) return { results: [] }
+    const excludedFolders = (options.excludedFolders ?? []).filter(Boolean)
     const files = this.app.vault
       .getFiles()
       .filter(
         (file) =>
           isLocalSearchExtension(file.extension) &&
-          !isVaultSearchPathExcluded(file.path),
+          !isVaultSearchPathExcluded(file.path) &&
+          !excludedFolders.some((folder) => isPathInsideFolder(file.path, folder)),
       )
     const livePaths = new Set(files.map((file) => file.path))
     for (const path of this.cache.keys()) {

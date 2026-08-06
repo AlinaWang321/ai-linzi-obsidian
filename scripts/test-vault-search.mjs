@@ -50,6 +50,31 @@ assert.deepEqual(core.searchVaultDocuments('你好', docs), [])
 const privateNamedResults = core.searchVaultDocuments('内部年度预算秘密', docs)
 assert.equal(privateNamedResults[0]?.path, '㊙️财务/收入.md')
 
+const configurableSkillResults = core.searchVaultDocuments(
+  '客户可读简报',
+  [
+    ...docs,
+    {
+      path: '05_System/AI工作流/consultation-brief/SKILL.md',
+      filename: 'SKILL.md',
+      text: '把咨询逐字稿整理成客户可读简报。',
+    },
+  ],
+  { excludedFolders: ['05_System/AI工作流'] },
+)
+assert.ok(
+  configurableSkillResults.every(
+    (result) => !result.path.startsWith('05_System/AI工作流/'),
+  ),
+)
+assert.equal(
+  core.isPathInsideFolder(
+    '05_System/AI工作流/consultation-brief/SKILL.md',
+    '05_System/AI工作流',
+  ),
+  true,
+)
+
 const limited = core.searchVaultDocuments('高客单产品定位', docs, {
   maxSources: 1,
   maxExcerptChars: 240,
@@ -140,6 +165,7 @@ assert.match(localSearch, /decodePlainText/)
 assert.match(localSearch, /binaryFiles\.length; offset \+= 2/)
 assert.match(localSearch, /sourceId: 'V1'/)
 assert.match(localSearch, /sourceId: `V\$\{index \+ 2\}`/)
+assert.match(localSearch, /excludedFolders/)
 
 const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')

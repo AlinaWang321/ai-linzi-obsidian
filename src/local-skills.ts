@@ -4,6 +4,7 @@ import {
   buildLocalSkillDescriptor,
   isLocalSkillPath,
   matchLocalSkillInvocation,
+  normalizeLocalSkillRoot,
   type LocalSkillDescriptor,
   type LocalSkillMatch,
   type LocalSkillOutput,
@@ -51,12 +52,20 @@ function parseFrontmatter(text: string): Record<string, unknown> {
 export class LocalSkillRegistry {
   private cache = new Map<string, CachedLocalSkill>()
 
-  constructor(private readonly app: App) {}
+  constructor(
+    private readonly app: App,
+    private readonly configuredRoot: () => string = () => 'system/skills',
+  ) {}
+
+  root(): string {
+    return normalizeLocalSkillRoot(this.configuredRoot())
+  }
 
   private async refresh(): Promise<CachedLocalSkill[]> {
+    const root = this.root()
     const files = this.app.vault
       .getMarkdownFiles()
-      .filter((file) => isLocalSkillPath(file.path))
+      .filter((file) => isLocalSkillPath(file.path, root))
     const livePaths = new Set(files.map((file) => file.path))
     for (const path of this.cache.keys()) {
       if (!livePaths.has(path)) this.cache.delete(path)
@@ -70,7 +79,7 @@ export class LocalSkillRegistry {
         continue
       }
       const content = await this.app.vault.cachedRead(file)
-      const descriptor = buildLocalSkillDescriptor(file.path, parseFrontmatter(content))
+      const descriptor = buildLocalSkillDescriptor(file.path, parseFrontmatter(content), content, root)
       if (!descriptor) continue
       const next = {
         mtime: file.stat.mtime,
