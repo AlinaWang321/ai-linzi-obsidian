@@ -238,6 +238,76 @@ function visualLength(text: string): number {
   return length
 }
 
+function sliceBlock(block: XhsCardBlock, start: number, end: number): XhsCardBlock | null {
+  let from = start
+  let to = end
+  while (from < to && /\s/.test(block.text[from])) from++
+  while (to > from && /\s/.test(block.text[to - 1])) to--
+  if (from >= to) return null
+  return {
+    ...block,
+    text: block.text.slice(from, to),
+    sectionIndex: from === 0 ? block.sectionIndex : undefined,
+    boldRanges: (block.boldRanges ?? [])
+      .map((range) => ({
+        start: Math.max(range.start, from) - from,
+        end: Math.min(range.end, to) - from,
+      }))
+      .filter((range) => range.start < range.end),
+  }
+}
+
+function visualCutIndex(text: string, maxVisualChars: number): number {
+  if (visualLength(text) <= maxVisualChars) return text.length
+  let width = 0
+  let cursor = 0
+  while (cursor < text.length && width < maxVisualChars) {
+    width += /[\u0000-\u00ff]/.test(text[cursor]) ? 0.56 : 1
+    cursor++
+  }
+  const minimum = Math.max(1, Math.floor(cursor * 0.58))
+  const candidate = text.slice(0, cursor)
+  const punctuation = Math.max(
+    candidate.lastIndexOf('。'),
+    candidate.lastIndexOf('！'),
+    candidate.lastIndexOf('？'),
+    candidate.lastIndexOf('；'),
+  )
+  return punctuation >= minimum ? punctuation + 1 : cursor
+}
+
+/**
+ * 把正文开头切给第一页，剩余内容从下一页继续。
+ * 这里按原 block 顺序消费，避免第一页和第二页重复正文。
+ */
+export function takeXhsCoverIntro(
+  blocks: XhsCardBlock[],
+  maxVisualChars = 118,
+): { coverBlocks: XhsCardBlock[]; remainingBlocks: XhsCardBlock[] } {
+  const coverBlocks: XhsCardBlock[] = []
+  let budget = maxVisualChars
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index]
+    const overhead = block.kind === 'heading' ? 14 : block.kind === 'quote' ? 6 : 0
+    if (budget <= overhead + 8) {
+      return { coverBlocks, remainingBlocks: blocks.slice(index) }
+    }
+    const allowance = budget - overhead
+    const cut = visualCutIndex(block.text, allowance)
+    const cover = sliceBlock(block, 0, cut)
+    if (cover) coverBlocks.push(cover)
+    if (cut < block.text.length) {
+      const remainder = sliceBlock(block, cut, block.text.length)
+      return {
+        coverBlocks,
+        remainingBlocks: [...(remainder ? [remainder] : []), ...blocks.slice(index + 1)],
+      }
+    }
+    budget -= visualLength(block.text) + overhead
+  }
+  return { coverBlocks, remainingBlocks: [] }
+}
+
 function splitLongText(text: string, maxVisualChars: number): string[] {
   if (visualLength(text) <= maxVisualChars) return [text]
   const chunks: string[] = []

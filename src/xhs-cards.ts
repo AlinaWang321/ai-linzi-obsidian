@@ -6,6 +6,7 @@ import {
   paginateXhsCardBlocks,
   parseXhsCardDocument,
   stableContentFingerprint,
+  takeXhsCoverIntro,
   type ParsedXhsCardDocument,
   type XhsCardBlock,
 } from './xhs-card-core'
@@ -18,7 +19,6 @@ const TITLE = '#252D38'
 const INK = '#33383F'
 const MUTED = '#7C8796'
 const PAPER = '#FFFFFF'
-const PANEL = '#F7F9FC'
 const SERIF_FONT = '"Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", serif'
 const SANS_FONT = '"PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif'
 
@@ -226,18 +226,19 @@ function drawContainedImage(
   x: number,
   y: number,
   width: number,
-  height: number,
-) {
-  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight)
+  maxHeight: number,
+): number {
+  const scale = Math.min(width / image.naturalWidth, maxHeight / image.naturalHeight)
   const drawWidth = image.naturalWidth * scale
   const drawHeight = image.naturalHeight * scale
   context.drawImage(
     image,
     x + (width - drawWidth) / 2,
-    y + (height - drawHeight) / 2,
+    y,
     drawWidth,
     drawHeight,
   )
+  return drawHeight
 }
 
 async function canvasPng(canvas: HTMLCanvasElement): Promise<Uint8Array> {
@@ -286,39 +287,52 @@ async function firstSourceImage(plugin: AiLinziPlugin, sourceFile: TFile): Promi
 function drawCover(
   context: CanvasRenderingContext2D,
   document: ParsedXhsCardDocument,
+  coverBlocks: XhsCardBlock[],
   image: HTMLImageElement | null,
   total: number,
 ) {
   drawPaper(context)
   drawPageChrome(context, 1, total)
 
-  let cursor = image ? 760 : 150
-  if (image) drawContainedImage(context, image, 70, 70, 940, 620)
-
   context.fillStyle = TITLE
-  setFont(context, 64, 700)
+  setFont(context, 58, 700)
   const titleLines = wrapText(context, document.title, 940).slice(0, 4)
-  cursor = drawLines(context, titleLines, 70, cursor, 84)
-  cursor += 20
+  let cursor = drawLines(context, titleLines, 70, 108, 76) + 14
 
   context.fillStyle = MUTED
-  setFont(context, 29, 400)
+  setFont(context, 27, 400)
   if (document.excerpt) {
     const excerptLines = wrapText(context, document.excerpt, 938).slice(0, image ? 2 : 4)
-    cursor = drawLines(context, excerptLines, 70, cursor, 48)
+    cursor = drawLines(context, excerptLines, 70, cursor, 43) + 20
   }
 
-  if (!image) {
-    const boxY = Math.max(document.excerpt ? 760 : 590, cursor + 42)
-    context.fillStyle = PANEL
-    roundedRect(context, 70, boxY, 940, 260, 24)
-    context.fill()
-    context.fillStyle = ORANGE
-    setFont(context, 82, 500)
-    context.fillText('“', 116, boxY + 100)
-    context.fillStyle = INK
-    setFont(context, 33, 450)
-    context.fillText('把长文，变成值得收藏的重点。', 198, boxY + 152)
+  if (image) {
+    const imageHeight = drawContainedImage(context, image, 70, cursor, 940, 420)
+    cursor += imageHeight + 30
+  }
+
+  for (const block of coverBlocks) {
+    if (block.kind === 'heading') {
+      context.fillStyle = BLUE
+      setFont(context, 34, 700)
+      const lines = wrapText(context, block.text, 900)
+      cursor = drawLines(context, lines, 84, cursor, 46) + 18
+      continue
+    }
+    if (block.kind === 'quote') {
+      const lines = wrapRichText(context, block, 870, 29, 500, 700)
+      context.fillStyle = BLUE
+      roundedRect(context, 70, cursor - 27, 5, Math.max(46, lines.length * 48 - 4), 3)
+      context.fill()
+      cursor =
+        drawRichLines(context, block, lines, 96, cursor, 48, 29, 500, 700, INK, '#172235') +
+        18
+      continue
+    }
+    const lines = wrapRichText(context, block, 940, 29, 400, 700, 58)
+    cursor =
+      drawRichLines(context, block, lines, 70, cursor, 48, 29, 400, 700, INK, '#172235') +
+      22
   }
 }
 
@@ -450,7 +464,8 @@ export async function generateXhsCardPackage(
   input: GenerateXhsCardsInput,
 ): Promise<XhsCardPackage> {
   const parsed = parseXhsCardDocument(input.markdown, input.sourceFile.basename, input.summary)
-  const pages = paginateXhsCardBlocks(parsed.blocks)
+  const { coverBlocks, remainingBlocks } = takeXhsCoverIntro(parsed.blocks)
+  const pages = remainingBlocks.length > 0 ? paginateXhsCardBlocks(remainingBlocks) : []
   const total = pages.length + 1
   const root = normalizePath(plugin.settings.outputFolder || 'AI霖子输出')
   const folderPath = uniqueFolder(
@@ -468,7 +483,7 @@ export async function generateXhsCardPackage(
     canvas.height = CARD_HEIGHT
     const context = canvas.getContext('2d')
     if (!context) throw new Error('当前环境不支持 Canvas，无法生成卡片')
-    if (index === 0) drawCover(context, parsed, coverImage, total)
+    if (index === 0) drawCover(context, parsed, coverBlocks, coverImage, total)
     else drawBodyPage(context, pages[index - 1].blocks, index + 1, total)
     const png = await canvasPng(canvas)
     const filename = `${String(index + 1).padStart(2, '0')}.png`

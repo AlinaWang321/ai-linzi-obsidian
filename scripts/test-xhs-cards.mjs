@@ -105,6 +105,39 @@ assert.ok(composedNote.includes('![[AI霖子输出/小红书/测试卡片/02.png
 assert.ok(composedNote.indexOf('01.png') < composedNote.indexOf('这是可以直接发布的小红书配文'))
 assert.equal(composedNote.includes('这里是公众号全文'), false)
 
+const coverSource = cards.parseXhsCardDocument(
+  '# 标题\n\n这是正文开头第一句。**这句要加粗。**这是正文开头后续内容。'.concat('继续正文。'.repeat(30)),
+  '备用标题',
+)
+const coverSplit = cards.takeXhsCoverIntro(coverSource.blocks, 28)
+assert.ok(coverSplit.coverBlocks.length > 0)
+assert.ok(coverSplit.remainingBlocks.length > 0)
+assert.ok(coverSplit.coverBlocks[0].text.startsWith('这是正文开头第一句'))
+assert.equal(
+  coverSplit.coverBlocks.map((block) => block.text).join('') +
+    coverSplit.remainingBlocks.map((block) => block.text).join(''),
+  coverSource.blocks.map((block) => block.text).join(''),
+)
+assert.ok(
+  [...coverSplit.coverBlocks, ...coverSplit.remainingBlocks].some((block) =>
+    (block.boldRanges ?? []).some((range) => range.end > range.start),
+  ),
+)
+
+const orderedCover = cards.takeXhsCoverIntro(
+  [
+    { kind: 'heading', text: '第一部分', level: 2, sectionIndex: 1 },
+    { kind: 'paragraph', text: '第一部分的正文开头。' },
+    { kind: 'paragraph', text: '后续正文。' },
+  ],
+  29,
+)
+assert.deepEqual(
+  orderedCover.coverBlocks.map((block) => block.text),
+  ['第一部分', '第一部分的正文开头。'],
+)
+assert.deepEqual(orderedCover.remainingBlocks.map((block) => block.text), ['后续正文。'])
+
 const withoutRule = cards.parseXhsCardDocument('# 标题\n\n正文。\n\n---\n\n## 小标题', '备用标题')
 assert.equal(withoutRule.blocks.some((block) => block.text === '---'), false)
 assert.equal(withoutRule.blocks.at(-1).level, 2)
