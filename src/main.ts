@@ -185,7 +185,7 @@ const DEFAULT_WECHAT_SECRET_ID = 'ai-linzi-wechat-app-secret'
 const OFFICIAL_SERVER_URL = 'https://chat.alinalinzi.com'
 
 const VIEW_TYPE_CHAT = 'ai-linzi-chat'
-const CHAT_SEND_SHORTCUT_HINT = 'Enter 换行 · Mac：⌘ + Enter / Windows：Ctrl + Enter 发送'
+const CHAT_SEND_SHORTCUT_HINT = 'Enter 换行 · Mac / Windows：Control + Enter 发送'
 const CHAT_INPUT_PLACEHOLDER = '问 AI霖子任何事…'
 const INTERVIEW_INPUT_PLACEHOLDER = '先告诉 AI 你想写什么方向（一句话），它会开始采访你…'
 const CAPABILITIES_CACHE_TTL_MS = 5 * 60 * 1000
@@ -231,6 +231,13 @@ interface PluginCapabilities {
         requiresExplicitInvocation?: boolean
         persistsInHistory?: boolean
       }
+      imageAttachments?: {
+        available?: boolean
+        maxImages?: number
+        supportedMediaTypes?: string[]
+        sentWithNextMessageOnly?: boolean
+        persistsInHistory?: boolean
+      }
     }
     articleIllustration?: {
       customCharacterReferenceAvailable?: boolean
@@ -254,6 +261,8 @@ interface WireMessage {
   articleIllustrationEditOffer?: ArticleIllustrationEditOffer
   /** 本地 Vault 检索来源；只保存在插件本机历史，messagesForApi 会剥离。 */
   vaultSources?: VaultMessageSource[]
+  /** 只保留用户本轮上传的图片名称；图片数据不写本机或云端历史。 */
+  imageAttachmentNames?: string[]
 }
 
 interface VaultMessageSource {
@@ -1063,6 +1072,8 @@ class ChatView extends ItemView {
   private imageMode = false
   private imageRatio: AiImageRatio = '16:9'
   private imageReferences: LocalImageReference[] = []
+  /** 普通主对话下一轮要识别的图片；压缩数据只驻留当前进程，发送后立即释放。 */
+  private chatImageAttachments: LocalImageReference[] = []
   private activeImageMessageId = ''
   private usePreviousImage = true
   /** 只保存用户明确勾选的本地路径；正文不会写入会话历史或插件设置。 */
@@ -1273,11 +1284,11 @@ class ChatView extends ItemView {
       text: '📎',
       cls: 'ai-linzi-attachment-btn',
       attr: {
-        title: '精确选择文件或文件夹（Pro）',
-        'aria-label': '精确选择文件或文件夹',
+        title: '添加文件或图片（Pro）',
+        'aria-label': '添加文件或图片',
       },
     })
-    this.authorizedContentBtn.onclick = () => void this.openAuthorizedContentSelector()
+    this.authorizedContentBtn.onclick = (event) => void this.openAttachmentMenu(event)
     sendMeta.createSpan({ text: CHAT_SEND_SHORTCUT_HINT, cls: 'ai-linzi-send-hint' })
     this.sendBtn = sendRow.createEl('button', {
       text: '发送',
@@ -1594,6 +1605,10 @@ class ChatView extends ItemView {
     if (!selection) return
     this.longDocumentTask = null
     if (selection.mode === 'long-document') {
+      if (this.chatImageAttachments.length > 0) {
+        this.chatImageAttachments = []
+        new Notice('长文任务不能同时带图片，已移除待发送图片')
+      }
       this.authorizedContentPaths = []
       this.authorizedContentChars = 0
       this.longDocumentPath = selection.path
@@ -1614,45 +1629,140 @@ class ChatView extends ItemView {
     this.longDocumentPath = ''
     this.longDocumentChars = 0
     this.longDocumentTask = null
+    this.chatImageAttachments = []
+    this.refreshAuthorizedContentUi()
+  }
+
+  private async openAttachmentMenu(event: MouseEvent): Promise<void> {
+    if (this.mode === 'interview') {
+      new Notice('请先结束访谈写作，再添加文件或图片')
+      return
+    }
+    if (this.imageMode) {
+      new Notice('AI 生图模式请使用上方「添加参考图」；退出生图模式后可上传图片让主对话识别')
+      return
+    }
+    const menu = new Menu()
+    menu.addItem((item) =>
+      item
+        .setTitle('从 Vault 选择文件或文件夹')
+        .setIcon('files')
+        .onClick(() => void this.openAuthorizedContentSelector()),
+    )
+    menu.addItem((item) =>
+      item
+        .setTitle('从 Vault 选择图片')
+        .setIcon('image')
+        .onClick(() => void this.addVaultChatImage()),
+    )
+    menu.addItem((item) =>
+      item
+        .setTitle('从电脑上传图片')
+        .setIcon('folder-open')
+        .onClick(() => void this.addComputerChatImages()),
+    )
+    menu.showAtMouseEvent(event)
+  }
+
+  private async addVaultChatImage(): Promise<void> {
+    if (this.longDocumentPath) {
+      new Notice('长文任务不能同时带图片，请先清除长文任务')
+      return
+    }
+    if (this.chatImageAttachments.length >= 3) {
+      new Notice('主对话单次最多上传 3 张图片')
+      return
+    }
+    if (!(await this.plugin.requireProAccess('主对话图片附件'))) return
+    chooseVaultAiImageReference(this.plugin, (reference) => {
+      this.chatImageAttachments.push(reference)
+      this.refreshAuthorizedContentUi()
+      this.inputEl.focus()
+    })
+  }
+
+  private async addComputerChatImages(): Promise<void> {
+    if (this.longDocumentPath) {
+      new Notice('长文任务不能同时带图片，请先清除长文任务')
+      return
+    }
+    if (this.chatImageAttachments.length >= 3) {
+      new Notice('主对话单次最多上传 3 张图片')
+      return
+    }
+    if (!(await this.plugin.requireProAccess('主对话图片附件'))) return
+    chooseComputerAiImageReferences(3 - this.chatImageAttachments.length, (references) => {
+      this.chatImageAttachments.push(...references)
+      this.refreshAuthorizedContentUi()
+      this.inputEl.focus()
+    })
+  }
+
+  private clearChatImageAttachments(): void {
+    if (this.chatImageAttachments.length === 0) return
+    this.chatImageAttachments = []
     this.refreshAuthorizedContentUi()
   }
 
   private refreshAuthorizedContentUi(): void {
     if (!this.authorizedContentBtn || !this.authorizedContentStatusEl) return
     const count = this.authorizedContentPaths.length
+    const imageCount = this.chatImageAttachments.length
     const isLongDocument = Boolean(this.longDocumentPath)
-    this.authorizedContentBtn.setText(isLongDocument ? '📄' : count > 0 ? `📎 ${count}` : '📎')
+    const attachmentCount = (isLongDocument ? 1 : count) + imageCount
+    this.authorizedContentBtn.setText(
+      isLongDocument && imageCount === 0
+        ? '📄'
+        : attachmentCount > 0
+          ? `📎 ${attachmentCount}`
+          : '📎',
+    )
     this.authorizedContentBtn.setAttr(
       'aria-label',
       isLongDocument
         ? '已选择长文任务，点击更换'
-        : count > 0
-          ? `已精确选择 ${count} 份文件，点击更换`
-          : '精确选择文件或文件夹',
+        : attachmentCount > 0
+          ? `已添加 ${attachmentCount} 个附件，点击更换`
+          : '添加文件或图片',
     )
     this.authorizedContentBtn.title =
       isLongDocument
         ? '已选择长文任务，点击更换'
-        : count > 0
-          ? `已精确选择 ${count} 份文件，点击更换`
-          : '精确选择文件或文件夹（Pro）'
-    this.authorizedContentBtn.toggleClass('is-active', isLongDocument || count > 0)
+        : attachmentCount > 0
+          ? `已添加 ${attachmentCount} 个附件，点击更换`
+          : '添加文件或图片（Pro）'
+    this.authorizedContentBtn.toggleClass('is-active', attachmentCount > 0)
     this.authorizedContentStatusEl.empty()
-    this.authorizedContentStatusEl.toggle(isLongDocument || count > 0)
-    if (!isLongDocument && count === 0) return
-    this.authorizedContentStatusEl.createSpan({
-      text: isLongDocument
-        ? `长文任务 · ${this.longDocumentPath.split('/').at(-1) ?? this.longDocumentPath}` +
+    this.authorizedContentStatusEl.toggle(attachmentCount > 0)
+    if (attachmentCount === 0) return
+    const statusParts: string[] = []
+    if (isLongDocument) {
+      statusParts.push(
+        `长文任务 · ${this.longDocumentPath.split('/').at(-1) ?? this.longDocumentPath}` +
           (this.longDocumentChars > 0
             ? ` · ${this.longDocumentChars.toLocaleString('zh-CN')} 字`
-            : '')
-        : `当前对话持续带上 ${count} 份已授权文件` +
+            : ''),
+      )
+    } else if (count > 0) {
+      statusParts.push(
+        `当前对话持续带上 ${count} 份已授权文件` +
           (this.authorizedContentChars > 0
             ? ` · ${this.authorizedContentChars.toLocaleString('zh-CN')} 字`
             : ''),
+      )
+    }
+    if (imageCount > 0) {
+      statusParts.push(
+        `下一条消息带上 ${imageCount} 张图片：${this.chatImageAttachments
+          .map((image) => image.name)
+          .join('、')}`,
+      )
+    }
+    this.authorizedContentStatusEl.createSpan({
+      text: statusParts.join('；'),
     })
     const changeBtn = this.authorizedContentStatusEl.createEl('button', { text: '更换' })
-    changeBtn.onclick = () => void this.openAuthorizedContentSelector()
+    changeBtn.onclick = (event) => void this.openAttachmentMenu(event)
     const clearBtn = this.authorizedContentStatusEl.createEl('button', { text: '清除' })
     clearBtn.onclick = () => this.clearAuthorizedContent()
   }
@@ -1773,7 +1883,14 @@ class ChatView extends ItemView {
     const text = this.inputEl.value.trim()
     if (!text || this.sending) return
 
-    this.messages.push({ id: uid(), role: 'user', parts: [{ type: 'text', text }] })
+    const imageAttachments = this.chatImageAttachments.slice()
+    this.messages.push({
+      id: uid(),
+      role: 'user',
+      parts: [{ type: 'text', text }],
+      imageAttachmentNames:
+        imageAttachments.length > 0 ? imageAttachments.map((image) => image.name) : undefined,
+    })
     this.inputEl.value = ''
     this.sending = true
     this.sendBtn.disabled = true
@@ -1843,7 +1960,7 @@ class ChatView extends ItemView {
             localSkill?.output === 'update-current-note',
         )
       const vaultSearch =
-        noteEdit || singleIllustration || illustrationEdit
+        noteEdit || singleIllustration || illustrationEdit || imageAttachments.length > 0
           ? { context: undefined, sources: [] }
           : await this.vaultSearchContext(
               text,
@@ -1869,6 +1986,7 @@ class ChatView extends ItemView {
           authorizedContent,
           localSkillRequest,
           vaultSearch.context,
+          imageAttachments,
           noteEdit,
           singleIllustration,
         )
@@ -1888,6 +2006,11 @@ class ChatView extends ItemView {
             stream: false,
             noteContext,
             authorizedContent,
+            imageAttachments: imageAttachments.map((image) => ({
+              filename: image.name,
+              dataUrl: image.dataUrl,
+              mediaType: 'image/jpeg',
+            })),
             vaultSearch: vaultSearch.context,
             noteEdit,
             noteImageIntent: singleIllustration,
@@ -1896,6 +2019,7 @@ class ChatView extends ItemView {
         })
         answer = typeof data.text === 'string' ? data.text : '(空响应)'
       }
+      if (!answer.startsWith('⚠️')) this.clearChatImageAttachments()
       this.messages.push({
         id: uid(),
         role: 'assistant',
@@ -2284,6 +2408,7 @@ class ChatView extends ItemView {
           items: { sourceId: string; filename: string; excerpt: string }[]
         }
       | undefined,
+    imageAttachments: LocalImageReference[],
     noteEdit: boolean,
     noteImageIntent: boolean,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
@@ -2303,6 +2428,11 @@ class ChatView extends ItemView {
         stream: 'text',
         noteContext,
         authorizedContent,
+        imageAttachments: imageAttachments.map((image) => ({
+          filename: image.name,
+          dataUrl: image.dataUrl,
+          mediaType: 'image/jpeg',
+        })),
         vaultSearch,
         noteEdit,
         noteImageIntent,
@@ -2643,7 +2773,13 @@ class ChatView extends ItemView {
           }
         }
       } else {
-        body.setText(text)
+        if ((m.imageAttachmentNames?.length ?? 0) > 0) {
+          body.createDiv({
+            text: `📷 ${m.imageAttachmentNames?.join('、')}`,
+            cls: 'ai-linzi-msg-attachment-summary',
+          })
+        }
+        body.createDiv({ text, cls: 'ai-linzi-msg-user-text' })
       }
     }
     if (this.longDocumentTask) this.renderLongDocumentProgress(this.longDocumentTask)

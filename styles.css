@@ -202,6 +202,16 @@
   color: var(--text-on-accent);
 }
 
+.ai-linzi-msg-attachment-summary {
+  margin-bottom: 4px;
+  font-size: var(--font-ui-smaller);
+  opacity: 0.82;
+}
+
+.ai-linzi-msg-user-text {
+  white-space: pre-wrap;
+}
+
 .ai-linzi-msg-assistant .ai-linzi-msg-body {
   max-width: 100%;
   background: var(--background-secondary);
