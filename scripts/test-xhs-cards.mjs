@@ -225,6 +225,40 @@ assert.ok(
   ),
   '图片页应该同时保留上下文文字，而不是一张图片独占一页',
 )
+const compactMixedPages = cards.paginateXhsCardBlocks([
+  { kind: 'paragraph', text: '图片前面的正文。'.repeat(18) },
+  {
+    kind: 'image',
+    text: '原文横版配图',
+    imageSource: 'attachments/compact.png',
+    imageAspectRatio: 3 / 2,
+  },
+  { kind: 'paragraph', text: '图片右边的短上下文。'.repeat(5) },
+])
+assert.equal(compactMixedPages.length, 1)
+assert.deepEqual(
+  compactMixedPages[0].blocks.map((block) => block.kind),
+  ['paragraph', 'image', 'paragraph'],
+)
+assert.equal(
+  cards.shouldUseXhsSideBySideLayout(
+    compactMixedPages[0].blocks[1],
+    compactMixedPages[0].blocks[2],
+  ),
+  true,
+)
+const headingPages = cards.paginateXhsCardBlocks(
+  [
+    { kind: 'paragraph', text: '前一页正文。'.repeat(40) },
+    { kind: 'heading', text: '新的章节', level: 2, sectionIndex: 2 },
+    { kind: 'paragraph', text: '章节开头必须跟着标题。'.repeat(8) },
+  ],
+  8,
+)
+assert.ok(
+  headingPages.slice(0, -1).every((page) => page.blocks.at(-1)?.kind !== 'heading'),
+  '章节标题不能孤零零留在上一页底部',
+)
 const endingImagePages = cards.paginateXhsCardBlocks([
   { kind: 'paragraph', text: '图片前面的长正文。'.repeat(70) },
   {

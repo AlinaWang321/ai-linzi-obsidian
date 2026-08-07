@@ -5,8 +5,12 @@ import {
   composeGeneratedXhsNote,
   paginateXhsCardBlocks,
   parseXhsCardDocument,
+  shouldUseXhsSideBySideLayout,
   stableContentFingerprint,
   takeXhsCoverIntro,
+  XHS_BODY_IMAGE_MAX_HEIGHT,
+  XHS_SIDE_IMAGE_MAX_HEIGHT,
+  XHS_SIDE_IMAGE_WIDTH,
   type ParsedXhsCardDocument,
   type XhsCardBlock,
 } from './xhs-card-core'
@@ -348,10 +352,65 @@ function drawBodyPage(
   drawPageChrome(context, page, total)
   let y = 104
 
-  for (const block of blocks) {
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index]
     if (block.kind === 'image') {
       const image = sourceImages.get(block)
-      if (image) y += drawContainedImage(context, image, 70, y, 940, 620) + 34
+      const next = blocks[index + 1]
+      if (image && shouldUseXhsSideBySideLayout(block, next)) {
+        const text = next as XhsCardBlock
+        const textX = 548
+        const textWidth = 460
+        const imageHeight = drawContainedImage(
+          context,
+          image,
+          70,
+          y,
+          XHS_SIDE_IMAGE_WIDTH,
+          XHS_SIDE_IMAGE_MAX_HEIGHT,
+        )
+        let textBottom = y
+        if (text.kind === 'quote') {
+          const lines = wrapRichText(context, text, textWidth - 32, 30, 560, 700)
+          context.fillStyle = BLUE
+          roundedRect(context, textX, y - 29, 6, Math.max(52, lines.length * 54 - 4), 3)
+          context.fill()
+          textBottom = drawRichLines(
+            context,
+            text,
+            lines,
+            textX + 28,
+            y,
+            54,
+            30,
+            560,
+            700,
+            TITLE,
+            '#172235',
+          )
+        } else {
+          const lines = wrapRichText(context, text, textWidth, 30, 400, 700, 54)
+          textBottom = drawRichLines(
+            context,
+            text,
+            lines,
+            textX,
+            y,
+            52,
+            30,
+            400,
+            700,
+            INK,
+            '#172235',
+          )
+        }
+        y = Math.max(y + imageHeight, textBottom) + 34
+        index++
+      } else if (image) {
+        y +=
+          drawContainedImage(context, image, 70, y, 940, XHS_BODY_IMAGE_MAX_HEIGHT) +
+          34
+      }
       continue
     }
     if (block.kind === 'heading') {
