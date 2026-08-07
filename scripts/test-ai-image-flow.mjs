@@ -5,6 +5,11 @@ const actions = readFileSync(new URL('../src/actions.ts', import.meta.url), 'utf
 const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
 
 assert.match(main, /AI 生图模式/)
+assert.match(main, /attachNoteDefault: false/)
+assert.match(main, /vaultSearchDefault: false/)
+assert.match(main, /cleanChatDefaultsV1/)
+assert.match(main, /stillUsingOldChatDefaults/)
+assert.match(main, /resetContextTogglesToDefaults/)
 assert.doesNotMatch(main, /🖼️ 用 AI 生图/, '顶部不应再保留与生图模式勾选重复的按钮')
 assert.match(main, /text: '调用技能'/)
 assert.match(main, /text: '存入知识库'/)
@@ -23,6 +28,13 @@ assert.match(main, /参考上一张图/)
 assert.match(main, /preserveRicherLocalCopy/)
 assert.match(main, /下一轮会继续修改上一张图/)
 assert.match(main, /下一轮会生成一张新图/)
+assert.match(main, /isExplicitCurrentNoteImageRequest/)
+assert.match(
+  main,
+  /const editPreviousImage = Boolean\(previousReference\)[\s\S]*?const requestsCurrentNoteImage =[\s\S]*?!editPreviousImage && isExplicitCurrentNoteImageRequest\(instruction\)[\s\S]*?const noteContext = requestsCurrentNoteImage/,
+  '继续修改上一张图时必须优先走自由修图，不能被当前笔记改道',
+)
+assert.match(main, /editPreviousImage,\s*\)/)
 assert.match(
   main,
   /const illustrationEdit = isArticleIllustrationEditIntent\(text\)[\s\S]*?const singleIllustration = Boolean\([\s\S]*?!illustrationEdit && !singleIllustration && isNoteEditIntent\(text\)/,
@@ -35,6 +47,8 @@ assert.match(actions, /sessionId/)
 assert.match(actions, /mode: 'single'/, '当前笔记补图必须走插件专用单图接口')
 assert.match(actions, /ratio: options\?\.ratio \?\? '16:9'/)
 assert.match(actions, /referenceImages: options\?\.referenceImageDataUrls\?\.slice\(0, 3\)/)
+assert.match(actions, /editPreviousImage = false/)
+assert.match(actions, /editPreviousImage,/)
 assert.match(
   main,
   /generateArticleIllustrationFromChat\([\s\S]*?referenceImageDataUrls: references[\s\S]*?ratio: this\.imageRatio[\s\S]*?ratio = articleCandidate\.ratio \?\? this\.imageRatio/,

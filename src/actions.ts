@@ -1919,6 +1919,7 @@ export async function generateAiImage(
   ratio: AiImageRatio,
   referenceImages: string[] = [],
   sessionId?: string,
+  editPreviousImage = false,
 ): Promise<{ imageUrl: string; ratio: AiImageRatio }> {
   const data = (await plugin.api(AI_IMAGE_API, {
     method: 'POST',
@@ -1927,6 +1928,7 @@ export async function generateAiImage(
       ratio,
       referenceImages: referenceImages.slice(0, 3),
       sessionId,
+      editPreviousImage,
     },
   })) as { imageUrl?: string; ratio?: AiImageRatio }
   if (!data.imageUrl) throw new Error('服务端没有返回图片')

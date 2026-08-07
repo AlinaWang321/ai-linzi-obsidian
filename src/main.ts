@@ -120,6 +120,8 @@ interface AiLinziSettings {
   serverUrl: string
   /** SecretStorage 的内部条目名，仅用于兼容旧设置；不得在学员界面中暴露 */
   tokenSecretId: string
+  /** 一次性迁移标记：不再让旧版两个 true 默认值污染新主对话 */
+  cleanChatDefaultsV1: boolean
   /** 「带上当前笔记」开关的默认值 */
   attachNoteDefault: boolean
   /** 主对话默认在本机 Vault 中检索相关笔记；只发送命中的少量片段 */
@@ -152,8 +154,9 @@ interface AiLinziSettings {
 const DEFAULT_SETTINGS: AiLinziSettings = {
   serverUrl: 'https://chat.alinalinzi.com',
   tokenSecretId: '',
-  attachNoteDefault: true,
-  vaultSearchDefault: true,
+  cleanChatDefaultsV1: false,
+  attachNoteDefault: false,
+  vaultSearchDefault: false,
   outputFolder: 'AI霖子输出',
   illustrationCharacterReferencePath: '',
   defaultNiche: '',
@@ -188,6 +191,18 @@ const VIEW_TYPE_CHAT = 'ai-linzi-chat'
 const CHAT_SEND_SHORTCUT_HINT = 'Enter 换行 · Mac / Windows：Control + Enter 发送'
 const CHAT_INPUT_PLACEHOLDER = '问 AI霖子任何事…'
 const INTERVIEW_INPUT_PLACEHOLDER = '先告诉 AI 你想写什么方向（一句话），它会开始采访你…'
+
+function isExplicitCurrentNoteImageRequest(text: string): boolean {
+  const normalized = text.replace(/\s+/g, '')
+  const explicitArticleIllustration =
+    /(?:公众号|正文|文章)(?:配图|插图|封面)/.test(normalized)
+  const explicitCurrentDocument =
+    /(?:当前|这篇|本篇|正在打开的)(?:笔记|文章|文档)/.test(normalized) ||
+    /(?:根据|结合|读取|参考)(?:当前|这篇|本篇|正在打开的)(?:笔记|文章|文档)/.test(normalized)
+  const imageAction =
+    /(?:生图|生成|做|画|设计|制作|新增|增加|补充|添加|插入|配)(?:一|1)?(?:张)?(?:配图|插图|图片|图|封面)/.test(normalized)
+  return explicitArticleIllustration || (explicitCurrentDocument && imageAction)
+}
 const CAPABILITIES_CACHE_TTL_MS = 5 * 60 * 1000
 // 四处未连接报错共用同一句(2026-07-30 统一;旧版有「服务器地址和 Token」等三种矛盾说法)
 const NOT_CONNECTED_MSG =
@@ -689,6 +704,20 @@ export default class AiLinziPlugin extends Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
     let migrated =
       legacyVaultSearchExcludedFolders !== undefined || legacyLastUpdateCheckAt !== undefined
+    // 0.6.48 以前两个主对话上下文开关默认都是 true，用户很容易在不知情时
+    // 把当前笔记和 Vault 检索带进普通对话/自由生图。只迁移仍完整保留旧默认
+    // 组合的安装；若用户已经单独改过任一开关，则尊重其自定义。
+    if (!this.settings.cleanChatDefaultsV1) {
+      const stillUsingOldChatDefaults =
+        (safeSettings.attachNoteDefault === undefined || safeSettings.attachNoteDefault === true) &&
+        (safeSettings.vaultSearchDefault === undefined || safeSettings.vaultSearchDefault === true)
+      if (stillUsingOldChatDefaults) {
+        this.settings.attachNoteDefault = false
+        this.settings.vaultSearchDefault = false
+      }
+      this.settings.cleanChatDefaultsV1 = true
+      migrated = true
+    }
     // 学员正式版只连接 AI霖子官方后端，避免误按第三方教程把连接密钥和笔记
     // 发送到陌生服务器。localhost 仅保留给本机开发联调。
     if (
@@ -1142,6 +1171,7 @@ class ChatView extends ItemView {
       this.activeImageMessageId = ''
       this.usePreviousImage = true
       this.clearAuthorizedContent()
+      this.resetContextTogglesToDefaults()
       if (this.mode === 'interview') this.exitInterviewMode()
       this.refreshImageModeUi()
       this.renderMessages()
@@ -1397,6 +1427,7 @@ class ChatView extends ItemView {
 
   private loadConvo(c: SavedConvo): void {
     this.clearAuthorizedContent()
+    this.resetContextTogglesToDefaults()
     this.messages = c.messages
     this.sessionId = normalizePluginSessionId(c.id)
     if (c.mode === 'interview' && this.mode !== 'interview') {
@@ -1447,10 +1478,17 @@ class ChatView extends ItemView {
     )
     this.inputEl.placeholder = this.imageMode
       ? this.attachNote
-        ? '描述要给当前笔记生成的图片；下一轮可直接说怎么修改…'
+        ? '自由描述图片；只有明确说“给当前笔记配图”才会读取笔记…'
         : '描述要生成的图片；下一轮可直接说怎么修改…'
       : CHAT_INPUT_PLACEHOLDER
     this.sendBtn.setText(this.imageMode ? '生成图片' : '发送')
+  }
+
+  private resetContextTogglesToDefaults(): void {
+    this.attachNote = this.plugin.settings.attachNoteDefault
+    this.vaultSearchEnabled = this.plugin.settings.vaultSearchDefault
+    if (this.attachToggleEl) this.attachToggleEl.checked = this.attachNote
+    if (this.vaultSearchToggleEl) this.vaultSearchToggleEl.checked = this.vaultSearchEnabled
   }
 
   private addVaultImageReference(): void {
@@ -2215,7 +2253,18 @@ class ChatView extends ItemView {
         ...(previousReference ? [previousReference] : []),
         ...this.imageReferences.map((reference) => reference.dataUrl),
       ].slice(0, 3)
-      const noteContext = await this.currentNoteContext()
+      // “继续修改这张”必须把上一张图当作主画布，绝不能因为当前笔记开关仍开着
+      // 就改走公众号文章配图模板。只有没有上一张图、且用户明确点名当前笔记/文章
+      // 配图时，才读取正文并进入文章配图专用流程。
+      const editPreviousImage = Boolean(previousReference)
+      const requestsCurrentNoteImage =
+        !editPreviousImage && isExplicitCurrentNoteImageRequest(instruction)
+      const noteContext = requestsCurrentNoteImage
+        ? await this.currentNoteContext()
+        : undefined
+      if (requestsCurrentNoteImage && !noteContext) {
+        throw new Error('请先打开目标笔记并勾选“主对话带上当前笔记”')
+      }
       let imageUrl = ''
       let ratio: AiImageRatio = this.imageRatio
       let articleCandidate: ChatIllustrationCandidate | undefined
@@ -2239,6 +2288,7 @@ class ChatView extends ItemView {
           this.imageRatio,
           references,
           this.sessionId,
+          editPreviousImage,
         )
         imageUrl = generated.imageUrl
         ratio = generated.ratio
