@@ -28,6 +28,9 @@ export interface XhsCardPackage {
   zipPath: string
   manifestPath: string
   noteFile: TFile
+  sourceImageCount: number
+  embeddedSourceImageCount: number
+  skippedSourceImages: string[]
 }
 
 interface GenerateXhsCardsInput {
@@ -36,7 +39,7 @@ interface GenerateXhsCardsInput {
   markdown: string
   /** 只接受源文章明确提供的摘要；不得用正文第一段自动补齐。 */
   summary?: string
-  /** 小红书发布配文；只写在卡片图片之后，不参与卡片分页。 */
+  /** 3 个备选标题、小红书正文和话题词；写在卡片图片之前，不参与卡片分页。 */
   caption?: string
 }
 
@@ -264,24 +267,22 @@ async function loadImageFromBinary(binary: ArrayBuffer): Promise<HTMLImageElemen
   }
 }
 
-async function firstSourceImage(plugin: AiLinziPlugin, sourceFile: TFile): Promise<HTMLImageElement | null> {
-  const cache = plugin.app.metadataCache.getFileCache(sourceFile)
-  const links = [...(cache?.embeds ?? []), ...(cache?.links ?? [])]
-  for (const link of links) {
-    try {
-      const target = plugin.app.metadataCache.getFirstLinkpathDest(link.link, sourceFile.path)
-      if (target instanceof TFile && /^(png|jpe?g|webp)$/i.test(target.extension)) {
-        return await loadImageFromBinary(await plugin.app.vault.readBinary(target))
-      }
-      if (/^https?:\/\//i.test(link.link)) {
-        const response = await requestUrl({ url: link.link, throw: false })
-        if (response.status === 200 && response.arrayBuffer) return await loadImageFromBinary(response.arrayBuffer)
-      }
-    } catch {
-      // 图片只做封面增强；单张图片失败不阻塞整套卡片生成。
+async function loadSourceImage(
+  plugin: AiLinziPlugin,
+  sourceFile: TFile,
+  source: string,
+): Promise<HTMLImageElement> {
+  const target = plugin.app.metadataCache.getFirstLinkpathDest(source, sourceFile.path)
+  if (target instanceof TFile && /^(png|jpe?g|webp)$/i.test(target.extension)) {
+    return loadImageFromBinary(await plugin.app.vault.readBinary(target))
+  }
+  if (/^https?:\/\//i.test(source)) {
+    const response = await requestUrl({ url: source, throw: false })
+    if (response.status === 200 && response.arrayBuffer) {
+      return loadImageFromBinary(response.arrayBuffer)
     }
   }
-  return null
+  throw new Error(`找不到图片：${source}`)
 }
 
 function drawCover(
@@ -339,6 +340,7 @@ function drawCover(
 function drawBodyPage(
   context: CanvasRenderingContext2D,
   blocks: XhsCardBlock[],
+  sourceImages: ReadonlyMap<XhsCardBlock, HTMLImageElement>,
   page: number,
   total: number,
 ) {
@@ -347,6 +349,11 @@ function drawBodyPage(
   let y = 104
 
   for (const block of blocks) {
+    if (block.kind === 'image') {
+      const image = sourceImages.get(block)
+      if (image) y += drawContainedImage(context, image, 70, y, 940, 620) + 34
+      continue
+    }
     if (block.kind === 'heading') {
       const primary = block.level !== 3
       if (primary) {
@@ -464,7 +471,37 @@ export async function generateXhsCardPackage(
   input: GenerateXhsCardsInput,
 ): Promise<XhsCardPackage> {
   const parsed = parseXhsCardDocument(input.markdown, input.sourceFile.basename, input.summary)
-  const { coverBlocks, remainingBlocks } = takeXhsCoverIntro(parsed.blocks)
+  const sourceImageBlocks = parsed.blocks.filter(
+    (block): block is XhsCardBlock & { imageSource: string } =>
+      block.kind === 'image' && Boolean(block.imageSource),
+  )
+  const loadedImages = await Promise.all(
+    sourceImageBlocks.map(async (block) => {
+      try {
+        const image = await loadSourceImage(plugin, input.sourceFile, block.imageSource)
+        block.imageAspectRatio = image.naturalWidth / image.naturalHeight
+        return { block, image }
+      } catch {
+        return null
+      }
+    }),
+  )
+  const successfulImages = loadedImages.filter(
+    (entry): entry is { block: XhsCardBlock & { imageSource: string }; image: HTMLImageElement } =>
+      entry !== null,
+  )
+  const sourceImages = new Map<XhsCardBlock, HTMLImageElement>(
+    successfulImages.map(({ block, image }) => [block, image]),
+  )
+  const coverImageBlock = successfulImages[0]?.block
+  const coverImage = successfulImages[0]?.image ?? null
+  const skippedSourceImages = sourceImageBlocks
+    .filter((block) => !sourceImages.has(block))
+    .map((block) => block.imageSource)
+  const renderableBlocks = parsed.blocks.filter(
+    (block) => block.kind !== 'image' || (block !== coverImageBlock && sourceImages.has(block)),
+  )
+  const { coverBlocks, remainingBlocks } = takeXhsCoverIntro(renderableBlocks)
   const pages = remainingBlocks.length > 0 ? paginateXhsCardBlocks(remainingBlocks) : []
   const total = pages.length + 1
   const root = normalizePath(plugin.settings.outputFolder || 'AI霖子输出')
@@ -473,7 +510,6 @@ export async function generateXhsCardPackage(
     `${root}/小红书/${fileDate()}_${sanitizeName(input.sourceFile.basename)}_卡片`,
   )
   await ensureFolder(plugin, folderPath)
-  const coverImage = await firstSourceImage(plugin, input.sourceFile)
   const imagePaths: string[] = []
   const zipEntries: Record<string, Uint8Array> = {}
 
@@ -484,7 +520,7 @@ export async function generateXhsCardPackage(
     const context = canvas.getContext('2d')
     if (!context) throw new Error('当前环境不支持 Canvas，无法生成卡片')
     if (index === 0) drawCover(context, parsed, coverBlocks, coverImage, total)
-    else drawBodyPage(context, pages[index - 1].blocks, index + 1, total)
+    else drawBodyPage(context, pages[index - 1].blocks, sourceImages, index + 1, total)
     const png = await canvasPng(canvas)
     const filename = `${String(index + 1).padStart(2, '0')}.png`
     const path = normalizePath(`${folderPath}/${filename}`)
@@ -501,7 +537,7 @@ export async function generateXhsCardPackage(
     manifestPath,
     JSON.stringify(
       {
-        version: 1,
+        version: 2,
         format: 'xiaohongshu-image-post',
         width: CARD_WIDTH,
         height: CARD_HEIGHT,
@@ -511,6 +547,11 @@ export async function generateXhsCardPackage(
         title: parsed.title,
         summary: parsed.excerpt || null,
         hashtags: parsed.hashtags,
+        sourceImages: {
+          found: sourceImageBlocks.length,
+          embedded: successfulImages.length,
+          skipped: skippedSourceImages,
+        },
         images: imagePaths,
         zipPath,
       },
@@ -519,7 +560,16 @@ export async function generateXhsCardPackage(
     ),
   )
 
-  const result = { folderPath, imagePaths, zipPath, manifestPath, noteFile: input.noteFile }
+  const result = {
+    folderPath,
+    imagePaths,
+    zipPath,
+    manifestPath,
+    noteFile: input.noteFile,
+    sourceImageCount: sourceImageBlocks.length,
+    embeddedSourceImageCount: successfulImages.length,
+    skippedSourceImages,
+  }
   await replaceWithGeneratedXhsNote(plugin, input.noteFile, imagePaths, input.caption)
   await updateCardFrontmatter(plugin, input, result)
   return result
@@ -536,7 +586,10 @@ export class XhsCardGalleryModal extends Modal {
   onOpen() {
     this.titleEl.setText(`小红书卡片 · ${this.result.imagePaths.length} 页`)
     this.contentEl.createEl('p', {
-      text: '图片和 ZIP 已保存到 Vault。请逐页检查后再发布。',
+      text:
+        `图片和 ZIP 已保存到 Vault；原文配图已混排 ${this.result.embeddedSourceImageCount}/${this.result.sourceImageCount} 张。` +
+        (this.result.skippedSourceImages.length > 0 ? ' 有图片未找到，请检查原文链接。' : '') +
+        ' 请逐页检查后再发布。',
       cls: 'setting-item-description',
     })
     const actions = this.contentEl.createDiv({ cls: 'ai-linzi-xhs-gallery-actions' })

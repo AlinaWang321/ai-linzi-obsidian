@@ -106,7 +106,7 @@ export const SKILL_ACTIONS: {
     fn: async (p) => p.startInterview(),
   },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
-  { id: 'xhs-cards', name: '小红书卡片:当前笔记 → 3:4 PNG（本地生成）', fn: runXhsCards },
+  { id: 'xhs-cards', name: '小红书图文卡片:当前笔记 → 正文 + 3:4 PNG', fn: runXhsCards },
   { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
   { id: 'illustration', name: '文章配图:可使用你的专属人偶(先看方案再生图)', fn: runArticleIllustration },
   { id: 'wechat-copy', name: '公众号排版:一键复制(去后台粘贴)', fn: async (p) => copyWechatFormatted(p) },

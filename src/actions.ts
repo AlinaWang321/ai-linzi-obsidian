@@ -99,7 +99,6 @@ async function getActiveNote(plugin: AiLinziPlugin): Promise<{ file: TFile; text
 }
 
 const XHS_SUMMARY_KEYS = ['摘要', '一句话摘要', 'summary', 'description', 'digest'] as const
-const XHS_CAPTION_KEYS = ['小红书配文', '小红书文案', '小红书正文', 'xhs_caption'] as const
 
 function sourceFrontmatterText(
   plugin: AiLinziPlugin,
@@ -116,10 +115,6 @@ function sourceFrontmatterText(
 
 function sourceArticleSummary(plugin: AiLinziPlugin, file: TFile): string {
   return sourceFrontmatterText(plugin, file, XHS_SUMMARY_KEYS)
-}
-
-function sourceXhsCaption(plugin: AiLinziPlugin, file: TFile): string {
-  return sourceFrontmatterText(plugin, file, XHS_CAPTION_KEYS) || sourceArticleSummary(plugin, file)
 }
 
 // ── 落盘 ─────────────────────────────────────────
@@ -489,7 +484,7 @@ export async function runDistribute(plugin: AiLinziPlugin) {
     const okN = data.results?.length ?? 0
     const failMsg = data.failed?.length ? `;失败:${data.failed.join('/')}` : ''
     const cardMsg = xhsPackage
-      ? `；小红书 ${xhsPackage.imagePaths.length} 张 3:4 卡片和 ZIP 已生成`
+      ? `；小红书 ${xhsPackage.imagePaths.length} 张 3:4 卡片和 ZIP 已生成，混排原文配图 ${xhsPackage.embeddedSourceImageCount}/${xhsPackage.sourceImageCount} 张`
       : xhsCardError
         ? `；小红书文字已保留，但卡片生成失败：${xhsCardError}`
         : ''
@@ -503,8 +498,8 @@ export async function runDistribute(plugin: AiLinziPlugin) {
 }
 
 /**
- * 完全本地的测试入口：不调用 AI、不消耗额度，直接把当前 Markdown 转成
- * 小红书 3:4 图片。适合先检查分页、字体和视觉，再决定是否跑完整分发。
+ * 单独生成小红书图文：服务端只改写一次小红书正文，不额外生成口播/朋友圈；
+ * 随后在本地把当前 Markdown 与原文配图混排成 3:4 PNG。
  */
 export async function runXhsCards(plugin: AiLinziPlugin) {
   const note = await getActiveNote(plugin)
@@ -514,10 +509,21 @@ export async function runXhsCards(plugin: AiLinziPlugin) {
     new Notice(`当前笔记只有 ${markdown.length} 字——生成卡片需要至少 100 字`)
     return
   }
-  const n = runningNotice('本地生成小红书 3:4 卡片')
+  const n = runningNotice('生成小红书正文和 3:4 卡片')
   try {
     const summary = sourceArticleSummary(plugin, note.file)
-    const caption = sourceXhsCaption(plugin, note.file)
+    const data = (await plugin.api('/api/plugin/v1/skills/wechat-distribute', {
+      method: 'POST',
+      body: {
+        article: clip(markdown, LIMITS.DISTRIBUTE_ARTICLE_MAX, '文章'),
+        formats: ['xhs'],
+      },
+    })) as {
+      results?: { key: string; label: string; text: string }[]
+      failed?: string[]
+    }
+    const caption = data.results?.find((result) => result.key === 'xhs')?.text?.trim() ?? ''
+    if (!caption) throw new Error('小红书正文生成失败，请稍后再试')
     const outputFile = await writeOutput(plugin, {
       skill: '小红书卡片',
       platform: '小红书',
@@ -533,7 +539,13 @@ export async function runXhsCards(plugin: AiLinziPlugin) {
       summary,
       caption,
     })
-    new Notice(`✅ 已在本地生成 ${result.imagePaths.length} 张 1080×1440 PNG 和 ZIP`, 8000)
+    const skipped = result.skippedSourceImages.length
+      ? `；${result.skippedSourceImages.length} 张原文图片未找到`
+      : ''
+    new Notice(
+      `✅ 已生成 3 个标题、正文和 ${result.imagePaths.length} 张卡片；混排原文配图 ${result.embeddedSourceImageCount}/${result.sourceImageCount} 张${skipped}`,
+      10000,
+    )
     new XhsCardGalleryModal(plugin.app, result).open()
   } catch (error) {
     new Notice(`❌ 小红书卡片：${error instanceof Error ? error.message : String(error)}`, 8000)

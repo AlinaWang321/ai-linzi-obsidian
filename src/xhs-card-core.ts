@@ -1,4 +1,4 @@
-export type XhsCardBlockKind = 'heading' | 'quote' | 'paragraph'
+export type XhsCardBlockKind = 'heading' | 'quote' | 'paragraph' | 'image'
 
 export interface XhsBoldRange {
   start: number
@@ -8,6 +8,10 @@ export interface XhsBoldRange {
 export interface XhsCardBlock {
   kind: XhsCardBlockKind
   text: string
+  /** 图片在 Markdown / Wiki 链接中的原始目标；只在 image block 上设置。 */
+  imageSource?: string
+  /** 图片成功加载后写入，用于分页时预估完整等比图片的高度。 */
+  imageAspectRatio?: number
   /** Markdown 标题层级；正文和引用不设置。 */
   level?: number
   /** H2 对应 PART 编号；只在章节标题上设置。 */
@@ -49,8 +53,8 @@ export function stripGeneratedXhsCardGallery(markdown: string): string {
 /**
  * 生成完成后，小红书笔记只保留：
  * 1. 原有 frontmatter（来源关系、发布状态等）；
- * 2. 可直接预览/发布的卡片；
- * 3. 小红书配文。
+ * 2. 3 个备选标题、小红书正文和话题词；
+ * 3. 可直接预览/发布的卡片。
  *
  * 公众号全文只用于卡片分页，不应在分发笔记里重复出现。
  */
@@ -64,10 +68,10 @@ export function composeGeneratedXhsNote(
   const embeds = imagePaths.map((path) => `![[${path}]]`).join('\n\n')
   return [
     frontmatter,
+    caption.trim(),
     '<!-- AI_LINZI_XHS_CARDS_START -->',
     embeds,
     '<!-- AI_LINZI_XHS_CARDS_END -->',
-    caption.trim(),
   ]
     .filter(Boolean)
     .join('\n\n')
@@ -133,6 +137,48 @@ function splitParagraphs(markdown: string): string[] {
     .filter(Boolean)
 }
 
+const IMAGE_TOKEN_PATTERN =
+  /!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]+\)|<img\b[^>]*\bsrc\s*=\s*["'][^"']+["'][^>]*>/gi
+
+function separateImageTokens(markdown: string): string {
+  return markdown.replace(IMAGE_TOKEN_PATTERN, (match) => `\n\n${match}\n\n`)
+}
+
+function imageBlock(markdown: string): XhsCardBlock | null {
+  const source = markdown.trim()
+  const wiki = /^!\[\[([^\]]+)\]\]$/.exec(source)
+  if (wiki) {
+    const [target, alias = ''] = wiki[1].split('|')
+    const cleanTarget = target.split('#')[0].trim()
+    if (!cleanTarget) return null
+    return {
+      kind: 'image',
+      text: /^\d+(?:x\d+)?$/.test(alias.trim()) ? '' : plainInline(alias),
+      imageSource: cleanTarget,
+    }
+  }
+  const standard = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(source)
+  if (standard) {
+    const rawTarget = standard[2].trim()
+    const target = rawTarget.startsWith('<')
+      ? rawTarget.slice(1, rawTarget.indexOf('>'))
+      : rawTarget.replace(/\s+["'][^"']*["']\s*$/, '')
+    if (!target) return null
+    return {
+      kind: 'image',
+      text: plainInline(standard[1]),
+      imageSource: target,
+    }
+  }
+  if (/^<img\b/i.test(source)) {
+    const target = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(source)?.[1]?.trim() ?? ''
+    const alt = /\balt\s*=\s*["']([^"']*)["']/i.exec(source)?.[1] ?? ''
+    if (!target) return null
+    return { kind: 'image', text: plainInline(alt), imageSource: target }
+  }
+  return null
+}
+
 function partNumber(text: string): number | null {
   const match = /^PART\s*0*(\d+)$/i.exec(plainInline(text))
   return match ? Number(match[1]) : null
@@ -184,7 +230,12 @@ export function parseXhsCardDocument(
   const blocks: XhsCardBlock[] = []
   let sectionIndex = 0
   let pendingPartIndex: number | null = null
-  for (const part of splitParagraphs(lines.join('\n'))) {
+  for (const part of splitParagraphs(separateImageTokens(lines.join('\n')))) {
+    const image = imageBlock(part)
+    if (image) {
+      blocks.push(image)
+      continue
+    }
     const partLines = part.split('\n').map((line) => line.trim()).filter(Boolean)
     const first = partLines[0] ?? ''
     const standalonePart = partLines.length === 1 ? partNumber(first) : null
@@ -288,6 +339,9 @@ export function takeXhsCoverIntro(
   let budget = maxVisualChars
   for (let index = 0; index < blocks.length; index++) {
     const block = blocks[index]
+    if (block.kind === 'image') {
+      return { coverBlocks, remainingBlocks: blocks.slice(index) }
+    }
     const overhead = block.kind === 'heading' ? 14 : block.kind === 'quote' ? 6 : 0
     if (budget <= overhead + 8) {
       return { coverBlocks, remainingBlocks: blocks.slice(index) }
@@ -337,6 +391,11 @@ function splitLongText(text: string, maxVisualChars: number): string[] {
 }
 
 function blockUnits(block: XhsCardBlock): number {
+  if (block.kind === 'image') {
+    const aspectRatio = Math.max(0.2, block.imageAspectRatio ?? 4 / 3)
+    const renderedHeight = Math.min(620, 940 / aspectRatio)
+    return Math.ceil((renderedHeight + 34) / 54)
+  }
   const charsPerLine =
     block.kind === 'heading'
       ? block.level === 2
@@ -350,6 +409,7 @@ function blockUnits(block: XhsCardBlock): number {
 }
 
 function splitBlock(block: XhsCardBlock, limit: number): XhsCardBlock[] {
+  if (block.kind === 'image') return [block]
   const chunks = splitLongText(block.text, limit)
   let cursor = 0
   return chunks.map((text, chunkIndex) => {
@@ -373,7 +433,7 @@ function splitBlock(block: XhsCardBlock, limit: number): XhsCardBlock[] {
 
 export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 21): XhsCardPage[] {
   const normalized = blocks.flatMap((block) => {
-    const limit = block.kind === 'heading' ? 48 : 240
+    const limit = block.kind === 'heading' ? 48 : block.kind === 'image' ? 1 : 180
     return splitBlock(block, limit)
   })
   const pages: XhsCardPage[] = []
@@ -393,7 +453,26 @@ export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 21): Xh
     units += needed
   }
   flush()
-  return pages.length > 0 ? pages : [{ blocks: [{ kind: 'paragraph', text: '内容正在整理中。' }] }]
+  for (let index = 0; index < pages.length; index++) {
+    const page = pages[index]
+    if (!page.blocks.every((block) => block.kind === 'image')) continue
+    const used = page.blocks.reduce((sum, block) => sum + blockUnits(block), 0)
+    const previous = pages[index - 1]
+    const previousLast = previous?.blocks.at(-1)
+    if (previousLast && previousLast.kind !== 'image' && used + blockUnits(previousLast) <= maxUnits) {
+      page.blocks.unshift(previous.blocks.pop() as XhsCardBlock)
+      continue
+    }
+    const next = pages[index + 1]
+    const nextFirst = next?.blocks[0]
+    if (nextFirst && nextFirst.kind !== 'image' && used + blockUnits(nextFirst) <= maxUnits) {
+      page.blocks.push(next.blocks.shift() as XhsCardBlock)
+    }
+  }
+  const filledPages = pages.filter((page) => page.blocks.length > 0)
+  return filledPages.length > 0
+    ? filledPages
+    : [{ blocks: [{ kind: 'paragraph', text: '内容正在整理中。' }] }]
 }
 
 export function stableContentFingerprint(text: string): string {

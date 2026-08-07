@@ -97,13 +97,42 @@ title: "小红书测试"
 
 这里是公众号全文，不应该出现在最终小红书笔记中。`,
   ['AI霖子输出/小红书/测试卡片/01.png', 'AI霖子输出/小红书/测试卡片/02.png'],
-  '这是可以直接发布的小红书配文。\n\n#一人公司 #AI霖子',
+  '## 小红书爆款标题（3选1）\n\n1. 标题一\n2. 标题二\n3. 标题三\n\n## 小红书正文\n\n这是可以直接发布的小红书配文。\n\n#一人公司 #AI霖子',
 )
 assert.ok(composedNote.startsWith('---\ntitle: "小红书测试"'))
 assert.ok(composedNote.includes('![[AI霖子输出/小红书/测试卡片/01.png]]'))
 assert.ok(composedNote.includes('![[AI霖子输出/小红书/测试卡片/02.png]]'))
-assert.ok(composedNote.indexOf('01.png') < composedNote.indexOf('这是可以直接发布的小红书配文'))
+assert.ok(composedNote.indexOf('这是可以直接发布的小红书配文') < composedNote.indexOf('01.png'))
 assert.equal(composedNote.includes('这里是公众号全文'), false)
+
+const withImages = cards.parseXhsCardDocument(
+  `# 图文混排测试
+
+图片上面的正文。
+
+![文章配图](attachments/第一张.png)
+
+图片下面的正文。
+
+![[04_Output/第二张.jpg|第二张说明]]
+
+<img src="https://example.com/第三张.webp" alt="第三张说明">
+
+最后一段正文。`,
+  '备用标题',
+)
+assert.deepEqual(
+  withImages.blocks.map((block) => block.kind),
+  ['paragraph', 'image', 'paragraph', 'image', 'image', 'paragraph'],
+)
+assert.deepEqual(
+  withImages.blocks.filter((block) => block.kind === 'image').map((block) => block.imageSource),
+  ['attachments/第一张.png', '04_Output/第二张.jpg', 'https://example.com/第三张.webp'],
+)
+assert.deepEqual(
+  withImages.blocks.filter((block) => block.kind === 'image').map((block) => block.text),
+  ['文章配图', '第二张说明', '第三张说明'],
+)
 
 const coverSource = cards.parseXhsCardDocument(
   '# 标题\n\n这是正文开头第一句。**这句要加粗。**这是正文开头后续内容。'.concat('继续正文。'.repeat(30)),
@@ -138,6 +167,20 @@ assert.deepEqual(
 )
 assert.deepEqual(orderedCover.remainingBlocks.map((block) => block.text), ['后续正文。'])
 
+const coverStopsAtImage = cards.takeXhsCoverIntro(
+  [
+    { kind: 'paragraph', text: '图片前正文。' },
+    { kind: 'image', text: '配图', imageSource: 'attachments/image.png' },
+    { kind: 'paragraph', text: '图片后正文。' },
+  ],
+  100,
+)
+assert.deepEqual(coverStopsAtImage.coverBlocks.map((block) => block.text), ['图片前正文。'])
+assert.deepEqual(
+  coverStopsAtImage.remainingBlocks.map((block) => block.kind),
+  ['image', 'paragraph'],
+)
+
 const withoutRule = cards.parseXhsCardDocument('# 标题\n\n正文。\n\n---\n\n## 小标题', '备用标题')
 assert.equal(withoutRule.blocks.some((block) => block.text === '---'), false)
 assert.equal(withoutRule.blocks.at(-1).level, 2)
@@ -163,6 +206,38 @@ const pages = cards.paginateXhsCardBlocks(
 )
 assert.ok(pages.length > 1)
 assert.ok(pages.every((page) => page.blocks.length > 0))
+
+const mixedPages = cards.paginateXhsCardBlocks([
+  { kind: 'paragraph', text: '图片上方的正文。'.repeat(4) },
+  {
+    kind: 'image',
+    text: '原文配图',
+    imageSource: 'attachments/mixed.png',
+    imageAspectRatio: 16 / 9,
+  },
+  { kind: 'paragraph', text: '图片下方的正文。'.repeat(4) },
+])
+assert.ok(
+  mixedPages.some(
+    (page) =>
+      page.blocks.some((block) => block.kind === 'image') &&
+      page.blocks.some((block) => block.kind === 'paragraph'),
+  ),
+  '图片页应该同时保留上下文文字，而不是一张图片独占一页',
+)
+const endingImagePages = cards.paginateXhsCardBlocks([
+  { kind: 'paragraph', text: '图片前面的长正文。'.repeat(70) },
+  {
+    kind: 'image',
+    text: '结尾原文配图',
+    imageSource: 'attachments/ending.png',
+    imageAspectRatio: 3 / 4,
+  },
+])
+const endingImagePage = endingImagePages.find((page) =>
+  page.blocks.some((block) => block.kind === 'image'),
+)
+assert.ok(endingImagePage?.blocks.some((block) => block.kind !== 'image'))
 assert.equal(cards.stableContentFingerprint('same'), cards.stableContentFingerprint('same'))
 assert.notEqual(cards.stableContentFingerprint('same'), cards.stableContentFingerprint('different'))
 
