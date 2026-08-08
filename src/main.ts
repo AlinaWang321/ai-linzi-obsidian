@@ -105,12 +105,12 @@ export const SKILL_ACTIONS: {
     name: '公众号原创访谈写作:AI 采访你 → 写成公众号长文',
     fn: async (p) => p.startInterview(),
   },
-  { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
-  { id: 'xhs-cards', name: '小红书图文卡片:当前笔记 → 正文 + 3:4 PNG', fn: runXhsCards },
-  { id: 'sales-review', name: '谈单复盘:诊断当前逐字稿', fn: runSalesReview },
   { id: 'illustration', name: '文章配图:可使用你的专属人偶(先看方案再生图)', fn: runArticleIllustration },
   { id: 'wechat-copy', name: '公众号排版:一键复制(去后台粘贴)', fn: async (p) => copyWechatFormatted(p) },
   { id: 'wechat-draft', name: '发到公众号草稿箱(自动传图,需配置AppID)', fn: async (p) => sendToWechatDraft(p) },
+  { id: 'xhs-cards', name: '小红书图文卡片:当前笔记 → 正文 + 3:4 PNG', fn: runXhsCards },
+  { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
+  { id: 'sales-review', name: '销售复盘:诊断当前逐字稿', fn: runSalesReview },
   { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
 ]
 
@@ -1212,6 +1212,12 @@ class ChatView extends ItemView {
     kbBtn.onclick = () => void feedKnowledge(this.plugin)
     const dashboardBtn = actionsRow.createEl('button', { text: '内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
+    const cockpitBtn = actionsRow.createEl('button', {
+      text: 'CEO驾驶舱',
+      cls: 'ai-linzi-action-btn',
+      attr: { title: '打开一人公司驾驶舱' },
+    })
+    cockpitBtn.onclick = () => void this.plugin.activateCockpit()
     const localSkillsBtn = actionsRow.createEl('button', {
       text: '本地 Skills',
       cls: 'ai-linzi-action-btn',

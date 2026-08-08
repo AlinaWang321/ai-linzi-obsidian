@@ -23,6 +23,7 @@ import {
 } from './article-format'
 import { extractExactTextHints } from './skill-suggest'
 import { canonicalContentFields } from './content-state'
+import { outputSubfolder } from './output-routing'
 import { VaultImageBrowserModal } from './vault-image-browser'
 import { generateXhsCardPackage, XhsCardGalleryModal } from './xhs-cards'
 
@@ -146,15 +147,8 @@ export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Prom
   })
   const rootFolder = normalizePath(plugin.settings.outputFolder || 'AI霖子输出')
   const contentType = canonical?.['内容类型']
-  const folder = normalizePath(
-    contentType === '选题'
-      ? `${rootFolder}/选题`
-      : contentType === '公众号文章'
-        ? `${rootFolder}/公众号文章`
-        : spec.platform === '小红书'
-          ? `${rootFolder}/小红书`
-        : rootFolder,
-  )
+  const subfolder = outputSubfolder(contentType, spec.platform)
+  const folder = normalizePath(subfolder ? `${rootFolder}/${subfolder}` : rootFolder)
   await ensureFolder(plugin, folder)
 
   const base = `${today()}_${sanitizeTitle(spec.title) || '未命名'}`
