@@ -281,6 +281,37 @@ assert.ok(
   headingPages.slice(0, -1).every((page) => page.blocks.at(-1)?.kind !== 'heading'),
   '章节标题不能孤零零留在上一页底部',
 )
+const adaptiveHeadingImagePages = cards.paginateXhsCardBlocks([
+  {
+    kind: 'image',
+    text: '课程真实页面',
+    imageSource: 'attachments/course.png',
+    imageAspectRatio: 1160 / 665,
+  },
+  { kind: 'paragraph', text: '课程真实页面：左边直接播放课程，右边是16节完整目录和学习进度。' },
+  { kind: 'heading', text: '课程讲完以后，AI继续陪你行动落地', level: 2, sectionIndex: 2 },
+  {
+    kind: 'image',
+    text: '章节配图',
+    imageSource: 'attachments/part-02.png',
+    imageAspectRatio: 3 / 2,
+  },
+])
+assert.equal(adaptiveHeadingImagePages.length, 1)
+assert.deepEqual(
+  adaptiveHeadingImagePages[0].blocks.map((block) => block.kind),
+  ['image', 'paragraph', 'heading', 'image'],
+)
+const adaptiveHeadingImage = adaptiveHeadingImagePages[0].blocks.at(-1)
+assert.equal(adaptiveHeadingImage?.imageLayout, 'full')
+assert.ok(
+  Number(adaptiveHeadingImage?.imageMaxHeight) >= cards.XHS_HEADING_IMAGE_MIN_HEIGHT,
+  '章节配图缩小后仍需保持可读尺寸',
+)
+assert.ok(
+  Number(adaptiveHeadingImage?.imageMaxHeight) < cards.XHS_BODY_IMAGE_MAX_HEIGHT,
+  '章节配图应按上一页剩余空间缩小，而不是整组换页',
+)
 const endingImagePages = cards.paginateXhsCardBlocks([
   { kind: 'paragraph', text: '图片前面的长正文。'.repeat(70) },
   {

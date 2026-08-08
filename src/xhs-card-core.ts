@@ -14,6 +14,8 @@ export interface XhsCardBlock {
   imageAspectRatio?: number
   /** 只有全宽图会造成明显留白时，分页器才会标记为左图右文。 */
   imageLayout?: 'full' | 'side'
+  /** 章节标题与配图需要补满上一页时，分页器给全宽图设置的自适应高度。 */
+  imageMaxHeight?: number
   /** Markdown 标题层级；正文和引用不设置。 */
   level?: number
   /** H2 对应 PART 编号；只在章节标题上设置。 */
@@ -35,6 +37,8 @@ export interface XhsCardPage {
 
 /** 正文图片不再默认占到 620px，给同页上下文留出空间。 */
 export const XHS_BODY_IMAGE_MAX_HEIGHT = 480
+/** 章节标题后的配图可以缩小补位，但低于这个高度会影响辨识。 */
+export const XHS_HEADING_IMAGE_MIN_HEIGHT = 240
 /** 左图右文的尺寸边界；是否启用由当前页的剩余空间决定。 */
 export const XHS_SIDE_IMAGE_WIDTH = 430
 export const XHS_SIDE_IMAGE_MAX_HEIGHT = 420
@@ -305,6 +309,7 @@ function canUseXhsSideBySideLayout(
 ): boolean {
   return Boolean(
     image.kind === 'image' &&
+      image.imageMaxHeight === undefined &&
       text &&
       (text.kind === 'paragraph' || text.kind === 'quote') &&
       visualLength(text.text) <= XHS_SIDE_TEXT_MAX_VISUAL_CHARS,
@@ -419,11 +424,18 @@ function splitLongText(text: string, maxVisualChars: number): string[] {
   return chunks.filter(Boolean)
 }
 
+function fullWidthImageHeight(block: XhsCardBlock): number {
+  const aspectRatio = Math.max(0.2, block.imageAspectRatio ?? 4 / 3)
+  return Math.min(
+    XHS_BODY_IMAGE_MAX_HEIGHT,
+    block.imageMaxHeight ?? XHS_BODY_IMAGE_MAX_HEIGHT,
+    940 / aspectRatio,
+  )
+}
+
 function blockUnits(block: XhsCardBlock): number {
   if (block.kind === 'image') {
-    const aspectRatio = Math.max(0.2, block.imageAspectRatio ?? 4 / 3)
-    const renderedHeight = Math.min(XHS_BODY_IMAGE_MAX_HEIGHT, 940 / aspectRatio)
-    return (renderedHeight + 40) / XHS_LAYOUT_UNIT_PX
+    return (fullWidthImageHeight(block) + 40) / XHS_LAYOUT_UNIT_PX
   }
   const charsPerLine =
     block.kind === 'heading'
@@ -525,7 +537,10 @@ export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 21): Xh
   let units = 0
 
   for (const block of normalized) {
-    if (block.kind === 'image') block.imageLayout = 'full'
+    if (block.kind === 'image') {
+      block.imageLayout = 'full'
+      delete block.imageMaxHeight
+    }
   }
 
   const flush = () => {
@@ -538,7 +553,20 @@ export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 21): Xh
     const block = normalized[index]
     const next = normalized[index + 1]
     if (block.kind === 'heading' && next) {
-      const needed = blockUnits(block) + blockUnits(next)
+      let needed = blockUnits(block) + blockUnits(next)
+      if (current.length > 0 && units + needed > maxUnits && next.kind === 'image') {
+        const availableImageHeight = Math.floor(
+          (maxUnits - units - blockUnits(block)) * XHS_LAYOUT_UNIT_PX - 40,
+        )
+        const normalImageHeight = fullWidthImageHeight(next)
+        if (
+          availableImageHeight >= XHS_HEADING_IMAGE_MIN_HEIGHT &&
+          availableImageHeight < normalImageHeight
+        ) {
+          next.imageMaxHeight = availableImageHeight
+          needed = blockUnits(block) + blockUnits(next)
+        }
+      }
       if (current.length > 0 && units + needed > maxUnits) flush()
       current.push(block, next)
       index++

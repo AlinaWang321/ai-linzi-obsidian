@@ -409,7 +409,14 @@ function drawBodyPage(
         index++
       } else if (image) {
         y +=
-          drawContainedImage(context, image, 70, y, 940, XHS_BODY_IMAGE_MAX_HEIGHT) +
+          drawContainedImage(
+            context,
+            image,
+            70,
+            y,
+            940,
+            Math.min(XHS_BODY_IMAGE_MAX_HEIGHT, block.imageMaxHeight ?? XHS_BODY_IMAGE_MAX_HEIGHT),
+          ) +
           40
       }
       continue
