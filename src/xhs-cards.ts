@@ -318,26 +318,27 @@ function drawCover(
 
   for (const block of coverBlocks) {
     if (block.kind === 'heading') {
+      if (cursor > 108) cursor += 28
       context.fillStyle = BLUE
       setFont(context, 34, 700)
       const lines = wrapText(context, block.text, 900)
-      cursor = drawLines(context, lines, 84, cursor, 46) + 18
+      cursor = drawLines(context, lines, 84, cursor, 50) + 24
       continue
     }
     if (block.kind === 'quote') {
       const lines = wrapRichText(context, block, 870, 29, 500, 700)
       context.fillStyle = BLUE
-      roundedRect(context, 70, cursor - 27, 5, Math.max(46, lines.length * 48 - 4), 3)
+      roundedRect(context, 70, cursor - 29, 5, Math.max(50, lines.length * 52 - 4), 3)
       context.fill()
       cursor =
-        drawRichLines(context, block, lines, 96, cursor, 48, 29, 500, 700, INK, '#172235') +
-        18
+        drawRichLines(context, block, lines, 96, cursor, 52, 29, 500, 700, INK, '#172235') +
+        24
       continue
     }
-    const lines = wrapRichText(context, block, 940, 29, 400, 700, 58)
+    const lines = wrapRichText(context, block, 940, 29, 400, 700, 0)
     cursor =
-      drawRichLines(context, block, lines, 70, cursor, 48, 29, 400, 700, INK, '#172235') +
-      22
+      drawRichLines(context, block, lines, 70, cursor, 52, 29, 400, 700, INK, '#172235') +
+      28
   }
 }
 
@@ -373,7 +374,7 @@ function drawBodyPage(
         if (text.kind === 'quote') {
           const lines = wrapRichText(context, text, textWidth - 32, 30, 560, 700)
           context.fillStyle = BLUE
-          roundedRect(context, textX, y - 29, 6, Math.max(52, lines.length * 54 - 4), 3)
+          roundedRect(context, textX, y - 31, 6, Math.max(56, lines.length * 58 - 4), 3)
           context.fill()
           textBottom = drawRichLines(
             context,
@@ -381,7 +382,7 @@ function drawBodyPage(
             lines,
             textX + 28,
             y,
-            54,
+            58,
             30,
             560,
             700,
@@ -389,14 +390,14 @@ function drawBodyPage(
             '#172235',
           )
         } else {
-          const lines = wrapRichText(context, text, textWidth, 30, 400, 700, 54)
+          const lines = wrapRichText(context, text, textWidth, 30, 400, 700, 0)
           textBottom = drawRichLines(
             context,
             text,
             lines,
             textX,
             y,
-            52,
+            56,
             30,
             400,
             700,
@@ -404,17 +405,18 @@ function drawBodyPage(
             '#172235',
           )
         }
-        y = Math.max(y + imageHeight, textBottom) + 34
+        y = Math.max(y + imageHeight, textBottom) + 40
         index++
       } else if (image) {
         y +=
           drawContainedImage(context, image, 70, y, 940, XHS_BODY_IMAGE_MAX_HEIGHT) +
-          34
+          40
       }
       continue
     }
     if (block.kind === 'heading') {
       const primary = block.level !== 3
+      if (y > 104) y += primary ? 48 : 36
       if (primary) {
         if (block.sectionIndex) {
           context.fillStyle = '#FFE38A'
@@ -433,7 +435,7 @@ function drawBodyPage(
         context.fillStyle = BLUE
         setFont(context, 46, 700)
         const lines = wrapText(context, block.text, 898)
-        y = drawLines(context, lines, 105, y, 62) + 32
+        y = drawLines(context, lines, 105, y, 62) + 40
       } else {
         context.fillStyle = ORANGE
         context.beginPath()
@@ -442,14 +444,14 @@ function drawBodyPage(
         context.fillStyle = BLUE
         setFont(context, 38, 700)
         const lines = wrapText(context, block.text, 900)
-        y = drawLines(context, lines, 102, y, 54) + 24
+        y = drawLines(context, lines, 102, y, 56) + 32
       }
       continue
     }
     if (block.kind === 'quote') {
       const lines = wrapRichText(context, block, 880, 33, 560, 700)
       context.fillStyle = BLUE
-      roundedRect(context, 70, y - 31, 6, Math.max(52, lines.length * 56 - 4), 3)
+      roundedRect(context, 70, y - 33, 6, Math.max(56, lines.length * 60 - 4), 3)
       context.fill()
       y =
         drawRichLines(
@@ -458,16 +460,16 @@ function drawBodyPage(
           lines,
           102,
           y,
-          56,
+          60,
           33,
           560,
           700,
           TITLE,
           '#172235',
-        ) + 26
+        ) + 34
       continue
     }
-    const lines = wrapRichText(context, block, 940, 32, 400, 700, 64)
+    const lines = wrapRichText(context, block, 940, 32, 400, 700, 0)
     y =
       drawRichLines(
         context,
@@ -475,13 +477,13 @@ function drawBodyPage(
         lines,
         70,
         y,
-        54,
+        58,
         32,
         400,
         700,
         INK,
         '#172235',
-      ) + 28
+      ) + 36
   }
 }
 

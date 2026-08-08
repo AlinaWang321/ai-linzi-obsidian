@@ -226,7 +226,7 @@ assert.ok(
   '图片页应该同时保留上下文文字，而不是一张图片独占一页',
 )
 const compactMixedPages = cards.paginateXhsCardBlocks([
-  { kind: 'paragraph', text: '图片前面的正文。'.repeat(18) },
+  { kind: 'paragraph', text: '图片前面的正文。'.repeat(34) },
   {
     kind: 'image',
     text: '原文横版配图',
@@ -238,14 +238,36 @@ const compactMixedPages = cards.paginateXhsCardBlocks([
 assert.equal(compactMixedPages.length, 1)
 assert.deepEqual(
   compactMixedPages[0].blocks.map((block) => block.kind),
-  ['paragraph', 'image', 'paragraph'],
+  ['paragraph', 'paragraph', 'image', 'paragraph'],
 )
 assert.equal(
   cards.shouldUseXhsSideBySideLayout(
-    compactMixedPages[0].blocks[1],
     compactMixedPages[0].blocks[2],
+    compactMixedPages[0].blocks[3],
   ),
   true,
+)
+const roomyMixedPages = cards.paginateXhsCardBlocks([
+  { kind: 'paragraph', text: '图片前面的正文。'.repeat(4) },
+  {
+    kind: 'image',
+    text: '正常全宽配图',
+    imageSource: 'attachments/full-width.png',
+    imageAspectRatio: 3 / 2,
+  },
+  { kind: 'paragraph', text: '图片下方的短上下文。'.repeat(3) },
+])
+const roomyImage = roomyMixedPages
+  .flatMap((page) => page.blocks)
+  .find((block) => block.kind === 'image')
+assert.equal(roomyImage?.imageLayout, 'full')
+assert.equal(
+  cards.shouldUseXhsSideBySideLayout(
+    roomyImage,
+    roomyMixedPages.flatMap((page) => page.blocks).find((block) => block.text.includes('短上下文')),
+  ),
+  false,
+  '当前页能容纳全宽图时，不应仅因后面文字较短就改成左图右文',
 )
 const headingPages = cards.paginateXhsCardBlocks(
   [

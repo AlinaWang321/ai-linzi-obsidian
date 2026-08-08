@@ -12,6 +12,8 @@ export interface XhsCardBlock {
   imageSource?: string
   /** 图片成功加载后写入，用于分页时预估完整等比图片的高度。 */
   imageAspectRatio?: number
+  /** 只有全宽图会造成明显留白时，分页器才会标记为左图右文。 */
+  imageLayout?: 'full' | 'side'
   /** Markdown 标题层级；正文和引用不设置。 */
   level?: number
   /** H2 对应 PART 编号；只在章节标题上设置。 */
@@ -33,10 +35,11 @@ export interface XhsCardPage {
 
 /** 正文图片不再默认占到 620px，给同页上下文留出空间。 */
 export const XHS_BODY_IMAGE_MAX_HEIGHT = 480
-/** 短段落可与图片左右混排，进一步减少“上一页半空、下一页才放图”。 */
+/** 左图右文的尺寸边界；是否启用由当前页的剩余空间决定。 */
 export const XHS_SIDE_IMAGE_WIDTH = 430
 export const XHS_SIDE_IMAGE_MAX_HEIGHT = 420
 export const XHS_SIDE_TEXT_MAX_VISUAL_CHARS = 112
+const XHS_LAYOUT_UNIT_PX = 58
 
 function stripYamlFrontmatter(markdown: string): string {
   return markdown.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
@@ -296,7 +299,7 @@ function visualLength(text: string): number {
   return length
 }
 
-export function shouldUseXhsSideBySideLayout(
+function canUseXhsSideBySideLayout(
   image: XhsCardBlock,
   text: XhsCardBlock | undefined,
 ): boolean {
@@ -306,6 +309,13 @@ export function shouldUseXhsSideBySideLayout(
       (text.kind === 'paragraph' || text.kind === 'quote') &&
       visualLength(text.text) <= XHS_SIDE_TEXT_MAX_VISUAL_CHARS,
   )
+}
+
+export function shouldUseXhsSideBySideLayout(
+  image: XhsCardBlock,
+  text: XhsCardBlock | undefined,
+): boolean {
+  return image.imageLayout === 'side' && canUseXhsSideBySideLayout(image, text)
 }
 
 function sliceBlock(block: XhsCardBlock, start: number, end: number): XhsCardBlock | null {
@@ -413,7 +423,7 @@ function blockUnits(block: XhsCardBlock): number {
   if (block.kind === 'image') {
     const aspectRatio = Math.max(0.2, block.imageAspectRatio ?? 4 / 3)
     const renderedHeight = Math.min(XHS_BODY_IMAGE_MAX_HEIGHT, 940 / aspectRatio)
-    return Math.ceil((renderedHeight + 34) / 54)
+    return (renderedHeight + 40) / XHS_LAYOUT_UNIT_PX
   }
   const charsPerLine =
     block.kind === 'heading'
@@ -423,8 +433,19 @@ function blockUnits(block: XhsCardBlock): number {
       : block.kind === 'quote'
         ? 27
         : 29
-  const lineUnits = Math.max(1, Math.ceil(visualLength(block.text) / charsPerLine))
-  return lineUnits + (block.kind === 'heading' ? (block.level === 2 ? 2.4 : 0.9) : block.kind === 'quote' ? 0.7 : 0.3)
+  const lineCount = Math.max(1, Math.ceil(visualLength(block.text) / charsPerLine))
+  if (block.kind === 'heading') {
+    const primary = block.level !== 3
+    const topSpacing = primary ? 48 : 36
+    const sectionHeight = primary && block.sectionIndex ? 112 : 0
+    const lineHeight = primary ? 62 : 56
+    const bottomSpacing = primary ? 40 : 32
+    return (topSpacing + sectionHeight + lineCount * lineHeight + bottomSpacing) / XHS_LAYOUT_UNIT_PX
+  }
+  if (block.kind === 'quote') {
+    return (lineCount * 60 + 34) / XHS_LAYOUT_UNIT_PX
+  }
+  return (lineCount * 58 + 36) / XHS_LAYOUT_UNIT_PX
 }
 
 function sideBySideUnits(image: XhsCardBlock, text: XhsCardBlock): number {
@@ -434,10 +455,10 @@ function sideBySideUnits(image: XhsCardBlock, text: XhsCardBlock): number {
     XHS_SIDE_IMAGE_WIDTH / aspectRatio,
   )
   const charsPerLine = text.kind === 'quote' ? 13 : 14
-  const lineHeight = text.kind === 'quote' ? 56 : 54
+  const lineHeight = text.kind === 'quote' ? 58 : 56
   const textHeight =
-    Math.max(1, Math.ceil(visualLength(text.text) / charsPerLine)) * lineHeight + 26
-  return Math.ceil((Math.max(imageHeight, textHeight) + 34) / 54)
+    Math.max(1, Math.ceil(visualLength(text.text) / charsPerLine)) * lineHeight + 40
+  return Math.max(imageHeight, textHeight) / XHS_LAYOUT_UNIT_PX
 }
 
 function pageUnits(blocks: XhsCardBlock[]): number {
@@ -453,6 +474,22 @@ function pageUnits(blocks: XhsCardBlock[]): number {
     }
   }
   return units
+}
+
+function compactSideBySidePageBreaks(pages: XhsCardPage[], maxUnits: number): void {
+  for (let index = 0; index < pages.length - 1; index++) {
+    const page = pages[index]
+    const next = pages[index + 1]
+    const image = page.blocks.at(-1)
+    const text = next.blocks[0]
+    if (!image || !canUseXhsSideBySideLayout(image, text)) continue
+    image.imageLayout = 'side'
+    if (pageUnits([...page.blocks, ...next.blocks]) <= maxUnits) {
+      page.blocks.push(...next.blocks.splice(0))
+    } else {
+      image.imageLayout = 'full'
+    }
+  }
 }
 
 function splitBlock(block: XhsCardBlock, limit: number): XhsCardBlock[] {
@@ -478,7 +515,7 @@ function splitBlock(block: XhsCardBlock, limit: number): XhsCardBlock[] {
   })
 }
 
-export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 22): XhsCardPage[] {
+export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 21): XhsCardPage[] {
   const normalized = blocks.flatMap((block) => {
     const limit = block.kind === 'heading' ? 48 : block.kind === 'image' ? 1 : 180
     return splitBlock(block, limit)
@@ -486,6 +523,10 @@ export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 22): Xh
   const pages: XhsCardPage[] = []
   let current: XhsCardBlock[] = []
   let units = 0
+
+  for (const block of normalized) {
+    if (block.kind === 'image') block.imageLayout = 'full'
+  }
 
   const flush = () => {
     if (current.length > 0) pages.push({ blocks: current })
@@ -497,28 +538,30 @@ export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 22): Xh
     const block = normalized[index]
     const next = normalized[index + 1]
     if (block.kind === 'heading' && next) {
-      const afterNext = normalized[index + 2]
-      const nextIsSideBySideImage = shouldUseXhsSideBySideLayout(next, afterNext)
-      const needed =
-        blockUnits(block) +
-        (nextIsSideBySideImage ? sideBySideUnits(next, afterNext) : blockUnits(next))
+      const needed = blockUnits(block) + blockUnits(next)
       if (current.length > 0 && units + needed > maxUnits) flush()
       current.push(block, next)
-      if (nextIsSideBySideImage) {
-        current.push(afterNext)
-        index += 2
-      } else {
-        index++
-      }
+      index++
       units += needed
       continue
     }
-    if (shouldUseXhsSideBySideLayout(block, next)) {
-      const needed = sideBySideUnits(block, next)
-      if (current.length > 0 && units + needed > maxUnits) flush()
-      current.push(block, next)
-      units += needed
-      index++
+    if (block.kind === 'image') {
+      const fullWidthNeeded = blockUnits(block)
+      if (current.length > 0 && units + fullWidthNeeded > maxUnits) {
+        if (canUseXhsSideBySideLayout(block, next)) {
+          const compactNeeded = sideBySideUnits(block, next as XhsCardBlock)
+          if (units + compactNeeded <= maxUnits) {
+            block.imageLayout = 'side'
+            current.push(block, next as XhsCardBlock)
+            units += compactNeeded
+            index++
+            continue
+          }
+        }
+        flush()
+      }
+      current.push(block)
+      units += fullWidthNeeded
       continue
     }
     const needed = blockUnits(block)
@@ -530,19 +573,29 @@ export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 22): Xh
   for (let index = 0; index < pages.length; index++) {
     const page = pages[index]
     if (!page.blocks.every((block) => block.kind === 'image')) continue
-    const used = page.blocks.reduce((sum, block) => sum + blockUnits(block), 0)
     const previous = pages[index - 1]
     const previousLast = previous?.blocks.at(-1)
-    if (previousLast && previousLast.kind !== 'image' && used + blockUnits(previousLast) <= maxUnits) {
+    if (
+      previousLast &&
+      previousLast.kind !== 'image' &&
+      pageUnits([previousLast, ...page.blocks]) <= maxUnits
+    ) {
       page.blocks.unshift(previous.blocks.pop() as XhsCardBlock)
-      continue
     }
     const next = pages[index + 1]
-    const nextFirst = next?.blocks[0]
-    if (nextFirst && nextFirst.kind !== 'image' && used + blockUnits(nextFirst) <= maxUnits) {
-      page.blocks.push(next.blocks.shift() as XhsCardBlock)
+    while (next?.blocks.length) {
+      const first = next.blocks[0]
+      if (first.kind === 'image') break
+      const take = first.kind === 'heading' && next.blocks[1] ? 2 : 1
+      const moving = next.blocks.slice(0, take)
+      if (pageUnits([...page.blocks, ...moving]) > maxUnits) break
+      page.blocks.push(...next.blocks.splice(0, take))
     }
   }
+
+  // 只有左图右文能把相邻两张稀疏卡片合并成一张时，才启用紧凑布局。
+  // 这是对“全宽图后留下大块空白”的后处理，不会把正常图片全部改成双栏。
+  compactSideBySidePageBreaks(pages, maxUnits)
   const filledPages = pages.filter((page) => page.blocks.length > 0)
   if (filledPages.length > 1) {
     const last = filledPages.at(-1) as XhsCardPage
@@ -566,8 +619,10 @@ export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 22): Xh
       last.blocks.unshift(...moving)
     }
   }
-  return filledPages.length > 0
-    ? filledPages
+  compactSideBySidePageBreaks(filledPages, maxUnits)
+  const finalPages = filledPages.filter((page) => page.blocks.length > 0)
+  return finalPages.length > 0
+    ? finalPages
     : [{ blocks: [{ kind: 'paragraph', text: '内容正在整理中。' }] }]
 }
 
