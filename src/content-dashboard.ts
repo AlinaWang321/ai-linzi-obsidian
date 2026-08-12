@@ -1,22 +1,54 @@
-import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian'
+import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian'
 import type AiLinziPlugin from './main'
-import { runArticleIllustration, runDistribute, runTopicRadar, runWechatWriter } from './actions'
-import { copyWechatFormatted, sendToWechatDraft } from './publish'
+import { chooseComputerAiImageReferences, runDistribute, runTopicRadar, runWechatWriter } from './actions'
 import {
-  boardLane,
+  aggregateContentRecords,
+  consecutivePublishDays,
   deriveContentRecord,
   isDashboardContentPath,
   isDateInRange,
   parseLocalDate,
-  startOfWeek,
-  type BoardLane,
+  pipelineLane,
+  PLATFORM_IDS,
+  PLATFORM_LABELS,
   type ContentRecord,
-  type WechatStatus,
+  type DistributionStage,
+  type PipelineLane,
+  type PlatformId,
+  type PlatformState,
 } from './content-state'
 
 export const VIEW_TYPE_CONTENT_DASHBOARD = 'ai-linzi-content-dashboard'
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif'])
+const PLATFORM_ICONS: Record<PlatformId, string> = { wechat: '公', xiaohongshu: '红', shipinhao: '视', douyin: '抖' }
+
+type DashboardMode = 'matrix' | 'pipeline' | 'data'
+
+interface PlatformMetrics {
+  id: PlatformId
+  label: string
+  handle: string
+  followers: number
+  monthGrowth: number
+  averageViews: number
+  monthlyPublished: number
+  lastUpdated: string
+  history: number[]
+}
+
+interface DashboardData {
+  accounts: Record<string, unknown>
+  updatedAt: string
+}
+
+interface RecognizedAccountMetrics {
+  handle?: unknown
+  followers?: unknown
+  monthGrowth?: unknown
+  averageViews?: unknown
+  history?: unknown
+}
 
 function isoToday(): string {
   const d = new Date()
@@ -26,6 +58,49 @@ function isoToday(): string {
 
 function shortDate(value: string): string {
   return value ? value.slice(5).replace('-', '/') : '未记录'
+}
+
+function numberValue(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string') return 0
+  const normalized = value.replace(/[,，\s]/g, '')
+  const parsed = Number.parseFloat(normalized)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function text(value: unknown): string {
+  return typeof value === 'string' || typeof value === 'number' ? String(value).trim() : ''
+}
+
+function numberList(value: unknown): number[] {
+  if (Array.isArray(value)) return value.map(numberValue).filter((item) => item >= 0).slice(-12)
+  if (typeof value === 'string') return value.split(/[，,]/).map(numberValue).filter((item) => item >= 0).slice(-12)
+  return []
+}
+
+function formatNumber(value: number): string {
+  if (value >= 10000) return `${(value / 10000).toFixed(value >= 100000 ? 0 : 1)}万`
+  return value.toLocaleString('zh-CN')
+}
+
+function recognizedAccountMetrics(raw: string, current: PlatformMetrics): PlatformMetrics {
+  const match = raw.replace(/```(?:json)?/gi, '').replace(/```/g, '').match(/\{[\s\S]*\}/)
+  if (!match) throw new Error('没有识别到可确认的数据，请换一张更清晰的平台后台截图')
+  let parsed: RecognizedAccountMetrics
+  try {
+    parsed = JSON.parse(match[0]) as RecognizedAccountMetrics
+  } catch {
+    throw new Error('截图数据识别结果不完整，请重试或手动记录')
+  }
+  return {
+    ...current,
+    handle: text(parsed.handle) || current.handle,
+    followers: numberValue(parsed.followers),
+    monthGrowth: numberValue(parsed.monthGrowth),
+    averageViews: numberValue(parsed.averageViews),
+    history: numberList(parsed.history),
+    lastUpdated: isoToday(),
+  }
 }
 
 function hasLocalImage(plugin: AiLinziPlugin, file: TFile): boolean {
@@ -40,7 +115,7 @@ function hasLocalImage(plugin: AiLinziPlugin, file: TFile): boolean {
 
 function scanContent(plugin: AiLinziPlugin): ContentRecord[] {
   const outputRoot = normalizePath(plugin.settings.outputFolder || 'AI霖子输出')
-  return plugin.app.vault
+  const records = plugin.app.vault
     .getMarkdownFiles()
     .filter((file) => isDashboardContentPath(file.path, outputRoot))
     .map((file) => {
@@ -55,18 +130,65 @@ function scanContent(plugin: AiLinziPlugin): ContentRecord[] {
       })
     })
     .filter((record): record is ContentRecord => Boolean(record))
-    .sort((a, b) => b.modifiedAt - a.modifiedAt)
+  return aggregateContentRecords(records)
 }
 
-class UpdateWechatStatusModal extends Modal {
+function pipelineDate(record: ContentRecord): string {
+  const published = PLATFORM_IDS.map((id) => record.platforms[id].publishedDate).filter(Boolean).sort().at(-1)
+  return published || record.draftDate || record.createdDate
+}
+
+function stageLabel(platform: PlatformState): string {
+  if (platform.stage === 'published') return `✅ ${shortDate(platform.publishedDate)}`
+  if (platform.stage === 'ready') return '⏳ 待发布'
+  if (platform.stage === 'planned') return '＋ 计划'
+  if (platform.stage === 'not-applicable') return '–'
+  return '＋ 计划'
+}
+
+function stageClass(stage: DistributionStage): string {
+  if (stage === 'published') return 'is-published'
+  if (stage === 'ready') return 'is-ready'
+  if (stage === 'planned') return 'is-planned'
+  if (stage === 'not-applicable') return 'is-not-applicable'
+  return 'is-unplanned'
+}
+
+function stageToStoredStatus(platform: PlatformId, stage: DistributionStage): string {
+  if (stage === 'not-applicable') return '不适用'
+  if (stage === 'unplanned') return '未开始'
+  if (stage === 'planned') return '计划中'
+  if (platform === 'wechat') return stage === 'published' ? '已正式发布' : '已生成草稿'
+  if (platform === 'xiaohongshu') return stage === 'published' ? '小红书已发布' : '已生成小红书图文'
+  if (platform === 'shipinhao') return stage === 'published' ? '视频已发布' : '已生成视频'
+  return stage === 'published' ? '抖音已发布' : '已生成抖音内容'
+}
+
+function statusField(platform: PlatformId): string {
+  return platform === 'wechat' ? '公众号状态' : platform === 'xiaohongshu' ? '小红书状态' : platform === 'shipinhao' ? '视频号状态' : '抖音状态'
+}
+
+function generatedDateField(platform: PlatformId): string {
+  return platform === 'wechat' ? '草稿日期' : `${PLATFORM_LABELS[platform]}生成时间`
+}
+
+function publishedDateField(platform: PlatformId): string {
+  return `${PLATFORM_LABELS[platform]}发布日期`
+}
+
+function urlField(platform: PlatformId): string {
+  return `${PLATFORM_LABELS[platform]}链接`
+}
+
+class PlatformStatusModal extends Modal {
   private submitted = false
-  private resolve!: (value: { status: WechatStatus; date: string; url: string } | null) => void
-  readonly result: Promise<{ status: WechatStatus; date: string; url: string } | null>
+  private resolve!: (value: { stage: DistributionStage; date: string; url: string } | null) => void
+  readonly result: Promise<{ stage: DistributionStage; date: string; url: string } | null>
 
   constructor(
     app: AiLinziPlugin['app'],
-    private record: ContentRecord,
-    private initialStatus?: WechatStatus,
+    private platform: PlatformId,
+    private current: PlatformState,
   ) {
     super(app)
     this.result = new Promise((resolve) => (this.resolve = resolve))
@@ -74,41 +196,32 @@ class UpdateWechatStatusModal extends Modal {
   }
 
   onOpen() {
-    this.titleEl.setText('修改公众号状态')
-    let status = this.initialStatus ?? this.record.wechatStatus
-    if (status === '未开始') status = '已生成草稿'
-    let date =
-      status === '已正式发布'
-        ? this.record.wechatPublishedDate || isoToday()
-        : status === '已发送公众号草稿箱'
-          ? this.record.wechatDraftDate || isoToday()
-          : isoToday()
-    let url = this.record.wechatUrl
+    this.titleEl.setText(`修改${PLATFORM_LABELS[this.platform]}状态`)
+    let stage: DistributionStage = this.current.stage === 'not-applicable' ? 'not-applicable' : this.current.stage
+    let date = this.current.publishedDate || this.current.generatedDate || isoToday()
+    let url = this.current.url
     this.contentEl.createEl('p', {
-      text: '从插件发送草稿箱后会自动更新。手动上传、正式发布或状态有误时，可以在这里修正。',
+      text: '这里只记录本地进度，不会替你自动发布到平台。标记已发布时可填写日期和链接。',
       cls: 'setting-item-description',
     })
-    new Setting(this.contentEl)
-      .setName('当前状态')
-      .addDropdown((input) =>
-        input
-          .addOption('已生成草稿', '已生成草稿')
-          .addOption('已发送公众号草稿箱', '已发送公众号草稿箱')
-          .addOption('已正式发布', '已正式发布')
-          .setValue(status)
-          .onChange((value) => {
-            status = value as WechatStatus
-          }),
-      )
+    new Setting(this.contentEl).setName('分发状态').addDropdown((input) =>
+      input
+        .addOption('unplanned', '未计划')
+        .addOption('planned', '计划分发')
+        .addOption('ready', '待发布（内容已完成）')
+        .addOption('published', '已发布')
+        .addOption('not-applicable', '不适用')
+        .setValue(stage)
+        .onChange((value) => (stage = value as DistributionStage)),
+    )
     new Setting(this.contentEl)
       .setName('状态日期')
-      .setDesc('发送草稿箱或正式发布时使用，用于统计和日历')
+      .setDesc('待发布或已发布时使用')
       .addText((input) => input.setPlaceholder('YYYY-MM-DD').setValue(date).onChange((value) => (date = value.trim())))
     new Setting(this.contentEl)
-      .setName('公众号文章链接（选填）')
-      .setDesc('填写后可从看板直接打开已发布文章')
+      .setName('发布链接（选填）')
       .addText((input) => {
-        input.setPlaceholder('https://mp.weixin.qq.com/s/...').setValue(url).onChange((value) => (url = value.trim()))
+        input.setPlaceholder('https://...').setValue(url).onChange((value) => (url = value.trim()))
         input.inputEl.addClass('ai-linzi-full-width')
       })
     new Setting(this.contentEl)
@@ -118,16 +231,16 @@ class UpdateWechatStatusModal extends Modal {
           .setButtonText('保存状态')
           .setCta()
           .onClick(() => {
-            if (status !== '已生成草稿' && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !parseLocalDate(date))) {
+            if ((stage === 'ready' || stage === 'published') && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !parseLocalDate(date))) {
               new Notice('状态日期请填写为 YYYY-MM-DD')
               return
             }
-            if (status === '已正式发布' && url && !/^https?:\/\//i.test(url)) {
-              new Notice('公众号链接需要以 http:// 或 https:// 开头')
+            if (url && !/^https?:\/\//i.test(url)) {
+              new Notice('发布链接需要以 http:// 或 https:// 开头')
               return
             }
             this.submitted = true
-            this.resolve({ status, date, url })
+            this.resolve({ stage, date, url })
             this.close()
           }),
       )
@@ -139,18 +252,129 @@ class UpdateWechatStatusModal extends Modal {
   }
 }
 
-const LANES: { id: BoardLane; number: number; label: string }[] = [
-  { id: 'topic', number: 1, label: '选题' },
-  { id: 'write', number: 2, label: '写公众号' },
-  { id: 'format', number: 3, label: '配图排版' },
-  { id: 'draftbox', number: 4, label: '公众号草稿箱' },
-  { id: 'published', number: 5, label: '公众号已发布' },
+class AccountMetricsModal extends Modal {
+  private submitted = false
+  private resolve!: (value: PlatformMetrics | null) => void
+  readonly result: Promise<PlatformMetrics | null>
+
+  constructor(
+    app: AiLinziPlugin['app'],
+    private metrics: PlatformMetrics,
+    private entryMode: 'manual' | 'screenshot' = 'manual',
+  ) {
+    super(app)
+    this.result = new Promise((resolve) => (this.resolve = resolve))
+    this.open()
+  }
+
+  onOpen() {
+    this.titleEl.setText(`记录${this.metrics.label}数据`)
+    let handle = this.metrics.handle
+    let followers = String(this.metrics.followers || '')
+    let monthGrowth = String(this.metrics.monthGrowth || '')
+    let averageViews = String(this.metrics.averageViews || '')
+    let history = this.metrics.history.join(', ')
+    this.contentEl.createEl('p', {
+      text: this.entryMode === 'screenshot'
+        ? 'AI霖子已根据你主动选择的截图预填数据。请仔细核对，只有点击“保存数据”后才会写入本地 Vault。'
+        : '把平台后台里的数字手动录入这里。数据只保存在本地 Vault。',
+      cls: 'setting-item-description',
+    })
+    const addText = (name: string, value: string, change: (value: string) => void, placeholder = '') => {
+      new Setting(this.contentEl).setName(name).addText((input) => input.setPlaceholder(placeholder).setValue(value).onChange((next) => change(next.trim())))
+    }
+    addText('账号名称', handle, (value) => (handle = value), '例如：Alina霖子')
+    addText('当前粉丝', followers, (value) => (followers = value), '8432')
+    addText('本月净增', monthGrowth, (value) => (monthGrowth = value), '126')
+    addText(this.metrics.id === 'wechat' || this.metrics.id === 'xiaohongshu' ? '平均阅读' : '平均播放', averageViews, (value) => (averageViews = value), '1850')
+    addText('近 12 个月粉丝', history, (value) => (history = value), '逗号分隔，最多 12 个数字')
+    new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
+      .addButton((button) =>
+        button
+          .setButtonText('保存数据')
+          .setCta()
+          .onClick(() => {
+            this.submitted = true
+            this.resolve({
+              ...this.metrics,
+              handle,
+              followers: numberValue(followers),
+              monthGrowth: numberValue(monthGrowth),
+              averageViews: numberValue(averageViews),
+              lastUpdated: isoToday(),
+              history: numberList(history),
+            })
+            this.close()
+          }),
+      )
+  }
+
+  onClose() {
+    if (!this.submitted) this.resolve(null)
+    this.contentEl.empty()
+  }
+}
+
+class ContentMetricsModal extends Modal {
+  private submitted = false
+  private resolve!: (value: { views: number; engagement: number; followersGained: number } | null) => void
+  readonly result: Promise<{ views: number; engagement: number; followersGained: number } | null>
+
+  constructor(
+    app: AiLinziPlugin['app'],
+    private platform: PlatformId,
+    current: { views: number; engagement: number; followersGained: number },
+  ) {
+    super(app)
+    this.current = current
+    this.result = new Promise((resolve) => (this.resolve = resolve))
+    this.open()
+  }
+
+  private current: { views: number; engagement: number; followersGained: number }
+
+  onOpen() {
+    this.titleEl.setText(`记录${PLATFORM_LABELS[this.platform]}单篇数据`)
+    let views = String(this.current.views || '')
+    let engagement = String(this.current.engagement || '')
+    let followersGained = String(this.current.followersGained || '')
+    const viewLabel = this.platform === 'wechat' || this.platform === 'xiaohongshu' ? '阅读' : '播放'
+    new Setting(this.contentEl).setName(`${viewLabel}量`).addText((input) => input.setValue(views).onChange((value) => (views = value.trim())))
+    new Setting(this.contentEl).setName('互动（赞藏/点赞等）').addText((input) => input.setValue(engagement).onChange((value) => (engagement = value.trim())))
+    new Setting(this.contentEl).setName('涨粉').addText((input) => input.setValue(followersGained).onChange((value) => (followersGained = value.trim())))
+    new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
+      .addButton((button) =>
+        button
+          .setButtonText('保存数据')
+          .setCta()
+          .onClick(() => {
+            this.submitted = true
+            this.resolve({ views: numberValue(views), engagement: numberValue(engagement), followersGained: numberValue(followersGained) })
+            this.close()
+          }),
+      )
+  }
+
+  onClose() {
+    if (!this.submitted) this.resolve(null)
+    this.contentEl.empty()
+  }
+}
+
+const PIPELINE_LANES: { id: PipelineLane; label: string; color: string }[] = [
+  { id: 'topic', label: '选题库', color: '#8a7e74' },
+  { id: 'draft', label: '草稿', color: '#5c7bb0' },
+  { id: 'production', label: '制作中', color: '#2e5a8f' },
+  { id: 'distribution', label: '分发中', color: '#d4a50c' },
+  { id: 'done', label: '已发完', color: '#3db389' },
 ]
 
 export class ContentDashboardView extends ItemView {
-  private mode: 'board' | 'calendar' = 'board'
-  private month = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+  private mode: DashboardMode = 'matrix'
   private refreshTimer: number | null = null
+  private dashboardData: DashboardData = { accounts: {}, updatedAt: '' }
 
   constructor(leaf: WorkspaceLeaf, private plugin: AiLinziPlugin) {
     super(leaf)
@@ -174,6 +398,7 @@ export class ContentDashboardView extends ItemView {
     this.registerEvent(this.app.vault.on('modify', schedule))
     this.registerEvent(this.app.vault.on('delete', schedule))
     this.registerEvent(this.app.metadataCache.on('changed', schedule))
+    await this.loadDashboardData()
     this.render()
   }
 
@@ -181,11 +406,53 @@ export class ContentDashboardView extends ItemView {
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer)
   }
 
+  private dataPath(): string {
+    return normalizePath(`${this.plugin.settings.outputFolder || 'AI霖子输出'}/内容看板/平台数据.md`)
+  }
+
+  private async loadDashboardData() {
+    const file = this.app.vault.getAbstractFileByPath(this.dataPath())
+    if (!(file instanceof TFile)) return
+    const fm = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {}
+    this.dashboardData = {
+      accounts: typeof fm['平台账号'] === 'object' && fm['平台账号'] ? (fm['平台账号'] as Record<string, unknown>) : {},
+      updatedAt: text(fm['更新时间']),
+    }
+  }
+
+  private async saveAccountMetrics(metrics: PlatformMetrics) {
+    const path = this.dataPath()
+    const parent = path.split('/').slice(0, -1).join('/')
+    if (!this.app.vault.getAbstractFileByPath(parent)) await this.app.vault.createFolder(parent)
+    const existing = this.app.vault.getAbstractFileByPath(path)
+    const file = existing instanceof TFile
+      ? existing
+      : await this.app.vault.create(
+        path,
+        `---\n内容类型: 内容看板数据\n平台账号: {}\n更新时间: ${isoToday()}\n---\n\n# 内容看板平台数据\n\n本文件由 AI霖子内容看板维护。账号指标只保存在本地 Vault。\n`,
+      )
+    await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+      const accounts = typeof fm['平台账号'] === 'object' && fm['平台账号'] ? (fm['平台账号'] as Record<string, unknown>) : {}
+      accounts[metrics.id] = {
+        账号: metrics.handle,
+        粉丝: metrics.followers,
+        本月净增: metrics.monthGrowth,
+        平均阅读播放: metrics.averageViews,
+        近12个月粉丝: metrics.history,
+        最后更新: metrics.lastUpdated,
+      }
+      fm['平台账号'] = accounts
+      fm['更新时间'] = isoToday()
+    })
+    await this.loadDashboardData()
+    this.render()
+  }
+
   private scheduleRefresh() {
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer)
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null
-      this.render()
+      void this.loadDashboardData().then(() => this.render())
     }, 350)
   }
 
@@ -196,202 +463,408 @@ export class ContentDashboardView extends ItemView {
     root.addClass('ai-linzi-dashboard-root')
 
     const header = root.createDiv({ cls: 'ai-linzi-dashboard-header' })
-    const heading = header.createDiv()
-    heading.createDiv({ text: '内容发布看板', cls: 'ai-linzi-dashboard-title' })
-    heading.createEl('p', {
-      text: `内容来源：${normalizePath(this.plugin.settings.outputFolder || 'AI霖子输出')}（可在插件设置中修改）`,
-    })
-    const headerActions = header.createDiv({ cls: 'ai-linzi-dashboard-header-actions' })
-    const refresh = headerActions.createEl('button', { text: '刷新' })
-    refresh.onclick = () => this.render()
-    const newTopic = headerActions.createEl('button', { text: '生成选题', cls: 'mod-cta' })
+    const title = header.createDiv({ cls: 'ai-linzi-dashboard-heading' })
+    title.createDiv({ text: '✍️ 内容发布看板', cls: 'ai-linzi-dashboard-title' })
+    title.createSpan({ text: '全平台版', cls: 'ai-linzi-dashboard-version' })
+    title.createEl('p', { text: `数据来源：${normalizePath(this.plugin.settings.outputFolder || 'AI霖子输出')} · 全部保存在本地` })
+    const actions = header.createDiv({ cls: 'ai-linzi-dashboard-header-actions' })
+    const refresh = actions.createEl('button', { text: '刷新' })
+    refresh.onclick = () => void this.loadDashboardData().then(() => this.render())
+    const newTopic = actions.createEl('button', { text: '✨ 生成选题', cls: 'mod-cta' })
     newTopic.onclick = () => void runTopicRadar(this.plugin).then(() => this.render())
 
-    this.renderStats(root, records)
-
     const tabs = root.createDiv({ cls: 'ai-linzi-dashboard-tabs' })
-    const boardTab = tabs.createEl('button', { text: '看板' })
-    const calendarTab = tabs.createEl('button', { text: '日历' })
-    boardTab.toggleClass('is-active', this.mode === 'board')
-    calendarTab.toggleClass('is-active', this.mode === 'calendar')
-    boardTab.onclick = () => {
-      this.mode = 'board'
-      this.render()
-    }
-    calendarTab.onclick = () => {
-      this.mode = 'calendar'
-      this.render()
+    for (const [id, label] of [
+      ['matrix', '发布矩阵'],
+      ['pipeline', '创作管线'],
+      ['data', '数据分析'],
+    ] as const) {
+      const tab = tabs.createEl('button', { text: label })
+      tab.toggleClass('is-active', this.mode === id)
+      tab.onclick = () => {
+        this.mode = id
+        this.render()
+      }
     }
 
-    if (this.mode === 'board') this.renderBoard(root, records)
-    else this.renderCalendar(root, records)
+    if (this.mode === 'matrix') this.renderMatrix(root, records)
+    else if (this.mode === 'pipeline') this.renderPipeline(root, records)
+    else this.renderData(root, records)
+
+    const footer = root.createDiv({ cls: 'ai-linzi-dashboard-footer' })
+    footer.createSpan({ text: '发布状态与数据全部存在笔记 frontmatter（本地）' })
+    footer.createSpan({ text: '截图只在你主动选择后发给 AI霖子识别；识别结果须确认才保存' })
   }
 
-  private renderStats(root: HTMLElement, records: ContentRecord[]) {
+  private renderMatrix(root: HTMLElement, records: ContentRecord[]) {
     const now = new Date()
-    const weekStart = startOfWeek(now)
-    const nextWeek = new Date(weekStart)
-    nextWeek.setDate(nextWeek.getDate() + 7)
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
     const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1)
-    const stats = [
-      {
-        label: '本周选题',
-        value: records.filter((r) => r.kind === '选题' && isDateInRange(r.createdDate, weekStart, nextWeek)).length,
-      },
-      {
-        label: '本月选题',
-        value: records.filter((r) => r.kind === '选题' && isDateInRange(r.createdDate, monthStart, nextMonth)).length,
-      },
-      {
-        label: '本周草稿',
-        value: records.filter((r) => r.kind === '公众号文章' && isDateInRange(r.draftDate, weekStart, nextWeek)).length,
-      },
-      {
-        label: '本月草稿',
-        value: records.filter((r) => r.kind === '公众号文章' && isDateInRange(r.draftDate, monthStart, nextMonth)).length,
-      },
-      {
-        label: '本月公众号发布',
-        value: records.filter((r) => isDateInRange(r.wechatPublishedDate, monthStart, nextMonth)).length,
-      },
-      { label: '累计公众号发布', value: records.filter((r) => r.wechatStatus === '已正式发布').length },
-      {
-        label: '本月小红书生成',
-        value: records.filter((r) => isDateInRange(r.xiaohongshuGeneratedDate, monthStart, nextMonth)).length,
-      },
-      {
-        label: '累计小红书发布',
-        value: records.filter((r) => r.xiaohongshuStatus === '小红书已发布').length,
-      },
-    ]
-    const row = root.createDiv({ cls: 'ai-linzi-dashboard-stats' })
-    for (const stat of stats) {
-      const item = row.createDiv({ cls: 'ai-linzi-dashboard-stat' })
-      item.createDiv({ text: stat.label, cls: 'ai-linzi-dashboard-stat-label' })
-      const value = item.createDiv({ cls: 'ai-linzi-dashboard-stat-value' })
-      value.createSpan({ text: String(stat.value) })
-      value.createSpan({ text: ' 篇' })
-    }
-  }
+    const monthPublishes = records.flatMap((record) => PLATFORM_IDS.map((id) => record.platforms[id].publishedDate)).filter((date) => isDateInRange(date, monthStart, nextMonth)).length
+    const distributed = records.filter((record) => PLATFORM_IDS.some((id) => record.platforms[id].stage !== 'unplanned' && record.platforms[id].stage !== 'not-applicable'))
+    const average = distributed.length === 0 ? 0 : distributed.reduce((sum, record) => sum + PLATFORM_IDS.filter((id) => record.platforms[id].stage === 'ready' || record.platforms[id].stage === 'published').length, 0) / distributed.length
+    const waiting = records.filter((record) => {
+      const states = PLATFORM_IDS.map((id) => record.platforms[id].stage)
+      return states.includes('published') && (states.includes('ready') || states.includes('planned'))
+    }).length
+    this.renderStats(root, [
+      { value: String(monthPublishes), label: '本月发布次数（全平台）', note: '每个平台各算 1 次' },
+      { value: average.toFixed(average % 1 ? 1 : 0), label: '平均分发平台数 / 篇', note: '一鱼多吃指数', tone: 'jade' },
+      { value: String(waiting), label: '待分发', note: '已发过 1 个平台的增量', tone: 'gold' },
+      { value: `${consecutivePublishDays(records)} 天`, label: '连续发布', note: '跨平台任一发布都算' },
+    ])
 
-  private renderBoard(root: HTMLElement, records: ContentRecord[]) {
-    const board = root.createDiv({ cls: 'ai-linzi-dashboard-board' })
-    for (const lane of LANES) {
-      const laneRecords = records.filter((record) => boardLane(record) === lane.id)
-      const column = board.createDiv({ cls: `ai-linzi-dashboard-column is-${lane.id}` })
-      const header = column.createDiv({ cls: 'ai-linzi-dashboard-column-header' })
-      header.createSpan({ text: `${lane.number}  ${lane.label}` })
-      header.createSpan({ text: String(laneRecords.length), cls: 'ai-linzi-dashboard-count' })
-      const list = column.createDiv({ cls: 'ai-linzi-dashboard-list' })
-      if (laneRecords.length === 0) {
-        list.createDiv({ text: '暂无内容', cls: 'ai-linzi-dashboard-empty' })
-        continue
+    const card = root.createDiv({ cls: 'ai-linzi-dashboard-panel ai-linzi-dashboard-matrix-panel' })
+    this.sectionHeading(card, '发布矩阵', '每篇内容 × 每个平台的分发状态 · 点格子改状态')
+    if (records.length === 0) {
+      this.empty(card, '还没有内容资产。先生成一个选题或公众号草稿，矩阵会自动出现。')
+      return
+    }
+    const scroll = card.createDiv({ cls: 'ai-linzi-dashboard-table-scroll' })
+    const table = scroll.createEl('table', { cls: 'ai-linzi-dashboard-matrix' })
+    const head = table.createEl('thead').createEl('tr')
+    head.createEl('th', { text: '内容' })
+    for (const id of PLATFORM_IDS) {
+      const th = head.createEl('th')
+      this.platformIcon(th, id)
+      th.createSpan({ text: PLATFORM_LABELS[id] })
+    }
+    const body = table.createEl('tbody')
+    for (const record of records) {
+      const row = body.createEl('tr')
+      const content = row.createEl('td')
+      const title = content.createEl('button', { text: record.title, cls: 'ai-linzi-dashboard-matrix-title' })
+      title.onclick = () => void this.openRecord(record)
+      content.createDiv({ text: `创建 ${shortDate(record.createdDate)} · 来源：${record.sourceSkill}`, cls: 'ai-linzi-dashboard-matrix-meta' })
+      for (const id of PLATFORM_IDS) {
+        const cell = row.createEl('td')
+        const platform = record.platforms[id]
+        const chip = cell.createEl('button', {
+          text: stageLabel(platform),
+          cls: `ai-linzi-dashboard-status-chip ${stageClass(platform.stage)}`,
+          attr: { title: `修改${PLATFORM_LABELS[id]}状态` },
+        })
+        chip.onclick = () => void this.updatePlatformStatus(record, id, chip)
+        if (platform.stage === 'published') {
+          const metrics = cell.createEl('button', {
+            text: platform.views || platform.engagement || platform.followersGained ? '数据 ✓' : '＋ 数据',
+            cls: 'ai-linzi-dashboard-metrics-link',
+            attr: { title: `记录${PLATFORM_LABELS[id]}单篇表现` },
+          })
+          metrics.onclick = () => void this.editContentMetrics(record, id, metrics)
+        }
       }
-      for (const record of laneRecords) this.renderCard(list, record, lane.id)
+    }
+    const legend = card.createDiv({ cls: 'ai-linzi-dashboard-legend' })
+    for (const label of ['✅ 已发布（记录日期，可填链接）', '⏳ 待发布（改写完成）', '＋ 计划（准备分发）', '– 不适用']) legend.createSpan({ text: label })
+
+    const hint = root.createDiv({ cls: 'ai-linzi-dashboard-hint' })
+    hint.createEl('strong', { text: '💡 「待分发」是最容易捡的增量：' })
+    hint.createSpan({ text: `${waiting} 篇内容已在至少一个平台发布，但计划里仍有平台没发。` })
+  }
+
+  private renderStats(root: HTMLElement, stats: { value: string; label: string; note: string; tone?: string }[]) {
+    const wrapper = root.createDiv({ cls: 'ai-linzi-dashboard-stats' })
+    for (const stat of stats) {
+      const card = wrapper.createDiv({ cls: 'ai-linzi-dashboard-stat' })
+      card.createDiv({ text: stat.value, cls: `ai-linzi-dashboard-stat-number${stat.tone ? ` is-${stat.tone}` : ''}` })
+      card.createDiv({ text: stat.label, cls: 'ai-linzi-dashboard-stat-label' })
+      card.createDiv({ text: stat.note, cls: 'ai-linzi-dashboard-stat-note' })
     }
   }
 
-  private renderCard(list: HTMLElement, record: ContentRecord, lane: BoardLane) {
-    const card = list.createDiv({ cls: 'ai-linzi-dashboard-card' })
+  private renderPipeline(root: HTMLElement, records: ContentRecord[]) {
+    const heading = root.createDiv({ cls: 'ai-linzi-dashboard-section-heading is-open' })
+    heading.createEl('h3', { text: '创作管线' })
+    heading.createSpan({ text: '从选题到全平台发完 · 卡片下方是各平台分发状态' })
+    const board = root.createDiv({ cls: 'ai-linzi-dashboard-pipeline' })
+    for (const lane of PIPELINE_LANES) {
+      const laneRecords = records.filter((record) => pipelineLane(record) === lane.id)
+      const column = board.createDiv({ cls: `ai-linzi-dashboard-pipeline-lane is-${lane.id}` })
+      const header = column.createDiv({ cls: 'ai-linzi-dashboard-pipeline-head' })
+      const dot = header.createSpan({ cls: 'ai-linzi-dashboard-pipeline-dot' })
+      dot.style.backgroundColor = lane.color
+      header.createSpan({ text: lane.label })
+      header.createSpan({ text: String(laneRecords.length), cls: 'ai-linzi-dashboard-pipeline-count' })
+      if (lane.id === 'topic') {
+        const add = header.createEl('button', { text: '＋ 选题', cls: 'ai-linzi-dashboard-pipeline-add' })
+        add.onclick = () => void runTopicRadar(this.plugin).then(() => this.render())
+      }
+      const list = column.createDiv({ cls: 'ai-linzi-dashboard-pipeline-list' })
+      if (laneRecords.length === 0) this.empty(list, '暂无内容')
+      for (const record of laneRecords) this.renderPipelineCard(list, record, lane.id)
+    }
+    const legend = root.createDiv({ cls: 'ai-linzi-dashboard-legend' })
+    legend.createSpan({ text: '平台角标：亮色＝已发布 · 虚线框＝待发布 · 灰色＝未计划' })
+    legend.createSpan({ text: '「分发中」＝至少发了 1 个平台，但计划里还有没发的' })
+  }
+
+  private renderPipelineCard(parent: HTMLElement, record: ContentRecord, lane: PipelineLane) {
+    const card = parent.createDiv({ cls: 'ai-linzi-dashboard-pipeline-card' })
     card.setAttribute('tabindex', '0')
     card.setAttribute('role', 'button')
     card.onclick = () => void this.openRecord(record)
     card.onkeydown = (event) => {
       if (event.key === 'Enter' || event.key === ' ') void this.openRecord(record)
     }
-    card.createDiv({ text: record.title, cls: 'ai-linzi-dashboard-card-title' })
-    const date =
-      lane === 'published'
-        ? record.wechatPublishedDate
-        : lane === 'draftbox'
-          ? record.wechatDraftDate
-          : record.draftDate || record.createdDate
-    card.createDiv({
-      text: `${lane === 'published' ? '发布' : lane === 'draftbox' ? '发送' : '创建'}：${shortDate(date)} · ${record.sourceSkill}`,
-      cls: 'ai-linzi-dashboard-card-meta',
-    })
-    const channels = card.createDiv({ cls: 'ai-linzi-dashboard-channels' })
-    this.channelPill(channels, '公众号', record.wechatStatus, record.wechatStatus === '已正式发布')
-    this.channelPill(
-      channels,
-      '小红书',
-      record.xiaohongshuStatus,
-      record.xiaohongshuStatus === '小红书已发布',
-    )
-    this.channelPill(channels, '视频', record.videoStatus, record.videoStatus === '视频已发布')
-    const actions = card.createDiv({ cls: 'ai-linzi-dashboard-card-actions' })
+    card.createDiv({ text: record.title, cls: 'ai-linzi-dashboard-pipeline-title' })
+    card.createDiv({ text: `${shortDate(pipelineDate(record))} · ${record.sourceSkill}`, cls: 'ai-linzi-dashboard-pipeline-meta' })
+    const platforms = card.createDiv({ cls: 'ai-linzi-dashboard-pipeline-platforms' })
+    for (const id of PLATFORM_IDS) {
+      const platform = record.platforms[id]
+      const button = platforms.createEl('button', {
+        text: PLATFORM_ICONS[id],
+        cls: `ai-linzi-dashboard-platform-dot is-${id} ${stageClass(platform.stage)}`,
+        attr: { title: `${PLATFORM_LABELS[id]}：${stageLabel(platform)}` },
+      })
+      button.onclick = (event) => {
+        event.stopPropagation()
+        void this.updatePlatformStatus(record, id, button)
+      }
+    }
+    const actions = card.createDiv({ cls: 'ai-linzi-dashboard-pipeline-actions' })
     if (lane === 'topic') {
-      this.actionButton(actions, '开始写作', record, () => runWechatWriter(this.plugin))
-    } else if (lane === 'write') {
-      this.actionButton(actions, '生成配图', record, () => runArticleIllustration(this.plugin))
-    } else if (lane === 'format') {
-      this.actionButton(actions, '复制排版', record, () => copyWechatFormatted(this.plugin))
-      this.actionButton(actions, '发到草稿箱', record, () => sendToWechatDraft(this.plugin), true)
-    } else if (lane === 'draftbox') {
-      const button = actions.createEl('button', { text: '标记已发布' })
-      button.onclick = (event) => {
+      const write = actions.createEl('button', { text: '开始写作' })
+      write.onclick = (event) => {
         event.stopPropagation()
-        void this.updateWechatStatus(record, button, '已正式发布')
+        void this.runRecordAction(record, () => runWechatWriter(this.plugin), write)
       }
-    } else if (lane === 'published' && record.wechatUrl) {
-      const button = actions.createEl('button', { text: '打开公众号' })
-      button.onclick = (event) => {
+    } else if (record.kind === '公众号文章' && record.platforms.xiaohongshu.stage === 'unplanned') {
+      const distribute = actions.createEl('button', { text: '生成分发包' })
+      distribute.onclick = (event) => {
         event.stopPropagation()
-        window.open(record.wechatUrl)
-      }
-    }
-    if (record.kind === '公众号文章') {
-      if (record.xiaohongshuStatus === '未开始') {
-        this.actionButton(actions, '生成分发包', record, () => runDistribute(this.plugin))
-      } else {
-        const openXhs = actions.createEl('button', { text: '打开小红书' })
-        openXhs.onclick = (event) => {
-          event.stopPropagation()
-          void this.openXiaohongshu(record)
-        }
-        if (record.xiaohongshuStatus !== '小红书已发布') {
-          const publishXhs = actions.createEl('button', { text: '标记小红书已发布' })
-          publishXhs.onclick = (event) => {
-            event.stopPropagation()
-            void this.markXiaohongshuPublished(record, publishXhs)
-          }
-        }
-      }
-      const statusButton = actions.createEl('button', { text: '修改状态' })
-      statusButton.onclick = (event) => {
-        event.stopPropagation()
-        void this.updateWechatStatus(record, statusButton)
+        void this.runRecordAction(record, () => runDistribute(this.plugin), distribute)
       }
     }
   }
 
-  private channelPill(
-    parent: HTMLElement,
-    label: string,
-    status: string,
-    published: boolean,
-  ) {
-    const active = status !== '未开始'
-    const pill = parent.createDiv({
-      cls: `ai-linzi-dashboard-channel${active ? ' is-active' : ''}${published ? ' is-published' : ''}`,
-      attr: { title: `${label}：${status}` },
+  private renderData(root: HTMLElement, records: ContentRecord[]) {
+    const hint = root.createDiv({ cls: 'ai-linzi-dashboard-hint' })
+    hint.createEl('strong', { text: '📷 数据怎么进来：' })
+    hint.createSpan({ text: '各平台不对个人号开放完整数据 API。你可主动选择后台截图交给 AI霖子识别，核对后再保存；保存的指标只存在本地 Vault。' })
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1)
+    const metrics = PLATFORM_IDS.map((id) => this.platformMetrics(id, records, monthStart, nextMonth))
+    const grid = root.createDiv({ cls: 'ai-linzi-dashboard-account-grid' })
+    for (const item of metrics) this.renderAccount(grid, item)
+    this.renderFollowersChart(root, metrics)
+    this.renderTopContent(root, records)
+  }
+
+  private platformMetrics(id: PlatformId, records: ContentRecord[], monthStart: Date, nextMonth: Date): PlatformMetrics {
+    const raw = this.dashboardData.accounts[id]
+    const account = typeof raw === 'object' && raw ? (raw as Record<string, unknown>) : {}
+    return {
+      id,
+      label: PLATFORM_LABELS[id],
+      handle: text(account['账号']),
+      followers: numberValue(account['粉丝']),
+      monthGrowth: numberValue(account['本月净增']),
+      averageViews: numberValue(account['平均阅读播放']),
+      monthlyPublished: records.filter((record) => isDateInRange(record.platforms[id].publishedDate, monthStart, nextMonth)).length,
+      lastUpdated: text(account['最后更新']),
+      history: numberList(account['近12个月粉丝']),
+    }
+  }
+
+  private renderAccount(parent: HTMLElement, metrics: PlatformMetrics) {
+    const card = parent.createDiv({ cls: 'ai-linzi-dashboard-account' })
+    const header = card.createDiv({ cls: 'ai-linzi-dashboard-account-head' })
+    this.platformIcon(header, metrics.id)
+    header.createSpan({ text: metrics.label, cls: 'ai-linzi-dashboard-account-name' })
+    header.createSpan({ text: metrics.handle || '未设置账号', cls: 'ai-linzi-dashboard-account-handle' })
+    header.createSpan({ text: metrics.lastUpdated ? `本地记录 · ${shortDate(metrics.lastUpdated)}` : '待首次记录', cls: 'ai-linzi-dashboard-account-sync' })
+    const stats = card.createDiv({ cls: 'ai-linzi-dashboard-account-stats' })
+    for (const [value, label, tone] of [
+      [formatNumber(metrics.followers), '粉丝', ''],
+      [`${metrics.monthGrowth >= 0 ? '+' : ''}${formatNumber(metrics.monthGrowth)}`, '本月净增', 'jade'],
+      [formatNumber(metrics.averageViews), metrics.id === 'wechat' || metrics.id === 'xiaohongshu' ? '平均阅读' : '平均播放', ''],
+      [String(metrics.monthlyPublished), '本月发布', ''],
+    ]) {
+      const stat = stats.createDiv()
+      stat.createDiv({ text: value, cls: `ai-linzi-dashboard-account-number${tone ? ` is-${tone}` : ''}` })
+      stat.createDiv({ text: label, cls: 'ai-linzi-dashboard-account-label' })
+    }
+    const trend = card.createDiv({ cls: 'ai-linzi-dashboard-mini-trend' })
+    const source = metrics.history.length > 1 ? metrics.history : [0, metrics.followers]
+    const max = Math.max(...source, 1)
+    for (const [index, value] of source.entries()) {
+      const bar = trend.createDiv({ cls: `ai-linzi-dashboard-mini-bar${index === source.length - 1 ? ' is-latest' : ''}` })
+      bar.style.height = `${Math.max(10, (value / max) * 100)}%`
+    }
+    const actions = card.createDiv({ cls: 'ai-linzi-dashboard-account-actions' })
+    const manual = actions.createEl('button', { text: '✏️ 手动记录', cls: 'is-primary' })
+    manual.onclick = () => void this.editAccount(metrics)
+    const screenshot = actions.createEl('button', { text: '📷 截图导入数据' })
+    screenshot.onclick = () => void this.importAccountScreenshot(metrics)
+  }
+
+  private renderFollowersChart(root: HTMLElement, metrics: PlatformMetrics[]) {
+    const panel = root.createDiv({ cls: 'ai-linzi-dashboard-panel' })
+    this.sectionHeading(panel, '📈 公域粉丝增长', '近 12 个月各平台粉丝数 · 来自本地手动记录')
+    if (!metrics.some((item) => item.history.length > 1)) {
+      this.empty(panel, '记录至少两个月的平台粉丝数后，这里会出现增长趋势。')
+      return
+    }
+    const chart = panel.createDiv({ cls: 'ai-linzi-dashboard-growth-chart' })
+    for (const item of metrics) {
+      if (item.history.length === 0) continue
+      const row = chart.createDiv({ cls: 'ai-linzi-dashboard-growth-row' })
+      const label = row.createDiv({ cls: 'ai-linzi-dashboard-growth-label' })
+      this.platformIcon(label, item.id)
+      label.createSpan({ text: `${item.label} ${formatNumber(item.followers)}` })
+      const bars = row.createDiv({ cls: 'ai-linzi-dashboard-growth-bars' })
+      const max = Math.max(...item.history, 1)
+      for (const value of item.history) {
+        const bar = bars.createDiv({ cls: `ai-linzi-dashboard-growth-bar is-${item.id}` })
+        bar.style.height = `${Math.max(4, (value / max) * 100)}%`
+        bar.title = formatNumber(value)
+      }
+    }
+  }
+
+  private renderTopContent(root: HTMLElement, records: ContentRecord[]) {
+    const rows = records
+      .flatMap((record) => PLATFORM_IDS.map((id) => ({ record, id, state: record.platforms[id], score: record.platforms[id].views + record.platforms[id].engagement * 10 + record.platforms[id].followersGained * 20 })))
+      .filter((row) => row.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+    const panel = root.createDiv({ cls: 'ai-linzi-dashboard-panel' })
+    this.sectionHeading(panel, '🏆 本月内容 Top', '跨平台按阅读/播放、互动和涨粉综合排序')
+    if (rows.length === 0) {
+      this.empty(panel, '在内容笔记 frontmatter 记录平台阅读/播放、互动或涨粉后，这里会自动排行。')
+      return
+    }
+    const list = panel.createDiv({ cls: 'ai-linzi-dashboard-top-list' })
+    rows.forEach((row, index) => {
+      const item = list.createDiv({ cls: 'ai-linzi-dashboard-top-row' })
+      item.createSpan({ text: String(index + 1), cls: 'ai-linzi-dashboard-top-rank' })
+      this.platformIcon(item, row.id)
+      const title = item.createEl('button', { text: row.record.title, cls: 'ai-linzi-dashboard-top-title' })
+      title.onclick = () => void this.openRecord(row.record)
+      item.createSpan({ text: `${row.id === 'wechat' || row.id === 'xiaohongshu' ? '阅读' : '播放'} ${formatNumber(row.state.views)} · 互动 ${formatNumber(row.state.engagement)} · 涨粉 ${formatNumber(row.state.followersGained)}`, cls: 'ai-linzi-dashboard-top-metrics' })
     })
-    pill.createSpan({ text: label })
-    pill.createSpan({ text: published ? '已发布' : active ? '已生成' : '未开始' })
   }
 
-  private actionButton(
-    actions: HTMLElement,
-    label: string,
-    record: ContentRecord,
-    action: () => Promise<void>,
-    primary = false,
-  ) {
-    const button = actions.createEl('button', { text: label, cls: primary ? 'is-primary' : undefined })
-    button.onclick = (event) => {
-      event.stopPropagation()
-      void this.runRecordAction(record, action, button)
+  private sectionHeading(parent: HTMLElement, title: string, caption: string) {
+    const heading = parent.createDiv({ cls: 'ai-linzi-dashboard-section-heading' })
+    heading.createEl('h3', { text: title })
+    heading.createSpan({ text: caption })
+  }
+
+  private platformIcon(parent: HTMLElement, id: PlatformId) {
+    parent.createSpan({ text: PLATFORM_ICONS[id], cls: `ai-linzi-dashboard-platform-icon is-${id}` })
+  }
+
+  private empty(parent: HTMLElement, message: string) {
+    parent.createDiv({ text: message, cls: 'ai-linzi-dashboard-empty' })
+  }
+
+  private async editAccount(metrics: PlatformMetrics) {
+    const result = await new AccountMetricsModal(this.app, metrics).result
+    if (!result) return
+    await this.saveAccountMetrics(result)
+    new Notice(`✅ ${metrics.label}数据已保存到本地 Vault`)
+  }
+
+  private async importAccountScreenshot(metrics: PlatformMetrics) {
+    chooseComputerAiImageReferences(1, async (references) => {
+      const image = references[0]
+      if (!image) return
+      const notice = new Notice(`正在识别${metrics.label}后台数据…`, 0)
+      try {
+        const prompt = [
+          `请识别这张${metrics.label}账号后台截图中的账号数据。`,
+          '只返回一个 JSON 对象，不要解释、不要 Markdown。',
+          '字段必须是：{"handle":"账号名称","followers":当前粉丝,"monthGrowth":本月净增,"averageViews":平均阅读或播放,"history":[近12个月粉丝数]}。',
+          '只填写截图中能确认的数字；无法确认的数字填 0，数组可以为空。',
+        ].join('\n')
+        const sessionId = `obsidian:content-dashboard:${Date.now()}`
+        const data = await this.plugin.api('/api/plugin/v1/chat', {
+          method: 'POST',
+          body: {
+            messages: [{ id: `content-metrics-${Date.now()}`, role: 'user', parts: [{ type: 'text', text: prompt }] }],
+            sessionId,
+            stream: false,
+            imageAttachments: [{ filename: image.name, dataUrl: image.dataUrl, mediaType: 'image/jpeg' }],
+            noteEdit: false,
+            noteImageIntent: false,
+          },
+        })
+        const raw = typeof data.text === 'string' ? data.text : ''
+        await this.plugin.api(`/api/plugin/v1/chat/history?sessionId=${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).catch(() => undefined)
+        const recognized = recognizedAccountMetrics(raw, metrics)
+        notice.hide()
+        const result = await new AccountMetricsModal(this.app, recognized, 'screenshot').result
+        if (!result) return
+        await this.saveAccountMetrics(result)
+        new Notice(`✅ ${metrics.label}识别数据已确认并保存到本地 Vault`)
+      } catch (error) {
+        notice.hide()
+        new Notice(error instanceof Error ? error.message : '截图识别失败，请稍后重试')
+      }
+    })
+  }
+
+  private async editContentMetrics(record: ContentRecord, platform: PlatformId, button: HTMLButtonElement) {
+    const result = await new ContentMetricsModal(this.app, platform, record.platforms[platform]).result
+    if (!result) return
+    const file = this.app.vault.getAbstractFileByPath(record.filePath)
+    if (!(file instanceof TFile)) {
+      new Notice('这篇内容的笔记已经不存在')
+      return
+    }
+    button.disabled = true
+    try {
+      const label = PLATFORM_LABELS[platform]
+      const viewLabel = platform === 'wechat' || platform === 'xiaohongshu' ? '阅读' : '播放'
+      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+        fm[`${label}${viewLabel}`] = result.views
+        fm[`${label}互动`] = result.engagement
+        fm[`${label}涨粉`] = result.followersGained
+      })
+      new Notice(`✅ ${label}单篇数据已保存到本地笔记`)
+      this.render()
+    } finally {
+      button.disabled = false
+    }
+  }
+
+  private async updatePlatformStatus(record: ContentRecord, platform: PlatformId, button: HTMLButtonElement) {
+    const result = await new PlatformStatusModal(this.app, platform, record.platforms[platform]).result
+    if (!result) return
+    const file = this.app.vault.getAbstractFileByPath(record.filePath)
+    if (!(file instanceof TFile)) {
+      new Notice('这篇内容的笔记已经不存在')
+      return
+    }
+    button.disabled = true
+    try {
+      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+        fm[statusField(platform)] = stageToStoredStatus(platform, result.stage)
+        if (platform === 'shipinhao') fm['视频状态'] = stageToStoredStatus(platform, result.stage)
+        if (result.stage === 'ready') {
+          fm[generatedDateField(platform)] = result.date
+          delete fm[publishedDateField(platform)]
+        } else if (result.stage === 'published') {
+          fm[publishedDateField(platform)] = result.date
+          if (result.url) fm[urlField(platform)] = result.url
+          else delete fm[urlField(platform)]
+          if (platform === 'wechat') {
+            fm['状态'] = '已正式发布'
+            fm['发布日期'] = result.date
+            if (result.url) fm['发布链接'] = result.url
+          }
+        } else {
+          delete fm[publishedDateField(platform)]
+          delete fm[urlField(platform)]
+        }
+      })
+      new Notice(`✅ ${PLATFORM_LABELS[platform]}状态已更新；不会自动发布到平台`)
+      this.render()
+    } finally {
+      button.disabled = false
     }
   }
 
@@ -415,177 +888,5 @@ export class ContentDashboardView extends ItemView {
     this.plugin.lastActiveFile = file
     await this.app.workspace.getLeaf('tab').openFile(file)
     return file
-  }
-
-  private async openXiaohongshu(record: ContentRecord) {
-    const file = record.xiaohongshuNotePath
-      ? this.app.vault.getAbstractFileByPath(record.xiaohongshuNotePath)
-      : null
-    if (!(file instanceof TFile)) {
-      new Notice(
-        record.xiaohongshuCardFolder
-          ? `卡片已生成在：${record.xiaohongshuCardFolder}`
-          : '没有找到关联的小红书笔记，请重新生成分发包',
-        7000,
-      )
-      return
-    }
-    this.plugin.lastActiveFile = file
-    await this.app.workspace.getLeaf('tab').openFile(file)
-  }
-
-  private async markXiaohongshuPublished(record: ContentRecord, button: HTMLButtonElement) {
-    const file = this.app.vault.getAbstractFileByPath(record.filePath)
-    if (!(file instanceof TFile)) {
-      new Notice('这篇内容的笔记已经不存在')
-      return
-    }
-    button.disabled = true
-    try {
-      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-        fm['小红书状态'] = '小红书已发布'
-        fm['小红书发布日期'] = isoToday()
-      })
-      if (record.xiaohongshuNotePath) {
-        const xhsFile = this.app.vault.getAbstractFileByPath(record.xiaohongshuNotePath)
-        if (xhsFile instanceof TFile) {
-          await this.app.fileManager.processFrontMatter(xhsFile, (fm: Record<string, unknown>) => {
-            fm['小红书状态'] = '小红书已发布'
-            fm['小红书发布日期'] = isoToday()
-          })
-        }
-      }
-      new Notice('✅ 已标记小红书发布；这一步只记录状态，不会自动发布到平台')
-      this.render()
-    } finally {
-      button.disabled = false
-    }
-  }
-
-  private async updateWechatStatus(
-    record: ContentRecord,
-    button: HTMLButtonElement,
-    initialStatus?: WechatStatus,
-  ) {
-    const result = await new UpdateWechatStatusModal(this.app, record, initialStatus).result
-    if (!result) return
-    const file = this.app.vault.getAbstractFileByPath(record.filePath)
-    if (!(file instanceof TFile)) {
-      new Notice('这篇内容的笔记已经不存在')
-      return
-    }
-    button.disabled = true
-    try {
-      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-        fm['状态'] = result.status
-        fm['内容类型'] = '公众号文章'
-        fm['内容阶段'] = '已生成草稿'
-        fm['公众号状态'] = result.status
-        fm['视频状态'] = fm['视频状态'] || '未开始'
-        fm['小红书状态'] = fm['小红书状态'] || '未开始'
-        if (result.status === '已生成草稿') {
-          delete fm['公众号草稿ID']
-          delete fm['公众号草稿箱时间']
-          delete fm['草稿箱时间']
-          delete fm['公众号发布日期']
-          delete fm['发布日期']
-          delete fm['公众号链接']
-          delete fm['发布链接']
-        } else if (result.status === '已发送公众号草稿箱') {
-          fm['公众号草稿箱时间'] = result.date
-          fm['草稿箱时间'] = result.date
-          delete fm['公众号发布日期']
-          delete fm['发布日期']
-          delete fm['公众号链接']
-          delete fm['发布链接']
-        } else {
-          fm['公众号发布日期'] = result.date
-          fm['发布日期'] = result.date
-          if (result.url) {
-            fm['公众号链接'] = result.url
-            fm['发布链接'] = result.url
-          } else {
-            delete fm['公众号链接']
-            delete fm['发布链接']
-          }
-        }
-      })
-      new Notice(`✅ 公众号状态已更新为「${result.status}」`)
-      this.render()
-    } finally {
-      button.disabled = false
-    }
-  }
-
-  private renderCalendar(root: HTMLElement, records: ContentRecord[]) {
-    const wrapper = root.createDiv({ cls: 'ai-linzi-dashboard-calendar' })
-    const header = wrapper.createDiv({ cls: 'ai-linzi-dashboard-calendar-header' })
-    const previous = header.createEl('button', { attr: { 'aria-label': '上个月' } })
-    setIcon(previous, 'chevron-left')
-    previous.onclick = () => {
-      this.month = new Date(this.month.getFullYear(), this.month.getMonth() - 1, 1)
-      this.render()
-    }
-    header.createEl('strong', { text: `${this.month.getFullYear()} 年 ${this.month.getMonth() + 1} 月` })
-    const next = header.createEl('button', { attr: { 'aria-label': '下个月' } })
-    setIcon(next, 'chevron-right')
-    next.onclick = () => {
-      this.month = new Date(this.month.getFullYear(), this.month.getMonth() + 1, 1)
-      this.render()
-    }
-
-    const legend = wrapper.createDiv({ cls: 'ai-linzi-dashboard-calendar-legend' })
-    legend.createSpan({ text: '● 草稿', cls: 'is-draft' })
-    legend.createSpan({ text: '● 已发送草稿箱', cls: 'is-draftbox' })
-    legend.createSpan({ text: '● 公众号已发布', cls: 'is-published' })
-
-    const grid = wrapper.createDiv({ cls: 'ai-linzi-dashboard-calendar-grid' })
-    for (const weekday of ['一', '二', '三', '四', '五', '六', '日']) {
-      grid.createDiv({ text: `周${weekday}`, cls: 'ai-linzi-dashboard-calendar-weekday' })
-    }
-    const year = this.month.getFullYear()
-    const month = this.month.getMonth()
-    const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7
-    const days = new Date(year, month + 1, 0).getDate()
-    const cells = Math.ceil((firstWeekday + days) / 7) * 7
-    const events = new Map<string, ContentRecord[]>()
-    for (const record of records) {
-      const date =
-        record.wechatStatus === '已正式发布'
-          ? record.wechatPublishedDate
-          : record.wechatStatus === '已发送公众号草稿箱'
-            ? record.wechatDraftDate
-            : record.draftDate || record.createdDate
-      if (!date) continue
-      const list = events.get(date) ?? []
-      list.push(record)
-      events.set(date, list)
-    }
-    for (let index = 0; index < cells; index++) {
-      const day = index - firstWeekday + 1
-      const cell = grid.createDiv({ cls: 'ai-linzi-dashboard-calendar-day' })
-      if (day < 1 || day > days) {
-        cell.addClass('is-empty')
-        continue
-      }
-      const date = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-      cell.createDiv({ text: String(day), cls: 'ai-linzi-dashboard-calendar-number' })
-      const dayEvents = events.get(date) ?? []
-      for (const record of dayEvents.slice(0, 3)) {
-        const statusClass =
-          record.wechatStatus === '已正式发布'
-            ? 'is-published'
-            : record.wechatStatus === '已发送公众号草稿箱'
-              ? 'is-draftbox'
-              : 'is-draft'
-        const event = cell.createEl('button', {
-          text: record.title,
-          cls: `ai-linzi-dashboard-calendar-event ${statusClass}`,
-          attr: { title: record.title },
-        })
-        event.onclick = () => void this.openRecord(record)
-      }
-      if (dayEvents.length > 3) cell.createDiv({ text: `+${dayEvents.length - 3}`, cls: 'ai-linzi-dashboard-more' })
-    }
   }
 }

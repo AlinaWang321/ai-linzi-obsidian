@@ -14,6 +14,7 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 - Generate or revise article illustrations and save successful images locally.
 - Format WeChat articles and send them to a configured WeChat draft box.
 - Turn a WeChat article into a publish-ready Xiaohongshu note with three title choices, 300–800 Chinese characters of copy, hashtags, and local 3:4 cards that mix the original images with surrounding text.
+- Review a local four-platform publishing matrix, five-stage creation pipeline, account growth, and per-post performance for WeChat, Xiaohongshu, Channels, and Douyin. Platform screenshots are analyzed only after an explicit selection and require confirmation before local metrics are saved.
 - Review local content activity and authorized account data in the one-person-company cockpit.
 
 ## Installation

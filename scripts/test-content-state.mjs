@@ -81,6 +81,53 @@ assert.equal(distributed.xiaohongshuNotePath, 'AI霖子输出/小红书/测试.m
 assert.equal(distributed.xiaohongshuCardFolder, 'AI霖子输出/小红书/测试_卡片')
 assert.equal(distributed.xiaohongshuZipPath, 'AI霖子输出/小红书/测试_卡片/小红书卡片.zip')
 
+const derivedXhs = state.deriveContentRecord({
+  ...base,
+  path: 'AI霖子输出/小红书/2026.07.22_小红书_测试.md',
+  frontmatter: {
+    title: '小红书_测试',
+    来源技能: '多平台分发',
+    平台: '小红书',
+    来源路径: 'AI霖子输出/公众号文章/2026.07.21_测试.md',
+    小红书状态: '小红书已发布',
+    小红书发布日期: '2026-07-23',
+  },
+})
+assert.equal(derivedXhs.kind, '小红书图文')
+assert.equal(derivedXhs.title, '测试')
+assert.equal(derivedXhs.platforms.xiaohongshu.stage, 'published')
+
+const datedDerivative = state.deriveContentRecord({
+  ...base,
+  path: 'AI霖子输出/小红书/小红书图文_2026.07.31_一篇内容.md',
+  basename: '小红书图文_2026.07.31_一篇内容',
+  frontmatter: { 来源技能: '多平台分发', 平台: '小红书' },
+})
+assert.equal(datedDerivative.title, '一篇内容')
+
+const parentArticle = state.deriveContentRecord({
+  ...base,
+  path: 'AI霖子输出/公众号文章/2026.07.21_测试.md',
+  frontmatter: { 内容ID: 'parent-1', 内容类型: '公众号文章' },
+})
+const aggregated = state.aggregateContentRecords([parentArticle, derivedXhs])
+assert.equal(aggregated.length, 1)
+assert.equal(aggregated[0].kind, '公众号文章')
+assert.equal(aggregated[0].platforms.xiaohongshu.stage, 'published')
+assert.equal(aggregated[0].relatedFiles.length, 2)
+
+const planned = state.deriveContentRecord({
+  ...base,
+  frontmatter: {
+    内容类型: '公众号文章',
+    公众号状态: '已正式发布',
+    公众号发布日期: '2026-07-21',
+    小红书状态: '计划中',
+  },
+})
+assert.equal(state.pipelineLane(planned), 'distribution')
+assert.deepEqual(state.publishedDates(planned), ['2026-07-21'])
+
 const published = state.deriveContentRecord({
   ...base,
   path: '公众号文章/已发布/2026.07.21_测试.md',
@@ -99,8 +146,23 @@ assert.deepEqual(
     公众号状态: '已生成草稿',
     视频状态: '未开始',
     小红书状态: '未开始',
+    抖音状态: '未开始',
     创建日期: '2026-07-21',
     草稿日期: '2026-07-21',
+  },
+)
+
+assert.deepEqual(
+  state.canonicalContentFields({ skill: '选题雷达', platform: '通用', date: '2026-07-22', contentId: 't1' }),
+  {
+    内容ID: 't1',
+    内容类型: '选题',
+    内容阶段: '待写选题',
+    公众号状态: '未开始',
+    视频状态: '未开始',
+    小红书状态: '未开始',
+    抖音状态: '未开始',
+    创建日期: '2026-07-22',
   },
 )
 
