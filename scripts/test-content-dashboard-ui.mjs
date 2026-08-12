@@ -18,14 +18,23 @@ assert.match(source, /chat\/history\?sessionId=/)
 assert.match(source, /AI霖子已根据你主动选择的截图预填数据/)
 assert.match(source, /内容看板\/平台数据\.md/)
 assert.match(source, /只有点击“保存数据”后才会写入本地 Vault/)
+assert.match(source, /↻ 正在刷新…/)
+assert.match(source, /✓ 已刷新/)
+assert.match(source, /✨ 正在打开…/)
+assert.match(source, /'aria-busy': String\(this\.headerAction === 'refresh'\)/)
+assert.match(source, /refresh\.disabled = this\.headerAction !== null/)
+assert.match(source, /newTopic\.disabled = this\.headerAction !== null/)
 
 for (const selector of [
   '.ai-linzi-dashboard-matrix',
   '.ai-linzi-dashboard-pipeline',
   '.ai-linzi-dashboard-account-grid',
   '.ai-linzi-dashboard-top-list',
+  '.ai-linzi-dashboard-header-feedback.is-visible',
+  '.ai-linzi-dashboard-header-actions button:active:not(:disabled)',
+  '.ai-linzi-dashboard-header-actions button.is-loading',
 ]) {
-  assert.match(styles, new RegExp(selector.replaceAll('.', '\\.')), `missing dashboard style: ${selector}`)
+  assert.equal(styles.includes(selector), true, `missing dashboard style: ${selector}`)
 }
 
 console.log('content dashboard UI contract tests passed')

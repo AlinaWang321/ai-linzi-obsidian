@@ -1608,7 +1608,7 @@ button.ai-linzi-vault-source-link:focus-visible {
   }
 }
 
-/* ── 全平台内容发布看板 v0.6.54（设计稿 v0.2） ───────────── */
+/* ── 全平台内容发布看板 v0.6.55（设计稿 v0.2） ───────────── */
 .ai-linzi-dashboard-root {
   --ailinzi-content-cream: #faf6f0;
   --ailinzi-content-warm: #f1ece3;
@@ -1683,10 +1683,31 @@ button.ai-linzi-vault-source-link:focus-visible {
 }
 
 .ai-linzi-dashboard-header-actions {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 0 0 auto;
+}
+
+.ai-linzi-dashboard-header-feedback {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  min-width: max-content;
+  color: var(--ailinzi-content-jade-deep);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 160ms ease, transform 160ms ease;
+  pointer-events: none;
+}
+
+.ai-linzi-dashboard-header-feedback.is-visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .ai-linzi-dashboard-header-actions button {
@@ -1699,6 +1720,29 @@ button.ai-linzi-vault-source-link:focus-visible {
   box-shadow: none;
   font-size: 12px;
   font-weight: 700;
+  transition: transform 100ms ease, box-shadow 150ms ease, background 150ms ease, border-color 150ms ease, opacity 150ms ease;
+}
+
+.ai-linzi-dashboard-header-actions button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgb(26 22 18 / 8%);
+}
+
+.ai-linzi-dashboard-header-actions button:active:not(:disabled) {
+  transform: translateY(1px) scale(0.98);
+  box-shadow: inset 0 1px 3px rgb(26 22 18 / 12%);
+}
+
+.ai-linzi-dashboard-header-actions button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.ai-linzi-dashboard-header-actions button.is-loading {
+  border-color: var(--ailinzi-content-gold-deep);
+  background-image: linear-gradient(90deg, transparent 0%, rgb(255 255 255 / 42%) 50%, transparent 100%);
+  background-size: 220% 100%;
+  animation: ai-linzi-dashboard-button-loading 1.1s linear infinite;
 }
 
 .ai-linzi-dashboard-header-actions .mod-cta {
@@ -1711,6 +1755,22 @@ button.ai-linzi-vault-source-link:focus-visible {
 .ai-linzi-dashboard-header-actions .mod-cta:hover {
   background: var(--ailinzi-content-navy-dark);
   border-color: var(--ailinzi-content-navy-dark);
+}
+
+@keyframes ai-linzi-dashboard-button-loading {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-linzi-dashboard-header-actions button,
+  .ai-linzi-dashboard-header-feedback {
+    transition: none;
+  }
+
+  .ai-linzi-dashboard-header-actions button.is-loading {
+    animation: none;
+  }
 }
 
 .ai-linzi-dashboard-tabs {

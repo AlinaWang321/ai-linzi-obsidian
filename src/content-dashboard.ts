@@ -375,6 +375,9 @@ export class ContentDashboardView extends ItemView {
   private mode: DashboardMode = 'matrix'
   private refreshTimer: number | null = null
   private dashboardData: DashboardData = { accounts: {}, updatedAt: '' }
+  private headerAction: 'refresh' | 'topic' | null = null
+  private headerFeedback = ''
+  private headerFeedbackTimer: number | null = null
 
   constructor(leaf: WorkspaceLeaf, private plugin: AiLinziPlugin) {
     super(leaf)
@@ -404,6 +407,7 @@ export class ContentDashboardView extends ItemView {
 
   async onClose() {
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer)
+    if (this.headerFeedbackTimer !== null) window.clearTimeout(this.headerFeedbackTimer)
   }
 
   private dataPath(): string {
@@ -468,10 +472,27 @@ export class ContentDashboardView extends ItemView {
     title.createSpan({ text: '全平台版', cls: 'ai-linzi-dashboard-version' })
     title.createEl('p', { text: `数据来源：${normalizePath(this.plugin.settings.outputFolder || 'AI霖子输出')} · 全部保存在本地` })
     const actions = header.createDiv({ cls: 'ai-linzi-dashboard-header-actions' })
-    const refresh = actions.createEl('button', { text: '刷新' })
-    refresh.onclick = () => void this.loadDashboardData().then(() => this.render())
-    const newTopic = actions.createEl('button', { text: '✨ 生成选题', cls: 'mod-cta' })
-    newTopic.onclick = () => void runTopicRadar(this.plugin).then(() => this.render())
+    const feedback = actions.createDiv({
+      text: this.headerFeedback,
+      cls: `ai-linzi-dashboard-header-feedback${this.headerFeedback ? ' is-visible' : ''}`,
+      attr: { 'aria-live': 'polite' },
+    })
+    const refresh = actions.createEl('button', {
+      text: this.headerAction === 'refresh' ? '↻ 正在刷新…' : '↻ 刷新',
+      cls: this.headerAction === 'refresh' ? 'is-loading' : '',
+      attr: {
+        'aria-label': this.headerAction === 'refresh' ? '正在刷新内容看板' : '刷新内容看板',
+        'aria-busy': String(this.headerAction === 'refresh'),
+      },
+    })
+    refresh.disabled = this.headerAction !== null
+    refresh.onclick = () => void this.refreshDashboard()
+    const newTopic = actions.createEl('button', {
+      text: this.headerAction === 'topic' ? '✨ 正在打开…' : '✨ 生成选题',
+      cls: `mod-cta${this.headerAction === 'topic' ? ' is-loading' : ''}`,
+    })
+    newTopic.disabled = this.headerAction !== null
+    newTopic.onclick = () => void this.generateTopic()
 
     const tabs = root.createDiv({ cls: 'ai-linzi-dashboard-tabs' })
     for (const [id, label] of [
@@ -494,6 +515,49 @@ export class ContentDashboardView extends ItemView {
     const footer = root.createDiv({ cls: 'ai-linzi-dashboard-footer' })
     footer.createSpan({ text: '发布状态与数据全部存在笔记 frontmatter（本地）' })
     footer.createSpan({ text: '截图只在你主动选择后发给 AI霖子识别；识别结果须确认才保存' })
+  }
+
+  private showHeaderFeedback(message: string, duration = 4000) {
+    this.headerFeedback = message
+    if (this.headerFeedbackTimer !== null) window.clearTimeout(this.headerFeedbackTimer)
+    this.render()
+    this.headerFeedbackTimer = window.setTimeout(() => {
+      this.headerFeedbackTimer = null
+      this.headerFeedback = ''
+      this.render()
+    }, duration)
+  }
+
+  private async refreshDashboard() {
+    if (this.headerAction !== null) return
+    this.headerAction = 'refresh'
+    this.headerFeedback = ''
+    this.render()
+    try {
+      await this.loadDashboardData()
+      await new Promise((resolve) => window.setTimeout(resolve, 280))
+      this.headerAction = null
+      const timeLabel = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      this.showHeaderFeedback(`✓ 已刷新 · ${timeLabel}`)
+      new Notice(`✅ 内容看板已刷新 · ${timeLabel}`, 3500)
+    } catch (error) {
+      this.headerAction = null
+      this.showHeaderFeedback('刷新失败，请稍后重试', 5000)
+      new Notice(`❌ 内容看板刷新失败：${error instanceof Error ? error.message : String(error)}`, 8000)
+    }
+  }
+
+  private async generateTopic() {
+    if (this.headerAction !== null) return
+    this.headerAction = 'topic'
+    this.headerFeedback = ''
+    this.render()
+    try {
+      await runTopicRadar(this.plugin)
+    } finally {
+      this.headerAction = null
+      this.render()
+    }
   }
 
   private renderMatrix(root: HTMLElement, records: ContentRecord[]) {
