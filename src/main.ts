@@ -11,6 +11,7 @@ import {
   App,
   ItemView,
   MarkdownRenderer,
+  MarkdownView,
   Menu,
   Modal,
   Notice,
@@ -659,10 +660,19 @@ export default class AiLinziPlugin extends Plugin {
   async onload() {
     await this.loadSettings()
 
+    // 插件重载时 active leaf 可能正好是右侧对话面板；先从仍打开的 Markdown
+    // 标签页恢复“用户刚才在看的笔记”，避免勾选成功却拿不到正文。
+    this.rememberCurrentMarkdownFile()
+    this.app.workspace.onLayoutReady(() => this.rememberCurrentMarkdownFile())
+
     this.registerEvent(
       this.app.workspace.on('active-leaf-change', () => {
-        const f = this.app.workspace.getActiveFile()
-        if (f) this.lastActiveFile = f
+        this.rememberCurrentMarkdownFile()
+      }),
+    )
+    this.registerEvent(
+      this.app.workspace.on('file-open', (file) => {
+        if (file) this.lastActiveFile = file
       }),
     )
 
@@ -724,6 +734,31 @@ export default class AiLinziPlugin extends Plugin {
     )
 
     this.addSettingTab(new AiLinziSettingTab(this.app, this))
+  }
+
+  rememberCurrentMarkdownFile(): TFile | null {
+    const active = this.app.workspace.getActiveFile()
+    if (active) {
+      this.lastActiveFile = active
+      return active
+    }
+
+    if (this.lastActiveFile) {
+      const existing = this.app.vault.getAbstractFileByPath(this.lastActiveFile.path)
+      if (existing instanceof TFile) {
+        this.lastActiveFile = existing
+        return existing
+      }
+      this.lastActiveFile = null
+    }
+
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      if (leaf.view instanceof MarkdownView && leaf.view.file) {
+        this.lastActiveFile = leaf.view.file
+        return leaf.view.file
+      }
+    }
+    return null
   }
 
   onunload(): void {
@@ -1680,7 +1715,7 @@ class ChatView extends ItemView {
 
   private async currentNoteContext(): Promise<{ filename: string; text: string; path: string } | undefined> {
     if (!this.attachNote) return undefined
-    const file = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+    const file = this.plugin.rememberCurrentMarkdownFile()
     if (!file) return undefined
     const text = await this.app.vault.cachedRead(file)
     if (!text.trim()) return undefined

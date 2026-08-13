@@ -29,6 +29,17 @@ assert.match(
   /只会删除这一条 AI霖子 Obsidian 插件对话；其他插件对话、网页版和微信端对话都不受影响/,
   '单删确认必须明确不会影响其他端或其他插件会话',
 )
+assert.match(source, /workspace\.on\('file-open'/, '必须持续记住用户最近打开的笔记')
+assert.match(
+  source,
+  /getLeavesOfType\('markdown'\)/,
+  '插件重载后必须能从仍打开的 Markdown 标签页恢复当前笔记',
+)
+assert.match(
+  source,
+  /const file = this\.plugin\.rememberCurrentMarkdownFile\(\)/,
+  '发送带当前笔记的请求时必须使用稳定的 Markdown 笔记引用',
+)
 
 const unsafeAssignments = [...source.matchAll(/this\.sessionId = uid\(\)/g)]
 assert.equal(unsafeAssignments.length, 0, '禁止生成无命名空间的插件 sessionId')
