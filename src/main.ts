@@ -87,11 +87,13 @@ import { type VaultSearchResult } from './vault-search-core'
 import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
   VAULT_AGENT_MAX_ROUNDS,
+  detectVaultAgentIntent,
   extractVaultOrganizePlan,
   extractVaultToolCalls,
   namespaceVaultToolCalls,
   operationLabel,
   type VaultAgentToolResult,
+  type VaultAgentIntent,
   type VaultOrganizePlan,
 } from './vault-agent-core'
 import {
@@ -2125,6 +2127,7 @@ class ChatView extends ItemView {
           vaultSearch: vaultSearch.context,
           noteEdit,
           noteImageIntent: singleIllustration,
+          intent: detectVaultAgentIntent(text),
         })
         answer = agentResult.text
         answerSources = [
@@ -2577,6 +2580,7 @@ class ChatView extends ItemView {
       | undefined
     noteEdit: boolean
     noteImageIntent: boolean
+    intent: VaultAgentIntent
   }): Promise<{ text: string; sources: VaultMessageSource[] }> {
     const toolResults: VaultAgentToolResult[] = []
     const sources: VaultMessageSource[] = []
@@ -2603,6 +2607,7 @@ class ChatView extends ItemView {
           localSkill: input.localSkill,
           vaultAgent: {
             enabled: true,
+            intent: input.intent,
             round,
             canRequestTools: round < VAULT_AGENT_MAX_ROUNDS - 1,
             toolResults,
@@ -2617,6 +2622,13 @@ class ChatView extends ItemView {
       if (toolRequest.calls.length === 0) {
         const plan = extractVaultOrganizePlan(lastText)
         if (plan.invalid) throw new Error('AI 返回的 Vault 整理方案格式不安全，请重试')
+        if (input.intent === 'organize' && !plan.plan) {
+          if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+            throw new Error('AI 没有生成可确认的 Vault 整理方案，请缩小范围后重试')
+          }
+          // Luna 偶尔只说“接下来检查”却不调用工具；下一轮由后端注入协议纠正。
+          continue
+        }
         return { text: lastText, sources }
       }
       if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {

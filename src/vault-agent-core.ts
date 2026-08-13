@@ -10,6 +10,7 @@ export const VAULT_AGENT_MAX_CALLS_PER_ROUND = 4
 export const VAULT_AGENT_MAX_PLAN_OPERATIONS = 60
 
 export type VaultAgentToolName = 'vault_search' | 'list_folder' | 'read_note'
+export type VaultAgentIntent = 'answer' | 'organize'
 
 export interface VaultAgentToolCall {
   id: string
@@ -222,4 +223,14 @@ export function namespaceVaultToolCalls(
     ...call,
     id: `r${round + 1}-${index + 1}-${call.id}`.slice(0, 64),
   }))
+}
+
+export function detectVaultAgentIntent(text: string): VaultAgentIntent {
+  const normalized = text.normalize('NFKC').toLocaleLowerCase()
+  if (/不要(?:整理|移动|重命名|改名|归档|分类)/.test(normalized)) return 'answer'
+  return /(?:请|帮我|把|将|需要|想要|能否|可以).*?(?:整理|移动|重命名|改名|归档|分类)|\b(?:organize|move|rename|reorganize)\b/.test(
+    normalized,
+  )
+    ? 'organize'
+    : 'answer'
 }
