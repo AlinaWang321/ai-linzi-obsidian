@@ -177,16 +177,24 @@ const consultationTimeline = {
     '| 月份 | 场次 | 累计 |',
     '| --- | ---: | ---: |',
     '| 2026年8月 | 7 | 274 |',
+    '| 2026.08.12 | 12:00 | A 第一次商业私教课 |',
+    '| 2026.08.11 | 10:00 | B 第二次私教课 |',
+    '| 2026.08.10 | 09:00 | C 测评咨询 |',
   ].join('\n'),
 }
 const allConsultationFact = core.buildVaultLocalFact(
   '合伙人的私教咨询有多少场',
   [consultationTimeline],
 )
-assert.equal(allConsultationFact?.count, 274)
+assert.equal(allConsultationFact?.count, 2)
 assert.equal(allConsultationFact?.matchedDocuments[0]?.path, consultationTimeline.path)
 assert.match(allConsultationFact?.text ?? '', /权威汇总/)
-assert.match(allConsultationFact?.text ?? '', /不等同于只筛选标题含“商业私教课”的子集/)
+assert.match(allConsultationFact?.text ?? '', /不包含测评、实操营发售咨询或普通沟通/)
+const allTypesConsultationFact = core.buildVaultLocalFact(
+  '合伙人的全部咨询一共有多少场',
+  [consultationTimeline],
+)
+assert.equal(allTypesConsultationFact?.count, 274)
 assert.equal(core.isConsultationCountQuestion('合伙人的私教咨询有多少场'), true)
 assert.equal(core.isConsultationCountQuestion('帮我总结一次私教咨询'), false)
 
@@ -194,8 +202,8 @@ const summaryMonthlyFact = core.buildVaultLocalFact(
   '2026年8月一共有多少场私教咨询',
   [consultationTimeline],
 )
-assert.equal(summaryMonthlyFact?.count, 7)
-assert.match(summaryMonthlyFact?.text ?? '', /2026年8月共 7 场咨询/)
+assert.equal(summaryMonthlyFact?.count, 2)
+assert.match(summaryMonthlyFact?.text ?? '', /2026年8月的明细中共 2 场私教/)
 
 const localSearch = await readFile(new URL('../src/vault-search.ts', import.meta.url), 'utf8')
 const localAgent = await readFile(new URL('../src/vault-agent.ts', import.meta.url), 'utf8')

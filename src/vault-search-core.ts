@@ -125,6 +125,9 @@ export function buildVaultLocalFact(
     const path = normalizePath(doc.path)
     if (!path) continue
     if (!isConsultationTranscriptPath(`${doc.path} ${doc.filename}`)) continue
+    if (target.privateOnly && !/私教/.test(`${doc.path} ${doc.filename}`.normalize('NFKC'))) {
+      continue
+    }
     if (
       target.year !== undefined &&
       target.month !== undefined &&
@@ -143,6 +146,7 @@ export function buildVaultLocalFact(
     target.year !== undefined && target.month !== undefined
       ? `${target.year}年${target.month}月`
       : '全部已落盘记录中'
+  const categoryLabel = target.privateOnly ? '私教逐字稿' : '咨询逐字稿'
   const exampleText = examples.length > 0 ? ` 命中文件示例：${examples.join('；')}。` : ''
   return {
     kind: 'consultation-session-count',
@@ -151,8 +155,10 @@ export function buildVaultLocalFact(
     count: matchedDocuments.length,
     text:
       `Vault 本地全量统计：按文件名和路径识别咨询逐字稿并去重，${scopeLabel}共有 ` +
-      `${matchedDocuments.length} 场咨询逐字稿。${exampleText}` +
-      '该数字只统计已保存为咨询/私教/测评/访谈/沟通逐字稿或转写稿的文件，不包含未落盘的咨询。',
+      `${matchedDocuments.length} 场${categoryLabel}。${exampleText}` +
+      (target.privateOnly
+        ? '该数字只统计文件名或路径明确含“私教”的已落盘逐字稿，不包含测评、普通沟通和未落盘的私教。'
+        : '该数字只统计已保存为咨询/私教/测评/访谈/沟通逐字稿或转写稿的文件，不包含未落盘的咨询。'),
     matchedDocuments,
   }
 }
@@ -160,6 +166,7 @@ export function buildVaultLocalFact(
 interface ConsultationCountTarget {
   year?: number
   month?: number
+  privateOnly: boolean
 }
 
 function parseConsultationCountQuery(
@@ -169,7 +176,10 @@ function parseConsultationCountQuery(
   if (!/(?:多少|几\s*(?:场|次|份|篇|个)|数量|统计|一共|总共)/.test(normalized)) return undefined
   if (!/(?:咨询|私教|测评|访谈|沟通)/.test(normalized)) return undefined
   const date = normalized.match(/((?:19|20)\d{2})\s*(?:年|[./_-])\s*(1[0-2]|0?[1-9])\s*(?:月|月份)?/)
-  return date ? { year: Number(date[1]), month: Number(date[2]) } : {}
+  const privateOnly = /私教/.test(normalized)
+  return date
+    ? { year: Number(date[1]), month: Number(date[2]), privateOnly }
+    : { privateOnly }
 }
 
 export function isConsultationCountQuestion(query: string): boolean {
@@ -186,7 +196,27 @@ function buildConsultationSummaryFact(
   for (const doc of candidates) {
     let count: number | undefined
     let scopeLabel = '全部记录'
-    if (target.year !== undefined && target.month !== undefined) {
+    if (target.privateOnly) {
+      const detailRows = doc.text.split('\n').filter((line) => {
+        const date = line.match(
+          /^\s*\|\s*((?:19|20)\d{2})\.(0?[1-9]|1[0-2])\.(0?[1-9]|[12]\d|3[01])\s*\|/,
+        )
+        if (!date || !/私教/.test(line)) return false
+        return (
+          target.year === undefined ||
+          target.month === undefined ||
+          (Number(date[1]) === target.year && Number(date[2]) === target.month)
+        )
+      })
+      const hasDatedDetailRows = /^\s*\|\s*(?:19|20)\d{2}\.\d{1,2}\.\d{1,2}\s*\|/m.test(
+        doc.text,
+      )
+      if (hasDatedDetailRows) count = detailRows.length
+      scopeLabel =
+        target.year !== undefined && target.month !== undefined
+          ? `${target.year}年${target.month}月的明细中`
+          : '全部日期明细中'
+    } else if (target.year !== undefined && target.month !== undefined) {
       const row = doc.text.match(
         new RegExp(
           `^\\s*\\|\\s*${target.year}\\s*年\\s*0?${target.month}\\s*月\\s*\\|\\s*(\\d+)\\s*\\|`,
@@ -206,9 +236,11 @@ function buildConsultationSummaryFact(
       month: target.month,
       count: count as number,
       text:
-        `Vault 本地权威汇总：读取「${doc.filename}」，${scopeLabel}共 ` +
-        `${count} 场咨询。统计口径以该时间线汇总为准，包含汇总中记录的各种咨询类型，` +
-        '不等同于只筛选标题含“商业私教课”的子集；如汇总文件尚未更新，最新未入档记录不会包含在内。',
+        `Vault 本地权威汇总：读取「${doc.filename}」，${scopeLabel}共 ${count} 场` +
+        (target.privateOnly
+          ? '私教。按带日期的明细行中明确含“私教”的记录统计，不包含测评、实操营发售咨询或普通沟通；'
+          : '咨询。统计口径包含该时间线汇总中记录的各种咨询类型；') +
+        '如汇总文件尚未更新，最新未入档记录不会包含在内。',
       matchedDocuments: [doc],
     }
   }
