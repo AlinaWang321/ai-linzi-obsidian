@@ -109,8 +109,9 @@ export function buildVaultLocalFact(
   query: string,
   documents: VaultSearchDocument[],
   excludedPaths: string[] = [],
+  nowMs = Date.now(),
 ): VaultLocalFact | undefined {
-  const target = parseConsultationCountQuery(query)
+  const target = parseConsultationCountQuery(query, nowMs)
   if (!target) return undefined
   const excludedPathSet = new Set(excludedPaths.map(normalizePath))
   const eligibleDocuments = documents.filter((doc) => {
@@ -171,19 +172,52 @@ interface ConsultationCountTarget {
 
 function parseConsultationCountQuery(
   query: string,
+  nowMs = Date.now(),
 ): ConsultationCountTarget | undefined {
   const normalized = query.normalize('NFKC')
   if (!/(?:多少|几\s*(?:场|次|份|篇|个)|数量|统计|一共|总共)/.test(normalized)) return undefined
   if (!/(?:咨询|私教|测评|访谈|沟通)/.test(normalized)) return undefined
-  const date = normalized.match(/((?:19|20)\d{2})\s*(?:年|[./_-])\s*(1[0-2]|0?[1-9])\s*(?:月|月份)?/)
+  const now = new Date(nowMs)
+  const currentYear = now.getFullYear()
+  const currentMonth = now.getMonth() + 1
+  const explicitDate = normalized.match(
+    /((?:19|20)\d{2})\s*(?:年|[./_-])\s*(1[0-2]|0?[1-9])\s*(?:月|月份)?/,
+  )
   const privateOnly = /私教/.test(normalized)
-  return date
-    ? { year: Number(date[1]), month: Number(date[2]), privateOnly }
-    : { privateOnly }
+  if (explicitDate) {
+    return {
+      year: Number(explicitDate[1]),
+      month: Number(explicitDate[2]),
+      privateOnly,
+    }
+  }
+  if (/(?:上个月|上月)/.test(normalized)) {
+    const previous = new Date(currentYear, currentMonth - 2, 1)
+    return {
+      year: previous.getFullYear(),
+      month: previous.getMonth() + 1,
+      privateOnly,
+    }
+  }
+  if (/(?:本月|这个月|当月)/.test(normalized)) {
+    return { year: currentYear, month: currentMonth, privateOnly }
+  }
+  const mentionedMonth = normalized.match(
+    /(?:^|[^\d])((?:1[0-2]|0?[1-9]))\s*月(?:份)?(?!个)/,
+  )
+  if (mentionedMonth) {
+    const relativeYear = /去年/.test(normalized)
+      ? currentYear - 1
+      : currentYear
+    return { year: relativeYear, month: Number(mentionedMonth[1]), privateOnly }
+  }
+  if (/去年/.test(normalized)) return { year: currentYear - 1, privateOnly }
+  if (/今年/.test(normalized)) return { year: currentYear, privateOnly }
+  return { privateOnly }
 }
 
-export function isConsultationCountQuestion(query: string): boolean {
-  return Boolean(parseConsultationCountQuery(query))
+export function isConsultationCountQuestion(query: string, nowMs = Date.now()): boolean {
+  return Boolean(parseConsultationCountQuery(query, nowMs))
 }
 
 function buildConsultationSummaryFact(
@@ -203,9 +237,8 @@ function buildConsultationSummaryFact(
         )
         if (!date || !/私教/.test(line)) return false
         return (
-          target.year === undefined ||
-          target.month === undefined ||
-          (Number(date[1]) === target.year && Number(date[2]) === target.month)
+          (target.year === undefined || Number(date[1]) === target.year) &&
+          (target.month === undefined || Number(date[2]) === target.month)
         )
       })
       const hasDatedDetailRows = /^\s*\|\s*(?:19|20)\d{2}\.\d{1,2}\.\d{1,2}\s*\|/m.test(
@@ -215,6 +248,8 @@ function buildConsultationSummaryFact(
       scopeLabel =
         target.year !== undefined && target.month !== undefined
           ? `${target.year}年${target.month}月的明细中`
+          : target.year !== undefined
+            ? `${target.year}年的明细中`
           : '全部日期明细中'
     } else if (target.year !== undefined && target.month !== undefined) {
       const row = doc.text.match(
@@ -225,6 +260,17 @@ function buildConsultationSummaryFact(
       )
       if (row) count = Number(row[1])
       scopeLabel = `${target.year}年${target.month}月`
+    } else if (target.year !== undefined) {
+      const monthRows = [...doc.text.matchAll(
+        new RegExp(
+          `^\\s*\\|\\s*${target.year}\\s*年\\s*(?:1[0-2]|0?[1-9])\\s*月\\s*\\|\\s*(\\d+)\\s*\\|`,
+          'gm',
+        ),
+      )]
+      if (monthRows.length > 0) {
+        count = monthRows.reduce((sum, row) => sum + Number(row[1]), 0)
+      }
+      scopeLabel = `${target.year}年`
     } else {
       const total = doc.text.match(/总计\s*[：:]?\s*\*{0,2}\s*(\d+)\s*场(?:咨询|私教)/)
       if (total) count = Number(total[1])

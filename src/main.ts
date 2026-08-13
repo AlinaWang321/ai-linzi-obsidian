@@ -91,6 +91,7 @@ import {
   detectVaultAgentIntent,
   extractVaultOrganizePlan,
   extractVaultToolCalls,
+  deterministicVaultFactAnswer,
   namespaceVaultToolCalls,
   operationLabel,
   vaultAnswerRetryReason,
@@ -2666,6 +2667,10 @@ class ChatView extends ItemView {
       ])
       toolResults.push(...seeded.results)
       sources.push(...seeded.sources)
+      const localFactAnswer = deterministicVaultFactAnswer(seeded.results)
+      if (localFactAnswer) {
+        return { text: localFactAnswer, sources }
+      }
     }
 
     for (let round = 0; round < VAULT_AGENT_MAX_ROUNDS; round++) {

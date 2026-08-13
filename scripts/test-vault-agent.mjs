@@ -37,6 +37,38 @@ assert.equal(
   'deferred_answer',
 )
 assert.equal(
+  core.vaultAnswerRetryReason(
+    '8月份我做了多少场合伙人私教咨询',
+    '我查到的权威汇总里，8月份没有直接给出月度数字；目前只能确认累计统计口径里有187场私教咨询，但这不是8月单月数据。\n\n我继续按8月的逐条咨询记录核对，先把合伙人私教和测评、实操营咨询分开，再去重。',
+  ),
+  'deferred_answer',
+)
+assert.equal(
+  core.deterministicVaultFactAnswer([
+    {
+      callId: 'seed-consultation-count',
+      name: 'vault_search',
+      ok: true,
+      output: JSON.stringify({
+        fact: { filename: 'Vault 本地统计', excerpt: '2026年8月的明细中共 7 场私教。' },
+        matches: [],
+      }),
+    },
+  ]),
+  '2026年8月的明细中共 7 场私教。',
+)
+assert.equal(
+  core.deterministicVaultFactAnswer([
+    {
+      callId: 'search',
+      name: 'vault_search',
+      ok: true,
+      output: JSON.stringify({ matches: [{ filename: '普通搜索.md' }] }),
+    },
+  ]),
+  undefined,
+)
+assert.equal(
   core.vaultAnswerRetryReason('合伙人的私教咨询有多少场', '我找到了相关记录。'),
   'missing_count',
 )

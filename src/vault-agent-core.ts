@@ -50,6 +50,21 @@ export interface VaultPlanExtraction {
 
 export type VaultAnswerRetryReason = 'deferred_answer' | 'missing_count'
 
+/** 只提取插件本机工具明确返回的确定性 fact；普通搜索片段绝不能走直答。 */
+export function deterministicVaultFactAnswer(
+  results: VaultAgentToolResult[],
+): string | undefined {
+  for (const result of results) {
+    if (!result.ok || result.name !== 'vault_search') continue
+    const parsed = safeJsonObject(result.output)
+    const fact = parsed?.fact
+    if (!fact || typeof fact !== 'object' || Array.isArray(fact)) continue
+    const excerpt = shortText((fact as Record<string, unknown>).excerpt, 4_000)
+    if (excerpt) return excerpt
+  }
+  return undefined
+}
+
 const TOOL_BLOCK_RE =
   /<<<VAULT_TOOL_CALLS>>>\s*([\s\S]*?)\s*<<<VAULT_TOOL_CALLS_END>>>/g
 const PLAN_BLOCK_RE =
@@ -258,6 +273,9 @@ export function vaultAnswerRetryReason(
       normalized,
     ) ||
     /^(?:我先|接下来|下一步|稍后).{0,100}(?:查|检索|核对|去重|统计|检查|读取|翻阅)[。！.!]?$/.test(
+      normalized,
+    ) ||
+    /(?:^|[。！；;])\s*(?:我)?(?:继续|接着).{0,180}(?:查|检索|核对|统计|检查|读取|翻阅).{0,180}(?:再|然后|之后).{0,80}(?:去重|核对|统计|确认|回答)[。！.!]?$/.test(
       normalized,
     )
   if (deferred) return 'deferred_answer'

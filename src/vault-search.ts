@@ -113,14 +113,14 @@ export class LocalVaultSearch {
     }
     // 咨询场次是确定性统计：先只读可能的汇总真相源；没有可解析汇总时，
     // 仅按全部文件的路径/文件名去重。大 Vault 不必为一个数字解析所有 PDF/DOCX 正文。
-    if (isConsultationCountQuestion(query)) {
+    if (isConsultationCountQuestion(query, options.nowMs)) {
       const summaryFiles = files.filter((file) =>
         isConsultationSummaryPath(`${file.path} ${file.name}`),
       )
       const summaryDocuments = (
         await Promise.all(summaryFiles.map((file) => this.readDocument(file)))
       ).filter((doc): doc is VaultSearchDocument => Boolean(doc))
-      const summaryFact = buildVaultLocalFact(query, summaryDocuments)
+      const summaryFact = buildVaultLocalFact(query, summaryDocuments, [], options.nowMs)
       if (summaryFact?.text.startsWith('Vault 本地权威汇总')) {
         return responseFromLocalFact(summaryFact, options.maxSources)
       }
@@ -130,7 +130,7 @@ export class LocalVaultSearch {
         text: '',
         mtime: file.stat.mtime,
       }))
-      const inventoryFact = buildVaultLocalFact(query, metadataDocuments)
+      const inventoryFact = buildVaultLocalFact(query, metadataDocuments, [], options.nowMs)
       if (inventoryFact) return responseFromLocalFact(inventoryFact, options.maxSources)
     }
     // 大型 Vault 可能有数千篇笔记。文本文件批量读取，PDF/DOCX 只开两个并发，
@@ -151,7 +151,7 @@ export class LocalVaultSearch {
     )
     // 聚合统计必须覆盖整个 Vault，不能因为当前笔记已另行附带就漏算这一场。
     // 普通片段搜索仍由 searchVaultDocuments 使用 excludedPaths 去重。
-    const fact = buildVaultLocalFact(query, availableDocuments)
+    const fact = buildVaultLocalFact(query, availableDocuments, [], options.nowMs)
     if (fact) {
       return responseFromLocalFact(fact, options.maxSources)
     }

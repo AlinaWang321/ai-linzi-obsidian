@@ -205,6 +205,32 @@ const summaryMonthlyFact = core.buildVaultLocalFact(
 assert.equal(summaryMonthlyFact?.count, 2)
 assert.match(summaryMonthlyFact?.text ?? '', /2026年8月的明细中共 2 场私教/)
 
+const omittedYearFact = core.buildVaultLocalFact(
+  '8月份我做了多少场合伙人私教咨询',
+  [consultationTimeline],
+  [],
+  new Date(2026, 7, 13, 15, 55).getTime(),
+)
+assert.equal(omittedYearFact?.year, 2026)
+assert.equal(omittedYearFact?.month, 8)
+assert.equal(omittedYearFact?.count, 2)
+assert.match(omittedYearFact?.text ?? '', /2026年8月的明细中共 2 场私教/)
+
+const previousMonthFact = core.buildVaultLocalFact(
+  '上个月我做了多少场合伙人私教咨询',
+  [
+    {
+      ...consultationTimeline,
+      text: `${consultationTimeline.text}\n| 2026.07.09 | 10:00 | D 第一次商业私教课 |`,
+    },
+  ],
+  [],
+  new Date(2026, 7, 13, 15, 55).getTime(),
+)
+assert.equal(previousMonthFact?.year, 2026)
+assert.equal(previousMonthFact?.month, 7)
+assert.equal(previousMonthFact?.count, 1)
+
 const localSearch = await readFile(new URL('../src/vault-search.ts', import.meta.url), 'utf8')
 const localAgent = await readFile(new URL('../src/vault-agent.ts', import.meta.url), 'utf8')
 assert.match(localSearch, /\.getFiles\(\)/)
@@ -229,6 +255,7 @@ assert.match(main, /ai-linzi-vault-source-link/)
 assert.match(main, /Agent 模式只按模型明确提出的工具调用读取/)
 assert.match(main, /seed-consultation-count/)
 assert.match(main, /本机全量统计咨询记录并去重/)
+assert.match(main, /deterministicVaultFactAnswer\(seeded\.results\)/)
 assert.match(styles, /button\.ai-linzi-vault-source-link/)
 assert.match(styles, /color: #0057ff/)
 assert.match(styles, /border: 0/)
