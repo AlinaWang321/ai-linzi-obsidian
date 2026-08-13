@@ -26,9 +26,9 @@ export interface VaultSearchResult {
 }
 
 export interface VaultLocalFact {
-  kind: 'monthly-consultation-transcript-count'
-  year: number
-  month: number
+  kind: 'consultation-session-count'
+  year?: number
+  month?: number
   count: number
   text: string
   matchedDocuments: VaultSearchDocument[]
@@ -102,22 +102,36 @@ export function isPathInsideFolder(path: string, folder: string): boolean {
 
 /**
  * 能由本机文件列表确定回答的统计问题，不交给模型从前几条片段里猜。
- * 当前只覆盖“某年某月有多少场咨询逐字稿”；没有日期或统计意图时返回 undefined。
+ * 覆盖“某年某月有多少场咨询”与“全部有多少场咨询”。优先读取 Vault 内已有的
+ * 咨询时间线/汇总真相源；没有汇总时，才按逐字稿文件名和路径全量去重统计。
  */
 export function buildVaultLocalFact(
   query: string,
   documents: VaultSearchDocument[],
   excludedPaths: string[] = [],
 ): VaultLocalFact | undefined {
-  const target = parseMonthlyConsultationCountQuery(query)
+  const target = parseConsultationCountQuery(query)
   if (!target) return undefined
   const excludedPathSet = new Set(excludedPaths.map(normalizePath))
-  const unique = new Map<string, VaultSearchDocument>()
-  for (const doc of documents) {
+  const eligibleDocuments = documents.filter((doc) => {
     const path = normalizePath(doc.path)
-    if (!path || excludedPathSet.has(path) || isVaultSearchPathExcluded(path)) continue
+    return Boolean(path && !excludedPathSet.has(path) && !isVaultSearchPathExcluded(path))
+  })
+  const summaryFact = buildConsultationSummaryFact(target, eligibleDocuments)
+  if (summaryFact) return summaryFact
+
+  const unique = new Map<string, VaultSearchDocument>()
+  for (const doc of eligibleDocuments) {
+    const path = normalizePath(doc.path)
+    if (!path) continue
     if (!isConsultationTranscriptPath(`${doc.path} ${doc.filename}`)) continue
-    if (!pathMatchesYearMonth(`${doc.path} ${doc.filename}`, target.year, target.month)) continue
+    if (
+      target.year !== undefined &&
+      target.month !== undefined &&
+      !pathMatchesYearMonth(`${doc.path} ${doc.filename}`, target.year, target.month)
+    ) {
+      continue
+    }
     const key = consultationSessionKey(doc)
     if (!unique.has(key)) unique.set(key, doc)
   }
@@ -125,30 +139,86 @@ export function buildVaultLocalFact(
     left.path.localeCompare(right.path),
   )
   const examples = matchedDocuments.slice(0, 8).map((doc) => doc.filename)
-  const monthLabel = `${target.year}年${target.month}月`
+  const scopeLabel =
+    target.year !== undefined && target.month !== undefined
+      ? `${target.year}年${target.month}月`
+      : '全部已落盘记录中'
   const exampleText = examples.length > 0 ? ` 命中文件示例：${examples.join('；')}。` : ''
   return {
-    kind: 'monthly-consultation-transcript-count',
+    kind: 'consultation-session-count',
     year: target.year,
     month: target.month,
     count: matchedDocuments.length,
     text:
-      `Vault 本地统计：按文件名和路径中的日期识别并去重，${monthLabel}共有 ` +
+      `Vault 本地全量统计：按文件名和路径识别咨询逐字稿并去重，${scopeLabel}共有 ` +
       `${matchedDocuments.length} 场咨询逐字稿。${exampleText}` +
       '该数字只统计已保存为咨询/私教/测评/访谈/沟通逐字稿或转写稿的文件，不包含未落盘的咨询。',
     matchedDocuments,
   }
 }
 
-function parseMonthlyConsultationCountQuery(
+interface ConsultationCountTarget {
+  year?: number
+  month?: number
+}
+
+function parseConsultationCountQuery(
   query: string,
-): { year: number; month: number } | undefined {
+): ConsultationCountTarget | undefined {
   const normalized = query.normalize('NFKC')
-  const date = normalized.match(/((?:19|20)\d{2})\s*(?:年|[./_-])\s*(1[0-2]|0?[1-9])\s*(?:月|月份)?/)
-  if (!date) return undefined
   if (!/(?:多少|几\s*(?:场|次|份|篇|个)|数量|统计|一共|总共)/.test(normalized)) return undefined
   if (!/(?:咨询|私教|测评|访谈|沟通)/.test(normalized)) return undefined
-  return { year: Number(date[1]), month: Number(date[2]) }
+  const date = normalized.match(/((?:19|20)\d{2})\s*(?:年|[./_-])\s*(1[0-2]|0?[1-9])\s*(?:月|月份)?/)
+  return date ? { year: Number(date[1]), month: Number(date[2]) } : {}
+}
+
+export function isConsultationCountQuestion(query: string): boolean {
+  return Boolean(parseConsultationCountQuery(query))
+}
+
+function buildConsultationSummaryFact(
+  target: ConsultationCountTarget,
+  documents: VaultSearchDocument[],
+): VaultLocalFact | undefined {
+  const candidates = documents
+    .filter((doc) => isConsultationSummaryPath(`${doc.path} ${doc.filename}`))
+    .sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'))
+  for (const doc of candidates) {
+    let count: number | undefined
+    let scopeLabel = '全部记录'
+    if (target.year !== undefined && target.month !== undefined) {
+      const row = doc.text.match(
+        new RegExp(
+          `^\\s*\\|\\s*${target.year}\\s*年\\s*0?${target.month}\\s*月\\s*\\|\\s*(\\d+)\\s*\\|`,
+          'm',
+        ),
+      )
+      if (row) count = Number(row[1])
+      scopeLabel = `${target.year}年${target.month}月`
+    } else {
+      const total = doc.text.match(/总计\s*[：:]?\s*\*{0,2}\s*(\d+)\s*场(?:咨询|私教)/)
+      if (total) count = Number(total[1])
+    }
+    if (!Number.isFinite(count)) continue
+    return {
+      kind: 'consultation-session-count',
+      year: target.year,
+      month: target.month,
+      count: count as number,
+      text:
+        `Vault 本地权威汇总：读取「${doc.filename}」，${scopeLabel}共 ` +
+        `${count} 场咨询。统计口径以该时间线汇总为准，包含汇总中记录的各种咨询类型，` +
+        '不等同于只筛选标题含“商业私教课”的子集；如汇总文件尚未更新，最新未入档记录不会包含在内。',
+      matchedDocuments: [doc],
+    }
+  }
+  return undefined
+}
+
+export function isConsultationSummaryPath(value: string): boolean {
+  return /咨询时间线.*(?:完整档案|汇总)|(?:咨询|私教).*(?:完整档案|总表|统计汇总)/.test(
+    value.normalize('NFKC'),
+  )
 }
 
 function isConsultationTranscriptPath(value: string): boolean {

@@ -84,7 +84,7 @@ import {
   type LongDocumentChunk,
 } from './long-document'
 import { LocalVaultSearch } from './vault-search'
-import { type VaultSearchResult } from './vault-search-core'
+import { isConsultationCountQuestion, type VaultSearchResult } from './vault-search-core'
 import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
   VAULT_AGENT_MAX_ROUNDS,
@@ -93,6 +93,8 @@ import {
   extractVaultToolCalls,
   namespaceVaultToolCalls,
   operationLabel,
+  vaultAnswerRetryReason,
+  type VaultAnswerRetryReason,
   type VaultAgentToolResult,
   type VaultAgentIntent,
   type VaultOrganizePlan,
@@ -2183,6 +2185,7 @@ class ChatView extends ItemView {
 
       if (useVaultAgent) {
         const agentResult = await this.runVaultAgentLoop({
+          question: text,
           noteContext,
           authorizedContent,
           localSkill: localSkillRequest,
@@ -2622,6 +2625,7 @@ class ChatView extends ItemView {
    * 工具协议与结果不会加入插件消息，也不会写入云端历史。
    */
   private async runVaultAgentLoop(input: {
+    question: string
     noteContext: { filename: string; text: string; path: string } | undefined
     authorizedContent:
       | { items: { filename: string; path: string; text: string }[] }
@@ -2647,6 +2651,22 @@ class ChatView extends ItemView {
     const toolResults: VaultAgentToolResult[] = []
     const sources: VaultMessageSource[] = []
     let lastText = ''
+    let pendingRetryReason: VaultAnswerRetryReason | undefined
+
+    // 咨询场次属于本机可确定性统计：用户开启 Vault 搜索后直接扫描全量索引，
+    // 不等待模型碰运气决定是否调用工具，也不把前 8 条搜索结果当作总数。
+    if (isConsultationCountQuestion(input.question)) {
+      new Notice('AI霖子正在本机全量统计咨询记录并去重…', 2500)
+      const seeded = await this.plugin.vaultAgent.executeReadCalls([
+        {
+          id: 'seed-consultation-count',
+          name: 'vault_search',
+          arguments: { query: input.question, maxResults: 8 },
+        },
+      ])
+      toolResults.push(...seeded.results)
+      sources.push(...seeded.sources)
+    }
 
     for (let round = 0; round < VAULT_AGENT_MAX_ROUNDS; round++) {
       new Notice(
@@ -2672,6 +2692,7 @@ class ChatView extends ItemView {
             intent: input.intent,
             round,
             canRequestTools: round < VAULT_AGENT_MAX_ROUNDS - 1,
+            retryReason: pendingRetryReason,
             toolResults,
           },
         },
@@ -2691,6 +2712,20 @@ class ChatView extends ItemView {
           // Luna 偶尔只说“接下来检查”却不调用工具；下一轮由后端注入协议纠正。
           continue
         }
+        if (input.intent === 'answer') {
+          const retryReason = vaultAnswerRetryReason(input.question, lastText)
+          if (retryReason) {
+            if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+              throw new Error(
+                retryReason === 'deferred_answer'
+                  ? 'AI 只承诺稍后处理，没有在安全轮次内给出最终答案，请重试'
+                  : 'AI 没有在安全轮次内给出明确数量或可信的不足说明，请重试',
+              )
+            }
+            pendingRetryReason = retryReason
+            continue
+          }
+        }
         return { text: lastText, sources }
       }
       if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
@@ -2699,6 +2734,7 @@ class ChatView extends ItemView {
       const executed = await this.plugin.vaultAgent.executeReadCalls(
         namespaceVaultToolCalls(toolRequest.calls, round),
       )
+      pendingRetryReason = undefined
       toolResults.push(...executed.results)
       sources.push(...executed.sources)
     }

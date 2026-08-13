@@ -1,11 +1,14 @@
 import { App, TFile } from 'obsidian'
 import {
   buildVaultLocalFact,
+  isConsultationCountQuestion,
+  isConsultationSummaryPath,
   isPathInsideFolder,
   isVaultSearchPathExcluded,
   searchVaultDocuments,
   shouldSearchVault,
   type VaultSearchDocument,
+  type VaultLocalFact,
   type VaultSearchOptions,
   type VaultSearchResult,
 } from './vault-search-core'
@@ -30,6 +33,30 @@ export interface LocalVaultSearchResponse {
     sourceId: string
     filename: string
     excerpt: string
+  }
+}
+
+function responseFromLocalFact(
+  fact: VaultLocalFact,
+  maxSourcesValue: number | undefined,
+): LocalVaultSearchResponse {
+  const maxSources = Math.max(0, Math.min((maxSourcesValue ?? 6) - 1, 5))
+  const results = fact.matchedDocuments.slice(0, maxSources).map((doc, index) => ({
+    sourceId: `V${index + 2}`,
+    path: doc.path,
+    filename: doc.filename,
+    excerpt:
+      doc.text.trim().slice(0, 240) ||
+      '本地文件名与路径符合咨询记录全量统计条件。',
+    score: 1_000,
+  }))
+  return {
+    results,
+    fact: {
+      sourceId: 'V1',
+      filename: 'Vault 本地统计',
+      excerpt: fact.text,
+    },
   }
 }
 
@@ -84,6 +111,28 @@ export class LocalVaultSearch {
     for (const path of this.cache.keys()) {
       if (!livePaths.has(path)) this.cache.delete(path)
     }
+    // 咨询场次是确定性统计：先只读可能的汇总真相源；没有可解析汇总时，
+    // 仅按全部文件的路径/文件名去重。大 Vault 不必为一个数字解析所有 PDF/DOCX 正文。
+    if (isConsultationCountQuestion(query)) {
+      const summaryFiles = files.filter((file) =>
+        isConsultationSummaryPath(`${file.path} ${file.name}`),
+      )
+      const summaryDocuments = (
+        await Promise.all(summaryFiles.map((file) => this.readDocument(file)))
+      ).filter((doc): doc is VaultSearchDocument => Boolean(doc))
+      const summaryFact = buildVaultLocalFact(query, summaryDocuments)
+      if (summaryFact?.text.startsWith('Vault 本地权威汇总')) {
+        return responseFromLocalFact(summaryFact, options.maxSources)
+      }
+      const metadataDocuments = files.map((file) => ({
+        path: file.path,
+        filename: file.name,
+        text: '',
+        mtime: file.stat.mtime,
+      }))
+      const inventoryFact = buildVaultLocalFact(query, metadataDocuments)
+      if (inventoryFact) return responseFromLocalFact(inventoryFact, options.maxSources)
+    }
     // 大型 Vault 可能有数千篇笔记。文本文件批量读取，PDF/DOCX 只开两个并发，
     // 避免大量二进制解析同时抢占 Obsidian 的 CPU 和内存。
     const documents: (VaultSearchDocument | null)[] = []
@@ -104,24 +153,7 @@ export class LocalVaultSearch {
     // 普通片段搜索仍由 searchVaultDocuments 使用 excludedPaths 去重。
     const fact = buildVaultLocalFact(query, availableDocuments)
     if (fact) {
-      const maxSources = Math.max(0, Math.min((options.maxSources ?? 6) - 1, 5))
-      const results = fact.matchedDocuments.slice(0, maxSources).map((doc, index) => ({
-        sourceId: `V${index + 2}`,
-        path: doc.path,
-        filename: doc.filename,
-        excerpt:
-          doc.text.trim().slice(0, 240) ||
-          '本地文件名与路径符合年月和咨询逐字稿统计条件。',
-        score: 1_000,
-      }))
-      return {
-        results,
-        fact: {
-          sourceId: 'V1',
-          filename: 'Vault 本地统计',
-          excerpt: fact.text,
-        },
-      }
+      return responseFromLocalFact(fact, options.maxSources)
     }
     return { results: searchVaultDocuments(query, availableDocuments, options) }
   }

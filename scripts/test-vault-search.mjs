@@ -168,7 +168,37 @@ const monthlyFact = core.buildVaultLocalFact(
 assert.equal(monthlyFact?.count, 2)
 assert.match(monthlyFact?.text ?? '', /2026年7月共有 2 场咨询逐字稿/)
 
+const consultationTimeline = {
+  path: '02_Wiki/学员档案/咨询时间线完整档案.md',
+  filename: '咨询时间线完整档案.md',
+  text: [
+    '# 咨询时间线完整档案（2025.02 - 2026.08.12）',
+    '> **总计：274场咨询，月均约18场**',
+    '| 月份 | 场次 | 累计 |',
+    '| --- | ---: | ---: |',
+    '| 2026年8月 | 7 | 274 |',
+  ].join('\n'),
+}
+const allConsultationFact = core.buildVaultLocalFact(
+  '合伙人的私教咨询有多少场',
+  [consultationTimeline],
+)
+assert.equal(allConsultationFact?.count, 274)
+assert.equal(allConsultationFact?.matchedDocuments[0]?.path, consultationTimeline.path)
+assert.match(allConsultationFact?.text ?? '', /权威汇总/)
+assert.match(allConsultationFact?.text ?? '', /不等同于只筛选标题含“商业私教课”的子集/)
+assert.equal(core.isConsultationCountQuestion('合伙人的私教咨询有多少场'), true)
+assert.equal(core.isConsultationCountQuestion('帮我总结一次私教咨询'), false)
+
+const summaryMonthlyFact = core.buildVaultLocalFact(
+  '2026年8月一共有多少场私教咨询',
+  [consultationTimeline],
+)
+assert.equal(summaryMonthlyFact?.count, 7)
+assert.match(summaryMonthlyFact?.text ?? '', /2026年8月共 7 场咨询/)
+
 const localSearch = await readFile(new URL('../src/vault-search.ts', import.meta.url), 'utf8')
+const localAgent = await readFile(new URL('../src/vault-agent.ts', import.meta.url), 'utf8')
 assert.match(localSearch, /\.getFiles\(\)/)
 assert.match(localSearch, /isLocalSearchExtension\(file\.extension\)/)
 assert.match(localSearch, /extractPdfText/)
@@ -178,11 +208,19 @@ assert.match(localSearch, /binaryFiles\.length; offset \+= 2/)
 assert.match(localSearch, /sourceId: 'V1'/)
 assert.match(localSearch, /sourceId: `V\$\{index \+ 2\}`/)
 assert.match(localSearch, /excludedFolders/)
+assert.match(localAgent, /fact: response\.fact/)
+assert.match(localAgent, /totalEntries: entries\.length/)
+assert.match(localAgent, /totalFiles/)
+assert.match(localAgent, /totalFolders/)
+assert.match(localAgent, /nextOffset/)
+assert.match(localAgent, /LIST_FOLDER_SCAN_MAX_ENTRIES = 20_000/)
 
 const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
 assert.match(main, /ai-linzi-vault-source-link/)
 assert.match(main, /Agent 模式只按模型明确提出的工具调用读取/)
+assert.match(main, /seed-consultation-count/)
+assert.match(main, /本机全量统计咨询记录并去重/)
 assert.match(styles, /button\.ai-linzi-vault-source-link/)
 assert.match(styles, /color: #0057ff/)
 assert.match(styles, /border: 0/)

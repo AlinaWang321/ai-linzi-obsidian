@@ -13,6 +13,8 @@ import {
 const TOOL_OUTPUT_MAX_CHARS = 20_000
 const READ_NOTE_MAX_CHARS = 16_000
 const LIST_FOLDER_MAX_ENTRIES = 160
+const LIST_FOLDER_SCAN_MAX_ENTRIES = 20_000
+const LIST_FOLDER_MAX_DEPTH = 12
 
 export interface VaultAgentExecution {
   results: VaultAgentToolResult[]
@@ -107,6 +109,12 @@ export class LocalVaultAgent {
       }
       return {
         query,
+        fact: response.fact
+          ? {
+              filename: response.fact.filename,
+              excerpt: response.fact.excerpt,
+            }
+          : undefined,
         matches: safeResults.map((result) => ({
           path: result.path,
           filename: result.filename,
@@ -120,7 +128,13 @@ export class LocalVaultAgent {
       const path = rawPath ? normalizeVaultRelativePath(rawPath) : ''
       if (rawPath && !path) throw new Error('文件夹路径不合法')
       if (path && this.protected(path)) throw new Error('该目录属于插件保护范围，不能读取')
-      const depth = clampInt(call.arguments.depth, 1, 1, 3)
+      const depth = clampInt(call.arguments.depth, 1, 1, LIST_FOLDER_MAX_DEPTH)
+      const offset = clampInt(
+        call.arguments.offset,
+        0,
+        0,
+        LIST_FOLDER_SCAN_MAX_ENTRIES,
+      )
       const maxEntries = clampInt(
         call.arguments.maxEntries,
         80,
@@ -135,11 +149,20 @@ export class LocalVaultAgent {
         size?: number
         modifiedAt?: number
       }> = []
+      let scanTruncated = false
       const walk = (folder: TFolder, level: number) => {
-        if (entries.length >= maxEntries || level > depth) return
+        if (entries.length >= LIST_FOLDER_SCAN_MAX_ENTRIES) {
+          scanTruncated = true
+          return
+        }
+        if (level > depth) return
         const children = [...folder.children].sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'))
         for (const child of children) {
-          if (entries.length >= maxEntries || this.protected(child.path)) continue
+          if (entries.length >= LIST_FOLDER_SCAN_MAX_ENTRIES) {
+            scanTruncated = true
+            break
+          }
+          if (this.protected(child.path)) continue
           if (child instanceof TFolder) {
             entries.push({ path: child.path, type: 'folder' })
             walk(child, level + 1)
@@ -154,7 +177,23 @@ export class LocalVaultAgent {
         }
       }
       walk(root, 1)
-      return { path: path || '/', depth, truncated: entries.length >= maxEntries, entries }
+      const page = entries.slice(offset, offset + maxEntries)
+      const nextOffset = offset + page.length < entries.length ? offset + page.length : null
+      const totalFiles = entries.filter((entry) => entry.type === 'file').length
+      const totalFolders = entries.length - totalFiles
+      return {
+        path: path || '/',
+        depth,
+        totalEntries: entries.length,
+        totalFiles,
+        totalFolders,
+        returnedEntries: page.length,
+        offset,
+        nextOffset,
+        truncated: nextOffset !== null || scanTruncated,
+        scanTruncated,
+        entries: page,
+      }
     }
 
     if (call.name === 'read_note') {

@@ -30,6 +30,33 @@ assert.equal(core.detectVaultAgentIntent('只读取，不要整理或移动任�
 assert.equal(core.detectVaultAgentIntent('总结这篇文章'), 'answer')
 
 assert.equal(
+  core.vaultAnswerRetryReason(
+    '合伙人的私教咨询有多少场',
+    '等我把重复沟通去重后，再给你准确场次。',
+  ),
+  'deferred_answer',
+)
+assert.equal(
+  core.vaultAnswerRetryReason('合伙人的私教咨询有多少场', '我找到了相关记录。'),
+  'missing_count',
+)
+assert.equal(
+  core.vaultAnswerRetryReason('合伙人的私教咨询有多少场', '共 274 场，统计到 2026 年 8 月 12 日。'),
+  undefined,
+)
+assert.equal(
+  core.vaultAnswerRetryReason('合伙人的私教咨询有多少场', '本轮找到了 8 个相关文件。'),
+  'missing_count',
+)
+assert.equal(
+  core.vaultAnswerRetryReason(
+    '合伙人的私教咨询有多少场',
+    '现有资料不足，无法确认准确场次；目前缺少 2024 年以前的记录。',
+  ),
+  undefined,
+)
+
+assert.equal(
   core.extractVaultToolCalls(`<<<VAULT_TOOL_CALLS>>>{"calls":[{"id":"x","name":"delete_file","arguments":{}}]}<<<VAULT_TOOL_CALLS_END>>>`).invalid,
   true,
 )

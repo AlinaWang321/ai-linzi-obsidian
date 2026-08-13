@@ -48,6 +48,8 @@ export interface VaultPlanExtraction {
   invalid: boolean
 }
 
+export type VaultAnswerRetryReason = 'deferred_answer' | 'missing_count'
+
 const TOOL_BLOCK_RE =
   /<<<VAULT_TOOL_CALLS>>>\s*([\s\S]*?)\s*<<<VAULT_TOOL_CALLS_END>>>/g
 const PLAN_BLOCK_RE =
@@ -233,4 +235,45 @@ export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   )
     ? 'organize'
     : 'answer'
+}
+
+function isVaultCountQuestion(text: string): boolean {
+  const normalized = text.normalize('NFKC').toLocaleLowerCase()
+  return /(?:多少|几\s*(?:场|次|份|篇|个|条)|数量|统计|一共|总共|合计)/.test(normalized)
+}
+
+/**
+ * 防止模型把“稍后再回答”或没有数字的统计承诺当成最终答案。
+ *
+ * 这里只做协议级完成校验，不判断答案是否正确；准确性仍由本机全量统计、
+ * list_folder/read_note 等确定性工具和最终证据共同保证。
+ */
+export function vaultAnswerRetryReason(
+  question: string,
+  answer: string,
+): VaultAnswerRetryReason | undefined {
+  const normalized = answer.normalize('NFKC').replace(/\s+/g, ' ').trim()
+  const deferred =
+    /(?:等我|待我|稍后|接下来|下一步|我先|我会继续).{0,120}(?:查|检索|核对|去重|统计|检查|读取|翻阅).{0,120}(?:再|然后|之后|后|就会).{0,80}(?:给你|告诉你|回复|回答|汇报|输出|准确|结果|结论|场次|数量)/.test(
+      normalized,
+    ) ||
+    /^(?:我先|接下来|下一步|稍后).{0,100}(?:查|检索|核对|去重|统计|检查|读取|翻阅)[。！.!]?$/.test(
+      normalized,
+    )
+  if (deferred) return 'deferred_answer'
+
+  if (!isVaultCountQuestion(question)) return undefined
+  const consultationQuestion = /(?:咨询|私教|辅导|多少\s*场|几\s*场)/.test(
+    question.normalize('NFKC'),
+  )
+  const hasCount = new RegExp(
+    `(?:\\d+|[零〇一二两三四五六七八九十百千万]+)\\s*(?:${
+      consultationQuestion ? '场|次' : '场|次|份|篇|个|条'
+    })`,
+  ).test(normalized)
+  const hasExplicitLimit =
+    /(?:无法|不能|资料不足|记录不足|未找到|没有找到|缺少).{0,80}(?:准确|统计|确认|判断|回答|场次|数量|记录|资料)/.test(
+      normalized,
+    )
+  return hasCount || hasExplicitLimit ? undefined : 'missing_count'
 }
