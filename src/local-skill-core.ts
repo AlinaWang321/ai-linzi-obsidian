@@ -182,6 +182,8 @@ export function buildLocalSkillDescriptor(
 }
 
 export function isLocalSkillListIntent(message: string): boolean {
+  const trimmed = message.trim()
+  if (/^\/skills?$/iu.test(trimmed)) return true
   const normalized = normalizeText(message)
   return [
     '我的本地skills',
@@ -198,8 +200,6 @@ export function isLocalSkillListIntent(message: string): boolean {
     'system里有哪些skills',
     'system里有哪些skill',
     'system里有哪些技能',
-    '/skills',
-    '/skill',
   ].some((intent) => normalized.includes(normalizeText(intent)))
 }
 

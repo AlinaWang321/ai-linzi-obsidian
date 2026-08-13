@@ -82,6 +82,12 @@ assert.equal(
 assert.equal(core.isLocalSkillListIntent('我有哪些本地技能？'), true)
 assert.equal(core.isLocalSkillListIntent('我有哪些技能？'), false)
 assert.equal(core.isLocalSkillListIntent('/skills'), true)
+assert.equal(core.isLocalSkillListIntent('/skill'), true)
+assert.equal(
+  core.isLocalSkillListIntent('用D5 本地 Skill 链路测试技能处理当前笔记'),
+  false,
+  '显式调用名称里包含“本地 Skill”时不能误判为查看技能清单',
+)
 assert.match(core.formatLocalSkillList([consultation, weekly]), /找到 2 个本地 Skill/)
 
 const duplicate = { ...consultation, path: 'system/skills/另一个.md' }
