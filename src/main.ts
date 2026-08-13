@@ -89,6 +89,7 @@ import {
   VAULT_AGENT_MAX_ROUNDS,
   extractVaultOrganizePlan,
   extractVaultToolCalls,
+  namespaceVaultToolCalls,
   operationLabel,
   type VaultAgentToolResult,
   type VaultOrganizePlan,
@@ -2621,7 +2622,9 @@ class ChatView extends ItemView {
       if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
         throw new Error('本次翻阅已达到安全轮次上限，请缩小范围后再试')
       }
-      const executed = await this.plugin.vaultAgent.executeReadCalls(toolRequest.calls)
+      const executed = await this.plugin.vaultAgent.executeReadCalls(
+        namespaceVaultToolCalls(toolRequest.calls, round),
+      )
       toolResults.push(...executed.results)
       sources.push(...executed.sources)
     }

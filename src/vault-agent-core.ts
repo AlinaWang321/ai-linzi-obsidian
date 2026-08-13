@@ -212,3 +212,14 @@ export function operationLabel(operation: VaultOrganizeOperation): string {
     ? `新建文件夹：${operation.path}`
     : `移动/重命名：${operation.from} → ${operation.to}`
 }
+
+/** 模型可能跨轮复用 ID；插件本机加轮次和序号后再累计回传。 */
+export function namespaceVaultToolCalls(
+  calls: VaultAgentToolCall[],
+  round: number,
+): VaultAgentToolCall[] {
+  return calls.map((call, index) => ({
+    ...call,
+    id: `r${round + 1}-${index + 1}-${call.id}`.slice(0, 64),
+  }))
+}

@@ -20,6 +20,12 @@ assert.equal(calls.calls.length, 2)
 assert.equal(calls.calls[0].name, 'vault_search')
 assert.equal(calls.cleanText, '准备继续查找。')
 
+const roundOne = core.namespaceVaultToolCalls(calls.calls, 0)
+const roundTwo = core.namespaceVaultToolCalls(calls.calls, 1)
+assert.equal(roundOne[0].id, 'r1-1-search-1')
+assert.equal(roundTwo[0].id, 'r2-1-search-1')
+assert.equal(new Set([...roundOne, ...roundTwo].map((call) => call.id)).size, 4)
+
 assert.equal(
   core.extractVaultToolCalls(`<<<VAULT_TOOL_CALLS>>>{"calls":[{"id":"x","name":"delete_file","arguments":{}}]}<<<VAULT_TOOL_CALLS_END>>>`).invalid,
   true,
