@@ -110,5 +110,29 @@ assert.equal(core.isProtectedVaultPath('system/skills/demo/SKILL.md'), true)
 assert.equal(core.isProtectedVaultPath('㊙️财务/收入.md'), false)
 assert.equal(core.isProtectedVaultPath('wiki/产品.md'), false)
 assert.equal(core.VAULT_AGENT_MAX_ROUNDS, 6)
+assert.equal(
+  core.isVaultAgentToolAllowed('read_skill_file', { vault: false, localSkill: true }),
+  true,
+)
+assert.equal(
+  core.isVaultAgentToolAllowed('read_note', { vault: false, localSkill: true }),
+  false,
+)
+assert.equal(
+  core.isVaultAgentToolAllowed('propose_skill_action', { vault: false, localSkill: true }),
+  true,
+)
+
+const skillRead = core.extractVaultToolCalls(`<<<VAULT_TOOL_CALLS>>>
+{"calls":[{"id":"skill-1","name":"read_skill_file","arguments":{"path":"references/workflow.md","offset":12000}}]}
+<<<VAULT_TOOL_CALLS_END>>>`)
+assert.equal(skillRead.invalid, false)
+assert.equal(skillRead.calls[0].name, 'read_skill_file')
+
+const actionProposal = core.extractVaultToolCalls(`<<<VAULT_TOOL_CALLS>>>
+{"calls":[{"id":"action-1","name":"propose_skill_action","arguments":{"label":"生成示例","program":"python","args":["$SKILL/scripts/demo.py"],"cwd":"$VAULT","writes":["$OUTPUT/demo.txt"]}}]}
+<<<VAULT_TOOL_CALLS_END>>>`)
+assert.equal(actionProposal.invalid, false)
+assert.equal(actionProposal.calls[0].name, 'propose_skill_action')
 
 console.log('vault agent protocol tests passed')

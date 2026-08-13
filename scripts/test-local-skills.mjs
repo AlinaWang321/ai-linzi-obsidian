@@ -89,6 +89,35 @@ assert.equal(
   '显式调用名称里包含“本地 Skill”时不能误判为查看技能清单',
 )
 assert.match(core.formatLocalSkillList([consultation, weekly]), /找到 2 个本地 Skill/)
+assert.equal(core.LOCAL_SKILL_MAX_CONTENT_CHARS, 12_000)
+assert.equal(core.LOCAL_SKILL_MAX_ENTRY_CHARS, 120_000)
+assert.equal(core.extendContiguousRead(0, 8_000, 2_000), 0, '跳到文件末尾不能算已读')
+assert.equal(core.extendContiguousRead(12_000, 12_000, 4_000), 16_000)
+assert.equal(core.extendContiguousRead(12_000, 10_000, 4_000), 14_000, '重叠读取可连续推进')
+assert.deepEqual(
+  core.localSkillLinkedPathCandidates(
+    '../../AI团队/工作流程/SOP/数字人口播视频制作SOP.md',
+    '05_System/Skills/alina-video-writer',
+    '05_System/Skills',
+  ),
+  ['05_System/AI团队/工作流程/SOP/数字人口播视频制作SOP.md'],
+)
+assert.deepEqual(
+  core.localSkillLinkedPathCandidates(
+    'references/style.md',
+    '05_System/Skills/demo',
+    '05_System/Skills',
+  ),
+  ['05_System/Skills/demo/references/style.md', 'references/style.md'],
+)
+assert.deepEqual(
+  core.localSkillLinkedPathCandidates(
+    '05_System/AI团队/工作流程/SOP/demo.md',
+    '05_System/Skills/demo',
+    '05_System/Skills',
+  ),
+  ['05_System/AI团队/工作流程/SOP/demo.md'],
+)
 
 const duplicate = { ...consultation, path: 'system/skills/另一个.md' }
 assert.equal(

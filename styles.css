@@ -2870,3 +2870,67 @@ button.ai-linzi-vault-source-link:focus-visible {
   color: var(--text-warning);
   font-size: 0.82em;
 }
+
+.ai-linzi-local-action-details {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 14px 0;
+}
+
+.ai-linzi-local-action-details dt {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.ai-linzi-local-action-details dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-linzi-local-action-code {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-local-action-warning {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.ai-linzi-local-run-card {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.ai-linzi-local-run-item + .ai-linzi-local-run-item {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.ai-linzi-local-run-outputs {
+  margin: 6px 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-local-run-outputs button {
+  display: block;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-accent);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}

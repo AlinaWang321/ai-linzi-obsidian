@@ -10,7 +10,52 @@
  */
 
 export const LOCAL_SKILL_ROOT = 'system/skills'
+/**
+ * The entry chunk sent with the first model turn. Larger Skills stay usable:
+ * the agent must continue with read_skill_file until it reaches end-of-file.
+ */
 export const LOCAL_SKILL_MAX_CONTENT_CHARS = 12_000
+export const LOCAL_SKILL_MAX_ENTRY_CHARS = 120_000
+
+/** Only continuous coverage from character zero counts as fully read. */
+export function extendContiguousRead(
+  alreadyReadThrough: number,
+  offset: number,
+  contentLength: number,
+): number {
+  if (offset > alreadyReadThrough) return alreadyReadThrough
+  return Math.max(alreadyReadThrough, offset + contentLength)
+}
+
+export function localSkillLinkedPathCandidates(
+  rawPath: string,
+  directory: string,
+  root: string,
+): string[] {
+  const raw = rawPath.trim().replace(/\\/g, '/').replace(/^<|>$/g, '')
+  if (!raw || /^(?:https?:|file:)/i.test(raw)) return []
+  const normalize = (value: string): string | null => {
+    const parts: string[] = []
+    for (const part of value.replace(/^\/+/, '').split('/')) {
+      if (!part || part === '.') continue
+      if (part === '..') {
+        if (parts.length === 0) return null
+        parts.pop()
+        continue
+      }
+      if (part.startsWith('.')) return null
+      parts.push(part)
+    }
+    return parts.join('/') || null
+  }
+  const direct = normalize(raw)
+  const relative = normalize(`${directory}/${raw}`)
+  const vaultTopFolder = root.split('/')[0]
+  if (raw.startsWith('/')) return direct ? [direct] : []
+  if (raw.startsWith('./') || raw.startsWith('../')) return relative ? [relative] : []
+  if (vaultTopFolder && raw.startsWith(`${vaultTopFolder}/`)) return direct ? [direct] : []
+  return [...new Set([relative, direct].filter((path): path is string => Boolean(path)))]
+}
 
 export type LocalSkillOutput = 'chat' | 'create-note' | 'update-current-note'
 

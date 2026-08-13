@@ -9,12 +9,18 @@ import {
   type VaultAgentToolResult,
   type VaultOrganizePlan,
 } from './vault-agent-core'
+import type { ActiveLocalSkillContext } from './local-skills'
+import { extendContiguousRead, localSkillLinkedPathCandidates } from './local-skill-core'
 
 const TOOL_OUTPUT_MAX_CHARS = 20_000
 const READ_NOTE_MAX_CHARS = 16_000
 const LIST_FOLDER_MAX_ENTRIES = 160
 const LIST_FOLDER_SCAN_MAX_ENTRIES = 20_000
 const LIST_FOLDER_MAX_DEPTH = 12
+const SKILL_TEXT_EXTENSIONS = new Set([
+  'md', 'txt', 'json', 'yaml', 'yml', 'toml', 'csv', 'html', 'htm', 'css',
+  'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'py', 'ps1', 'sh',
+])
 
 export interface VaultAgentExecution {
   results: VaultAgentToolResult[]
@@ -64,11 +70,18 @@ export class LocalVaultAgent {
   }
 
   async executeReadCalls(calls: VaultAgentToolCall[]): Promise<VaultAgentExecution> {
+    return this.executeCalls(calls)
+  }
+
+  async executeCalls(
+    calls: VaultAgentToolCall[],
+    skillContext?: ActiveLocalSkillContext,
+  ): Promise<VaultAgentExecution> {
     const results: VaultAgentToolResult[] = []
     const sources: VaultAgentExecution['sources'] = []
     for (const call of calls) {
       try {
-        const value = await this.executeReadCall(call, sources)
+        const value = await this.executeReadCall(call, sources, skillContext)
         results.push({ callId: call.id, name: call.name, ok: true, output: outputJson(value) })
       } catch (error) {
         results.push({
@@ -88,6 +101,7 @@ export class LocalVaultAgent {
   private async executeReadCall(
     call: VaultAgentToolCall,
     sources: VaultAgentExecution['sources'],
+    skillContext?: ActiveLocalSkillContext,
   ): Promise<unknown> {
     if (call.name === 'vault_search') {
       const query = toolText(call.arguments.query, 240)
@@ -205,6 +219,43 @@ export class LocalVaultAgent {
       const result = await this.search.readPath(path, { offset, maxChars })
       sources.push({ sourceId: call.id, filename: result.filename, path })
       return result
+    }
+
+    if (call.name === 'read_skill_file') {
+      if (!skillContext) throw new Error('本轮没有正在执行的本地 Skill')
+      const rawPath = toolText(call.arguments.path, 240)
+      const path = resolveSkillPath(rawPath, skillContext)
+      const offset = clampInt(call.arguments.offset, 0, 0, 1_000_000)
+      const maxChars = clampInt(call.arguments.maxChars, 12_000, 500, READ_NOTE_MAX_CHARS)
+      const file = this.app.vault.getAbstractFileByPath(path)
+      if (!(file instanceof TFile)) throw new Error(`没有找到 Skill 文件：${path}`)
+      if (!SKILL_TEXT_EXTENSIONS.has(file.extension.toLocaleLowerCase())) {
+        throw new Error(`Skill 工具只能读取文字型文件：${path}`)
+      }
+      const text = await this.app.vault.cachedRead(file)
+      const content = text.slice(offset, offset + maxChars)
+      const nextOffset = offset + content.length < text.length ? offset + content.length : null
+      const readThrough = extendContiguousRead(
+        skillContext.readThroughByPath[path] ?? 0,
+        offset,
+        content.length,
+      )
+      skillContext.readThroughByPath[path] = readThrough
+      if (readThrough >= text.length && !skillContext.fullyReadPaths.includes(path)) {
+        skillContext.fullyReadPaths.push(path)
+      }
+      return {
+        filename: file.name,
+        content,
+        offset,
+        totalChars: text.length,
+        nextOffset,
+        truncated: nextOffset !== null,
+      }
+    }
+
+    if (call.name === 'propose_skill_action') {
+      throw new Error('本地动作必须经过对话确认流程，不能作为只读工具直接执行')
     }
 
     throw new Error(`不支持的 Vault 工具：${call.name satisfies never}`)
@@ -335,4 +386,39 @@ export class LocalVaultAgent {
     }
     this.search.clear()
   }
+}
+
+function resolveSkillPath(
+  rawPath: string,
+  context: ActiveLocalSkillContext,
+): string {
+  if (!rawPath) throw new Error('Skill 工具缺少 path')
+  const raw = rawPath.replace(/\\/g, '/').replace(/^\.\//, '')
+  if (context.linkedPaths.includes(raw)) return normalizePath(raw)
+  const linkedPath = localSkillLinkedPathCandidates(raw, context.directory, context.root)
+    .find((path) => context.linkedPaths.includes(path))
+  if (linkedPath) return normalizePath(linkedPath)
+  const base = raw === 'SKILL.md'
+    ? context.entryPath
+    : raw.startsWith(`${context.directory}/`)
+      ? raw
+    : `${context.directory}/${raw}`
+  const segments: string[] = []
+  for (const segment of base.split('/')) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') {
+      if (segments.length <= context.directory.split('/').length) {
+        throw new Error('Skill 文件不能离开当前 Skill 目录')
+      }
+      segments.pop()
+      continue
+    }
+    if (segment.startsWith('.')) throw new Error('Skill 文件不能使用隐藏路径')
+    segments.push(segment)
+  }
+  const path = segments.join('/')
+  if (path !== context.directory && !path.startsWith(`${context.directory}/`)) {
+    throw new Error('Skill 文件不能离开当前 Skill 目录')
+  }
+  return normalizePath(path)
 }

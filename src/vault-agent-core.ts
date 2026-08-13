@@ -9,7 +9,12 @@ export const VAULT_AGENT_MAX_ROUNDS = 6
 export const VAULT_AGENT_MAX_CALLS_PER_ROUND = 4
 export const VAULT_AGENT_MAX_PLAN_OPERATIONS = 60
 
-export type VaultAgentToolName = 'vault_search' | 'list_folder' | 'read_note'
+export type VaultAgentToolName =
+  | 'vault_search'
+  | 'list_folder'
+  | 'read_note'
+  | 'read_skill_file'
+  | 'propose_skill_action'
 export type VaultAgentIntent = 'answer' | 'organize'
 
 export interface VaultAgentToolCall {
@@ -50,6 +55,14 @@ export interface VaultPlanExtraction {
 
 export type VaultAnswerRetryReason = 'deferred_answer' | 'missing_count'
 
+export function isVaultAgentToolAllowed(
+  name: VaultAgentToolName,
+  access: { vault: boolean; localSkill: boolean },
+): boolean {
+  if (name === 'read_skill_file' || name === 'propose_skill_action') return access.localSkill
+  return access.vault
+}
+
 /** 只提取插件本机工具明确返回的确定性 fact；普通搜索片段绝不能走直答。 */
 export function deterministicVaultFactAnswer(
   results: VaultAgentToolResult[],
@@ -74,6 +87,8 @@ const TOOL_NAMES = new Set<VaultAgentToolName>([
   'vault_search',
   'list_folder',
   'read_note',
+  'read_skill_file',
+  'propose_skill_action',
 ])
 
 function cleaned(text: string): string {

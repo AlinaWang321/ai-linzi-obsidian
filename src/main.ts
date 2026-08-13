@@ -92,6 +92,7 @@ import {
   extractVaultOrganizePlan,
   extractVaultToolCalls,
   deterministicVaultFactAnswer,
+  isVaultAgentToolAllowed,
   namespaceVaultToolCalls,
   operationLabel,
   vaultAnswerRetryReason,
@@ -106,7 +107,18 @@ import {
   normalizeLocalSkillRoot,
   type LocalSkillOutput,
 } from './local-skill-core'
-import { LocalSkillRegistry } from './local-skills'
+import {
+  LocalSkillRegistry,
+  type ActiveLocalSkillContext,
+} from './local-skills'
+import {
+  LocalSkillExecutor,
+  type LocalSkillRunRecord,
+} from './local-skill-executor'
+import {
+  localSkillActionSummary,
+  type LocalSkillActionProposal,
+} from './local-skill-execution-core'
 
 /** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -160,6 +172,8 @@ interface AiLinziSettings {
   cockpitOutputFolder: string
   /** 用户指定的本地 AI 工作流 / SOP 根目录(相对 vault 根) */
   localSkillsFolder: string
+  /** 本地程序执行默认关闭；开启后仍然每一步单独确认。 */
+  localSkillExecutionEnabled: boolean
   /** 「AI霖子·今天的判断」按日缓存(免费但没必要一天生成多次) */
   cockpitJudgmentDate: string
   cockpitJudgmentText: string
@@ -184,6 +198,7 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   cockpitKnowledgeFolder: 'wiki',
   cockpitOutputFolder: 'output',
   localSkillsFolder: 'system/skills',
+  localSkillExecutionEnabled: false,
   cockpitJudgmentDate: '',
   cockpitJudgmentText: '',
   cockpitPartnerSteps: [],
@@ -276,6 +291,12 @@ interface PluginCapabilities {
         maxContentChars?: number
         requiresExplicitInvocation?: boolean
         persistsInHistory?: boolean
+        localExecution?: {
+          status?: string
+          minPluginVersion?: string
+          requiresConfirmation?: boolean
+          programs?: string[]
+        }
       }
       imageAttachments?: {
         available?: boolean
@@ -311,6 +332,8 @@ interface WireMessage {
   imageAttachmentNames?: string[]
   /** 本地整理方案的执行日志 ID；方案正文仍在 parts 的本机副本中。 */
   vaultActionId?: string
+  /** 本地 Skill 动作日志只保存元数据，不保存命令输出、系统路径或正文。 */
+  localSkillRunIds?: string[]
 }
 
 interface VaultMessageSource {
@@ -371,6 +394,7 @@ interface AiLinziPluginData extends LegacyAiLinziSettings {
   conversations?: SavedConvo[]
   illustrationJobs?: unknown[]
   vaultActionHistory?: VaultActionRecord[]
+  localSkillRunHistory?: LocalSkillRunRecord[]
 }
 
 interface CloudSessionSummary {
@@ -433,6 +457,83 @@ class ConfirmActionModal extends Modal {
     this.resolve(confirmed)
     this.close()
   }
+}
+
+class LocalSkillActionConfirmModal extends Modal {
+  private resolved = false
+
+  constructor(
+    app: App,
+    private readonly skillName: string,
+    private readonly action: LocalSkillActionProposal,
+    private readonly resolve: (confirmed: boolean) => void,
+  ) {
+    super(app)
+  }
+
+  onOpen(): void {
+    this.setTitle('允许本地 Skill 执行这一步？')
+    this.contentEl.addClass('ai-linzi-local-action-modal')
+    this.contentEl.createEl('p', {
+      text: `Skill《${this.skillName}》申请：${localSkillActionSummary(this.action)}`,
+    })
+    const details = this.contentEl.createEl('dl', { cls: 'ai-linzi-local-action-details' })
+    details.createEl('dt', { text: '工作目录' })
+    details.createEl('dd', { text: this.action.cwd })
+    details.createEl('dt', { text: '参数' })
+    details.createEl('dd', {
+      text: this.action.args.length > 0 ? this.action.args.join('  ') : '（无）',
+      cls: 'ai-linzi-local-action-code',
+    })
+    details.createEl('dt', { text: '预计生成' })
+    details.createEl('dd', {
+      text: this.action.writes.length > 0 ? this.action.writes.join('、') : '不生成 Vault 文件',
+    })
+    details.createEl('dt', { text: '联网' })
+    details.createEl('dd', {
+      text: this.action.usesNetwork ? '这个脚本可能联网' : '本动作未声明联网',
+    })
+    details.createEl('dt', { text: '交给 AI' })
+    details.createEl('dd', {
+      text: this.action.shareOutputWithAi
+        ? '会把这一步最多 4,000 字的终端输出临时交给 AI 判断（不写入对话历史）'
+        : '不会把终端输出交给 AI',
+    })
+    this.contentEl.createEl('p', {
+      text: '插件不会通过 Shell 解释这些参数，也会拒绝声明输出位置的同名文件。但脚本不是系统沙箱，仍拥有 Obsidian 当前用户权限；只允许你信任的 Skill。你可以取消，仅跳过这一步。',
+      cls: 'ai-linzi-local-action-warning',
+    })
+    const actions = this.contentEl.createDiv({ cls: 'modal-button-container' })
+    const cancel = actions.createEl('button', { text: '取消这一步' })
+    cancel.onclick = () => this.finish(false)
+    const confirm = actions.createEl('button', { text: '允许执行', cls: 'mod-cta' })
+    confirm.onclick = () => this.finish(true)
+  }
+
+  onClose(): void {
+    if (!this.resolved) {
+      this.resolved = true
+      this.resolve(false)
+    }
+    this.contentEl.empty()
+  }
+
+  private finish(confirmed: boolean): void {
+    if (this.resolved) return
+    this.resolved = true
+    this.resolve(confirmed)
+    this.close()
+  }
+}
+
+function confirmLocalSkillAction(
+  app: App,
+  skillName: string,
+  action: LocalSkillActionProposal,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    new LocalSkillActionConfirmModal(app, skillName, action, resolve).open()
+  })
 }
 
 function confirmAction(
@@ -651,10 +752,15 @@ export default class AiLinziPlugin extends Plugin {
     this.vaultSearch,
     () => this.settings.localSkillsFolder,
   )
+  readonly localSkillExecutor = new LocalSkillExecutor(
+    this.app,
+    () => this.settings.outputFolder,
+  )
   private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
   private savedConversations: SavedConvo[] = []
   private savedIllustrationJobs: unknown[] = []
   private vaultActionHistory: VaultActionRecord[] = []
+  private localSkillRunHistory: LocalSkillRunRecord[] = []
   /**
    * 最近一次激活的笔记。侧边面板(对话)获得焦点时 getActiveFile() 会返回 null,
    * 面板上的「调用技能/存入知识库」按钮靠这个记录知道用户"当前开着哪篇笔记"。
@@ -792,12 +898,16 @@ export default class AiLinziPlugin extends Plugin {
       conversations,
       illustrationJobs,
       vaultActionHistory,
+      localSkillRunHistory,
       ...safeSettings
     } = raw
     this.savedConversations = Array.isArray(conversations) ? conversations : []
     this.savedIllustrationJobs = Array.isArray(illustrationJobs) ? illustrationJobs : []
     this.vaultActionHistory = Array.isArray(vaultActionHistory)
       ? (vaultActionHistory as VaultActionRecord[]).slice(0, 20)
+      : []
+    this.localSkillRunHistory = Array.isArray(localSkillRunHistory)
+      ? (localSkillRunHistory as LocalSkillRunRecord[]).slice(0, 50)
       : []
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
     let migrated =
@@ -966,6 +1076,23 @@ export default class AiLinziPlugin extends Plugin {
     return record
   }
 
+  async recordLocalSkillRun(record: LocalSkillRunRecord): Promise<void> {
+    this.localSkillRunHistory = [record, ...this.localSkillRunHistory].slice(0, 50)
+    await this.saveSettings()
+  }
+
+  async undoLocalSkillRun(id: string): Promise<LocalSkillRunRecord> {
+    const record = this.getLocalSkillRunRecord(id)
+    if (!record) throw new Error('没有找到这次本地 Skill 执行记录')
+    await this.localSkillExecutor.undoCreatedOutputs(record)
+    await this.saveSettings()
+    return record
+  }
+
+  getLocalSkillRunRecord(id: string): LocalSkillRunRecord | undefined {
+    return this.localSkillRunHistory.find((record) => record.id === id)
+  }
+
   private async undoLastVaultAction(): Promise<void> {
     const record = this.getVaultActionRecord()
     if (!record) {
@@ -1030,6 +1157,7 @@ export default class AiLinziPlugin extends Plugin {
       conversations: this.savedConversations,
       illustrationJobs: this.savedIllustrationJobs,
       vaultActionHistory: this.vaultActionHistory,
+      localSkillRunHistory: this.localSkillRunHistory,
     } satisfies AiLinziPluginData)
   }
 
@@ -2154,7 +2282,7 @@ class ChatView extends ItemView {
             localSkill?.output === 'update-current-note',
         )
       const useVaultAgent =
-        this.vaultSearchEnabled &&
+        (this.vaultSearchEnabled || Boolean(localSkill)) &&
         this.authorizedContentPaths.length === 0 &&
         !this.longDocumentPath &&
         !singleIllustration &&
@@ -2178,6 +2306,8 @@ class ChatView extends ItemView {
             description: localSkill.description,
             output: localSkill.output,
             content: localSkill.content,
+            entryChars: localSkill.entryChars,
+            entryTruncated: localSkill.entryTruncated,
           }
         : undefined
       if (localSkill) new Notice(`正在调用本地 Skill：${localSkill.name}`, 4000)
@@ -2190,12 +2320,15 @@ class ChatView extends ItemView {
           noteContext,
           authorizedContent,
           localSkill: localSkillRequest,
+          localSkillContext: localSkill ? this.localSkills.context(localSkill) : undefined,
+          vaultAccess: this.vaultSearchEnabled,
           vaultSearch: vaultSearch.context,
           noteEdit,
           noteImageIntent: singleIllustration,
           intent: detectVaultAgentIntent(text),
         })
         answer = agentResult.text
+        var localSkillRunIds = agentResult.localSkillRunIds
         answerSources = [
           ...new Map(
             [...answerSources, ...agentResult.sources].map((source) => [source.path, source]),
@@ -2250,6 +2383,7 @@ class ChatView extends ItemView {
         role: 'assistant',
         parts: [{ type: 'text', text: answer }],
         vaultSources: answerSources,
+        localSkillRunIds,
       })
       await this.persistNow()
       if (singleIllustration && noteContext && !answer.startsWith('⚠️')) {
@@ -2637,8 +2771,12 @@ class ChatView extends ItemView {
           description: string
           output: LocalSkillOutput
           content: string
+          entryChars: number
+          entryTruncated: boolean
         }
       | undefined
+    localSkillContext: ActiveLocalSkillContext | undefined
+    vaultAccess: boolean
     vaultSearch:
       | {
           query: string
@@ -2648,15 +2786,20 @@ class ChatView extends ItemView {
     noteEdit: boolean
     noteImageIntent: boolean
     intent: VaultAgentIntent
-  }): Promise<{ text: string; sources: VaultMessageSource[] }> {
+  }): Promise<{
+    text: string
+    sources: VaultMessageSource[]
+    localSkillRunIds?: string[]
+  }> {
     const toolResults: VaultAgentToolResult[] = []
     const sources: VaultMessageSource[] = []
+    const localSkillRunIds: string[] = []
     let lastText = ''
     let pendingRetryReason: VaultAnswerRetryReason | undefined
 
     // 咨询场次属于本机可确定性统计：用户开启 Vault 搜索后直接扫描全量索引，
     // 不等待模型碰运气决定是否调用工具，也不把前 8 条搜索结果当作总数。
-    if (isConsultationCountQuestion(input.question)) {
+    if (input.vaultAccess && isConsultationCountQuestion(input.question)) {
       new Notice('AI霖子正在本机全量统计咨询记录并去重…', 2500)
       const seeded = await this.plugin.vaultAgent.executeReadCalls([
         {
@@ -2669,7 +2812,7 @@ class ChatView extends ItemView {
       sources.push(...seeded.sources)
       const localFactAnswer = deterministicVaultFactAnswer(seeded.results)
       if (localFactAnswer) {
-        return { text: localFactAnswer, sources }
+        return { text: localFactAnswer, sources, localSkillRunIds }
       }
     }
 
@@ -2694,6 +2837,7 @@ class ChatView extends ItemView {
           localSkill: input.localSkill,
           vaultAgent: {
             enabled: true,
+            vaultAccess: input.vaultAccess,
             intent: input.intent,
             round,
             canRequestTools: round < VAULT_AGENT_MAX_ROUNDS - 1,
@@ -2731,19 +2875,128 @@ class ChatView extends ItemView {
             continue
           }
         }
-        return { text: lastText, sources }
+        return { text: lastText, sources, localSkillRunIds }
       }
       if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
         throw new Error('本次翻阅已达到安全轮次上限，请缩小范围后再试')
       }
-      const executed = await this.plugin.vaultAgent.executeReadCalls(
-        namespaceVaultToolCalls(toolRequest.calls, round),
+      const forbidden = toolRequest.calls.find((call) =>
+        !isVaultAgentToolAllowed(call.name, {
+          vault: input.vaultAccess,
+          localSkill: Boolean(input.localSkillContext),
+        }),
+      )
+      if (forbidden) {
+        throw new Error(`本轮未授权工具：${forbidden.name}`)
+      }
+      const namespacedCalls = namespaceVaultToolCalls(toolRequest.calls, round)
+      const actionCalls = namespacedCalls.filter((call) => call.name === 'propose_skill_action')
+      const readCalls = namespacedCalls.filter((call) => call.name !== 'propose_skill_action')
+      if (actionCalls.length > 0 && !input.localSkillContext) {
+        throw new Error('本轮没有正在执行的本地 Skill，不能运行本地动作')
+      }
+      if (actionCalls.length > 1) {
+        throw new Error('每轮最多确认一个本地动作，请让 AI 拆分步骤')
+      }
+      if (actionCalls.length > 0 && readCalls.length > 0) {
+        throw new Error('读取资料与运行本地动作必须分轮进行')
+      }
+      if (actionCalls.length > 0) {
+        const call = actionCalls[0]
+        if (!this.plugin.settings.localSkillExecutionEnabled) {
+          toolResults.push({
+            callId: call.id,
+            name: call.name,
+            ok: false,
+            output: JSON.stringify({
+              status: 'disabled',
+              message: '用户未在 AI霖子设置中开启“允许本地 Skill 运行程序”',
+            }),
+          })
+          pendingRetryReason = undefined
+          continue
+        }
+        const prepared = this.plugin.localSkillExecutor.prepare(call.arguments)
+        if (!prepared.ok) throw new Error(`AI 提出的本地动作不安全：${prepared.error}`)
+        const action = prepared.action
+        const ok = await confirmLocalSkillAction(
+          this.app,
+          input.localSkill?.name ?? '本地 Skill',
+          action,
+        )
+        if (!ok) {
+          const record = this.plugin.localSkillExecutor.cancelledRecord(
+            input.localSkill?.name ?? '本地 Skill',
+            action,
+          )
+          await this.plugin.recordLocalSkillRun(record)
+          localSkillRunIds.push(record.id)
+          toolResults.push({
+            callId: call.id,
+            name: call.name,
+            ok: false,
+            output: JSON.stringify({ status: 'cancelled', message: '用户取消了这一步' }),
+          })
+          pendingRetryReason = undefined
+          continue
+        }
+        const notice = new Notice(`正在本机执行：${action.label}…`, 0)
+        try {
+          try {
+            const executed = await this.plugin.localSkillExecutor.run(
+              input.localSkill?.name ?? '本地 Skill',
+              action,
+              input.localSkillContext as ActiveLocalSkillContext,
+            )
+            this.plugin.vaultSearch.clear()
+            await this.plugin.recordLocalSkillRun(executed.record)
+            localSkillRunIds.push(executed.record.id)
+            toolResults.push({
+              callId: call.id,
+              name: call.name,
+              ok: executed.record.status === 'success',
+              output: executed.output,
+            })
+            new Notice(
+              executed.record.status === 'success'
+                ? `✅ 本地动作完成：${action.label}`
+                : `⚠️ 本地动作未完成：${action.label}`,
+              6000,
+            )
+          } catch (error) {
+            const failed = this.plugin.localSkillExecutor.failedRecord(
+              input.localSkill?.name ?? '本地 Skill',
+              action,
+            )
+            await this.plugin.recordLocalSkillRun(failed)
+            localSkillRunIds.push(failed.id)
+            const safeError = this.plugin.localSkillExecutor.safeError(
+              error,
+              input.localSkillContext as ActiveLocalSkillContext,
+            )
+            toolResults.push({
+              callId: call.id,
+              name: call.name,
+              ok: false,
+              output: JSON.stringify({ status: 'failed', message: safeError }),
+            })
+            new Notice(`本地动作失败：${safeError}`, 9000)
+          }
+        } finally {
+          notice.hide()
+        }
+        pendingRetryReason = undefined
+        continue
+      }
+      const executed = await this.plugin.vaultAgent.executeCalls(
+        readCalls,
+        input.localSkillContext,
       )
       pendingRetryReason = undefined
       toolResults.push(...executed.results)
       sources.push(...executed.sources)
     }
-    return { text: lastText, sources }
+    return { text: lastText, sources, localSkillRunIds }
   }
 
   /**
@@ -2762,6 +3015,8 @@ class ChatView extends ItemView {
           description: string
           output: LocalSkillOutput
           content: string
+          entryChars?: number
+          entryTruncated?: boolean
         }
       | undefined,
     vaultSearch:
@@ -3078,6 +3333,67 @@ class ChatView extends ItemView {
     }
   }
 
+  private renderLocalSkillRunOffer(row: HTMLElement, message: WireMessage): void {
+    const records = (message.localSkillRunIds ?? [])
+      .map((id) => this.plugin.getLocalSkillRunRecord(id))
+      .filter((record): record is LocalSkillRunRecord => Boolean(record))
+    if (records.length === 0) return
+    const card = row.createDiv({ cls: 'ai-linzi-local-run-card' })
+    card.createDiv({ text: '本机执行记录', cls: 'ai-linzi-create-note-title' })
+    for (const record of records) {
+      const item = card.createDiv({ cls: 'ai-linzi-local-run-item' })
+      const status = record.status === 'success'
+        ? '✅ 已完成'
+        : record.status === 'cancelled'
+          ? '已取消'
+          : record.status === 'timed_out'
+            ? '⏱️ 已超时'
+            : '⚠️ 执行失败'
+      item.createDiv({
+        text: `${status} · ${record.label} · ${(record.durationMs / 1000).toFixed(1)} 秒`,
+      })
+      if (record.createdOutputs.length > 0) {
+        const outputs = item.createDiv({ cls: 'ai-linzi-local-run-outputs' })
+        outputs.createSpan({ text: '生成：' })
+        for (const output of record.createdOutputs) {
+          const open = outputs.createEl('button', { text: output.path })
+          open.onclick = () => void this.app.workspace.openLinkText(output.path, '', false)
+        }
+      }
+      if (record.createdOutputs.length > 0 && !record.undoneAt) {
+        const undo = item.createEl('button', { text: '移到系统废纸篓' })
+        undo.onclick = () => {
+          undo.disabled = true
+          void (async () => {
+            try {
+              const ok = await confirmAction(this.app, {
+                title: '撤销这次生成文件',
+                message:
+                  `将把本次新生成的 ${record.createdOutputs.length} 个文件移到系统废纸篓/回收站。` +
+                  '如果文件生成后被修改过，插件会停止撤销，避免误删。',
+                confirmLabel: '移到废纸篓',
+                destructive: true,
+              })
+              if (!ok) {
+                undo.disabled = false
+                return
+              }
+              await this.plugin.undoLocalSkillRun(record.id)
+              await this.persistNow()
+              this.renderMessages()
+              new Notice('✅ 本次生成文件已移到系统废纸篓，可恢复')
+            } catch (error) {
+              undo.disabled = false
+              new Notice(`撤销失败：${(error as Error).message}`, 9000)
+            }
+          })()
+        }
+      } else if (record.undoneAt) {
+        item.createDiv({ text: '↩️ 生成文件已移到系统废纸篓', cls: 'ai-linzi-create-note-done' })
+      }
+    }
+  }
+
   private renderMessages(thinking = false) {
     this.listEl.empty()
     if (this.messages.length === 0) {
@@ -3150,6 +3466,7 @@ class ChatView extends ItemView {
         const editReply = this.mode === 'chat' && !illustrationEdit && isNoteEditIntent(previousUserText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
         if ((m.vaultSources?.length ?? 0) > 0) this.renderVaultSources(row, m.vaultSources ?? [])
+        if ((m.localSkillRunIds?.length ?? 0) > 0) this.renderLocalSkillRunOffer(row, m)
         if (localSkillCreateResult.blocks.length > 0) {
           this.renderCreateLocalSkillOffers(row, localSkillCreateResult.blocks)
         }
@@ -3647,6 +3964,42 @@ class AiLinziSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.localSkillsFolder = normalizeLocalSkillRoot(value)
             this.plugin.vaultSearch.clear()
+            await this.plugin.saveSettings()
+          }),
+      )
+
+    new Setting(containerEl)
+      .setName('允许本地 Skill 运行程序')
+      .setDesc('默认关闭。开启后，Skill 可以申请运行 Node.js、Python、FFmpeg 或 FFprobe；每一步仍会展示程序、参数、联网声明和输出文件，由你单独确认。只应运行你信任的 Skill，脚本本身可能读取或修改电脑上的数据。')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.localSkillExecutionEnabled)
+          .onChange(async (value) => {
+            if (value) {
+              try {
+                const capabilities = await this.plugin.getCapabilities(true)
+                const execution = capabilities.features?.chat?.localSkills?.localExecution
+                const minVersion = execution?.minPluginVersion
+                if (
+                  execution?.status !== 'available' ||
+                  (minVersion && compareVersions(this.plugin.manifest.version, minVersion) < 0)
+                ) {
+                  toggle.setValue(false)
+                  new Notice(
+                    minVersion
+                      ? `本地 Skill 运行需要插件 ${minVersion} 或更高版本，请先更新插件`
+                      : '当前 AI霖子服务还未开放本地 Skill 运行，请稍后更新后再试',
+                    8000,
+                  )
+                  return
+                }
+              } catch (error) {
+                toggle.setValue(false)
+                new Notice(`暂时无法确认本地 Skill 运行能力：${(error as Error).message}`, 8000)
+                return
+              }
+            }
+            this.plugin.settings.localSkillExecutionEnabled = value
             await this.plugin.saveSettings()
           }),
       )
