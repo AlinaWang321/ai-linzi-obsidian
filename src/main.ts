@@ -743,6 +743,13 @@ export default class AiLinziPlugin extends Plugin {
       return active
     }
 
+    // 官方 API 专门用于“侧边栏获得焦点、但仍要找到主编辑区最近标签页”的场景。
+    const recentRootLeaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit)
+    if (recentRootLeaf?.view instanceof MarkdownView && recentRootLeaf.view.file) {
+      this.lastActiveFile = recentRootLeaf.view.file
+      return recentRootLeaf.view.file
+    }
+
     if (this.lastActiveFile) {
       const existing = this.app.vault.getAbstractFileByPath(this.lastActiveFile.path)
       if (existing instanceof TFile) {
@@ -757,6 +764,13 @@ export default class AiLinziPlugin extends Plugin {
         this.lastActiveFile = leaf.view.file
         return leaf.view.file
       }
+    }
+
+    const recentPath = this.app.workspace.getLastOpenFiles()[0]
+    const recentFile = recentPath ? this.app.vault.getAbstractFileByPath(recentPath) : null
+    if (recentFile instanceof TFile) {
+      this.lastActiveFile = recentFile
+      return recentFile
     }
     return null
   }
@@ -1351,6 +1365,16 @@ class ChatView extends ItemView {
     this.attachToggleEl.checked = this.attachNote
     this.attachToggleEl.onchange = () => {
       this.attachNote = this.attachToggleEl.checked
+      if (this.attachNote) {
+        const file = this.plugin.rememberCurrentMarkdownFile()
+        if (!file) {
+          this.attachNote = false
+          this.attachToggleEl.checked = false
+          new Notice('没有找到当前笔记。请先点开目标笔记，再勾选“主对话带上当前笔记”。', 6000)
+        } else {
+          new Notice(`已带上当前笔记：${file.basename}`, 3500)
+        }
+      }
       this.refreshImageModeUi()
     }
     label.createSpan({ text: ' 主对话带上当前笔记' })
@@ -2102,6 +2126,9 @@ class ChatView extends ItemView {
       const localSkill =
         localSkillMatch.kind === 'matched' ? localSkillMatch.skill : undefined
       const noteContext = await this.currentNoteContext()
+      if (this.attachNote && !noteContext) {
+        throw new Error('没有读取到当前笔记。请先点开目标笔记，重新勾选“主对话带上当前笔记”后再试。')
+      }
       if (localSkill?.output === 'update-current-note' && !noteContext) {
         throw new Error(
           `本地 Skill《${localSkill.name}》需要修改当前笔记。请打开目标笔记并勾选「主对话带上当前笔记」。`,

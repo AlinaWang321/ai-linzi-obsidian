@@ -40,6 +40,17 @@ assert.match(
   /const file = this\.plugin\.rememberCurrentMarkdownFile\(\)/,
   '发送带当前笔记的请求时必须使用稳定的 Markdown 笔记引用',
 )
+assert.match(
+  source,
+  /getMostRecentLeaf\(this\.app\.workspace\.rootSplit\)/,
+  '右侧栏获得焦点时必须从主编辑区恢复最近使用的 Markdown 标签页',
+)
+assert.match(source, /已带上当前笔记：\$\{file\.basename\}/, '勾选后必须明确提示实际附带的笔记')
+assert.match(
+  source,
+  /if \(this\.attachNote && !noteContext\)/,
+  '勾选但读取失败时必须阻止请求，不能让模型猜测',
+)
 
 const unsafeAssignments = [...source.matchAll(/this\.sessionId = uid\(\)/g)]
 assert.equal(unsafeAssignments.length, 0, '禁止生成无命名空间的插件 sessionId')
