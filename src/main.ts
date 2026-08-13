@@ -84,6 +84,15 @@ import {
 } from './long-document'
 import { LocalVaultSearch } from './vault-search'
 import { type VaultSearchResult } from './vault-search-core'
+import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
+import {
+  VAULT_AGENT_MAX_ROUNDS,
+  extractVaultOrganizePlan,
+  extractVaultToolCalls,
+  operationLabel,
+  type VaultAgentToolResult,
+  type VaultOrganizePlan,
+} from './vault-agent-core'
 import {
   formatLocalSkillList,
   isLocalSkillListIntent,
@@ -239,6 +248,21 @@ interface PluginCapabilities {
         ocr?: boolean
         legacyDoc?: boolean
       }
+      vaultAgent?: {
+        available?: boolean
+        maxRounds?: number
+        maxCallsPerRound?: number
+        tools?: string[]
+        persistsToolResultsInHistory?: boolean
+      }
+      vaultManagement?: {
+        available?: boolean
+        planFirst?: boolean
+        requiresConfirmation?: boolean
+        deletesFiles?: boolean
+        overwritesExistingFiles?: boolean
+        supportsUndo?: boolean
+      }
       localSkills?: {
         available?: boolean
         localOnly?: boolean
@@ -278,6 +302,8 @@ interface WireMessage {
   vaultSources?: VaultMessageSource[]
   /** 只保留用户本轮上传的图片名称；图片数据不写本机或云端历史。 */
   imageAttachmentNames?: string[]
+  /** 本地整理方案的执行日志 ID；方案正文仍在 parts 的本机副本中。 */
+  vaultActionId?: string
 }
 
 interface VaultMessageSource {
@@ -337,6 +363,7 @@ interface SavedConvo {
 interface AiLinziPluginData extends LegacyAiLinziSettings {
   conversations?: SavedConvo[]
   illustrationJobs?: unknown[]
+  vaultActionHistory?: VaultActionRecord[]
 }
 
 interface CloudSessionSummary {
@@ -612,9 +639,15 @@ function extractTextFromSSE(raw: string): { text: string; error?: string } {
 export default class AiLinziPlugin extends Plugin {
   settings: AiLinziSettings = DEFAULT_SETTINGS
   readonly vaultSearch = new LocalVaultSearch(this.app)
+  readonly vaultAgent = new LocalVaultAgent(
+    this.app,
+    this.vaultSearch,
+    () => this.settings.localSkillsFolder,
+  )
   private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
   private savedConversations: SavedConvo[] = []
   private savedIllustrationJobs: unknown[] = []
+  private vaultActionHistory: VaultActionRecord[] = []
   /**
    * 最近一次激活的笔记。侧边面板(对话)获得焦点时 getActiveFile() 会返回 null,
    * 面板上的「调用技能/存入知识库」按钮靠这个记录知道用户"当前开着哪篇笔记"。
@@ -662,6 +695,12 @@ export default class AiLinziPlugin extends Plugin {
       callback: () => this.activateCockpit(),
     })
 
+    this.addCommand({
+      id: 'undo-last-vault-organization',
+      name: '撤销上一次 AI Vault 整理',
+      callback: () => void this.undoLastVaultAction(),
+    })
+
     // ── M2:四技能 + 喂库(笔记即输入);三入口共用 SKILL_ACTIONS ──
     for (const c of SKILL_ACTIONS) {
       this.addCommand({ id: c.id, name: c.name, callback: () => void c.fn(this) })
@@ -697,10 +736,14 @@ export default class AiLinziPlugin extends Plugin {
       lastUpdateCheckAt: legacyLastUpdateCheckAt,
       conversations,
       illustrationJobs,
+      vaultActionHistory,
       ...safeSettings
     } = raw
     this.savedConversations = Array.isArray(conversations) ? conversations : []
     this.savedIllustrationJobs = Array.isArray(illustrationJobs) ? illustrationJobs : []
+    this.vaultActionHistory = Array.isArray(vaultActionHistory)
+      ? (vaultActionHistory as VaultActionRecord[]).slice(0, 20)
+      : []
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
     let migrated =
       legacyVaultSearchExcludedFolders !== undefined || legacyLastUpdateCheckAt !== undefined
@@ -846,6 +889,44 @@ export default class AiLinziPlugin extends Plugin {
     await this.saveSettings()
   }
 
+  getVaultActionRecord(id?: string): VaultActionRecord | undefined {
+    return id
+      ? this.vaultActionHistory.find((record) => record.id === id)
+      : this.vaultActionHistory.find((record) => !record.undoneAt)
+  }
+
+  async applyVaultPlan(plan: VaultOrganizePlan): Promise<VaultActionRecord> {
+    const record = await this.vaultAgent.applyPlan(plan)
+    this.vaultActionHistory = [record, ...this.vaultActionHistory].slice(0, 20)
+    await this.saveSettings()
+    return record
+  }
+
+  async undoVaultAction(id?: string): Promise<VaultActionRecord> {
+    const record = this.getVaultActionRecord(id)
+    if (!record) throw new Error('没有找到可撤销的 AI Vault 整理记录')
+    await this.vaultAgent.undo(record)
+    record.undoneAt = Date.now()
+    await this.saveSettings()
+    return record
+  }
+
+  private async undoLastVaultAction(): Promise<void> {
+    const record = this.getVaultActionRecord()
+    if (!record) {
+      new Notice('没有可撤销的 AI Vault 整理记录')
+      return
+    }
+    const ok = await confirmAction(this.app, {
+      title: '撤销上一次 AI Vault 整理',
+      message: `将把「${record.planTitle}」移动/重命名的 ${record.moves.length} 项恢复到原位置。整理时新建的空文件夹会保留，不删除任何文件。`,
+      confirmLabel: '确认撤销',
+    })
+    if (!ok) return
+    await this.undoVaultAction(record.id)
+    new Notice(`✅ 已撤销「${record.planTitle}」`)
+  }
+
   async loadCloudSessions(): Promise<CloudSessionSummary[]> {
     const data = await this.api('/api/plugin/v1/chat/sessions')
     return Array.isArray(data.sessions) ? (data.sessions as CloudSessionSummary[]) : []
@@ -893,6 +974,7 @@ export default class AiLinziPlugin extends Plugin {
       ...this.settings,
       conversations: this.savedConversations,
       illustrationJobs: this.savedIllustrationJobs,
+      vaultActionHistory: this.vaultActionHistory,
     } satisfies AiLinziPluginData)
   }
 
@@ -2020,55 +2102,80 @@ class ChatView extends ItemView {
           }
         : undefined
       if (localSkill) new Notice(`正在调用本地 Skill：${localSkill.name}`, 4000)
-      // M3:优先流式(fetch 纯文本流,逐块显示);CORS/网络不支持时自动回落非流式;
-      // 业务错误(积分不足/tier/限流)不回落不重发,直接显示。
       let answer: string
-      let streamed: { kind: 'ok'; text: string } | { kind: 'bizError'; message: string } | null
-      try {
-        streamed = await this.sendStreaming(
+      let answerSources = [...vaultSearch.sources]
+      const useVaultAgent =
+        this.vaultSearchEnabled &&
+        this.authorizedContentPaths.length === 0 &&
+        !this.longDocumentPath &&
+        !singleIllustration &&
+        !illustrationEdit &&
+        imageAttachments.length === 0
+
+      if (useVaultAgent) {
+        const agentResult = await this.runVaultAgentLoop({
           noteContext,
           authorizedContent,
-          localSkillRequest,
-          vaultSearch.context,
-          imageAttachments,
+          localSkill: localSkillRequest,
+          vaultSearch: vaultSearch.context,
           noteEdit,
-          singleIllustration,
-        )
-      } catch {
-        streamed = null
-      }
-      if (streamed?.kind === 'bizError') {
-        answer = `⚠️ ${streamed.message}`
-      } else if (streamed?.kind === 'ok') {
-        answer = streamed.text
+          noteImageIntent: singleIllustration,
+        })
+        answer = agentResult.text
+        answerSources = [
+          ...new Map(
+            [...answerSources, ...agentResult.sources].map((source) => [source.path, source]),
+          ).values(),
+        ]
       } else {
-        const data = await this.plugin.api('/api/plugin/v1/chat', {
-          method: 'POST',
-          body: {
-            messages: this.messagesForApi(),
-            sessionId: this.sessionId,
-            stream: false,
+        // 普通对话继续优先流式；Vault 工具循环使用非流式 JSON，避免把内部协议闪给用户。
+        let streamed: { kind: 'ok'; text: string } | { kind: 'bizError'; message: string } | null
+        try {
+          streamed = await this.sendStreaming(
             noteContext,
             authorizedContent,
-            imageAttachments: imageAttachments.map((image) => ({
-              filename: image.name,
-              dataUrl: image.dataUrl,
-              mediaType: 'image/jpeg',
-            })),
-            vaultSearch: vaultSearch.context,
+            localSkillRequest,
+            vaultSearch.context,
+            imageAttachments,
             noteEdit,
-            noteImageIntent: singleIllustration,
-            localSkill: localSkillRequest,
-          },
-        })
-        answer = typeof data.text === 'string' ? data.text : '(空响应)'
+            singleIllustration,
+          )
+        } catch {
+          streamed = null
+        }
+        if (streamed?.kind === 'bizError') {
+          answer = `⚠️ ${streamed.message}`
+        } else if (streamed?.kind === 'ok') {
+          answer = streamed.text
+        } else {
+          const data = await this.plugin.api('/api/plugin/v1/chat', {
+            method: 'POST',
+            body: {
+              messages: this.messagesForApi(),
+              sessionId: this.sessionId,
+              stream: false,
+              noteContext,
+              authorizedContent,
+              imageAttachments: imageAttachments.map((image) => ({
+                filename: image.name,
+                dataUrl: image.dataUrl,
+                mediaType: 'image/jpeg',
+              })),
+              vaultSearch: vaultSearch.context,
+              noteEdit,
+              noteImageIntent: singleIllustration,
+              localSkill: localSkillRequest,
+            },
+          })
+          answer = typeof data.text === 'string' ? data.text : '(空响应)'
+        }
       }
       if (!answer.startsWith('⚠️')) this.clearChatImageAttachments()
       this.messages.push({
         id: uid(),
         role: 'assistant',
         parts: [{ type: 'text', text: answer }],
-        vaultSources: vaultSearch.sources,
+        vaultSources: answerSources,
       })
       await this.persistNow()
       if (singleIllustration && noteContext && !answer.startsWith('⚠️')) {
@@ -2441,6 +2548,83 @@ class ChatView extends ItemView {
   }
 
   /**
+   * 模型无关的 Vault 工具循环：服务端只提出只读调用，本机校验并执行；
+   * 工具协议与结果不会加入插件消息，也不会写入云端历史。
+   */
+  private async runVaultAgentLoop(input: {
+    noteContext: { filename: string; text: string; path: string } | undefined
+    authorizedContent:
+      | { items: { filename: string; path: string; text: string }[] }
+      | undefined
+    localSkill:
+      | {
+          name: string
+          description: string
+          output: LocalSkillOutput
+          content: string
+        }
+      | undefined
+    vaultSearch:
+      | {
+          query: string
+          items: { sourceId: string; filename: string; excerpt: string }[]
+        }
+      | undefined
+    noteEdit: boolean
+    noteImageIntent: boolean
+  }): Promise<{ text: string; sources: VaultMessageSource[] }> {
+    const toolResults: VaultAgentToolResult[] = []
+    const sources: VaultMessageSource[] = []
+    let lastText = ''
+
+    for (let round = 0; round < VAULT_AGENT_MAX_ROUNDS; round++) {
+      new Notice(
+        round === 0
+          ? 'AI霖子正在查看 Vault，需要时会继续翻阅相关文件…'
+          : `AI霖子正在继续翻阅 Vault（第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮）…`,
+        2500,
+      )
+      const data = await this.plugin.api('/api/plugin/v1/chat', {
+        method: 'POST',
+        body: {
+          messages: this.messagesForApi(),
+          sessionId: this.sessionId,
+          stream: false,
+          noteContext: input.noteContext,
+          authorizedContent: input.authorizedContent,
+          vaultSearch: input.vaultSearch,
+          noteEdit: input.noteEdit,
+          noteImageIntent: input.noteImageIntent,
+          localSkill: input.localSkill,
+          vaultAgent: {
+            enabled: true,
+            round,
+            canRequestTools: round < VAULT_AGENT_MAX_ROUNDS - 1,
+            toolResults,
+          },
+        },
+      })
+      lastText = typeof data.text === 'string' ? data.text : ''
+      if (!lastText.trim()) throw new Error('Vault 工具循环返回了空内容，请重试')
+
+      const toolRequest = extractVaultToolCalls(lastText)
+      if (toolRequest.invalid) throw new Error('AI 返回的 Vault 工具请求格式不安全，请重试')
+      if (toolRequest.calls.length === 0) {
+        const plan = extractVaultOrganizePlan(lastText)
+        if (plan.invalid) throw new Error('AI 返回的 Vault 整理方案格式不安全，请重试')
+        return { text: lastText, sources }
+      }
+      if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+        throw new Error('本次翻阅已达到安全轮次上限，请缩小范围后再试')
+      }
+      const executed = await this.plugin.vaultAgent.executeReadCalls(toolRequest.calls)
+      toolResults.push(...executed.results)
+      sources.push(...executed.sources)
+    }
+    return { text: lastText, sources }
+  }
+
+  /**
    * 流式发送:POST stream:'text' → fetch 逐块读 → 实时刷在临时气泡里。
    * 返回 {kind:'ok'} 完整文本 或 {kind:'bizError'} 服务端业务错误(调用方不回落不重发);
    * 网络/CORS 层异常直接 throw,由调用方回落非流式。
@@ -2673,6 +2857,105 @@ class ChatView extends ItemView {
     }
   }
 
+  /** Vault 整理方案：预览 → 二次确认 → 本机执行；不删除、不覆盖，移动可撤销。 */
+  private renderVaultPlanOffer(
+    row: HTMLElement,
+    plan: VaultOrganizePlan,
+    message: WireMessage,
+  ): void {
+    const card = row.createDiv({ cls: 'ai-linzi-create-note-card ai-linzi-vault-plan-card' })
+    card.createDiv({
+      text: `🗂️ 待确认：${plan.title}`,
+      cls: 'ai-linzi-create-note-title',
+    })
+    if (plan.summary) {
+      card.createDiv({ text: plan.summary, cls: 'ai-linzi-create-note-preview' })
+    }
+    const operations = card.createEl('ol', { cls: 'ai-linzi-vault-plan-operations' })
+    for (const operation of plan.operations) {
+      const item = operations.createEl('li')
+      item.createDiv({ text: operationLabel(operation) })
+      if (operation.reason) item.createEl('small', { text: operation.reason })
+    }
+    for (const note of plan.notes) {
+      card.createDiv({ text: `注意：${note}`, cls: 'ai-linzi-vault-plan-note' })
+    }
+
+    const record = this.plugin.getVaultActionRecord(message.vaultActionId)
+    if (record?.undoneAt) {
+      card.createDiv({ text: '↩️ 本次移动/重命名已经撤销。', cls: 'ai-linzi-create-note-done' })
+      return
+    }
+    const actions = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
+    if (record) {
+      actions.createSpan({
+        text: `✅ 已执行：移动/重命名 ${record.moves.length} 项，新建文件夹 ${record.createdFolders.length} 个`,
+        cls: 'ai-linzi-create-note-done',
+      })
+      if (record.moves.length > 0) {
+        const undoBtn = actions.createEl('button', { text: '撤销本次移动/重命名' })
+        undoBtn.onclick = () => {
+          undoBtn.disabled = true
+          void (async () => {
+            try {
+              const ok = await confirmAction(this.app, {
+                title: '撤销这次 Vault 整理',
+                message: `将把 ${record.moves.length} 项移动/重命名恢复到原位置。新建的空文件夹会保留，不删除任何文件。`,
+                confirmLabel: '确认撤销',
+              })
+              if (!ok) {
+                undoBtn.disabled = false
+                return
+              }
+              await this.plugin.undoVaultAction(record.id)
+              await this.persistNow()
+              this.renderMessages()
+              new Notice(`✅ 已撤销「${record.planTitle}」`)
+            } catch (error) {
+              undoBtn.disabled = false
+              new Notice(`撤销失败：${(error as Error).message}`, 8000)
+            }
+          })()
+        }
+      }
+      return
+    }
+
+    const executeBtn = actions.createEl('button', {
+      text: `确认执行 ${plan.operations.length} 项`,
+      cls: 'mod-cta',
+    })
+    executeBtn.onclick = () => {
+      executeBtn.disabled = true
+      void (async () => {
+        try {
+          const ok = await confirmAction(this.app, {
+            title: '执行 Vault 整理方案',
+            message:
+              `即将执行 ${plan.operations.length} 项操作。插件只会新建文件夹、移动或重命名；` +
+              '不会删除文件，也不会覆盖同名文件。移动/重命名会记录在本机，可撤销。',
+            confirmLabel: '确认执行',
+          })
+          if (!ok) {
+            executeBtn.disabled = false
+            return
+          }
+          const applied = await this.plugin.applyVaultPlan(plan)
+          message.vaultActionId = applied.id
+          await this.persistNow()
+          this.renderMessages()
+          new Notice(
+            `✅ 已完成「${plan.title}」：移动/重命名 ${applied.moves.length} 项，新建文件夹 ${applied.createdFolders.length} 个`,
+            7000,
+          )
+        } catch (error) {
+          executeBtn.disabled = false
+          new Notice(`执行失败，未覆盖任何文件：${(error as Error).message}`, 9000)
+        }
+      })()
+    }
+  }
+
   private renderMessages(thinking = false) {
     this.listEl.empty()
     if (this.messages.length === 0) {
@@ -2731,7 +3014,8 @@ class ChatView extends ItemView {
             break
           }
         }
-        const skillResult = extractPluginSkillSuggestions(text, previousUserText)
+        const vaultPlanResult = extractVaultOrganizePlan(text)
+        const skillResult = extractPluginSkillSuggestions(vaultPlanResult.cleanText, previousUserText)
         // 对话创建本地 Skill(v0.6.47)：先剥整个 Skill 块，避免其中的协议示例
         // 被后续“新建笔记/文件夹”解析器误当成独立写入动作。
         const localSkillCreateResult = extractCreateLocalSkillBlocks(skillResult.cleanText)
@@ -2749,6 +3033,9 @@ class ChatView extends ItemView {
         }
         if (createResult.blocks.length > 0) this.renderCreateNoteOffers(row, createResult.blocks)
         if (folderResult.folders.length > 0) this.renderCreateFolderOffer(row, folderResult.folders)
+        if (vaultPlanResult.plan) {
+          this.renderVaultPlanOffer(row, vaultPlanResult.plan, m)
+        }
         if (m.articleIllustrationEditOffer) {
           this.renderArticleIllustrationEditOffer(row, m.articleIllustrationEditOffer)
           continue
@@ -2763,7 +3050,7 @@ class ChatView extends ItemView {
         }
         if (patch) this.renderPatchCards(row, patch)
         // 每条 AI 回复都能一键落盘——内容留在用户自己的 Obsidian 里才是关键(Alina 2026-07-21)
-        if (text.trim().length > 0 && !text.startsWith('⚠️')) {
+        if (!vaultPlanResult.plan && text.trim().length > 0 && !text.startsWith('⚠️')) {
           const bar = row.createDiv({ cls: 'ai-linzi-msg-actions' })
           if (patch) {
             const applyBtn = bar.createEl('button', {

@@ -2845,3 +2845,28 @@ button.ai-linzi-vault-source-link:focus-visible {
 .ai-linzi-cockpit-pipe.is-clickable:hover .ai-linzi-cockpit-pipe-node { background: var(--background-modifier-hover); }
 .ai-linzi-cockpit-pill.is-clickable { cursor: pointer; }
 .ai-linzi-cockpit-pill.is-clickable:hover { border-color: var(--ck-sea); color: var(--ck-sea); }
+
+/* ── Vault agent 0.7.0：整理方案确认卡 ── */
+.ai-linzi-vault-plan-card {
+  border-left: 3px solid #0057ff;
+}
+.ai-linzi-vault-plan-operations {
+  margin: 8px 0 10px 22px;
+  padding: 0;
+  max-height: 320px;
+  overflow: auto;
+}
+.ai-linzi-vault-plan-operations li {
+  margin: 5px 0;
+  overflow-wrap: anywhere;
+}
+.ai-linzi-vault-plan-operations small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+}
+.ai-linzi-vault-plan-note {
+  margin-top: 5px;
+  color: var(--text-warning);
+  font-size: 0.82em;
+}

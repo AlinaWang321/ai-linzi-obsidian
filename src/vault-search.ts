@@ -51,10 +51,26 @@ export class LocalVaultSearch {
     query: string,
     options: VaultSearchOptions = {},
   ): Promise<LocalVaultSearchResponse> {
+    return this.searchInternal(query, options, false)
+  }
+
+  /** Agent 显式调用搜索时不走“寒暄/超短输入”短路；其余范围与缓存边界完全相同。 */
+  async searchForAgent(
+    query: string,
+    options: VaultSearchOptions = {},
+  ): Promise<LocalVaultSearchResponse> {
+    return this.searchInternal(query, options, true)
+  }
+
+  private async searchInternal(
+    query: string,
+    options: VaultSearchOptions,
+    explicit: boolean,
+  ): Promise<LocalVaultSearchResponse> {
     // 短路:寒暄/超短输入不该触发全 Vault 扫描(大库的 PDF/DOCX 解析成本高,
     // 新用户第一句「你好」尤其不能卡)。统计类问题词长足够,不会被误伤;
     // searchVaultDocuments 内部同一判断保留作为纯函数的自我保护。
-    if (!shouldSearchVault(query)) return { results: [] }
+    if (!explicit && !shouldSearchVault(query)) return { results: [] }
     const excludedFolders = (options.excludedFolders ?? []).filter(Boolean)
     const files = this.app.vault
       .getFiles()
@@ -108,6 +124,38 @@ export class LocalVaultSearch {
       }
     }
     return { results: searchVaultDocuments(query, availableDocuments, options) }
+  }
+
+  /** 按精确相对路径读取一段本地文档；只返回本次工具调用需要的窗口。 */
+  async readPath(
+    path: string,
+    options: { offset?: number; maxChars?: number } = {},
+  ): Promise<{
+    path: string
+    filename: string
+    text: string
+    offset: number
+    nextOffset: number | null
+    totalChars: number
+  }> {
+    const file = this.app.vault.getAbstractFileByPath(path)
+    if (!(file instanceof TFile) || !isLocalSearchExtension(file.extension)) {
+      throw new Error(`没有找到可读取的 MD/TXT/PDF/DOCX 文件：${path}`)
+    }
+    const document = await this.readDocument(file)
+    if (!document) throw new Error(`文件暂时无法读取：${path}`)
+    const offset = Math.max(0, Math.min(Math.trunc(options.offset ?? 0), document.text.length))
+    const maxChars = Math.max(1, Math.min(Math.trunc(options.maxChars ?? 12_000), 16_000))
+    const text = document.text.slice(offset, offset + maxChars)
+    const nextOffset = offset + text.length < document.text.length ? offset + text.length : null
+    return {
+      path,
+      filename: file.name,
+      text,
+      offset,
+      nextOffset,
+      totalChars: document.text.length,
+    }
   }
 
   private async readDocument(file: TFile): Promise<VaultSearchDocument | null> {

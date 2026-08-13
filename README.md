@@ -30,16 +30,16 @@ AI Linzi is currently desktop-only and requires Obsidian 1.11.4 or later.
 
 ## Privacy and network access
 
-Local search scans supported files in memory on the user's device. It does not create a cloud index or upload the whole Vault. For a normal chat request, the plugin sends only the active note, explicitly authorized documents, or a bounded set of locally matched excerpts.
+Local search scans supported files in memory on the user's device. It does not create a cloud index or upload the whole Vault. For a normal chat request, the plugin sends only the active note, explicitly authorized documents, or a bounded set of locally matched excerpts. When the user enables Vault search, the service may request a bounded sequence of local search, folder listing, and document-read operations; the model never receives direct filesystem access.
 
-The plugin reads or writes Vault files only for user-triggered actions such as including a note, saving a generated result, creating a confirmed note or folder, inserting an image, or publishing a WeChat draft. Connection keys and WeChat AppSecrets use Obsidian SecretStorage and are not written to plugin settings or logs.
+The plugin reads or writes Vault files only for user-triggered actions such as including a note, saving a generated result, creating a confirmed note or folder, inserting an image, or publishing a WeChat draft. Vault organization is plan-first and confirmation-gated: it can create folders, move, or rename without deleting or overwriting; move/rename actions have a local undo log. Connection keys and WeChat AppSecrets use Obsidian SecretStorage and are not written to plugin settings or logs.
 
 Generated images and local conversation cards remain in the Vault or Obsidian-managed local plugin data. Cloud history contains text only and excludes local paths and image data.
 
 ## Security and implementation notes
 
 - The public repository is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration remain on the AI Linzi service.
-- Vault enumeration powers user-enabled local search. Only bounded matched excerpts are transmitted.
+- Vault enumeration powers user-enabled local search and bounded read-tool results. Tool calls and local paths are excluded from cloud chat history.
 - Clipboard access occurs only after an explicit user copy action.
 - PDF.js is bundled for local extraction of text-based PDFs. It supplies the dynamic-code finding reported by automated static analysis; no remote script or CDN is used.
 - Streaming chat uses `fetch` because Obsidian's `requestUrl` API buffers the complete response and does not expose the response stream.
