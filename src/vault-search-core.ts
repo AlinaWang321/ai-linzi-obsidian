@@ -260,7 +260,13 @@ export function searchVaultDocuments(
   for (const item of ranked) {
     if (results.length >= maxSources || totalChars >= maxTotalChars) break
     const remaining = maxTotalChars - totalChars
-    const excerpt = buildExcerpt(item.doc.text, terms, Math.min(maxExcerptChars, remaining))
+    // buildExcerpt 可能为了标示截断补前后省略号；最后仍必须严格裁到 wire
+    // contract 的剩余额度，不能因为 1~2 个标记字符让服务端整轮拒绝。
+    const excerpt = buildExcerpt(
+      item.doc.text,
+      terms,
+      Math.min(maxExcerptChars, remaining),
+    ).slice(0, remaining)
     if (!excerpt) continue
     results.push({
       sourceId: `V${results.length + 1}`,

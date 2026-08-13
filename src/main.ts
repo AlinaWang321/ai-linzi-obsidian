@@ -2085,9 +2085,20 @@ class ChatView extends ItemView {
             !singleIllustration &&
             localSkill?.output === 'update-current-note',
         )
+      const useVaultAgent =
+        this.vaultSearchEnabled &&
+        this.authorizedContentPaths.length === 0 &&
+        !this.longDocumentPath &&
+        !singleIllustration &&
+        !illustrationEdit &&
+        imageAttachments.length === 0
       const vaultSearch =
         noteEdit || singleIllustration || illustrationEdit || imageAttachments.length > 0
           ? { context: undefined, sources: [] }
+          : useVaultAgent
+            // Agent 模式只按模型明确提出的工具调用读取，不能先跑旧 top-snippet：
+            // 否则会上传无关片段、重复扫描，还会让模型误以为片段就是完整目录。
+            ? { context: undefined, sources: [] }
           : await this.vaultSearchContext(
               text,
               noteContext?.path,
@@ -2104,13 +2115,6 @@ class ChatView extends ItemView {
       if (localSkill) new Notice(`正在调用本地 Skill：${localSkill.name}`, 4000)
       let answer: string
       let answerSources = [...vaultSearch.sources]
-      const useVaultAgent =
-        this.vaultSearchEnabled &&
-        this.authorizedContentPaths.length === 0 &&
-        !this.longDocumentPath &&
-        !singleIllustration &&
-        !illustrationEdit &&
-        imageAttachments.length === 0
 
       if (useVaultAgent) {
         const agentResult = await this.runVaultAgentLoop({

@@ -84,6 +84,18 @@ assert.equal(limited.length, 1)
 assert.equal(limited[0].path, '内容素材/高客单产品案例.md')
 assert.ok(limited[0].excerpt.length <= 240)
 
+const boundaryDocs = Array.from({ length: 8 }, (_, index) => ({
+  path: `边界测试/长文${index + 1}.md`,
+  filename: `长文${index + 1}.md`,
+  text: `${'前置内容'.repeat(900)} 精确边界词 ${'后置内容'.repeat(900)}`,
+}))
+const boundaryResults = core.searchVaultDocuments('精确边界词', boundaryDocs, {
+  maxSources: 8,
+  maxExcerptChars: 4_000,
+  maxTotalChars: 20_000,
+})
+assert.ok(boundaryResults.reduce((sum, item) => sum + item.excerpt.length, 0) <= 20_000)
+
 const transcriptNow = new Date(2026, 6, 24, 18, 0, 0).getTime()
 const transcriptResults = core.searchVaultDocuments(
   '总结今天跟雷琼的咨询逐字稿，在raw文件夹里',
@@ -170,6 +182,7 @@ assert.match(localSearch, /excludedFolders/)
 const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
 assert.match(main, /ai-linzi-vault-source-link/)
+assert.match(main, /Agent 模式只按模型明确提出的工具调用读取/)
 assert.match(styles, /button\.ai-linzi-vault-source-link/)
 assert.match(styles, /color: #0057ff/)
 assert.match(styles, /border: 0/)
