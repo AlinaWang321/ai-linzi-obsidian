@@ -24,6 +24,48 @@
   font-size: var(--font-ui-smaller);
 }
 
+/*
+ * 对话面板与历史弹窗按钮共用的轻量点击反馈。
+ * pointerdown 会在业务 click 之前触发，即使随后打开菜单或关闭弹窗也能先看到按下感。
+ */
+.ai-linzi-root button,
+.ai-linzi-history-modal button {
+  transform-origin: center;
+}
+
+.ai-linzi-root button:active:not(:disabled),
+.ai-linzi-history-modal button:active:not(:disabled) {
+  transform: translateY(1px) scale(0.97);
+  filter: brightness(0.96);
+}
+
+.ai-linzi-root button.is-ai-linzi-pressed:not(:disabled),
+.ai-linzi-history-modal button.is-ai-linzi-pressed:not(:disabled) {
+  animation: ai-linzi-button-press 180ms cubic-bezier(0.22, 0.8, 0.3, 1);
+}
+
+@keyframes ai-linzi-button-press {
+  0%, 100% {
+    transform: translateY(0) scale(1);
+    filter: brightness(1);
+    box-shadow: none;
+  }
+
+  42% {
+    transform: translateY(1px) scale(0.97);
+    filter: brightness(0.96);
+    box-shadow: inset 0 1px 3px rgb(0 0 0 / 14%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-linzi-root button.is-ai-linzi-pressed:not(:disabled),
+  .ai-linzi-history-modal button.is-ai-linzi-pressed:not(:disabled) {
+    animation: none;
+    opacity: 0.86;
+  }
+}
+
 .ai-linzi-history-modal {
   width: min(620px, calc(100vw - 32px));
 }

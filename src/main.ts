@@ -575,6 +575,43 @@ function confirmAction(
   })
 }
 
+const BUTTON_PRESS_FEEDBACK_MS = 180
+const buttonFeedbackContainers = new WeakSet<HTMLElement>()
+const buttonFeedbackTimers = new WeakMap<HTMLButtonElement, number>()
+
+/**
+ * 给 AI霖子界面里的按钮统一增加轻微按下/回弹反馈。
+ * 使用事件委托，后续动态渲染出来的历史行和消息按钮也自动生效；
+ * 只改变本地视觉状态，不介入任何按钮原有业务逻辑。
+ */
+function installButtonPressFeedback(container: HTMLElement): void {
+  if (buttonFeedbackContainers.has(container)) return
+  buttonFeedbackContainers.add(container)
+
+  const replay = (target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) return
+    const button = target.closest('button')
+    if (!(button instanceof HTMLButtonElement) || !container.contains(button) || button.disabled) return
+
+    const previousTimer = buttonFeedbackTimers.get(button)
+    if (previousTimer !== undefined) window.clearTimeout(previousTimer)
+    button.removeClass('is-ai-linzi-pressed')
+    void button.offsetWidth
+    button.addClass('is-ai-linzi-pressed')
+    const timer = window.setTimeout(() => {
+      button.removeClass('is-ai-linzi-pressed')
+      buttonFeedbackTimers.delete(button)
+    }, BUTTON_PRESS_FEEDBACK_MS)
+    buttonFeedbackTimers.set(button, timer)
+  }
+
+  container.addEventListener('pointerdown', (event) => replay(event.target))
+  container.addEventListener('keydown', (event) => {
+    if (event.repeat || (event.key !== 'Enter' && event.key !== ' ')) return
+    replay(event.target)
+  })
+}
+
 /**
  * 插件历史管理窗口。每条会话的“打开”和“删除”分开，避免用户只能清空全部。
  * 删除回调仍由 ChatView 执行，以便同时收窄云端 obsidian: 会话与本机缓存。
@@ -593,6 +630,7 @@ class ChatHistoryModal extends Modal {
 
   onOpen(): void {
     this.modalEl.addClass('ai-linzi-history-modal')
+    installButtonPressFeedback(this.modalEl)
     this.setTitle('插件对话历史')
     this.renderHistory()
   }
@@ -1439,6 +1477,7 @@ class ChatView extends ItemView {
     const root = this.contentEl
     root.empty()
     root.addClass('ai-linzi-root')
+    installButtonPressFeedback(root)
 
     // 顶栏:历史 + 新对话
     const topbar = root.createDiv({ cls: 'ai-linzi-topbar' })
