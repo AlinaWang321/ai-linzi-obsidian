@@ -104,9 +104,16 @@ import {
 import {
   formatLocalSkillList,
   isLocalSkillListIntent,
+  localSkillMenuTitle,
   normalizeLocalSkillRoot,
   type LocalSkillOutput,
 } from './local-skill-core'
+import {
+  extractChatAiImageRequests,
+  isDirectAiImageEditRequest,
+  requestedAiImageIndex,
+  type ChatAiImageRequest,
+} from './chat-ai-image'
 import {
   LocalSkillRegistry,
   type ActiveLocalSkillContext,
@@ -377,6 +384,11 @@ interface ChatAiImageResult {
   savedPath: string
   instruction: string
   ratio: AiImageRatio
+  /** 同一轮多图生成的本地标识，用于“修改第 2 张”精确选图。 */
+  batchId?: string
+  batchIndex?: number
+  batchTotal?: number
+  label?: string
   articleCandidate?: ChatIllustrationCandidate
   insertedNotePath?: string
 }
@@ -1625,11 +1637,7 @@ class ChatView extends ItemView {
     for (const skill of skills) {
       menu.addItem((item) =>
         item
-          .setTitle(
-            skill.description
-              ? `${skill.displayName} · ${skill.description}`
-              : skill.displayName,
-          )
+          .setTitle(localSkillMenuTitle(skill))
           .setIcon('sparkles')
           .onClick(() => {
             this.inputEl.value = `用${skill.displayName}技能处理当前笔记`
@@ -2222,9 +2230,31 @@ class ChatView extends ItemView {
         await this.persistNow()
         return
       }
+      const requestedImageIndex = requestedAiImageIndex(text)
+      if (isDirectAiImageEditRequest(text) && requestedImageIndex) {
+        const target = this.directAiImageEditTarget(text)
+        if (!target) {
+          throw new Error('没有找到你点名的那张图片；请确认是当前对话最近一组中的第几张')
+        }
+        this.activeImageMessageId = target.message.id
+        this.imageRatio = target.result.ratio
+        this.usePreviousImage = true
+        if (this.imageMode || (await this.setImageMode(true))) await this.sendImageModePrompt(text)
+        return
+      }
       if (this.imageMode) {
         await this.sendImageModePrompt(text)
         return
+      }
+      if (isDirectAiImageEditRequest(text)) {
+        const target = this.directAiImageEditTarget(text)
+        if (target) {
+          this.activeImageMessageId = target.message.id
+          this.imageRatio = target.result.ratio
+          this.usePreviousImage = true
+          if (await this.setImageMode(true)) await this.sendImageModePrompt(text)
+          return
+        }
       }
       if (this.longDocumentPath) {
         await this.startLongDocumentTask(text)
@@ -2377,15 +2407,27 @@ class ChatView extends ItemView {
           answer = typeof data.text === 'string' ? data.text : '(空响应)'
         }
       }
+      const aiImageRequest = extractChatAiImageRequests(answer)
       if (!answer.startsWith('⚠️')) this.clearChatImageAttachments()
+      const imageProtocolWarning = aiImageRequest.invalid
+        ? aiImageRequest.requests.length > 0
+          ? `部分图片请求超出上限或格式不完整，本次只执行可安全识别的 ${aiImageRequest.requests.length} 张。`
+          : '图片生成请求格式不完整，本次没有自动扣积分或生成图片，请重新说一次要求。'
+        : ''
+      const visibleAnswer = [aiImageRequest.cleanText, imageProtocolWarning]
+        .filter(Boolean)
+        .join('\n\n') || '我已经理解图片要求，正在准备生成。'
       this.messages.push({
         id: uid(),
         role: 'assistant',
-        parts: [{ type: 'text', text: answer }],
+        parts: [{ type: 'text', text: visibleAnswer }],
         vaultSources: answerSources,
         localSkillRunIds,
       })
       await this.persistNow()
+      if (aiImageRequest.requests.length > 0 && !answer.startsWith('⚠️')) {
+        await this.executeChatAiImageRequests(aiImageRequest.requests, imageAttachments)
+      }
       if (singleIllustration && noteContext && !answer.startsWith('⚠️')) {
         await this.generateChatIllustration(text, noteContext)
       }
@@ -2554,6 +2596,134 @@ class ChatView extends ItemView {
       if (message.aiImageResult) return { message, result: message.aiImageResult }
     }
     return null
+  }
+
+  private directAiImageEditTarget(
+    instruction: string,
+  ): { message: WireMessage; result: ChatAiImageResult } | null {
+    const requestedIndex = requestedAiImageIndex(instruction)
+    if (requestedIndex) {
+      let latestBatchId = ''
+      for (let index = this.messages.length - 1; index >= 0; index--) {
+        const result = this.messages[index].aiImageResult
+        if (result?.batchId) {
+          latestBatchId = result.batchId
+          break
+        }
+      }
+      if (latestBatchId) {
+        const message = this.messages.find(
+          (candidate) =>
+            candidate.aiImageResult?.batchId === latestBatchId &&
+            candidate.aiImageResult.batchIndex === requestedIndex,
+        )
+        if (message?.aiImageResult) return { message, result: message.aiImageResult }
+        return null
+      }
+      return null
+    }
+    return this.latestImageModeResult()
+  }
+
+  private async executeChatAiImageRequests(
+    requests: ChatAiImageRequest[],
+    userReferences: LocalImageReference[],
+  ): Promise<void> {
+    if (!(await this.plugin.requireProAccess('AI 生图模式'))) {
+      this.messages.push({
+        id: uid(),
+        role: 'assistant',
+        parts: [{ type: 'text', text: '这轮没有生成图片：AI 生图是 Pro 及以上会员功能。' }],
+      })
+      await this.persistNow()
+      return
+    }
+
+    const batchId = uid()
+    let styleReference = ''
+    let completed = 0
+    for (const [index, request] of requests.entries()) {
+      const displayIndex = index + 1
+      const progress: WireMessage = {
+        id: uid(),
+        role: 'assistant',
+        parts: [{
+          type: 'text',
+          text: requests.length > 1
+            ? `正在生成第 ${displayIndex}/${requests.length} 张：${request.label}…`
+            : `正在生成：${request.label}…`,
+        }],
+      }
+      this.messages.push(progress)
+      this.renderMessages()
+
+      try {
+        const editTarget = request.editPreviousImage
+          ? this.directAiImageEditTarget(`上一张图，${request.instruction}`)
+          : null
+        const editReference = editTarget
+          ? await vaultImageToReferenceDataUrl(this.plugin, editTarget.result.savedPath)
+          : ''
+        const references = [
+          ...(editReference ? [editReference] : []),
+          ...userReferences.map((reference) => reference.dataUrl),
+          ...(!editReference && styleReference ? [styleReference] : []),
+        ].slice(0, 3)
+        const ratio = editTarget?.result.ratio ?? request.ratio
+        const generated = await generateAiImage(
+          this.plugin,
+          request.instruction,
+          ratio,
+          references,
+          undefined,
+          Boolean(editReference),
+        )
+        const savedPath = await saveAiImageToVault(
+          this.plugin,
+          generated.imageUrl,
+          `${request.label}_${request.instruction}`,
+        )
+        progress.aiImageResult = {
+          kind: 'ai-image',
+          imageUrl: generated.imageUrl,
+          savedPath,
+          instruction: request.instruction,
+          ratio: generated.ratio,
+          batchId,
+          batchIndex: displayIndex,
+          batchTotal: requests.length,
+          label: request.label,
+        }
+        progress.parts = [{
+          type: 'text',
+          text: requests.length > 1
+            ? `第 ${displayIndex}/${requests.length} 张“${request.label}”已生成并保存。`
+            : `“${request.label}”已生成并保存。`,
+        }]
+        this.activeImageMessageId = progress.id
+        this.imageRatio = generated.ratio
+        this.usePreviousImage = true
+        completed += 1
+        if (!styleReference && requests.length > 1 && !editReference) {
+          styleReference = await vaultImageToReferenceDataUrl(this.plugin, savedPath)
+        }
+      } catch (error) {
+        progress.parts = [{
+          type: 'text',
+          text: `⚠️ ${request.label}生成失败：${error instanceof Error ? error.message : String(error)}`,
+        }]
+      }
+      await this.persistNow()
+      this.renderMessages()
+    }
+    new Notice(
+      completed === requests.length
+        ? requests.length > 1
+          ? `✅ 已完成 ${completed} 张图片生成；可直接说“修改第 2 张……”`
+          : '✅ 图片已生成；可继续说怎么修改'
+        : `图片任务完成 ${completed}/${requests.length} 张；失败项没有扣图片积分，可稍后重试`,
+      7000,
+    )
   }
 
   private async sendImageModePrompt(instruction: string): Promise<void> {
@@ -3080,9 +3250,12 @@ class ChatView extends ItemView {
         if (done) break
         full += decoder.decode(value, { stream: true })
         const patchAt = full.indexOf('<AI_LINZI_NOTE_PATCH>')
+        const imageRequestAt = full.indexOf('<<<AI_LINZI_IMAGE_REQUEST>>>')
         body.setText(
           patchAt >= 0
             ? `${full.slice(0, patchAt).trim()}\n\n正在整理可一键应用的修改…`
+            : imageRequestAt >= 0
+              ? `${full.slice(0, imageRequestAt).trim()}\n\n正在准备 AI 生图任务…`
             : full,
         )
         this.listEl.scrollTop = this.listEl.scrollHeight
@@ -3696,7 +3869,12 @@ class ChatView extends ItemView {
       card.createDiv({ text: '图片文件已经移动或不存在。', cls: 'ai-linzi-image-error' })
     }
     const meta = card.createDiv({ cls: 'ai-linzi-chat-image-meta' })
-    meta.createEl('strong', { text: `${result.ratio} · 已自动保存` })
+    const batchLabel = result.batchIndex && result.batchTotal
+      ? `第 ${result.batchIndex}/${result.batchTotal} 张${result.label ? ` · ${result.label}` : ''}`
+      : result.label ?? ''
+    meta.createEl('strong', {
+      text: [batchLabel, result.ratio, '已自动保存'].filter(Boolean).join(' · '),
+    })
     meta.createSpan({ text: result.savedPath })
     if (result.articleCandidate) {
       meta.createSpan({ text: `建议放在「${result.articleCandidate.anchor}」之后` })

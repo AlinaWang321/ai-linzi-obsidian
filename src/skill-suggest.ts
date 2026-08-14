@@ -1,3 +1,5 @@
+import { isDirectAiImageRequest } from './chat-ai-image'
+
 export type PluginSkillActionId =
   | 'interview'
   | 'topic-radar'
@@ -37,6 +39,7 @@ const MARKER_RE = /<<<\s*推荐技能[\s\u3000]+([a-z0-9-]+)\s*>>>/g
 const HANGING_RE = /\n?<{1,3}(?:\s*推?荐?技?能?[\s\u3000]*[a-z0-9-]*)?$/
 
 export function isArticleIllustrationIntent(text: string): boolean {
+  if (isDirectAiImageRequest(text)) return false
   return /(?:文章配图|正文配图|配图|插图|图片|封面)/.test(text) &&
     (/(?:生成|生图|做图|配图|插图|加图|加入|插入)/.test(text) || isArticleIllustrationEditIntent(text))
 }
@@ -89,7 +92,11 @@ export function extractPluginSkillSuggestions(
     return ''
   })
   cleanText = cleanText.replace(HANGING_RE, '').trimEnd()
-  if (isArticleIllustrationIntent(previousUserText) && !singleIllustration) {
+  if (
+    isArticleIllustrationIntent(previousUserText) &&
+    !isDirectAiImageRequest(previousUserText) &&
+    !singleIllustration
+  ) {
     add(PLUGIN_SKILLS['article-illustration'])
   }
   return { cleanText, suggestions }

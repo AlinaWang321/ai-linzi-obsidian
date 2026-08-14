@@ -52,6 +52,8 @@ const portable = core.buildLocalSkillDescriptor(
 assert.ok(portable)
 assert.equal(portable.output, 'create-note')
 assert.equal(portable.displayName, '每周经营复盘')
+assert.equal(portable.folderName, 'weekly-review')
+assert.equal(core.localSkillMenuTitle(portable), '每周经营复盘 · weekly-review')
 assert.equal(
   core.matchLocalSkillInvocation('用每周经营复盘技能整理当前笔记', [portable]).kind,
   'matched',
@@ -89,6 +91,11 @@ assert.equal(
   '显式调用名称里包含“本地 Skill”时不能误判为查看技能清单',
 )
 assert.match(core.formatLocalSkillList([consultation, weekly]), /找到 2 个本地 Skill/)
+assert.doesNotMatch(
+  core.formatLocalSkillList([consultation, weekly]),
+  /把咨询逐字稿整理成客户可读简报/,
+  'Skill 清单不应把给模型看的长 description 铺满界面',
+)
 assert.equal(core.LOCAL_SKILL_MAX_CONTENT_CHARS, 12_000)
 assert.equal(core.LOCAL_SKILL_MAX_ENTRY_CHARS, 120_000)
 assert.equal(core.extendContiguousRead(0, 8_000, 2_000), 0, '跳到文件末尾不能算已读')

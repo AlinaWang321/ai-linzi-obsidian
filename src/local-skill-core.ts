@@ -61,6 +61,8 @@ export type LocalSkillOutput = 'chat' | 'create-note' | 'update-current-note'
 
 export interface LocalSkillDescriptor {
   name: string
+  /** Vault 中实际承载该 Skill 的文件夹名（单文件 Skill 则为文件名）。 */
+  folderName: string
   /** 标准 SKILL.md 的首个 H1；用于中文展示与显式调用别名，不写回 YAML。 */
   displayName: string
   description: string
@@ -212,6 +214,7 @@ export function buildLocalSkillDescriptor(
   ]
   return {
     name: name.slice(0, 80),
+    folderName: fallbackName.slice(0, 120),
     displayName,
     description: description.slice(0, 240),
     triggers,
@@ -313,12 +316,9 @@ export function formatLocalSkillList(
       '支持 `技能名.md` 或 `技能名/SKILL.md`。'
     )
   }
-  const rows = skills.map((skill, index) => {
-    const description = skill.description ? `：${skill.description}` : ''
-    const machineName =
-      skill.displayName === skill.name ? '' : `（\`${skill.name}\`）`
-    return `${index + 1}. **${skill.displayName}**${machineName}${description}`
-  })
+  const rows = skills.map(
+    (skill, index) => `${index + 1}. **${localSkillMenuTitle(skill)}**`,
+  )
   return [
     `我在 \`${root}/\` 找到 ${skills.length} 个本地 Skill：`,
     '',
@@ -326,4 +326,10 @@ export function formatLocalSkillList(
     '',
     '调用示例：`用咨询简报技能处理当前笔记`。',
   ].join('\n')
+}
+
+/** 菜单只展示可辨认的名字与文件夹，不把给模型看的长 description 铺满屏幕。 */
+export function localSkillMenuTitle(skill: LocalSkillDescriptor): string {
+  const folder = skill.folderName || skill.name
+  return skill.displayName === folder ? skill.displayName : `${skill.displayName} · ${folder}`
 }

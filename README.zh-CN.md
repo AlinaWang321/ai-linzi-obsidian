@@ -22,6 +22,7 @@ This public plugin is a thin client. Private prompts, model routing, billing, ac
 
 ## 功能路线
 
+- **v0.7.12**：本地 Skills 菜单改为只显示“中文功能名 · Skill 文件夹名”，不再把长 description 铺满屏幕；主对话新增自然 AI 生图协议，小红书卡片、海报、长图、普通封面可直接按上下文生成 1—6 张图片并保存到 Vault，不再误导到“文章配图”。同组图片沿用首图风格，支持继续说“修改第 2 张……”进行多轮图片编辑。
 - **v0.7.11**：新增受控本地 Skill 执行器。默认关闭，开启后每一步都先展示程序、参数、联网声明、预计输出和是否把终端输出交给 AI；只开放 Node.js/Python/FFmpeg/FFprobe，不使用 Shell，不覆盖已有文件。本次新生成且未被修改的 Vault 文件可移入系统废纸篓/回收站。脚本仍与 Obsidian 同权限，只运行可信 Skill。
 - **v0.7.10**：长 Skill 支持按需继续读取 `SKILL.md`、references、scripts 与入口明确引用的 Vault SOP；Skill 调用和全 Vault 搜索分开授权。
 - **v0.6.55**：内容看板右上角「刷新 / 生成选题」新增完整点击反馈：处理中按钮立即变为加载态并防止重复点击，刷新完成显示时间与成功通知，生成选题弹窗打开后恢复按钮状态。

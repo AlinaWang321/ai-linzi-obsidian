@@ -34,10 +34,14 @@ assert.equal(local.suggestions.length, 1)
 assert.equal(local.suggestions[0].slug, 'article-illustration')
 
 const automatic = suggest.extractPluginSkillSuggestions('我来帮你处理。', '这张封面的标题写错了，帮我修正')
-assert.equal(automatic.suggestions[0].slug, 'article-illustration')
+assert.deepEqual(automatic.suggestions, [], '普通 AI 封面修改不能误导到文章配图')
 const firstImageEdit = '把我第一张图片的标题改成：一键撰写、配图、排版、发布公众号'
 assert.equal(suggest.isArticleIllustrationEditIntent(firstImageEdit), true)
-assert.equal(suggest.extractPluginSkillSuggestions('可以修改。', firstImageEdit).suggestions[0].slug, 'article-illustration')
+assert.deepEqual(
+  suggest.extractPluginSkillSuggestions('可以修改。', firstImageEdit).suggestions,
+  [],
+  '没有点名当前文章时应走 GPT Image 2 续改，不应出现文章配图按钮',
+)
 assert.deepEqual(suggest.extractExactTextHints(firstImageEdit), ['一键撰写、配图、排版、发布公众号'])
 assert.equal(suggest.isArticleIllustrationEditIntent('我想调整商业模式'), false)
 const addPartImage = '把 Part 4 也增加一张配图'
@@ -57,6 +61,11 @@ assert.equal(
   'article-illustration',
 )
 assert.equal(suggest.isArticleIllustrationIntent('帮我看看咨询简报'), false)
+assert.deepEqual(
+  suggest.extractPluginSkillSuggestions('我会生成。', '给我生成6张小红书卡片图').suggestions,
+  [],
+  '小红书卡片必须走主对话直接生图，不能误导到文章配图',
+)
 assert.deepEqual(
   suggest.extractExactTextHints('把配图里的「AI霖子」改正确，霖字写错了'),
   ['AI霖子'],

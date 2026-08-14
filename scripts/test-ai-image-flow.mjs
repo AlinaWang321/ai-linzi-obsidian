@@ -24,6 +24,16 @@ assert.doesNotMatch(main, /runAiImageGeneration/)
 assert.match(main, /aiImageResult/)
 assert.match(main, /saveAiImageToVault/)
 assert.match(main, /继续修改这张/)
+assert.match(
+  main,
+  /const requestedImageIndex = requestedAiImageIndex\(text\)[\s\S]*?isDirectAiImageEditRequest\(text\) && requestedImageIndex[\s\S]*?if \(this\.imageMode\)/,
+  '点名修改第 N 张必须先精确选图，不能被当前生图模式误改到别图',
+)
+assert.match(
+  main,
+  /if \(requestedIndex\)[\s\S]*?if \(latestBatchId\)[\s\S]*?return null\s*}\s*return null\s*}\s*return this\.latestImageModeResult\(\)/,
+  '点名图片不存在时必须报错，不能默认改最后一张',
+)
 assert.match(main, /参考上一张图/)
 assert.match(main, /preserveRicherLocalCopy/)
 assert.match(main, /下一轮会继续修改上一张图/)
@@ -80,5 +90,6 @@ assert.ok(
 assert.doesNotMatch(actions, /生成修改版并覆盖原图/)
 assert.doesNotMatch(actions, /预计最多\s*\$\{?.*积分/)
 assert.doesNotMatch(`${actions}\n${main}`, /Seedream/i)
+assert.doesNotMatch(main, /GPT Image 2/i, '公开插件 UI 不应暴露私有后端的具体图片模型')
 
 console.log('AI image preview and confirmation tests passed')
