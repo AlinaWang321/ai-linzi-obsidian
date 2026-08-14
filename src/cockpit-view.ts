@@ -24,6 +24,12 @@ interface CloudTask {
   period: 'week' | 'month' | 'quarter'
   source: string
 }
+interface CloudCustomerTodo {
+  content: string
+  customerName: string
+  dueDate: string | null
+  overdue: boolean
+}
 interface CloudCrm {
   thisMonth: { new: number; consults: number; deals: number; amount: number }
   lastMonth: { new: number; consults: number; deals: number; amount: number }
@@ -33,7 +39,7 @@ interface CloudCrm {
   ytdAmount: number
   lifetimeAmount: number
   lifetimeWonCustomers?: number
-  todos: { open: number; overdue: number; items: { content: string; customerName: string; dueDate: string | null; overdue: boolean }[] }
+  todos: { open: number; overdue: number; items: CloudCustomerTodo[] }
   silent: { count: number; thresholdDays: number; items: { name: string; stage: string; days: number }[] }
   upcomingConsults7d: number
 }
@@ -321,7 +327,7 @@ export class CockpitView extends ItemView {
   private cloudFetchedAt = 0
   private cloudError = ''
   private loading = false
-  private taskTab: 'week' | 'month' | 'quarter' | 'overdue' = 'week'
+  private taskTab: 'week' | 'month' | 'quarter' | 'customer' | 'overdue' = 'week'
   private month = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
   private refreshTimer: number | null = null
   private dayCache = new Map<string, DayDetail>()
@@ -736,15 +742,18 @@ export class CockpitView extends ItemView {
       return
     }
     const overdue = this.cloud?.overdueTasks ?? []
+    const customerTodos = this.cloud?.crm?.todos
     const tabs = card.createDiv({ cls: 'ai-linzi-cockpit-tabs' })
-    const periods: { key: 'week' | 'month' | 'quarter' | 'overdue'; label: string; count: number }[] = [
+    const periods: { key: 'week' | 'month' | 'quarter' | 'customer' | 'overdue'; label: string; count: number }[] = [
       { key: 'week', label: '本周', count: tasks.filter((t) => t.period === 'week' && t.status !== 'gave_up').length },
       { key: 'month', label: '本月', count: tasks.filter((t) => t.period === 'month' && t.status !== 'gave_up').length },
       { key: 'quarter', label: '本季', count: tasks.filter((t) => t.period === 'quarter' && t.status !== 'gave_up').length },
+      { key: 'customer', label: '客户待办', count: customerTodos?.open ?? 0 },
       { key: 'overdue', label: '逾期', count: overdue.length },
     ]
     for (const p of periods) {
       if (p.key === 'overdue' && p.count === 0) continue
+      if (p.key === 'customer' && !this.cloud?.crm) continue
       const tab = tabs.createEl('button', { text: `${p.label} ${p.count}`, cls: 'ai-linzi-cockpit-tab' })
       tab.toggleClass('is-active', this.taskTab === p.key)
       tab.toggleClass('is-warn', p.key === 'overdue')
@@ -754,6 +763,42 @@ export class CockpitView extends ItemView {
       }
     }
     if (this.taskTab === 'overdue' && overdue.length === 0) this.taskTab = 'week'
+    if (this.taskTab === 'customer' && !this.cloud?.crm) this.taskTab = 'week'
+    if (this.taskTab === 'customer') {
+      const customerItems = customerTodos?.items ?? []
+      if (customerItems.length === 0) {
+        const empty = card.createDiv({ cls: 'ai-linzi-cockpit-empty' })
+        empty.createSpan({ text: '还没有客户待办。' })
+        const add = empty.createSpan({ text: '去客户管理新增 →', cls: 'ai-linzi-cockpit-day-link' })
+        add.onclick = () => window.open(`${this.plugin.settings.serverUrl.replace(/\/+$/, '')}/customers`)
+        return
+      }
+      for (const todo of customerItems.slice(0, 8)) {
+        const row = card.createDiv({ cls: `ai-linzi-cockpit-task${todo.overdue ? ' is-overdue' : ''}` })
+        row.createSpan({ text: todo.overdue ? '⏰' : '⬜️', cls: 'ai-linzi-cockpit-task-mark' })
+        row.createSpan({ text: todo.content, cls: 'ai-linzi-cockpit-task-title' })
+        row.createSpan({ text: todo.customerName || '客户', cls: 'ai-linzi-cockpit-badge' })
+        if (todo.dueDate) {
+          row.createSpan({
+            text: `${todo.overdue ? '逾期 ' : ''}${todo.dueDate.slice(5).replace('-', '/')}`,
+            cls: 'ai-linzi-cockpit-task-due',
+          })
+        }
+      }
+      const hint = card.createDiv({ cls: 'ai-linzi-cockpit-hint' })
+      hint.createSpan({
+        text:
+          (customerTodos?.open ?? 0) > customerItems.length
+            ? `这里先显示 ${customerItems.length} 条，完整管理去网页版 → `
+            : '完成或新增客户待办去网页版 → ',
+      })
+      const link = hint.createEl('a', {
+        text: '客户管理',
+        href: `${this.plugin.settings.serverUrl.replace(/\/+$/, '')}/customers`,
+      })
+      link.addClass('ai-linzi-cockpit-link')
+      return
+    }
     const items =
       this.taskTab === 'overdue'
         ? overdue

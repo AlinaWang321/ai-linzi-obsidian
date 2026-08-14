@@ -2693,7 +2693,7 @@ button.ai-linzi-vault-source-link:focus-visible {
 }
 .ai-linzi-cockpit-grid { display: flex; gap: 12px; flex-wrap: wrap; }
 .ai-linzi-cockpit-grid > .ai-linzi-cockpit-card { flex: 1; min-width: 250px; }
-.ai-linzi-cockpit-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.ai-linzi-cockpit-tabs { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
 .ai-linzi-cockpit-tab { font-size: 0.78em; padding: 2px 10px; border-radius: 12px; }
 .ai-linzi-cockpit-tab.is-active {
   background: rgba(61, 179, 137, 0.14);
@@ -2702,7 +2702,10 @@ button.ai-linzi-vault-source-link:focus-visible {
 }
 .ai-linzi-cockpit-task { display: flex; align-items: center; gap: 7px; padding: 4px 0; font-size: 0.85em; }
 .ai-linzi-cockpit-task.is-done { color: var(--text-muted); text-decoration: line-through; }
+.ai-linzi-cockpit-task.is-overdue .ai-linzi-cockpit-task-mark,
+.ai-linzi-cockpit-task.is-overdue .ai-linzi-cockpit-task-due { color: var(--ck-danger); }
 .ai-linzi-cockpit-task-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.ai-linzi-cockpit-task-due { color: var(--text-muted); font-size: 0.72em; flex-shrink: 0; }
 .ai-linzi-cockpit-badge {
   font-size: 0.7em;
   background: var(--background-primary);
