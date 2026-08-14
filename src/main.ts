@@ -55,7 +55,13 @@ import {
   type LocalImageReference,
 } from './actions'
 import { extractCreateNoteBlocks, type CreateNoteBlock } from './create-note'
-import { extractCreateFolderBlocks } from './create-folder'
+import {
+  extractCreateFolderBlocks,
+  vaultStructureSettingPatch,
+  VAULT_STRUCTURE_BINDING_LABELS,
+  type VaultStructureBindingKey,
+  type VaultStructurePlan,
+} from './create-folder'
 import {
   extractCreateLocalSkillBlocks,
   type CreateLocalSkillBlock,
@@ -172,7 +178,7 @@ interface AiLinziSettings {
   wechatAppSecretId: string
   /** 文末品牌小卡「排版与配图 · AI霖子」(默认开,可关) */
   brandFooter: boolean
-  /** 驾驶舱目录映射(相对 vault 根;留空=该卡不统计)。默认 inbox/raw/wiki/output 四件套 */
+  /** 驾驶舱目录映射(相对 vault 根;留空=该卡不统计)。新安装默认一人公司驾驶舱编号目录 */
   cockpitInboxFolder: string
   cockpitSourcesFolder: string
   cockpitKnowledgeFolder: string
@@ -200,11 +206,11 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   wechatAppId: '',
   wechatAppSecretId: '',
   brandFooter: true,
-  cockpitInboxFolder: 'inbox',
-  cockpitSourcesFolder: 'raw',
-  cockpitKnowledgeFolder: 'wiki',
-  cockpitOutputFolder: 'output',
-  localSkillsFolder: 'system/skills',
+  cockpitInboxFolder: '000_Inbox',
+  cockpitSourcesFolder: '01_Raw',
+  cockpitKnowledgeFolder: '02_Wiki',
+  cockpitOutputFolder: '04_Output',
+  localSkillsFolder: '05_System/Skills',
   localSkillExecutionEnabled: false,
   cockpitJudgmentDate: '',
   cockpitJudgmentText: '',
@@ -3364,20 +3370,61 @@ class ChatView extends ItemView {
     }
   }
 
-  /** 对话创建文件夹确认卡(v0.6.42):列出净化后的路径,点击才逐级创建,已存在跳过 */
-  private renderCreateFolderOffer(row: HTMLElement, folders: string[]) {
+  /**
+   * 动态知识库目录确认卡：Luna 负责规划，插件只做已展示路径的机械创建与设置绑定。
+   * “创建并应用”只修改插件目录设置，不重命名/移动/删除任何已有内容。
+   */
+  private renderCreateFolderOffer(
+    row: HTMLElement,
+    folders: string[],
+    plan?: VaultStructurePlan,
+    isLatestPlan = true,
+  ) {
     const card = row.createDiv({ cls: 'ai-linzi-create-note-card' })
-    card.createDiv({ text: `📁 待创建文件夹(${folders.length} 个):`, cls: 'ai-linzi-create-note-title' })
+    card.createDiv({
+      text: `📁 待确认：${plan?.title ?? `创建 ${folders.length} 个文件夹`}`,
+      cls: 'ai-linzi-create-note-title',
+    })
     for (const path of folders) {
       card.createDiv({ text: `· ${path}`, cls: 'ai-linzi-create-note-preview' })
     }
+    const bindingEntries = plan
+      ? (Object.entries(plan.bindings) as [VaultStructureBindingKey, string][])
+      : []
+    if (bindingEntries.length > 0) {
+      card.createDiv({ text: '同时更新 AI霖子目录设置：', cls: 'ai-linzi-create-note-title' })
+      for (const [key, path] of bindingEntries) {
+        card.createDiv({
+          text: `· ${VAULT_STRUCTURE_BINDING_LABELS[key]} → ${path}`,
+          cls: 'ai-linzi-create-note-preview',
+        })
+      }
+    }
+    if (!isLatestPlan) {
+      card.createDiv({
+        text: '此方案已被后续修改替代，请使用下方最新方案。',
+        cls: 'ai-linzi-create-note-preview',
+      })
+      return
+    }
     const actionsRow = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
-    const createBtn = actionsRow.createEl('button', { text: `创建这 ${folders.length} 个文件夹` })
-    createBtn.onclick = () => {
-      createBtn.disabled = true
+    const applyBtn = bindingEntries.length > 0
+      ? actionsRow.createEl('button', { text: '创建并应用到 AI霖子（推荐）' })
+      : null
+    const createOnlyBtn = actionsRow.createEl('button', { text: '仅创建文件夹' })
+    const execute = (applySettings: boolean) => {
+      if (applyBtn) applyBtn.disabled = true
+      createOnlyBtn.disabled = true
       void (async () => {
         let created = 0
         let skipped = 0
+        const previousSettings = {
+          cockpitInboxFolder: this.plugin.settings.cockpitInboxFolder,
+          cockpitSourcesFolder: this.plugin.settings.cockpitSourcesFolder,
+          cockpitKnowledgeFolder: this.plugin.settings.cockpitKnowledgeFolder,
+          cockpitOutputFolder: this.plugin.settings.cockpitOutputFolder,
+          localSkillsFolder: this.plugin.settings.localSkillsFolder,
+        }
         try {
           for (const path of folders) {
             // 逐级确保父目录存在(vault.createFolder 不保证递归)
@@ -3393,18 +3440,35 @@ class ChatView extends ItemView {
             if (createdForPath > 0) created += createdForPath
             else skipped++
           }
+          if (applySettings && plan) {
+            Object.assign(this.plugin.settings, vaultStructureSettingPatch(plan))
+            try {
+              await this.plugin.saveSettings()
+            } catch (error) {
+              Object.assign(this.plugin.settings, previousSettings)
+              throw error
+            }
+          }
           card.empty()
           card.createDiv({
             cls: 'ai-linzi-create-note-done',
-            text: `✅ 已创建 ${created} 个文件夹${skipped > 0 ? `(${skipped} 个已存在,跳过)` : ''}`,
+            text:
+              `✅ 已创建 ${created} 个文件夹${skipped > 0 ? `（${skipped} 个已存在，跳过）` : ''}` +
+              (applySettings ? '，并已更新驾驶舱与本地 Skills 目录设置' : ''),
           })
-          new Notice(`已创建 ${created} 个文件夹${skipped > 0 ? `,${skipped} 个已存在` : ''}`)
+          new Notice(
+            `已创建 ${created} 个文件夹${skipped > 0 ? `，${skipped} 个已存在` : ''}` +
+              (applySettings ? '，目录设置已更新' : ''),
+          )
         } catch (e) {
-          createBtn.disabled = false
-          new Notice(`创建失败:${(e as Error).message}`, 6000)
+          if (applyBtn) applyBtn.disabled = false
+          createOnlyBtn.disabled = false
+          new Notice(`创建失败：${(e as Error).message}。目录设置未更改。`, 6000)
         }
       })()
     }
+    if (applyBtn) applyBtn.onclick = () => execute(true)
+    createOnlyBtn.onclick = () => execute(false)
   }
 
   /** Vault 整理方案：预览 → 二次确认 → 本机执行；不删除、不覆盖，移动可撤销。 */
@@ -3609,6 +3673,18 @@ class ChatView extends ItemView {
       link.createSpan({ text: ' 可注册账号、查看和充值积分' })
       return
     }
+    let latestFolderOfferIndex = -1
+    for (let index = 0; index < this.messages.length; index++) {
+      const candidate = this.messages[index]
+      if (candidate.role !== 'assistant') continue
+      const candidateText = candidate.parts.map((part) => part.text).join('')
+      const candidateVaultPlan = extractVaultOrganizePlan(candidateText)
+      const candidateSkill = extractPluginSkillSuggestions(candidateVaultPlan.cleanText, '')
+      const candidateLocalSkill = extractCreateLocalSkillBlocks(candidateSkill.cleanText)
+      const candidateNote = extractCreateNoteBlocks(candidateLocalSkill.cleanText)
+      const candidateFolders = extractCreateFolderBlocks(candidateNote.cleanText)
+      if (candidateFolders.folders.length > 0) latestFolderOfferIndex = index
+    }
     for (let mi = 0; mi < this.messages.length; mi++) {
       const m = this.messages[mi]
       const row = this.listEl.createDiv({
@@ -3644,7 +3720,20 @@ class ChatView extends ItemView {
           this.renderCreateLocalSkillOffers(row, localSkillCreateResult.blocks)
         }
         if (createResult.blocks.length > 0) this.renderCreateNoteOffers(row, createResult.blocks)
-        if (folderResult.folders.length > 0) this.renderCreateFolderOffer(row, folderResult.folders)
+        if (folderResult.invalidStructurePlan) {
+          const invalidCard = row.createDiv({ cls: 'ai-linzi-create-note-card' })
+          invalidCard.createDiv({
+            text: '⚠️ 目录方案格式不完整，本次没有创建或修改任何内容。请让 AI霖子重新生成完整方案。',
+            cls: 'ai-linzi-create-note-preview',
+          })
+        }
+        if (folderResult.plans.length > 0) {
+          for (const plan of folderResult.plans) {
+            this.renderCreateFolderOffer(row, plan.folders, plan, mi === latestFolderOfferIndex)
+          }
+        } else if (folderResult.folders.length > 0) {
+          this.renderCreateFolderOffer(row, folderResult.folders, undefined, mi === latestFolderOfferIndex)
+        }
         if (vaultPlanResult.plan) {
           this.renderVaultPlanOffer(row, vaultPlanResult.plan, m)
         }
@@ -4128,16 +4217,16 @@ class AiLinziSettingTab extends PluginSettingTab {
             }),
         )
     }
-    cockpitFolderSetting('收件箱 Inbox 文件夹', '随手记、待整理的内容先进这里;驾驶舱会提醒积压', 'cockpitInboxFolder', 'inbox')
-    cockpitFolderSetting('原始素材 Raw 文件夹', '录音转写、聊天记录、灵感等原始输入', 'cockpitSourcesFolder', 'raw')
-    cockpitFolderSetting('知识库 Wiki 文件夹', '整理后的方法论、案例、洞察', 'cockpitKnowledgeFolder', 'wiki')
-    cockpitFolderSetting('对外输出 Output 文件夹', '发出去的文章、笔记、交付物', 'cockpitOutputFolder', 'output')
+    cockpitFolderSetting('收件箱 Inbox 文件夹', '随手记、待整理的内容先进这里;驾驶舱会提醒积压', 'cockpitInboxFolder', '000_Inbox')
+    cockpitFolderSetting('原始素材 Raw 文件夹', '录音转写、聊天记录、灵感等原始输入', 'cockpitSourcesFolder', '01_Raw')
+    cockpitFolderSetting('知识库 Wiki 文件夹', '整理后的方法论、案例、洞察', 'cockpitKnowledgeFolder', '02_Wiki')
+    cockpitFolderSetting('对外输出 Output 文件夹', '发出去的文章、笔记、交付物', 'cockpitOutputFolder', '04_Output')
     new Setting(containerEl)
       .setName('AI 工作流 / SOP 文件夹')
       .setDesc('存放可被 AI霖子调用的 Skills；支持「技能名.md」或标准「技能名/SKILL.md」，也可在对话中让 AI 生成后确认写入')
       .addText((text) =>
         text
-          .setPlaceholder('system/skills')
+          .setPlaceholder('05_System/Skills')
           .setValue(this.plugin.settings.localSkillsFolder)
           .onChange(async (value) => {
             this.plugin.settings.localSkillsFolder = normalizeLocalSkillRoot(value)
