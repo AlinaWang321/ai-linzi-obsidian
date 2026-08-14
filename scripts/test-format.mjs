@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { build } from 'esbuild'
 
@@ -139,5 +140,18 @@ const imageBlock = publisher.wechatImageHtml('https://example.com/a.png', '说�
 assert.match(imageBlock, /^<section/)
 assert.match(imageBlock, /<img src="https:\/\/example\.com\/a\.png"/)
 assert.match(imageBlock, /<\/section>$/)
+
+const publishSource = await readFile(new URL('../src/publish.ts', import.meta.url), 'utf8')
+const sendDraftStart = publishSource.indexOf('export async function sendToWechatDraft')
+assert.ok(sendDraftStart >= 0, '必须保留公众号草稿箱发送入口')
+const sendDraftSource = publishSource.slice(sendDraftStart)
+assert.match(sendDraftSource, /extractImages\(note\.body\)/, '草稿箱发送应读取文章里已有的图片')
+assert.match(sendDraftSource, /uploadContentImage/, '草稿箱发送应上传已有正文图片')
+assert.match(sendDraftSource, /mdToWechatHtml/, '草稿箱发送应自动执行公众号排版')
+assert.doesNotMatch(
+  sendDraftSource,
+  /runArticleIllustration|article-illustration/,
+  '草稿箱发送不得再次调用 AI 文章配图',
+)
 
 console.log('format regression tests passed')
