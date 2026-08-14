@@ -147,7 +147,7 @@ export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Prom
   })
   const rootFolder = normalizePath(plugin.settings.outputFolder || 'AI霖子输出')
   const contentType = canonical?.['内容类型']
-  const subfolder = outputSubfolder(contentType, spec.platform)
+  const subfolder = outputSubfolder(contentType, spec.platform, spec.skill)
   const folder = normalizePath(subfolder ? `${rootFolder}/${subfolder}` : rootFolder)
   await ensureFolder(plugin, folder)
 
