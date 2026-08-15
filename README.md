@@ -8,6 +8,7 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 
 - Chat with AI Linzi in a sidebar and optionally include the active note.
 - Search Markdown, TXT, text-based PDF, and DOCX files locally.
+- Run sales reviews and customer consultation briefs from one explicitly selected Markdown, TXT, text-based PDF, or DOCX transcript; the original file stays local.
 - Send only a bounded set of relevant excerpts to the service.
 - Explicitly select complete documents for authorized long-document tasks.
 - Create new notes and folders after an in-app confirmation.

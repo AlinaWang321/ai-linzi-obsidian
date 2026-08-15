@@ -29,7 +29,7 @@ export async function readLocalDocumentText(
   app: App,
   file: TFile,
   maxChars: number,
-  mode: 'chat' | 'long-document' = 'long-document',
+  mode: 'chat' | 'long-document' | 'skill' = 'long-document',
 ): Promise<LongDocumentText> {
   const extension = file.extension.toLocaleLowerCase()
   if (!isLocalSearchExtension(extension)) {
@@ -61,6 +61,12 @@ export async function readLocalDocumentText(
       throw new Error(
         `《${file.name}》超过普通对话单篇 ${maxChars.toLocaleString('zh-CN')} 字上限。` +
         '如需完整处理，请只勾选这一份文件并选择“作为长文任务处理”（Pro及以上）',
+      )
+    }
+    if (mode === 'skill') {
+      throw new Error(
+        `《${file.name}》超过本技能 ${maxChars.toLocaleString('zh-CN')} 字上限，` +
+        '请按章节拆成两份后再处理',
       )
     }
     throw new Error(

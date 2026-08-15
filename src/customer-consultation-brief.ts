@@ -9,7 +9,6 @@ import {
 } from 'obsidian'
 import { toPng } from 'html-to-image'
 import type AiLinziPlugin from './main'
-import { stripFrontmatter } from './article-format'
 import {
   CUSTOMER_CONSULTATION_OUTPUT_FOLDER,
   CUSTOMER_CONSULTATION_TRANSCRIPT_MAX,
@@ -18,6 +17,7 @@ import {
   normalizeConsultationBriefMarkdown,
   type CustomerConsultationBriefInput,
 } from './customer-consultation-brief-core'
+import { selectTranscriptSource } from './transcript-source'
 
 function fileDate(): string {
   const date = new Date()
@@ -271,13 +271,14 @@ class CustomerConsultationBriefModal extends Modal {
 }
 
 export async function runCustomerConsultationBrief(plugin: AiLinziPlugin): Promise<void> {
-  const sourceFile = plugin.rememberCurrentMarkdownFile()
-  if (!sourceFile) {
-    new Notice('请先打开要处理的咨询逐字稿笔记')
-    return
-  }
-  const raw = await plugin.app.vault.cachedRead(sourceFile)
-  const transcript = stripFrontmatter(raw).trim()
+  const source = await selectTranscriptSource(
+    plugin,
+    '客户咨询简报',
+    CUSTOMER_CONSULTATION_TRANSCRIPT_MAX,
+  )
+  if (!source) return
+  const sourceFile = source.file
+  const transcript = source.text
   if (transcript.length < CUSTOMER_CONSULTATION_TRANSCRIPT_MIN) {
     new Notice(`当前逐字稿只有 ${transcript.length} 字；客户咨询简报至少需要 800 字`, 7000)
     return

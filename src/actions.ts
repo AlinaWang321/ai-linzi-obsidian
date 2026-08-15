@@ -26,6 +26,7 @@ import { canonicalContentFields } from './content-state'
 import { outputSubfolder } from './output-routing'
 import { VaultImageBrowserModal } from './vault-image-browser'
 import { generateXhsCardPackage, XhsCardGalleryModal } from './xhs-cards'
+import { selectTranscriptSource } from './transcript-source'
 
 // ── 与服务端对齐的常量 ─────────────────────────────
 
@@ -550,22 +551,26 @@ export async function runXhsCards(plugin: AiLinziPlugin) {
 }
 
 export async function runSalesReview(plugin: AiLinziPlugin) {
-  const note = await getActiveNote(plugin)
-  if (!note) return
-  const transcript = stripFrontmatter(note.text)
+  const source = await selectTranscriptSource(
+    plugin,
+    '销售复盘',
+    LIMITS.SALES_REVIEW_TRANSCRIPT_MAX,
+  )
+  if (!source) return
+  const transcript = source.text
   if (transcript.length < LIMITS.SALES_REVIEW_TRANSCRIPT_MIN) {
     new Notice(`逐字稿只有 ${transcript.length} 字——谈单复盘需要 ≥500 字的完整逐字稿`)
     return
   }
   const input = await new PromptModal(
     plugin.app,
-    `销售复盘 · 已锁定 ${note.file.basename}`,
+    `销售复盘 · 已锁定 ${source.file.basename}`,
     '开始诊断',
     [
       {
         key: 'background',
         label: '客户背景/产品说明(可选)',
-        desc: `本次只读取：${note.file.path}。逐字稿传输不留存（不进 AI霖子数据库），建议先把客户实名换成化名。`,
+        desc: `本次只读取：${source.file.path}。支持 MD、TXT、可复制文字的 PDF 和 DOCX；原文件不上传，提取后的逐字稿不进 AI霖子数据库。建议先把客户实名换成化名。`,
         multiline: true,
       },
     ],
@@ -575,15 +580,15 @@ export async function runSalesReview(plugin: AiLinziPlugin) {
   const n = runningNotice('谈单复盘')
   try {
     const text = await plugin.apiText('/api/plugin/v1/skills/sales-review', {
-      transcript: clip(transcript, LIMITS.SALES_REVIEW_TRANSCRIPT_MAX, '逐字稿'),
+      transcript,
       background: input.background.trim() || undefined,
     })
     await writeOutput(plugin, {
       skill: '谈单复盘',
       platform: '内部',
-      title: `谈单复盘_${note.file.basename}`,
+      title: `谈单复盘_${source.file.basename}`,
       body: text,
-      sourceNote: note.file,
+      sourceNote: source.file,
     })
     new Notice('✅ 谈单诊断报告已落盘')
   } catch (e) {
