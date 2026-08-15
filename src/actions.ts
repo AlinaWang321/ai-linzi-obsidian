@@ -773,7 +773,7 @@ export interface ChatIllustrationCandidate {
   insertedPath?: string
 }
 
-export type AiImageRatio = '16:9' | '3:4' | '1:1'
+export type AiImageRatio = '2.35:1' | '16:9' | '3:4' | '1:1'
 
 export interface LocalImageReference {
   name: string
@@ -1926,6 +1926,7 @@ export async function generateAiImage(
   referenceImages: string[] = [],
   sessionId?: string,
   editPreviousImage = false,
+  preserveOriginalRatio = false,
 ): Promise<{ imageUrl: string; ratio: AiImageRatio }> {
   const data = (await plugin.api(AI_IMAGE_API, {
     method: 'POST',
@@ -1935,6 +1936,7 @@ export async function generateAiImage(
       referenceImages: referenceImages.slice(0, 3),
       sessionId,
       editPreviousImage,
+      preserveOriginalRatio,
     },
   })) as { imageUrl?: string; ratio?: AiImageRatio }
   if (!data.imageUrl) throw new Error('服务端没有返回图片')
@@ -2026,11 +2028,14 @@ class AiImageGenerationModal extends Modal {
       new Setting(this.contentEl)
         .setName('图片比例')
         .addDropdown((dropdown) => {
+          dropdown.addOption('2.35:1', '2.35:1 公众号封面')
           dropdown.addOption('16:9', '16:9 横版')
           dropdown.addOption('3:4', '3:4 竖版')
           dropdown.addOption('1:1', '1:1 方图')
           dropdown.setValue(this.ratio).onChange((value) => {
-            this.ratio = value === '3:4' || value === '1:1' ? value : '16:9'
+            this.ratio = value === '2.35:1' || value === '3:4' || value === '1:1'
+              ? value
+              : '16:9'
           })
           dropdown.setDisabled(this.generating)
         })

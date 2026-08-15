@@ -1,10 +1,12 @@
-export type ChatAiImageRatio = '16:9' | '3:4' | '1:1'
+export type ChatAiImageRatio = '2.35:1' | '16:9' | '3:4' | '1:1'
 
 export interface ChatAiImageRequest {
   label: string
   instruction: string
   ratio: ChatAiImageRatio
   editPreviousImage: boolean
+  /** 修改已有图片时，用户没有明确要求换画幅就保持原比例。 */
+  preserveOriginalRatio: boolean
 }
 
 export interface ChatAiImageExtraction {
@@ -25,7 +27,7 @@ function text(value: unknown, max: number): string {
 }
 
 function ratio(value: unknown): ChatAiImageRatio {
-  return value === '3:4' || value === '1:1' ? value : '16:9'
+  return value === '2.35:1' || value === '3:4' || value === '1:1' ? value : '16:9'
 }
 
 function clean(value: string): string {
@@ -64,11 +66,14 @@ export function extractChatAiImageRequests(value: string): ChatAiImageExtraction
           invalid = true
           continue
         }
+        const editPreviousImage = item.editPreviousImage === true
         requests.push({
           label: text(item.label, 40) || `图片 ${index + 1}`,
           instruction,
           ratio: ratio(item.ratio),
-          editPreviousImage: item.editPreviousImage === true,
+          editPreviousImage,
+          preserveOriginalRatio:
+            editPreviousImage && item.preserveOriginalRatio !== false,
         })
       }
     } catch {

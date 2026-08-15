@@ -661,42 +661,6 @@
   }
 }
 
-.ai-linzi-image-mode-options {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 9px;
-  border: 1px solid rgba(0, 87, 255, 0.24);
-  border-radius: 8px;
-  background: rgba(0, 87, 255, 0.06);
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-}
-
-.ai-linzi-image-mode-options select,
-.ai-linzi-image-mode-options button {
-  min-height: 28px;
-  font-size: var(--font-ui-smaller);
-}
-
-.ai-linzi-image-previous-toggle {
-  display: inline-flex;
-  align-items: center;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.ai-linzi-image-previous-toggle.is-disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.ai-linzi-image-reference-status {
-  flex: 1 1 180px;
-  line-height: 1.4;
-}
-
 .ai-linzi-input {
   width: 100%;
   min-height: 64px;

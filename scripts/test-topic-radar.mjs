@@ -12,6 +12,7 @@ assert.doesNotMatch(actions, /const note = await getActiveNote\(plugin\)[\s\S]{0
 assert.match(main, /主对话带上当前笔记/)
 assert.doesNotMatch(main, /技能是否使用当前笔记，以弹窗说明为准/)
 assert.match(main, /title: '添加文件或图片（Pro）'/)
-assert.match(main, /text: ' 智能搜索 Vault'/)
+assert.doesNotMatch(main, /text: ' 智能搜索 Vault'/)
+assert.match(main, /shouldUseVaultAgent\(text, recentVaultContext\)/)
 
 console.log('topic radar note opt-in tests passed')

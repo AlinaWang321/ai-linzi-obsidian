@@ -101,6 +101,7 @@ import {
   isVaultAgentToolAllowed,
   namespaceVaultToolCalls,
   operationLabel,
+  shouldUseVaultAgent,
   vaultAnswerRetryReason,
   type VaultAnswerRetryReason,
   type VaultAgentToolResult,
@@ -165,7 +166,7 @@ interface AiLinziSettings {
   cleanChatDefaultsV1: boolean
   /** 「带上当前笔记」开关的默认值 */
   attachNoteDefault: boolean
-  /** 主对话默认在本机 Vault 中检索相关笔记；只发送命中的少量片段 */
+  /** @deprecated v0.7.17 起由明确的 Vault 对话意图按需触发，仅兼容旧 data.json。 */
   vaultSearchDefault: boolean
   /** 技能产出落盘的文件夹(相对 vault 根) */
   outputFolder: string
@@ -236,17 +237,6 @@ const CHAT_SEND_SHORTCUT_HINT = 'Enter 换行 · Mac / Windows：Control + Enter
 const CHAT_INPUT_PLACEHOLDER = '问 AI霖子任何事…'
 const INTERVIEW_INPUT_PLACEHOLDER = '先告诉 AI 你想写什么方向（一句话），它会开始采访你…'
 
-function isExplicitCurrentNoteImageRequest(text: string): boolean {
-  const normalized = text.replace(/\s+/g, '')
-  const explicitArticleIllustration =
-    /(?:公众号|正文|文章)(?:配图|插图|封面)/.test(normalized)
-  const explicitCurrentDocument =
-    /(?:当前|这篇|本篇|正在打开的)(?:笔记|文章|文档)/.test(normalized) ||
-    /(?:根据|结合|读取|参考)(?:当前|这篇|本篇|正在打开的)(?:笔记|文章|文档)/.test(normalized)
-  const imageAction =
-    /(?:生图|生成|做|画|设计|制作|新增|增加|补充|添加|插入|配)(?:一|1)?(?:张)?(?:配图|插图|图片|图|封面)/.test(normalized)
-  return explicitArticleIllustration || (explicitCurrentDocument && imageAction)
-}
 const CAPABILITIES_CACHE_TTL_MS = 5 * 60 * 1000
 // 四处未连接报错共用同一句(2026-07-30 统一;旧版有「服务器地址和 Token」等三种矛盾说法)
 const NOT_CONNECTED_MSG =
@@ -335,7 +325,7 @@ interface WireMessage {
   parts: { type: 'text'; text: string }[]
   /** 只保存在插件本机历史；发送给主对话 API 时会被剥离。 */
   imageResult?: ChatIllustrationCandidate
-  /** 主对话生图模式的本地图片卡片；图片已自动落到用户 Vault，不上传本地路径。 */
+  /** 主对话自然生图的本地图片卡片；图片已自动落到用户 Vault，不上传本地路径。 */
   aiImageResult?: ChatAiImageResult
   /** 整篇配图完成后的本地操作卡片；只保存目标笔记路径，不同步到云端。 */
   articleIllustrationEditOffer?: ArticleIllustrationEditOffer
@@ -1417,15 +1407,10 @@ class ChatView extends ItemView {
   private messages: WireMessage[] = []
   private sessionId = newPluginSessionId()
   private attachNote: boolean
-  private vaultSearchEnabled: boolean
   private localSkills: LocalSkillRegistry
-  private imageMode = false
-  private imageRatio: AiImageRatio = '16:9'
-  private imageReferences: LocalImageReference[] = []
   /** 普通主对话下一轮要识别的图片；压缩数据只驻留当前进程，发送后立即释放。 */
   private chatImageAttachments: LocalImageReference[] = []
   private activeImageMessageId = ''
-  private usePreviousImage = true
   /** 只保存用户明确勾选的本地路径；正文不会写入会话历史或插件设置。 */
   private authorizedContentPaths: string[] = []
   private authorizedContentChars = 0
@@ -1442,13 +1427,6 @@ class ChatView extends ItemView {
   private inputEl!: HTMLTextAreaElement
   private sendBtn!: HTMLButtonElement
   private attachToggleEl!: HTMLInputElement
-  private vaultSearchToggleEl!: HTMLInputElement
-  private imageToggleEl!: HTMLInputElement
-  private imageRatioEl!: HTMLSelectElement
-  private imageUsePreviousEl!: HTMLInputElement
-  private imageUsePreviousLabelEl!: HTMLLabelElement
-  private imageOptionsEl!: HTMLElement
-  private imageReferenceStatusEl!: HTMLElement
   private authorizedContentBtn!: HTMLButtonElement
   private authorizedContentStatusEl!: HTMLElement
 
@@ -1456,7 +1434,6 @@ class ChatView extends ItemView {
     super(leaf)
     this.plugin = plugin
     this.attachNote = plugin.settings.attachNoteDefault
-    this.vaultSearchEnabled = plugin.settings.vaultSearchDefault
     this.localSkills = new LocalSkillRegistry(
       plugin.app,
       () => plugin.settings.localSkillsFolder,
@@ -1491,11 +1468,9 @@ class ChatView extends ItemView {
       this.messages = []
       this.sessionId = newPluginSessionId()
       this.activeImageMessageId = ''
-      this.usePreviousImage = true
       this.clearAuthorizedContent()
       this.resetContextTogglesToDefaults()
       if (this.mode === 'interview') this.exitInterviewMode()
-      this.refreshImageModeUi()
       this.renderMessages()
     }
 
@@ -1563,28 +1538,8 @@ class ChatView extends ItemView {
           new Notice(`已带上当前笔记：${file.basename}`, 3500)
         }
       }
-      this.refreshImageModeUi()
     }
     label.createSpan({ text: ' 主对话带上当前笔记' })
-
-    const vaultSearchLabel = toggleRow.createEl('label', {
-      cls: 'ai-linzi-toggle ai-linzi-vault-search-toggle',
-      attr: {
-        title: '在本机搜索 Markdown、TXT、PDF 和 DOCX，只把相关的少量片段交给 AI',
-      },
-    })
-    this.vaultSearchToggleEl = vaultSearchLabel.createEl('input', { type: 'checkbox' })
-    this.vaultSearchToggleEl.checked = this.vaultSearchEnabled
-    this.vaultSearchToggleEl.onchange = () => {
-      this.vaultSearchEnabled = this.vaultSearchToggleEl.checked
-    }
-    vaultSearchLabel.createSpan({ text: ' 智能搜索 Vault' })
-
-    const imageLabel = toggleRow.createEl('label', { cls: 'ai-linzi-toggle ai-linzi-image-toggle' })
-    this.imageToggleEl = imageLabel.createEl('input', { type: 'checkbox' })
-    this.imageToggleEl.checked = false
-    this.imageToggleEl.onchange = () => void this.setImageMode(this.imageToggleEl.checked)
-    imageLabel.createSpan({ text: ' AI 生图模式' })
 
     this.authorizedContentStatusEl = footer.createDiv({
       cls: 'ai-linzi-authorized-content-status',
@@ -1593,47 +1548,6 @@ class ChatView extends ItemView {
     // 不隐藏就会在输入框上方留一个空的蓝框(0.6.32 Alina 实测反馈)
     this.authorizedContentStatusEl.toggle(false)
     this.refreshAuthorizedContentUi()
-
-    this.imageOptionsEl = footer.createDiv({ cls: 'ai-linzi-image-mode-options' })
-    this.imageOptionsEl.createSpan({ text: '图片比例' })
-    this.imageRatioEl = this.imageOptionsEl.createEl('select', { cls: 'dropdown' })
-    for (const [value, labelText] of [
-      ['16:9', '16:9 横版'],
-      ['3:4', '3:4 竖版'],
-      ['1:1', '1:1 方图'],
-    ] as const) {
-      this.imageRatioEl.createEl('option', { value, text: labelText })
-    }
-    this.imageRatioEl.value = this.imageRatio
-    this.imageRatioEl.onchange = () => {
-      const value = this.imageRatioEl.value
-      this.imageRatio = value === '3:4' || value === '1:1' ? value : '16:9'
-    }
-    const addReferenceBtn = this.imageOptionsEl.createEl('button', { text: '添加参考图' })
-    addReferenceBtn.onclick = (event) => {
-      const menu = new Menu()
-      menu.addItem((item) =>
-        item.setTitle('从 Vault 选择').setIcon('image').onClick(() => this.addVaultImageReference()),
-      )
-      menu.addItem((item) =>
-        item.setTitle('从电脑选择').setIcon('folder-open').onClick(() => this.addComputerImageReferences()),
-      )
-      menu.showAtMouseEvent(event)
-    }
-    const clearReferencesBtn = this.imageOptionsEl.createEl('button', { text: '清除参考图' })
-    clearReferencesBtn.onclick = () => {
-      this.imageReferences = []
-      this.refreshImageModeUi()
-    }
-    this.imageUsePreviousLabelEl = this.imageOptionsEl.createEl('label', { cls: 'ai-linzi-image-previous-toggle' })
-    this.imageUsePreviousEl = this.imageUsePreviousLabelEl.createEl('input', { type: 'checkbox' })
-    this.imageUsePreviousEl.checked = this.usePreviousImage
-    this.imageUsePreviousEl.onchange = () => {
-      this.usePreviousImage = this.imageUsePreviousEl.checked
-      this.refreshImageModeUi()
-    }
-    this.imageUsePreviousLabelEl.createSpan({ text: ' 参考上一张图' })
-    this.imageReferenceStatusEl = this.imageOptionsEl.createSpan({ cls: 'ai-linzi-image-reference-status' })
 
     this.inputEl = footer.createEl('textarea', {
       cls: 'ai-linzi-input',
@@ -1664,8 +1578,6 @@ class ChatView extends ItemView {
       attr: { title: CHAT_SEND_SHORTCUT_HINT, 'aria-label': `发送消息，${CHAT_SEND_SHORTCUT_HINT}` },
     })
     this.sendBtn.onclick = () => void this.send()
-
-    this.refreshImageModeUi()
 
     this.renderMessages()
     // 恢复最近一次会话(升级/重启后不丢)
@@ -1773,78 +1685,12 @@ class ChatView extends ItemView {
       this.interviewBar.hide()
       this.inputEl.placeholder = CHAT_INPUT_PLACEHOLDER
     }
-    this.refreshImageModeUi()
     this.renderMessages()
-  }
-
-  private async setImageMode(active: boolean): Promise<boolean> {
-    if (this.mode === 'interview' && active) {
-      new Notice('请先结束访谈写作，再进入 AI 生图模式')
-      this.refreshImageModeUi()
-      return false
-    }
-    if (active && !(await this.plugin.requireProAccess('AI 生图模式'))) {
-      this.imageMode = false
-      this.refreshImageModeUi()
-      return false
-    }
-    this.imageMode = active
-    this.refreshImageModeUi()
-    if (active) this.inputEl.focus()
-    return true
-  }
-
-  private refreshImageModeUi(): void {
-    if (!this.inputEl) return
-    this.imageToggleEl.checked = this.imageMode
-    this.imageOptionsEl.toggle(this.imageMode)
-    this.imageRatioEl.value = this.imageRatio
-    const hasPreviousImage = Boolean(this.latestImageModeResult())
-    this.imageUsePreviousEl.disabled = !hasPreviousImage
-    this.imageUsePreviousLabelEl.toggleClass('is-disabled', !hasPreviousImage)
-    this.imageUsePreviousEl.checked = hasPreviousImage && this.usePreviousImage
-    this.imageReferenceStatusEl.setText(
-      this.imageReferences.length > 0
-        ? `已添加 ${this.imageReferences.length} 张参考图`
-        : hasPreviousImage && this.usePreviousImage
-          ? '下一轮会继续修改上一张图'
-          : '下一轮会生成一张新图',
-    )
-    this.inputEl.placeholder = this.imageMode
-      ? this.attachNote
-        ? '自由描述图片；只有明确说“给当前笔记配图”才会读取笔记…'
-        : '描述要生成的图片；下一轮可直接说怎么修改…'
-      : CHAT_INPUT_PLACEHOLDER
-    this.sendBtn.setText(this.imageMode ? '生成图片' : '发送')
   }
 
   private resetContextTogglesToDefaults(): void {
     this.attachNote = this.plugin.settings.attachNoteDefault
-    this.vaultSearchEnabled = this.plugin.settings.vaultSearchDefault
     if (this.attachToggleEl) this.attachToggleEl.checked = this.attachNote
-    if (this.vaultSearchToggleEl) this.vaultSearchToggleEl.checked = this.vaultSearchEnabled
-  }
-
-  private addVaultImageReference(): void {
-    if (this.imageReferences.length >= 3) {
-      new Notice('参考图最多 3 张')
-      return
-    }
-    chooseVaultAiImageReference(this.plugin, (reference) => {
-      this.imageReferences.push(reference)
-      this.refreshImageModeUi()
-    })
-  }
-
-  private addComputerImageReferences(): void {
-    if (this.imageReferences.length >= 3) {
-      new Notice('参考图最多 3 张')
-      return
-    }
-    chooseComputerAiImageReferences(3 - this.imageReferences.length, (references) => {
-      this.imageReferences.push(...references)
-      this.refreshImageModeUi()
-    })
   }
 
   private async showHistoryMenu(): Promise<void> {
@@ -2008,10 +1854,6 @@ class ChatView extends ItemView {
   private async openAttachmentMenu(event: MouseEvent): Promise<void> {
     if (this.mode === 'interview') {
       new Notice('请先结束访谈写作，再添加文件或图片')
-      return
-    }
-    if (this.imageMode) {
-      new Notice('AI 生图模式请使用上方「添加参考图」；退出生图模式后可上传图片让主对话识别')
       return
     }
     const menu = new Menu()
@@ -2179,73 +2021,6 @@ class ChatView extends ItemView {
     return items.length > 0 ? { items } : undefined
   }
 
-  private vaultSearchLimits(data?: PluginCapabilities): {
-    maxSources: number
-    maxExcerptChars: number
-    maxTotalChars: number
-  } {
-    const capability = data?.features?.chat?.vaultSearch
-    return {
-      maxSources: capability?.maxSources ?? 6,
-      maxExcerptChars: capability?.maxExcerptChars ?? 1_200,
-      maxTotalChars: capability?.maxTotalChars ?? 7_200,
-    }
-  }
-
-  private async vaultSearchContext(
-    query: string,
-    currentNotePath?: string,
-    extraExcludedPaths: string[] = [],
-  ): Promise<{
-    context:
-      | {
-          query: string
-          items: { sourceId: string; filename: string; excerpt: string }[]
-        }
-      | undefined
-    sources: VaultMessageSource[]
-  }> {
-    // 精确选择文件/文件夹时，以用户明确划定的资料范围为准，避免额外混入其他笔记。
-    if (!this.vaultSearchEnabled || this.authorizedContentPaths.length > 0 || this.longDocumentPath) {
-      return { context: undefined, sources: [] }
-    }
-    let capabilities: PluginCapabilities | undefined
-    try {
-      capabilities = await this.plugin.getCapabilities()
-      if (capabilities.features?.chat?.vaultSearch?.available === false) {
-        return { context: undefined, sources: [] }
-      }
-    } catch {
-      // 旧服务端暂时没有能力字段时仍按客户端保守上限搜索；v1 路由会再次校验。
-    }
-    const search = await this.plugin.vaultSearch.search(query, {
-      ...this.vaultSearchLimits(capabilities),
-      excludedPaths: [
-        ...(currentNotePath ? [currentNotePath] : []),
-        ...extraExcludedPaths,
-      ],
-      excludedFolders: [this.localSkills.root()],
-    })
-    const items = [
-      ...(search.fact ? [search.fact] : []),
-      ...search.results.map((result) => ({
-        sourceId: result.sourceId,
-        filename: result.filename,
-        excerpt: result.excerpt,
-      })),
-    ]
-    return {
-      context:
-        items.length > 0
-          ? {
-              query,
-              items,
-            }
-          : undefined,
-      sources: search.results.map(toVaultMessageSource),
-    }
-  }
-
   /** 本地候选图片元数据绝不传给主对话；云端只收到标准 UIMessage。 */
   private messagesForApi(): WireMessage[] {
     return this.messages.map(({ id, role, parts }) => ({ id, role, parts }))
@@ -2282,23 +2057,11 @@ class ChatView extends ItemView {
           throw new Error('没有找到你点名的那张图片；请确认是当前对话最近一组中的第几张')
         }
         this.activeImageMessageId = target.message.id
-        this.imageRatio = target.result.ratio
-        this.usePreviousImage = true
-        if (this.imageMode || (await this.setImageMode(true))) await this.sendImageModePrompt(text)
-        return
-      }
-      if (this.imageMode) {
-        await this.sendImageModePrompt(text)
-        return
       }
       if (isDirectAiImageEditRequest(text)) {
         const target = this.directAiImageEditTarget(text)
         if (target) {
           this.activeImageMessageId = target.message.id
-          this.imageRatio = target.result.ratio
-          this.usePreviousImage = true
-          if (await this.setImageMode(true)) await this.sendImageModePrompt(text)
-          return
         }
       }
       if (this.longDocumentPath) {
@@ -2356,25 +2119,28 @@ class ChatView extends ItemView {
             !singleIllustration &&
             localSkill?.output === 'update-current-note',
         )
+      const recentVaultContext = this.messages
+        .slice(0, -1)
+        .slice(-6)
+        .some(
+          (message) =>
+            (message.vaultSources?.length ?? 0) > 0 ||
+            message.parts.some((part) => part.text.includes('<<<VAULT_ORGANIZE_PLAN>>>')),
+        )
+      const autonomousVaultAccess = shouldUseVaultAgent(text, recentVaultContext)
       const useVaultAgent =
-        (this.vaultSearchEnabled || Boolean(localSkill)) &&
+        (autonomousVaultAccess || Boolean(localSkill)) &&
         this.authorizedContentPaths.length === 0 &&
         !this.longDocumentPath &&
         !singleIllustration &&
         !illustrationEdit &&
         imageAttachments.length === 0
-      const vaultSearch =
-        noteEdit || singleIllustration || illustrationEdit || imageAttachments.length > 0
-          ? { context: undefined, sources: [] }
-          : useVaultAgent
-            // Agent 模式只按模型明确提出的工具调用读取，不能先跑旧 top-snippet：
-            // 否则会上传无关片段、重复扫描，还会让模型误以为片段就是完整目录。
-            ? { context: undefined, sources: [] }
-          : await this.vaultSearchContext(
-              text,
-              noteContext?.path,
-              localSkill ? [localSkill.path] : [],
-            )
+      // v0.7.17 起取消手动搜索开关。明确的 Vault 请求进入工具循环，由模型按需
+      // 请求本机搜索；普通闲聊不预扫 Vault，也不会自动发送任何本地片段。
+      const vaultSearch: {
+        context: undefined
+        sources: VaultMessageSource[]
+      } = { context: undefined, sources: [] }
       const localSkillRequest = localSkill
         ? {
             name: localSkill.name,
@@ -2396,7 +2162,7 @@ class ChatView extends ItemView {
           authorizedContent,
           localSkill: localSkillRequest,
           localSkillContext: localSkill ? this.localSkills.context(localSkill) : undefined,
-          vaultAccess: this.vaultSearchEnabled,
+          vaultAccess: autonomousVaultAccess,
           vaultSearch: vaultSearch.context,
           noteEdit,
           noteImageIntent: singleIllustration,
@@ -2631,7 +2397,7 @@ class ChatView extends ItemView {
     this.renderMessages()
   }
 
-  private latestImageModeResult(): { message: WireMessage; result: ChatAiImageResult } | null {
+  private latestAiImageResult(): { message: WireMessage; result: ChatAiImageResult } | null {
     const preferred = this.activeImageMessageId
       ? this.messages.find((message) => message.id === this.activeImageMessageId)
       : undefined
@@ -2667,14 +2433,14 @@ class ChatView extends ItemView {
       }
       return null
     }
-    return this.latestImageModeResult()
+    return this.latestAiImageResult()
   }
 
   private async executeChatAiImageRequests(
     requests: ChatAiImageRequest[],
     userReferences: LocalImageReference[],
   ): Promise<void> {
-    if (!(await this.plugin.requireProAccess('AI 生图模式'))) {
+    if (!(await this.plugin.requireProAccess('AI 生图'))) {
       this.messages.push({
         id: uid(),
         role: 'assistant',
@@ -2714,7 +2480,9 @@ class ChatView extends ItemView {
           ...userReferences.map((reference) => reference.dataUrl),
           ...(!editReference && styleReference ? [styleReference] : []),
         ].slice(0, 3)
-        const ratio = editTarget?.result.ratio ?? request.ratio
+        const ratio = editTarget && request.preserveOriginalRatio
+          ? editTarget.result.ratio
+          : request.ratio
         const generated = await generateAiImage(
           this.plugin,
           request.instruction,
@@ -2722,6 +2490,7 @@ class ChatView extends ItemView {
           references,
           undefined,
           Boolean(editReference),
+          request.preserveOriginalRatio,
         )
         const savedPath = await saveAiImageToVault(
           this.plugin,
@@ -2746,8 +2515,6 @@ class ChatView extends ItemView {
             : `“${request.label}”已生成并保存。`,
         }]
         this.activeImageMessageId = progress.id
-        this.imageRatio = generated.ratio
-        this.usePreviousImage = true
         completed += 1
         if (!styleReference && requests.length > 1 && !editReference) {
           styleReference = await vaultImageToReferenceDataUrl(this.plugin, savedPath)
@@ -2769,97 +2536,6 @@ class ChatView extends ItemView {
         : `图片任务完成 ${completed}/${requests.length} 张；失败项没有扣图片积分，可稍后重试`,
       7000,
     )
-  }
-
-  private async sendImageModePrompt(instruction: string): Promise<void> {
-    const message: WireMessage = {
-      id: uid(),
-      role: 'assistant',
-      parts: [{ type: 'text', text: 'AI 正在生成图片…' }],
-    }
-    this.messages.push(message)
-    this.renderMessages()
-    const notice = new Notice('🎨 AI 正在生成图片…', 0)
-    try {
-      const previous = this.usePreviousImage ? this.latestImageModeResult() : null
-      const previousReference = previous
-        ? await vaultImageToReferenceDataUrl(this.plugin, previous.result.savedPath)
-        : undefined
-      const references = [
-        ...(previousReference ? [previousReference] : []),
-        ...this.imageReferences.map((reference) => reference.dataUrl),
-      ].slice(0, 3)
-      // “继续修改这张”必须把上一张图当作主画布，绝不能因为当前笔记开关仍开着
-      // 就改走公众号文章配图模板。只有没有上一张图、且用户明确点名当前笔记/文章
-      // 配图时，才读取正文并进入文章配图专用流程。
-      const editPreviousImage = Boolean(previousReference)
-      const requestsCurrentNoteImage =
-        !editPreviousImage && isExplicitCurrentNoteImageRequest(instruction)
-      const noteContext = requestsCurrentNoteImage
-        ? await this.currentNoteContext()
-        : undefined
-      if (requestsCurrentNoteImage && !noteContext) {
-        throw new Error('请先打开目标笔记并勾选“主对话带上当前笔记”')
-      }
-      let imageUrl = ''
-      let ratio: AiImageRatio = this.imageRatio
-      let articleCandidate: ChatIllustrationCandidate | undefined
-      if (noteContext) {
-        articleCandidate = await generateArticleIllustrationFromChat(
-          this.plugin,
-          instruction,
-          noteContext,
-          {
-            referenceImageDataUrls: references,
-            sessionId: this.sessionId,
-            ratio: this.imageRatio,
-          },
-        )
-        imageUrl = articleCandidate.imageUrl
-        ratio = articleCandidate.ratio ?? this.imageRatio
-      } else {
-        const generated = await generateAiImage(
-          this.plugin,
-          instruction,
-          this.imageRatio,
-          references,
-          this.sessionId,
-          editPreviousImage,
-        )
-        imageUrl = generated.imageUrl
-        ratio = generated.ratio
-      }
-      const savedPath = await saveAiImageToVault(this.plugin, imageUrl, instruction)
-      if (articleCandidate) articleCandidate.savedPath = savedPath
-      message.aiImageResult = {
-        kind: 'ai-image',
-        imageUrl,
-        savedPath,
-        instruction,
-        ratio,
-        articleCandidate,
-      }
-      message.parts = [{
-        type: 'text',
-        text: articleCandidate
-          ? `已结合当前笔记生成图片，并自动保存到 Vault。建议放在「${articleCandidate.anchor}」之后。继续输入要求可以修改这张图。`
-          : '图片已生成并自动保存到 Vault。继续输入要求可以修改这张图。',
-      }]
-      this.activeImageMessageId = message.id
-      // 新图成为后续修改的默认参考；用户仍可取消勾选来开启另一张新图。
-      this.usePreviousImage = true
-      this.imageReferences = []
-    } catch (error) {
-      message.parts = [{
-        type: 'text',
-        text: `⚠️ AI 生图失败：${error instanceof Error ? error.message : String(error)}`,
-      }]
-    } finally {
-      notice.hide()
-      await this.persistNow()
-      this.refreshImageModeUi()
-      this.renderMessages()
-    }
   }
 
   private async generateChatIllustration(
@@ -4009,11 +3685,9 @@ class ChatView extends ItemView {
     }
     const actions = card.createDiv({ cls: 'ai-linzi-chat-image-actions' })
     const continueBtn = actions.createEl('button', { text: '继续修改这张' })
-    continueBtn.onclick = async () => {
+    continueBtn.onclick = () => {
       this.activeImageMessageId = message.id
-      this.usePreviousImage = true
-      if (!(await this.setImageMode(true))) return
-      this.inputEl.placeholder = '直接写修改要求，例如：标题缩小，人物移到右边…'
+      if (!this.inputEl.value.trim()) this.inputEl.value = '修改这张图：'
       this.inputEl.focus()
     }
     const inserted = Boolean(result.articleCandidate?.insertedPath || result.insertedNotePath)
@@ -4316,16 +3990,6 @@ class AiLinziSettingTab extends PluginSettingTab {
       .addToggle((t) =>
         t.setValue(this.plugin.settings.attachNoteDefault).onChange(async (v) => {
           this.plugin.settings.attachNoteDefault = v
-          await this.plugin.saveSettings()
-        }),
-      )
-
-    new Setting(containerEl)
-      .setName('默认智能搜索 Vault')
-      .setDesc('在你的电脑本地搜索 Vault 内全部正常的 Markdown、TXT、可复制文字的 PDF 和 DOCX，只把相关的少量片段交给 AI；不会上传整个 Vault')
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.vaultSearchDefault).onChange(async (v) => {
-          this.plugin.settings.vaultSearchDefault = v
           await this.plugin.saveSettings()
         }),
       )

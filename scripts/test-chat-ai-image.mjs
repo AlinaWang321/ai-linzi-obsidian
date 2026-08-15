@@ -19,14 +19,28 @@ assert.equal(batch.cleanText, '我会生成两张卡片。')
 assert.equal(batch.invalid, false)
 assert.equal(batch.requests.length, 2)
 assert.equal(batch.requests[0].ratio, '3:4')
+assert.equal(batch.requests[0].preserveOriginalRatio, false)
 assert.equal(batch.requests[1].label, '结尾')
+
+const wechatCover = image.extractChatAiImageRequests(`准备生成公众号封面。
+<<<AI_LINZI_IMAGE_REQUEST>>>
+{"requests":[{"label":"公众号封面","instruction":"生成公众号封面，准确写「把自己当公司经营」","ratio":"2.35:1","editPreviousImage":false,"preserveOriginalRatio":false}]}
+<<<AI_LINZI_IMAGE_REQUEST_END>>>`)
+assert.equal(wechatCover.requests[0].ratio, '2.35:1')
 
 const edit = image.extractChatAiImageRequests(`准备修改。
 <<<AI_LINZI_IMAGE_REQUEST>>>
 {"requests":[{"instruction":"把标题改成「AI一人公司」，其他内容保持不变","ratio":"3:4","editPreviousImage":true}]}
 <<<AI_LINZI_IMAGE_REQUEST_END>>>`)
 assert.equal(edit.requests[0].editPreviousImage, true)
+assert.equal(edit.requests[0].preserveOriginalRatio, true)
 assert.equal(edit.requests[0].label, '图片 1')
+
+const resizeEdit = image.extractChatAiImageRequests(`改成小红书封面。
+<<<AI_LINZI_IMAGE_REQUEST>>>
+{"requests":[{"instruction":"改成3:4小红书封面，未提及内容保持不变","ratio":"3:4","editPreviousImage":true,"preserveOriginalRatio":false}]}
+<<<AI_LINZI_IMAGE_REQUEST_END>>>`)
+assert.equal(resizeEdit.requests[0].preserveOriginalRatio, false)
 
 const broken = image.extractChatAiImageRequests(
   '正在准备\n<<<AI_LINZI_IMAGE_REQUEST>>>\n{"requests":[',

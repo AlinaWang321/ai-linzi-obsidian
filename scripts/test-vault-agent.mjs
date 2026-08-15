@@ -28,6 +28,12 @@ assert.equal(new Set([...roundOne, ...roundTwo].map((call) => call.id)).size, 4)
 assert.equal(core.detectVaultAgentIntent('请把这篇笔记整理到归档目录'), 'organize')
 assert.equal(core.detectVaultAgentIntent('只读取，不要整理或移动任何文件'), 'answer')
 assert.equal(core.detectVaultAgentIntent('总结这篇文章'), 'answer')
+assert.equal(core.shouldUseVaultAgent('帮我找一下 Vault 里的产品定位笔记'), true)
+assert.equal(core.shouldUseVaultAgent('我的产品定位笔记在哪里？'), true)
+assert.equal(core.shouldUseVaultAgent('请把这些文件整理到归档目录'), true)
+assert.equal(core.shouldUseVaultAgent('你好，今天适合写什么内容？'), false)
+assert.equal(core.shouldUseVaultAgent('再看看那个文件', true), true)
+assert.equal(core.shouldUseVaultAgent('再给我三个标题', false), false)
 
 assert.equal(
   core.vaultAnswerRetryReason(

@@ -267,6 +267,24 @@ export function detectVaultAgentIntent(text: string): VaultAgentIntent {
     : 'answer'
 }
 
+/**
+ * v0.7.17 起不再要求用户先找开关。只有文字明确指向本地 Vault/文件任务，
+ * 或正在继续上一轮已经授权的 Vault 对话时，才允许进入本机工具循环。
+ * 普通闲聊不会因此读取或发送任何 Vault 片段。
+ */
+export function shouldUseVaultAgent(text: string, continuingVaultTask = false): boolean {
+  const normalized = text.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '')
+  if (detectVaultAgentIntent(text) === 'organize') return true
+  const explicitVaultObject =
+    /(?:vault|obsidian)/.test(normalized) ||
+    /(?:本地|我的|这个|那个|当前).{0,12}(?:笔记|文件|文件夹|目录|知识库|资料|文档)|(?:笔记|文件|文件夹|目录|知识库|资料库|文档).{0,12}(?:里|中|内|下|在哪里|在哪)/.test(normalized)
+  const explicitVaultAction =
+    /(?:搜索|搜一下|搜一搜|查找|找一下|找一找|找出|找到|在哪|哪里|有什么|哪些|翻找|读取|打开|查看|看看|列出|统计|汇总|盘点|总结|对比|整理|移动|重命名|改名|归档|分类)/.test(normalized)
+  if (explicitVaultObject && explicitVaultAction) return true
+  if (!continuingVaultTask) return false
+  return /^(?:继续|再|那|这个|那个|它|它们|这些|那些|另外|然后|接着|同样|也|改成|移到|放到|归到)/.test(normalized)
+}
+
 function isVaultCountQuestion(text: string): boolean {
   const normalized = text.normalize('NFKC').toLocaleLowerCase()
   return /(?:多少|几\s*(?:场|次|份|篇|个|条)|数量|统计|一共|总共|合计)/.test(normalized)
