@@ -39,11 +39,57 @@ assert.equal(core.shouldUseCurrentNote('再短一点', true), true)
 assert.equal(core.shouldUseCurrentNote('再短一点', false), false)
 assert.equal(core.shouldUseCurrentNote('谢谢', true), false)
 
+assert.equal(
+  core.selectCurrentOpenMarkdownPath({
+    activePath: '02_Wiki/正在看的笔记.md',
+    recentRootPath: '02_Wiki/另一篇.md',
+    lastActivePath: '02_Wiki/旧笔记.md',
+    openPaths: ['02_Wiki/正在看的笔记.md', '02_Wiki/另一篇.md'],
+  }),
+  '02_Wiki/正在看的笔记.md',
+  '主编辑区当前激活的笔记优先',
+)
+assert.equal(
+  core.selectCurrentOpenMarkdownPath({
+    recentRootPath: '02_Wiki/正在看的笔记.md',
+    lastActivePath: '02_Wiki/旧笔记.md',
+    openPaths: ['02_Wiki/正在看的笔记.md'],
+  }),
+  '02_Wiki/正在看的笔记.md',
+  '侧边对话获得焦点时仍可使用主编辑区内仍打开的最近笔记',
+)
+assert.equal(
+  core.selectCurrentOpenMarkdownPath({
+    lastActivePath: '02_Wiki/已关闭.md',
+    openPaths: ['02_Wiki/仍打开.md'],
+  }),
+  '02_Wiki/仍打开.md',
+  '已关闭的 lastActiveFile 不能继续授权',
+)
+assert.equal(
+  core.selectCurrentOpenMarkdownPath({
+    lastActivePath: '02_Wiki/已关闭.md',
+    openPaths: ['02_Wiki/A.md', '02_Wiki/B.md'],
+  }),
+  undefined,
+  '无法确认最近激活项时不能从多个打开标签页中随便选一篇',
+)
+assert.equal(
+  core.selectCurrentOpenMarkdownPath({
+    lastActivePath: '02_Wiki/已关闭.md',
+    openPaths: [],
+  }),
+  undefined,
+  '关闭所有 Markdown 标签页后当前笔记必须为空',
+)
+
 const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 assert.doesNotMatch(main, /主对话带上当前笔记/)
 assert.doesNotMatch(main, /默认带上当前笔记/)
 assert.doesNotMatch(main, /attachToggleEl/)
 assert.match(main, /shouldUseCurrentNote/)
 assert.match(main, /本轮只读取当前笔记：/)
+assert.match(main, /openMarkdownFile\(lockedPath\)/)
+assert.doesNotMatch(main, /getLastOpenFiles\(\)/, '最近打开记录不能作为当前笔记授权')
 
 console.log('automatic current note intent tests passed')

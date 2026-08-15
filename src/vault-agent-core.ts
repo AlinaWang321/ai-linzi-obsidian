@@ -276,10 +276,10 @@ export function shouldUseVaultAgent(text: string, continuingVaultTask = false): 
   const normalized = text.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '')
   if (detectVaultAgentIntent(text) === 'organize') return true
   const explicitVaultObject =
-    /(?:vault|obsidian)/.test(normalized) ||
-    /(?:本地|我的|这个|那个|当前).{0,12}(?:笔记|文件|文件夹|目录|知识库|资料|文档)|(?:笔记|文件|文件夹|目录|知识库|资料库|文档).{0,12}(?:里|中|内|下|在哪里|在哪)/.test(normalized)
+    /(?:vault|obsidian|知识库|数字大脑|第二大脑|我的大脑|文件仓库|资料仓库|文档仓库|本地仓库)/.test(normalized) ||
+    /(?:本地|我的|这个|那个|当前).{0,12}(?:笔记|文件|文件夹|目录|知识库|资料|文档|仓库)|(?:笔记|文件|文件夹|目录|知识库|资料库|文档|仓库).{0,12}(?:里|中|内|下|在哪里|在哪)/.test(normalized)
   const explicitVaultAction =
-    /(?:搜索|搜一下|搜一搜|查找|找一下|找一找|找出|找到|在哪|哪里|有什么|哪些|翻找|读取|打开|查看|看看|列出|统计|汇总|盘点|总结|对比|整理|移动|重命名|改名|归档|分类)/.test(normalized)
+    /(?:搜索|搜一下|搜一搜|查找|查一下|查一查|查查|查阅|找一下|找一找|找出|找到|在哪|哪里|有什么|哪些|翻找|读取|打开|查看|看看|列出|统计|汇总|盘点|总结|对比|整理|移动|重命名|改名|归档|分类)/.test(normalized)
   if (explicitVaultObject && explicitVaultAction) return true
   if (!continuingVaultTask) return false
   return /^(?:继续|再|那|这个|那个|它|它们|这些|那些|另外|然后|接着|同样|也|改成|移到|放到|归到)/.test(normalized)

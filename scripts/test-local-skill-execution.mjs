@@ -65,7 +65,7 @@ const timeout = core.prepareLocalSkillAction({
 assert.equal(timeout.ok, true)
 assert.equal(timeout.action.timeoutSeconds, core.LOCAL_SKILL_ACTION_MAX_TIMEOUT_SECONDS)
 
-assert.match(mainSource, /setName\('允许本地 Skill 运行程序'\)/)
+assert.match(mainSource, /setName\('允许“我的 Skills”运行程序'\)/)
 assert.match(mainSource, /getCapabilities\(true\)/)
 assert.match(mainSource, /execution\?\.status !== 'available'/)
 assert.match(mainSource, /脚本不是系统沙箱/)

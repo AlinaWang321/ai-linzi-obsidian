@@ -234,6 +234,14 @@ export function isLocalSkillListIntent(message: string): boolean {
   if (/^\/skills?$/iu.test(trimmed)) return true
   const normalized = normalizeText(message)
   return [
+    '我的skills',
+    '我的skill',
+    '查看我的skills',
+    '查看我的skill',
+    '查看我的技能',
+    '打开我的skills',
+    '打开我的skill',
+    '打开我的技能',
     '我的本地skills',
     '我的本地skill',
     '我有哪些本地skills',
@@ -312,15 +320,15 @@ export function formatLocalSkillList(
   const root = normalizeLocalSkillRoot(configuredRoot)
   if (skills.length === 0) {
     return (
-      `还没有找到本地 Skill。请把技能文件放进 \`${root}/\`，` +
-      '支持 `技能名.md` 或 `技能名/SKILL.md`。'
+      `“我的 Skills”中还没有 Skill。你可以直接在主对话中让我创建，` +
+      `创建后会保存在 \`${root}/\`。`
     )
   }
   const rows = skills.map(
     (skill, index) => `${index + 1}. **${localSkillMenuTitle(skill)}**`,
   )
   return [
-    `我在 \`${root}/\` 找到 ${skills.length} 个本地 Skill：`,
+    `“我的 Skills”中共有 ${skills.length} 个 Skill（保存在 \`${root}/\`）：`,
     '',
     ...rows,
     '',

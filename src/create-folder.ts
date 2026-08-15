@@ -55,7 +55,7 @@ export const VAULT_STRUCTURE_BINDING_LABELS: Record<VaultStructureBindingKey, st
   sources: '驾驶舱 · 原始素材',
   knowledge: '驾驶舱 · 知识库',
   output: '驾驶舱 · 对外输出',
-  localSkills: '本地 Skills',
+  localSkills: '我的 Skills',
 }
 
 /** 单段净化与 create-note 的标题净化同规:危险字符换空格、折叠、剥前导点 */

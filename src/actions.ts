@@ -350,7 +350,7 @@ function runningNotice(label: string): Notice {
 // ── 四个技能动作 ────────────────────────────────────
 
 export async function runTopicRadar(plugin: AiLinziPlugin) {
-  const activeFile = plugin.app.workspace.getActiveFile() ?? plugin.lastActiveFile
+  const activeFile = plugin.rememberCurrentMarkdownFile()
   const input = await new TopicRadarModal(
     plugin.app,
     plugin.settings.defaultNiche,
@@ -1971,7 +1971,7 @@ export async function insertSavedAiImageIntoCurrentNote(
 ): Promise<void> {
   const image = plugin.app.vault.getAbstractFileByPath(path)
   if (!(image instanceof TFile)) throw new Error('对话中的图片已经移动或不存在')
-  const file = plugin.app.workspace.getActiveFile() ?? plugin.lastActiveFile
+  const file = plugin.rememberCurrentMarkdownFile()
   if (!file) throw new Error('请先打开一篇笔记再插入图片')
   const markdownView = plugin.app.workspace
     .getLeavesOfType('markdown')
@@ -2213,7 +2213,7 @@ class AiImageGenerationModal extends Modal {
       }
       return
     }
-    const file = this.plugin.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+    const file = this.plugin.rememberCurrentMarkdownFile()
     if (!file) {
       new Notice('请先打开一篇笔记再插入图片')
       return

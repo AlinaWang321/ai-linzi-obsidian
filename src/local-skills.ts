@@ -147,7 +147,7 @@ export class LocalSkillRegistry {
     if (!record) return { kind: 'missing' }
     if (record.content.length > LOCAL_SKILL_MAX_ENTRY_CHARS) {
       throw new Error(
-        `本地 Skill《${record.descriptor.name}》有 ${record.content.length.toLocaleString('zh-CN')} 字，` +
+        `“我的 Skills”中的《${record.descriptor.name}》有 ${record.content.length.toLocaleString('zh-CN')} 字，` +
           `超过 ${LOCAL_SKILL_MAX_ENTRY_CHARS.toLocaleString('zh-CN')} 字的本地安全上限，请拆分到 references/ 后再试。`,
       )
     }

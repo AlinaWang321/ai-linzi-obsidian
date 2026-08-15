@@ -14,6 +14,31 @@ const CURRENT_NOTE_ACTION =
 const CONTINUING_CURRENT_NOTE =
   /^(?:继续|接着|再(?:帮我)?|然后|按这个|基于这个|把它|把这篇|把这段|改成|修改为|再改|再优化|再润色|再短一点|再长一点|同样)/u
 
+export interface OpenMarkdownSelection {
+  activePath?: string
+  recentRootPath?: string
+  lastActivePath?: string
+  openPaths: string[]
+}
+
+/**
+ * “最近打开过”不等于“当前仍授权”。只有仍存在于 Markdown 标签页里的文件，
+ * 才能成为当前笔记；所有标签页关闭后必须返回 undefined。
+ */
+export function selectCurrentOpenMarkdownPath(
+  selection: OpenMarkdownSelection,
+): string | undefined {
+  const open = new Set(selection.openPaths)
+  for (const candidate of [
+    selection.activePath,
+    selection.recentRootPath,
+    selection.lastActivePath,
+  ]) {
+    if (candidate && open.has(candidate)) return candidate
+  }
+  return selection.openPaths.length === 1 ? selection.openPaths[0] : undefined
+}
+
 export function isExplicitCurrentNoteIntent(text: string): boolean {
   const normalized = text.normalize('NFKC').replace(/\s+/g, '')
   if (!EXPLICIT_CURRENT_NOTE.test(normalized)) return false

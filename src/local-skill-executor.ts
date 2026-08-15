@@ -267,7 +267,7 @@ export class LocalSkillExecutor {
   private vaultBasePath(): string {
     const adapter = this.app.vault.adapter
     if (!(adapter instanceof FileSystemAdapter)) {
-      throw new Error('本地 Skill 执行器只支持桌面版 Obsidian Vault')
+      throw new Error('“我的 Skills”程序执行只支持桌面版 Obsidian Vault')
     }
     return normalize(adapter.getBasePath())
   }

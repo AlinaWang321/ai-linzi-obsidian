@@ -222,7 +222,7 @@ export class LocalVaultAgent {
     }
 
     if (call.name === 'read_skill_file') {
-      if (!skillContext) throw new Error('本轮没有正在执行的本地 Skill')
+      if (!skillContext) throw new Error('本轮没有正在执行的 Skill')
       const rawPath = toolText(call.arguments.path, 240)
       const path = resolveSkillPath(rawPath, skillContext)
       const offset = clampInt(call.arguments.offset, 0, 0, 1_000_000)

@@ -6,7 +6,7 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 
 ## Features
 
-- Chat with AI Linzi in a sidebar and optionally include the active note.
+- Chat with AI Linzi in a sidebar. A current-note request reads only a Markdown tab that is still open; closing the tab revokes that access.
 - Search Markdown, TXT, text-based PDF, and DOCX files locally.
 - Run sales reviews and customer consultation briefs from one explicitly selected Markdown, TXT, text-based PDF, or DOCX transcript; the original file stays local.
 - Send only a bounded set of relevant excerpts to the service.
@@ -17,7 +17,7 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 - Turn a WeChat article into a publish-ready Xiaohongshu note with three title choices, 300–800 Chinese characters of copy, hashtags, and local 3:4 cards that mix the original images with surrounding text.
 - Review a local four-platform publishing matrix, five-stage creation pipeline, account growth, and per-post performance for WeChat, Xiaohongshu, Channels, and Douyin. Platform screenshots are analyzed only after an explicit selection and require confirmation before local metrics are saved.
 - Review local content activity and authorized account data in the one-person-company cockpit.
-- Explicitly invoke a local `SKILL.md`, progressively read its referenced files, and—when the user separately enables local execution—request per-step confirmation for Node.js, Python, FFmpeg, or FFprobe actions. Shell command strings are not accepted.
+- Create a basic personal Skill from the main chat, browse it under **My Skills**, and explicitly invoke its `SKILL.md`. Existing Skills can progressively read referenced files and—when the user separately enables local execution—request per-step confirmation for Node.js, Python, FFmpeg, or FFprobe actions. Shell command strings are not accepted.
 
 ## Installation
 
@@ -32,7 +32,7 @@ AI Linzi is currently desktop-only and requires Obsidian 1.11.4 or later.
 
 ## Privacy and network access
 
-Local search scans supported files in memory on the user's device. It does not create a cloud index or upload the whole Vault. For a normal chat request, the plugin sends only the active note, explicitly authorized documents, or a bounded set of locally matched excerpts. When the user enables Vault search, the service may request a bounded sequence of local search, folder listing, and document-read operations; the model never receives direct filesystem access.
+Local search scans supported files in memory on the user's device. It does not create a cloud index or upload the whole Vault. For a normal chat request, the plugin sends only an explicitly requested still-open note, explicitly authorized documents, or a bounded set of locally matched excerpts. When the user asks to search their Vault, knowledge base, digital brain, or file repository, the service may request a bounded sequence of local search, folder listing, and document-read operations; the model never receives direct filesystem access.
 
 The plugin reads or writes Vault files only for user-triggered actions such as including a note, saving a generated result, creating a confirmed note or folder, inserting an image, or publishing a WeChat draft. Vault organization is plan-first and confirmation-gated: it can create folders, move, or rename without deleting or overwriting; move/rename actions have a local undo log. Connection keys and WeChat AppSecrets use Obsidian SecretStorage and are not written to plugin settings or logs.
 

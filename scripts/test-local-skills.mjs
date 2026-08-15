@@ -82,6 +82,8 @@ assert.equal(
   'missing',
 )
 assert.equal(core.isLocalSkillListIntent('我有哪些本地技能？'), true)
+assert.equal(core.isLocalSkillListIntent('我的 Skills'), true)
+assert.equal(core.isLocalSkillListIntent('查看我的技能'), true)
 assert.equal(core.isLocalSkillListIntent('我有哪些技能？'), false)
 assert.equal(core.isLocalSkillListIntent('/skills'), true)
 assert.equal(core.isLocalSkillListIntent('/skill'), true)
@@ -90,7 +92,7 @@ assert.equal(
   false,
   '显式调用名称里包含“本地 Skill”时不能误判为查看技能清单',
 )
-assert.match(core.formatLocalSkillList([consultation, weekly]), /找到 2 个本地 Skill/)
+assert.match(core.formatLocalSkillList([consultation, weekly]), /“我的 Skills”中共有 2 个 Skill/)
 assert.doesNotMatch(
   core.formatLocalSkillList([consultation, weekly]),
   /把咨询逐字稿整理成客户可读简报/,

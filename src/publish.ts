@@ -219,7 +219,7 @@ export function wechatImageHtml(url: string, alt = ''): string {
 }
 
 async function currentNote(plugin: AiLinziPlugin): Promise<{ file: TFile; body: string; digest: string } | null> {
-  const file = plugin.app.workspace.getActiveFile() ?? plugin.lastActiveFile
+  const file = plugin.rememberCurrentMarkdownFile()
   if (!file) {
     new Notice('请先打开要发布的文章笔记')
     return null

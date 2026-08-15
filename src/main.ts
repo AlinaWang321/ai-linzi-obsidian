@@ -135,6 +135,7 @@ import {
 } from './local-skill-execution-core'
 import {
   isExplicitCurrentNoteIntent,
+  selectCurrentOpenMarkdownPath,
   shouldUseCurrentNote,
 } from './current-note-intent'
 import { runCustomerConsultationBrief } from './customer-consultation-brief'
@@ -483,7 +484,7 @@ class LocalSkillActionConfirmModal extends Modal {
   }
 
   onOpen(): void {
-    this.setTitle('允许本地 Skill 执行这一步？')
+    this.setTitle('允许“我的 Skills”执行这一步？')
     this.contentEl.addClass('ai-linzi-local-action-modal')
     this.contentEl.createEl('p', {
       text: `Skill《${this.skillName}》申请：${localSkillActionSummary(this.action)}`,
@@ -811,8 +812,8 @@ export default class AiLinziPlugin extends Plugin {
   private vaultActionHistory: VaultActionRecord[] = []
   private localSkillRunHistory: LocalSkillRunRecord[] = []
   /**
-   * 最近一次激活的笔记。侧边面板(对话)获得焦点时 getActiveFile() 会返回 null,
-   * 面板上的「调用技能/存入知识库」按钮靠这个记录知道用户"当前开着哪篇笔记"。
+   * 最近一次激活且仍然打开的笔记。它只用于侧边面板获得焦点后的界面衔接，
+   * 不能把已经关闭的标签页或 Obsidian“最近打开记录”重新解释为读取授权。
    */
   lastActiveFile: TFile | null = null
   async onload() {
@@ -831,6 +832,7 @@ export default class AiLinziPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
         if (file?.extension.toLowerCase() === 'md') this.lastActiveFile = file
+        else this.rememberCurrentMarkdownFile()
       }),
     )
 
@@ -894,43 +896,36 @@ export default class AiLinziPlugin extends Plugin {
     this.addSettingTab(new AiLinziSettingTab(this.app, this))
   }
 
-  rememberCurrentMarkdownFile(): TFile | null {
-    const active = this.app.workspace.getActiveFile()
-    if (active?.extension.toLowerCase() === 'md') {
-      this.lastActiveFile = active
-      return active
-    }
-
-    // 官方 API 专门用于“侧边栏获得焦点、但仍要找到主编辑区最近标签页”的场景。
-    const recentRootLeaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit)
-    if (recentRootLeaf?.view instanceof MarkdownView && recentRootLeaf.view.file) {
-      this.lastActiveFile = recentRootLeaf.view.file
-      return recentRootLeaf.view.file
-    }
-
-    if (this.lastActiveFile) {
-      const existing = this.app.vault.getAbstractFileByPath(this.lastActiveFile.path)
-      if (existing instanceof TFile && existing.extension.toLowerCase() === 'md') {
-        this.lastActiveFile = existing
-        return existing
-      }
-      this.lastActiveFile = null
-    }
-
+  openMarkdownFile(path: string): TFile | null {
     for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
-      if (leaf.view instanceof MarkdownView && leaf.view.file) {
-        this.lastActiveFile = leaf.view.file
+      if (leaf.view instanceof MarkdownView && leaf.view.file?.path === path) {
         return leaf.view.file
       }
     }
-
-    const recentPath = this.app.workspace.getLastOpenFiles()[0]
-    const recentFile = recentPath ? this.app.vault.getAbstractFileByPath(recentPath) : null
-    if (recentFile instanceof TFile) {
-      this.lastActiveFile = recentFile
-      return recentFile
-    }
     return null
+  }
+
+  rememberCurrentMarkdownFile(): TFile | null {
+    const openFiles = this.app.workspace
+      .getLeavesOfType('markdown')
+      .map((leaf) => (leaf.view instanceof MarkdownView ? leaf.view.file : null))
+      .filter((file): file is TFile => Boolean(file))
+    const active = this.app.workspace.getActiveFile()
+    const recentRootLeaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit)
+    const selectedPath = selectCurrentOpenMarkdownPath({
+      activePath: active?.extension.toLowerCase() === 'md' ? active.path : undefined,
+      recentRootPath:
+        recentRootLeaf?.view instanceof MarkdownView
+          ? recentRootLeaf.view.file?.path
+          : undefined,
+      lastActivePath: this.lastActiveFile?.path,
+      openPaths: openFiles.map((file) => file.path),
+    })
+    const selected = selectedPath
+      ? openFiles.find((file) => file.path === selectedPath) ?? null
+      : null
+    this.lastActiveFile = selected
+    return selected
   }
 
   onunload(): void {
@@ -1123,7 +1118,7 @@ export default class AiLinziPlugin extends Plugin {
 
   async undoLocalSkillRun(id: string): Promise<LocalSkillRunRecord> {
     const record = this.getLocalSkillRunRecord(id)
-    if (!record) throw new Error('没有找到这次本地 Skill 执行记录')
+    if (!record) throw new Error('没有找到这次 Skill 执行记录')
     await this.localSkillExecutor.undoCreatedOutputs(record)
     await this.saveSettings()
     return record
@@ -1506,9 +1501,9 @@ class ChatView extends ItemView {
     })
     cockpitBtn.onclick = () => void this.plugin.activateCockpit()
     const localSkillsBtn = actionsRow.createEl('button', {
-      text: '本地 Skills',
+      text: '我的 Skills',
       cls: 'ai-linzi-action-btn',
-      attr: { title: `查看 ${this.localSkills.root()}/ 中的本地 Skill` },
+      attr: { title: `查看保存在 ${this.localSkills.root()}/ 中的自建 Skill` },
     })
     localSkillsBtn.onclick = (event: MouseEvent) => void this.showLocalSkillsMenu(event)
 
@@ -1558,7 +1553,7 @@ class ChatView extends ItemView {
   private async showLocalSkillsMenu(event: MouseEvent): Promise<void> {
     const skills = await this.localSkills.list()
     if (skills.length === 0) {
-      new Notice(`没有找到本地 Skill。请先把技能文件放进 ${this.localSkills.root()}/。`, 5000)
+      new Notice('“我的 Skills”中还没有 Skill。你可以直接在主对话中让我创建。', 5000)
       return
     }
     const menu = new Menu()
@@ -1745,13 +1740,10 @@ class ChatView extends ItemView {
   private async currentNoteContext(
     lockedPath?: string,
   ): Promise<{ filename: string; text: string; path: string } | undefined> {
-    const locked = lockedPath ? this.app.vault.getAbstractFileByPath(lockedPath) : null
     // 连续对话必须保持上一轮锁定的同一篇。若文件已移动或删除就停止，绝不能
-    // 悄悄换成用户此刻打开的另一篇笔记。
+    // 悄悄换成用户此刻打开的另一篇笔记；若标签页已关闭，也视为撤销授权。
     const file = lockedPath
-      ? locked instanceof TFile && locked.extension.toLowerCase() === 'md'
-        ? locked
-        : undefined
+      ? this.plugin.openMarkdownFile(lockedPath) ?? undefined
       : this.plugin.rememberCurrentMarkdownFile()
     if (!file) return undefined
     const text = await this.app.vault.cachedRead(file)
@@ -2064,13 +2056,13 @@ class ChatView extends ItemView {
       const localSkillMatch = await this.localSkills.resolve(text)
       if (localSkillMatch.kind === 'missing') {
         throw new Error(
-          `没有找到你点名的本地 Skill。可以说「查看本地 Skills」，` +
+          `没有找到你点名的 Skill。可以说「查看我的 Skills」，` +
             `或检查文件是否在 ${this.localSkills.root()}/。`,
         )
       }
       if (localSkillMatch.kind === 'ambiguous') {
         throw new Error(
-          `有多个本地 Skill 同时匹配：${localSkillMatch.skills
+          `有多个 Skill 同时匹配：${localSkillMatch.skills
             .map((skill) => skill.displayName)
             .join('、')}。请说出完整技能名后重试。`,
         )
@@ -2098,7 +2090,7 @@ class ChatView extends ItemView {
       }
       if (localSkill?.output === 'update-current-note' && !noteContext) {
         throw new Error(
-          `本地 Skill《${localSkill.name}》需要修改当前笔记。请先打开目标笔记后重试。`,
+          `Skill《${localSkill.name}》需要修改当前笔记。请先打开目标笔记后重试。`,
         )
       }
       if (noteContext) new Notice(`本轮只读取当前笔记：${noteContext.filename}`, 3500)
@@ -2151,7 +2143,7 @@ class ChatView extends ItemView {
             entryTruncated: localSkill.entryTruncated,
           }
         : undefined
-      if (localSkill) new Notice(`正在调用本地 Skill：${localSkill.name}`, 4000)
+      if (localSkill) new Notice(`正在调用我的 Skill：${localSkill.name}`, 4000)
       let answer: string
       let answerSources = [
         ...(noteContext
@@ -2793,7 +2785,7 @@ class ChatView extends ItemView {
       const actionCalls = namespacedCalls.filter((call) => call.name === 'propose_skill_action')
       const readCalls = namespacedCalls.filter((call) => call.name !== 'propose_skill_action')
       if (actionCalls.length > 0 && !input.localSkillContext) {
-        throw new Error('本轮没有正在执行的本地 Skill，不能运行本地动作')
+        throw new Error('本轮没有正在执行的 Skill，不能运行本地动作')
       }
       if (actionCalls.length > 1) {
         throw new Error('每轮最多确认一个本地动作，请让 AI 拆分步骤')
@@ -2810,7 +2802,7 @@ class ChatView extends ItemView {
             ok: false,
             output: JSON.stringify({
               status: 'disabled',
-              message: '用户未在 AI霖子设置中开启“允许本地 Skill 运行程序”',
+              message: '用户未在 AI霖子设置中开启“允许我的 Skills 运行程序”',
             }),
           })
           pendingRetryReason = undefined
@@ -2821,12 +2813,12 @@ class ChatView extends ItemView {
         const action = prepared.action
         const ok = await confirmLocalSkillAction(
           this.app,
-          input.localSkill?.name ?? '本地 Skill',
+          input.localSkill?.name ?? '我的 Skill',
           action,
         )
         if (!ok) {
           const record = this.plugin.localSkillExecutor.cancelledRecord(
-            input.localSkill?.name ?? '本地 Skill',
+            input.localSkill?.name ?? '我的 Skill',
             action,
           )
           await this.plugin.recordLocalSkillRun(record)
@@ -2844,7 +2836,7 @@ class ChatView extends ItemView {
         try {
           try {
             const executed = await this.plugin.localSkillExecutor.run(
-              input.localSkill?.name ?? '本地 Skill',
+              input.localSkill?.name ?? '我的 Skill',
               action,
               input.localSkillContext as ActiveLocalSkillContext,
             )
@@ -2865,7 +2857,7 @@ class ChatView extends ItemView {
             )
           } catch (error) {
             const failed = this.plugin.localSkillExecutor.failedRecord(
-              input.localSkill?.name ?? '本地 Skill',
+              input.localSkill?.name ?? '我的 Skill',
               action,
             )
             await this.plugin.recordLocalSkillRun(failed)
@@ -3043,7 +3035,7 @@ class ChatView extends ItemView {
               event.preventDefault()
               void this.app.workspace.openLinkText(file.path, '', false)
             }
-            new Notice(`已创建本地 Skill:${file.path}`, 6000)
+            new Notice(`已创建到“我的 Skills”：${file.path}`, 6000)
           } catch (error) {
             createBtn.disabled = false
             new Notice(`创建失败:${(error as Error).message}`, 7000)
@@ -3178,7 +3170,7 @@ class ChatView extends ItemView {
             cls: 'ai-linzi-create-note-done',
             text:
               `✅ 已创建 ${created} 个文件夹${skipped > 0 ? `（${skipped} 个已存在，跳过）` : ''}` +
-              (applySettings ? '，并已更新驾驶舱与本地 Skills 目录设置' : ''),
+              (applySettings ? '，并已更新驾驶舱与“我的 Skills”目录设置' : ''),
           })
           new Notice(
             `已创建 ${created} 个文件夹${skipped > 0 ? `，${skipped} 个已存在` : ''}` +
@@ -3520,7 +3512,7 @@ class ChatView extends ItemView {
             // 非局部编辑回复仍保留“整篇更新”出口；它始终位于回复底部且需要二次确认。
             const updateBtn = bar.createEl('button', { text: '✏️ 更新当前笔记' })
             updateBtn.onclick = async () => {
-              const file = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+              const file = this.plugin.rememberCurrentMarkdownFile()
               if (!file) {
                 new Notice('没有找到当前打开的笔记')
                 return
@@ -3660,7 +3652,7 @@ class ChatView extends ItemView {
         new Notice('原文章已经移动或删除，请打开要修改的文章后重试')
         return
       }
-      const active = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+      const active = this.plugin.rememberCurrentMarkdownFile()
       if (active?.path !== target.path) {
         await this.app.workspace.getLeaf('tab').openFile(target)
       }
@@ -3716,7 +3708,7 @@ class ChatView extends ItemView {
           )
         } else {
           await insertSavedAiImageIntoCurrentNote(this.plugin, result.savedPath)
-          result.insertedNotePath = (this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile)?.path || '已插入'
+          result.insertedNotePath = this.plugin.rememberCurrentMarkdownFile()?.path || '已插入'
         }
         await this.persistNow()
         this.renderMessages()
@@ -3826,7 +3818,7 @@ class ChatView extends ItemView {
   }
 
   private async applyPatchToCurrentNote(patch: ParsedNotePatch, button: HTMLButtonElement): Promise<void> {
-    const file = this.app.workspace.getActiveFile() ?? this.plugin.lastActiveFile
+    const file = this.plugin.rememberCurrentMarkdownFile()
     if (!file) {
       new Notice('没有找到当前打开的笔记')
       return
@@ -3944,8 +3936,8 @@ class AiLinziSettingTab extends PluginSettingTab {
     cockpitFolderSetting('知识库 Wiki 文件夹', '整理后的方法论、案例、洞察', 'cockpitKnowledgeFolder', '02_Wiki')
     cockpitFolderSetting('对外输出 Output 文件夹', '发出去的文章、笔记、交付物', 'cockpitOutputFolder', '04_Output')
     new Setting(containerEl)
-      .setName('AI 工作流 / SOP 文件夹')
-      .setDesc('存放可被 AI霖子调用的 Skills；支持「技能名.md」或标准「技能名/SKILL.md」，也可在对话中让 AI 生成后确认写入')
+      .setName('我的 Skills 文件夹')
+      .setDesc('存放你自己创建、可被 AI霖子调用的 Skills；支持「技能名.md」或标准「技能名/SKILL.md」，也可以直接在主对话中让 AI 创建')
       .addText((text) =>
         text
           .setPlaceholder('05_System/Skills')
@@ -3958,7 +3950,7 @@ class AiLinziSettingTab extends PluginSettingTab {
       )
 
     new Setting(containerEl)
-      .setName('允许本地 Skill 运行程序')
+      .setName('允许“我的 Skills”运行程序')
       .setDesc('默认关闭。开启后，Skill 可以申请运行 Node.js、Python、FFmpeg 或 FFprobe；每一步仍会展示程序、参数、联网声明和输出文件，由你单独确认。只应运行你信任的 Skill，脚本本身可能读取或修改电脑上的数据。')
       .addToggle((toggle) =>
         toggle
@@ -3976,15 +3968,15 @@ class AiLinziSettingTab extends PluginSettingTab {
                   toggle.setValue(false)
                   new Notice(
                     minVersion
-                      ? `本地 Skill 运行需要插件 ${minVersion} 或更高版本，请先更新插件`
-                      : '当前 AI霖子服务还未开放本地 Skill 运行，请稍后更新后再试',
+                      ? `“我的 Skills”运行程序需要插件 ${minVersion} 或更高版本，请先更新插件`
+                      : '当前 AI霖子服务还未开放“我的 Skills”程序运行，请稍后更新后再试',
                     8000,
                   )
                   return
                 }
               } catch (error) {
                 toggle.setValue(false)
-                new Notice(`暂时无法确认本地 Skill 运行能力：${(error as Error).message}`, 8000)
+                new Notice(`暂时无法确认“我的 Skills”运行能力：${(error as Error).message}`, 8000)
                 return
               }
             }
