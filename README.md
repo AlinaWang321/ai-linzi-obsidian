@@ -12,7 +12,7 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 - Send only a bounded set of relevant excerpts to the service.
 - Explicitly select complete documents for authorized long-document tasks.
 - Create new notes and folders after an in-app confirmation.
-- Move one explicitly requested Markdown note to the Trash/Recycle Bin after a separate confirmation; permanent deletion, folders, attachments, and batch deletion are not supported.
+- Move one explicitly requested Markdown note to the Trash/Recycle Bin after a separate confirmation. An explicit request to delete the current note uses the note path locked when the message was sent, so later tab changes cannot retarget it; permanent deletion, folders, attachments, and batch deletion are not supported.
 - Generate or revise article illustrations and save successful images locally.
 - Format WeChat articles and send them to a configured WeChat draft box.
 - Turn a WeChat article into a publish-ready Xiaohongshu note with three title choices, 300–800 Chinese characters of copy, hashtags, and local 3:4 cards that mix the original images with surrounding text.

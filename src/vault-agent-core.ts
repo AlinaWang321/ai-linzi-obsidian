@@ -273,6 +273,23 @@ export function detectVaultAgentIntent(text: string): VaultAgentIntent {
 }
 
 /**
+ * 明确要求删除当前打开的单篇笔记时，插件可直接使用已经锁定的 noteContext.path
+ * 生成本机确认方案，不再让模型猜路径。这样既避免耗时工具循环，也保证用户切换
+ * 标签页后仍然只处理发送瞬间锁定的那篇笔记。
+ */
+export function isExplicitCurrentNoteTrashRequest(text: string): boolean {
+  const normalized = text.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '')
+  if (detectVaultAgentIntent(text) !== 'organize') return false
+  const trashAction = /(?:删除|删掉|移入(?:废纸篓|回收站)|放入(?:废纸篓|回收站)|丢到(?:废纸篓|回收站)|\b(?:delete|trash)\b)/.test(
+    normalized,
+  )
+  const currentTarget = /(?:当前|这篇|本篇|这份|这个|正在打开|刚打开|打开的).{0,10}(?:笔记|文章|文件)|(?:把|将)(?:它|这篇|这个|这份)(?:删除|删掉|移入|放入|丢到)/.test(
+    normalized,
+  )
+  return trashAction && currentTarget
+}
+
+/**
  * v0.7.17 起不再要求用户先找开关。只有文字明确指向本地 Vault/文件任务，
  * 或正在继续上一轮已经授权的 Vault 对话时，才允许进入本机工具循环。
  * 普通闲聊不会因此读取或发送任何 Vault 片段。

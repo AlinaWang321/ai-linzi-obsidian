@@ -98,6 +98,7 @@ import {
   extractVaultOrganizePlan,
   extractVaultToolCalls,
   deterministicVaultFactAnswer,
+  isExplicitCurrentNoteTrashRequest,
   isVaultAgentToolAllowed,
   namespaceVaultToolCalls,
   operationLabel,
@@ -2691,6 +2692,35 @@ class ChatView extends ItemView {
     const localSkillRunIds: string[] = []
     let lastText = ''
     let pendingRetryReason: VaultAnswerRetryReason | undefined
+
+    // 删除当前笔记不需要模型搜索：noteContext 已在发送瞬间锁定了准确路径。
+    // 本机仍只生成待确认卡，真正移入回收站前还会再次弹窗确认。
+    if (
+      input.noteContext &&
+      input.intent === 'organize' &&
+      isExplicitCurrentNoteTrashRequest(input.question)
+    ) {
+      const plan: VaultOrganizePlan = {
+        title: '删除当前笔记',
+        summary: '只移入废纸篓/回收站，不会永久删除。',
+        operations: [{
+          type: 'trash_note',
+          path: input.noteContext.path,
+          reason: '用户明确要求删除发送瞬间锁定的当前笔记',
+        }],
+        notes: ['确认后插件才会移入废纸篓/回收站；需要恢复时请到系统废纸篓或 Obsidian .trash。'],
+      }
+      return {
+        text: [
+          `已锁定当前笔记「${input.noteContext.filename}」，下面只生成待确认方案。`,
+          '<<<VAULT_ORGANIZE_PLAN>>>',
+          JSON.stringify(plan),
+          '<<<VAULT_ORGANIZE_PLAN_END>>>',
+        ].join('\n'),
+        sources,
+        localSkillRunIds,
+      }
+    }
 
     // 咨询场次属于本机可确定性统计：用户开启 Vault 搜索后直接扫描全量索引，
     // 不等待模型碰运气决定是否调用工具，也不把前 8 条搜索结果当作总数。
