@@ -32,6 +32,8 @@ assert.equal(core.detectVaultAgentIntent('把当前笔记移入回收站'), 'org
 assert.equal(core.detectVaultAgentIntent('只读取，不要整理或移动任何文件'), 'answer')
 assert.equal(core.detectVaultAgentIntent('不要删除这篇笔记'), 'answer')
 assert.equal(core.detectVaultAgentIntent('别帮我删除这篇笔记'), 'answer')
+assert.equal(core.detectVaultAgentIntent('先不要写入任何文件，只读取并生成草稿'), 'answer')
+assert.equal(core.detectVaultAgentIntent('整理成可写入客户档案的草稿，先不要直接更新档案'), 'answer')
 assert.equal(core.detectVaultAgentIntent('总结这篇文章'), 'answer')
 assert.equal(core.isExplicitCurrentNoteTrashRequest('请把当前这篇测试笔记删除，只能移入回收站'), true)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('删除这篇笔记'), true)

@@ -72,7 +72,11 @@ export interface VaultPlanExtraction {
   invalid: boolean
 }
 
-export type VaultAnswerRetryReason = 'deferred_answer' | 'missing_count' | 'missing_tool_use'
+export type VaultAnswerRetryReason =
+  | 'deferred_answer'
+  | 'missing_count'
+  | 'missing_tool_use'
+  | 'invalid_plan'
 
 export function isVaultAgentToolAllowed(
   name: VaultAgentToolName,
@@ -326,7 +330,7 @@ export function namespaceVaultToolCalls(
 
 export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   const normalized = text.normalize('NFKC').toLocaleLowerCase()
-  if (/(?:不要|别)(?:再)?(?:帮我)?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)/.test(normalized)) return 'answer'
+  if (/(?:不要|别)(?:再)?(?:帮我)?(?:先|直接|现在|立刻|立即)?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站|写入|写进|追加|保存|新建|创建|更新)/.test(normalized)) return 'answer'
   return /(?:请|帮我|把|将|需要|想要|能否|可以).*?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|^(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|(?:写入|追加到|保存到|新建|创建|更新).{0,40}(?:wiki|知识库|客户档案|学员档案|笔记|文档|文件)|(?:wiki|知识库|客户档案|学员档案|笔记|文档|文件).{0,40}(?:写入|追加|保存|新建|创建|更新)|\b(?:organize|move|rename|reorganize|delete|trash)\b/.test(
     normalized,
   )

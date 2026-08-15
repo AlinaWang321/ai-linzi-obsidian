@@ -2900,7 +2900,13 @@ class ChatView extends ItemView {
       if (toolRequest.invalid) throw new Error('AI 返回的 Vault 工具请求格式不安全，请重试')
       if (toolRequest.calls.length === 0) {
         const plan = extractVaultOrganizePlan(lastText)
-        if (plan.invalid) throw new Error('AI 返回的 Vault 整理方案格式不安全，请重试')
+        if (plan.invalid) {
+          if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+            throw new Error('AI 没有在安全轮次内生成可执行的 Vault 方案，请缩小范围后重试')
+          }
+          pendingRetryReason = 'invalid_plan'
+          continue
+        }
         // 明确的 Vault 文件任务至少必须有一条本机工具结果。没有真实结果时，
         // “我现在扫描”或直接猜出的方案都只是口头承诺/幻觉，绝不能结束本轮。
         if (input.vaultAccess && toolResults.length === 0) {
@@ -2949,7 +2955,9 @@ class ChatView extends ItemView {
                   ? 'AI 只承诺稍后处理，没有在安全轮次内给出最终答案，请重试'
                   : retryReason === 'missing_count'
                     ? 'AI 没有在安全轮次内给出明确数量或可信的不足说明，请重试'
-                    : 'AI 没有实际调用 Vault 工具，请重试',
+                    : retryReason === 'missing_tool_use'
+                      ? 'AI 没有实际调用 Vault 工具，请重试'
+                      : 'AI 没有在安全轮次内生成可执行的 Vault 方案，请缩小范围后重试',
               )
             }
             pendingRetryReason = retryReason
