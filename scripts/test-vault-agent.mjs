@@ -34,6 +34,10 @@ assert.equal(core.detectVaultAgentIntent('不要删除这篇笔记'), 'answer')
 assert.equal(core.detectVaultAgentIntent('别帮我删除这篇笔记'), 'answer')
 assert.equal(core.detectVaultAgentIntent('先不要写入任何文件，只读取并生成草稿'), 'answer')
 assert.equal(core.detectVaultAgentIntent('整理成可写入客户档案的草稿，先不要直接更新档案'), 'answer')
+assert.equal(
+  core.detectVaultAgentIntent('把这份草稿再优化一下，输出一个可以直接追加的 Markdown 章节'),
+  'answer',
+)
 assert.equal(core.detectVaultAgentIntent('总结这篇文章'), 'answer')
 assert.equal(core.isExplicitCurrentNoteTrashRequest('请把当前这篇测试笔记删除，只能移入回收站'), true)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('删除这篇笔记'), true)
@@ -59,6 +63,17 @@ assert.equal(core.shouldUseVaultAgent('你好，今天适合写什么内容？')
 assert.equal(core.shouldUseVaultAgent('知识库应该怎么搭建？'), false)
 assert.equal(core.shouldUseVaultAgent('再看看那个文件', true), true)
 assert.equal(core.shouldUseVaultAgent('再给我三个标题', false), false)
+assert.equal(
+  core.shouldUseVaultAgent(
+    '把这份草稿再优化一下：保留长期客户档案真正需要的事实，输出一个可以直接追加的 Markdown 章节。',
+    true,
+  ),
+  false,
+)
+assert.equal(
+  core.shouldUseVaultAgent('请把刚才确认的章节追加到 02_Wiki/客户档案/客户甲.md', true),
+  true,
+)
 
 assert.equal(
   core.vaultAnswerRetryReason(

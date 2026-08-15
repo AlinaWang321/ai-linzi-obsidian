@@ -330,9 +330,16 @@ export function namespaceVaultToolCalls(
   }))
 }
 
+function isDraftOnlyWriteIntent(normalized: string): boolean {
+  return /(?:输出|生成|整理|改写|优化).{0,60}(?:可(?:以)?|用于|供|方便)(?:直接)?(?:写入|写进|追加|保存).{0,30}(?:草稿|章节|内容|版本)/.test(
+    normalized,
+  )
+}
+
 export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   const normalized = text.normalize('NFKC').toLocaleLowerCase()
   if (/(?:不要|别)(?:再)?(?:帮我)?(?:先|直接|现在|立刻|立即)?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站|写入|写进|追加|保存|新建|创建|更新)/.test(normalized)) return 'answer'
+  if (isDraftOnlyWriteIntent(normalized)) return 'answer'
   return /(?:请|帮我|把|将|需要|想要|能否|可以).*?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|^(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|(?:写入|追加到|保存到|新建|创建|更新).{0,40}(?:wiki|知识库|客户档案|学员档案|笔记|文档|文件)|(?:wiki|知识库|客户档案|学员档案|笔记|文档|文件).{0,40}(?:写入|追加|保存|新建|创建|更新)|\b(?:organize|move|rename|reorganize|delete|trash)\b/.test(
     normalized,
   )
@@ -364,6 +371,7 @@ export function isExplicitCurrentNoteTrashRequest(text: string): boolean {
  */
 export function shouldUseVaultAgent(text: string, continuingVaultTask = false): boolean {
   const normalized = text.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '')
+  const draftOnlyWrite = isDraftOnlyWriteIntent(normalized)
   if (detectVaultAgentIntent(text) === 'organize') return true
   const businessFileObject =
     /(?:咨询(?:交付|服务)?逐字稿|交付(?:顾问)?咨询逐字稿|销售逐字稿|谈单逐字稿|咨询记录|销售记录|客户档案|学员档案|客户资料|学员资料|聊天记录|会议逐字稿|课程逐字稿|直播逐字稿|访谈逐字稿)/.test(normalized)
@@ -372,7 +380,8 @@ export function shouldUseVaultAgent(text: string, continuingVaultTask = false): 
     businessFileObject ||
     /(?:本地|我的|这个|那个|当前).{0,12}(?:笔记|文件|文件夹|目录|知识库|资料|文档|仓库)|(?:笔记|文件|文件夹|目录|知识库|资料库|文档|仓库).{0,12}(?:里|中|内|下|在哪里|在哪)/.test(normalized)
   const explicitVaultAction =
-    /(?:搜索|搜一下|搜一搜|扫描|查找|查一下|查一查|查查|查阅|找一下|找一找|找出|找到|定位|在哪|哪里|有什么|哪些|翻找|读取|打开|查看|看看|列出|统计|汇总|盘点|总结|对比|整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站|写入|追加|保存到|新建|创建)/.test(normalized) ||
+    /(?:搜索|搜一下|搜一搜|扫描|查找|查一下|查一查|查查|查阅|找一下|找一找|找出|找到|定位|在哪|哪里|有什么|哪些|翻找|读取|打开|查看|看看|列出|统计|汇总|盘点|总结|对比|整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)/.test(normalized) ||
+    (!draftOnlyWrite && /(?:写入|写进|追加|保存到|新建|创建)/.test(normalized)) ||
     (businessFileObject && /^(?:请|帮我|麻烦)?(?:处理|分析|复盘|提炼|优化)/.test(normalized))
   if (explicitVaultObject && explicitVaultAction) return true
   if (!continuingVaultTask) return false
