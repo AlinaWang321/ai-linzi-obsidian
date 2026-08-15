@@ -2894,7 +2894,13 @@ class ChatView extends ItemView {
         },
       })
       lastText = typeof data.text === 'string' ? data.text : ''
-      if (!lastText.trim()) throw new Error('Vault 工具循环返回了空内容，请重试')
+      if (!lastText.trim()) {
+        if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+          throw new Error('Vault 工具循环连续没有返回可见内容，请重试')
+        }
+        pendingRetryReason = 'empty_response'
+        continue
+      }
 
       const toolRequest = extractVaultToolCalls(lastText)
       if (toolRequest.invalid) throw new Error('AI 返回的 Vault 工具请求格式不安全，请重试')
@@ -2905,6 +2911,16 @@ class ChatView extends ItemView {
             throw new Error('AI 没有在安全轮次内生成可执行的 Vault 方案，请缩小范围后重试')
           }
           pendingRetryReason = 'invalid_plan'
+          continue
+        }
+        if (input.intent === 'answer' && plan.plan) {
+          if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+            if (plan.cleanText.trim()) {
+              return { text: plan.cleanText.trim(), sources, localSkillRunIds }
+            }
+            throw new Error('AI 没有在安全轮次内遵守只读要求，请重试')
+          }
+          pendingRetryReason = 'unexpected_plan'
           continue
         }
         // 明确的 Vault 文件任务至少必须有一条本机工具结果。没有真实结果时，
@@ -2957,7 +2973,11 @@ class ChatView extends ItemView {
                     ? 'AI 没有在安全轮次内给出明确数量或可信的不足说明，请重试'
                     : retryReason === 'missing_tool_use'
                       ? 'AI 没有实际调用 Vault 工具，请重试'
-                      : 'AI 没有在安全轮次内生成可执行的 Vault 方案，请缩小范围后重试',
+                      : retryReason === 'empty_response'
+                        ? 'AI 没有返回可见内容，请重试'
+                        : retryReason === 'unexpected_plan'
+                          ? 'AI 没有遵守本轮只读要求，请重试'
+                          : 'AI 没有在安全轮次内生成可执行的 Vault 方案，请缩小范围后重试',
               )
             }
             pendingRetryReason = retryReason

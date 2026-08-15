@@ -77,6 +77,8 @@ export type VaultAnswerRetryReason =
   | 'missing_count'
   | 'missing_tool_use'
   | 'invalid_plan'
+  | 'empty_response'
+  | 'unexpected_plan'
 
 export function isVaultAgentToolAllowed(
   name: VaultAgentToolName,
