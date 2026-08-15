@@ -20,7 +20,11 @@ for (const name of ['manifest.json', 'main.js', 'styles.css']) {
 await copyFile(join(root, 'docs/安装说明.md'), join(pluginDir, 'INSTALL.md'))
 await copyFile(join(root, 'docs/THIRD_PARTY_NOTICES.md'), join(pluginDir, 'THIRD_PARTY_NOTICES.md'))
 await mkdir(join(pluginDir, 'third-party-licenses'), { recursive: true })
-for (const licenseName of ['pdfjs-apache-2.0.txt', 'fflate-mit.txt']) {
+for (const licenseName of [
+  'pdfjs-apache-2.0.txt',
+  'fflate-mit.txt',
+  'html-to-image-mit.txt',
+]) {
   await copyFile(
     join(root, 'docs/third-party-licenses', licenseName),
     join(pluginDir, 'third-party-licenses', licenseName),
