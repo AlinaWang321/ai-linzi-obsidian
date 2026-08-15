@@ -85,8 +85,9 @@ function clip(text: string, max: number, what: string): string {
 
 async function getActiveNote(plugin: AiLinziPlugin): Promise<{ file: TFile; text: string } | null> {
   const app = plugin.app
-  // 对话面板获得焦点时 getActiveFile() 为 null → 回落到最近激活的笔记
-  const file = app.workspace.getActiveFile() ?? plugin.lastActiveFile
+  // 多标签或侧边栏获得焦点时，统一锁定最近真正激活的 Markdown 标签页；
+  // 图片、PDF 等非笔记文件不得覆盖销售复盘等技能的源文件。
+  const file = plugin.rememberCurrentMarkdownFile()
   if (!file) {
     new Notice('请先打开一篇笔记再运行技能')
     return null
@@ -558,13 +559,13 @@ export async function runSalesReview(plugin: AiLinziPlugin) {
   }
   const input = await new PromptModal(
     plugin.app,
-    '谈单复盘 · 诊断当前逐字稿',
+    `销售复盘 · 已锁定 ${note.file.basename}`,
     '开始诊断',
     [
       {
         key: 'background',
         label: '客户背景/产品说明(可选)',
-        desc: '💡 隐私提醒:逐字稿传输不留存(不进 AI霖子 数据库),但建议先把客户实名换成化名。',
+        desc: `本次只读取：${note.file.path}。逐字稿传输不留存（不进 AI霖子数据库），建议先把客户实名换成化名。`,
         multiline: true,
       },
     ],

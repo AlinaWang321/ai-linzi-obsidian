@@ -37,7 +37,7 @@ assert.match(
 )
 assert.match(
   source,
-  /const file = this\.plugin\.rememberCurrentMarkdownFile\(\)/,
+  /this\.plugin\.rememberCurrentMarkdownFile\(\)/,
   '发送带当前笔记的请求时必须使用稳定的 Markdown 笔记引用',
 )
 assert.match(
@@ -45,12 +45,16 @@ assert.match(
   /getMostRecentLeaf\(this\.app\.workspace\.rootSplit\)/,
   '右侧栏获得焦点时必须从主编辑区恢复最近使用的 Markdown 标签页',
 )
-assert.match(source, /已带上当前笔记：\$\{file\.basename\}/, '勾选后必须明确提示实际附带的笔记')
+assert.match(source, /active\?\.extension\.toLowerCase\(\) === 'md'/, '当前笔记锁定必须排除图片/PDF 等非 Markdown 文件')
+assert.match(source, /本轮只读取当前笔记：\$\{noteContext\.filename\}/, '自动读取时必须明确提示实际附带的笔记')
 assert.match(
   source,
-  /if \(this\.attachNote && !noteContext\)/,
-  '勾选但读取失败时必须阻止请求，不能让模型猜测',
+  /if \(currentNoteRequested && !noteContext\)/,
+  '明确要求当前笔记但读取失败时必须阻止请求，不能让模型猜测',
 )
+assert.match(source, /sourceId: `current-note:\$\{noteContext\.path\}`/, '当前笔记来源必须只保留路径标记供连续对话锁定')
+assert.match(source, /若文件已移动或删除就停止/, '连续对话的锁定笔记失效时不得静默改读当前其他笔记')
+assert.doesNotMatch(source, /private attachNote:/, '主对话不应继续保留长期当前笔记开关')
 
 const unsafeAssignments = [...source.matchAll(/this\.sessionId = uid\(\)/g)]
 assert.equal(unsafeAssignments.length, 0, '禁止生成无命名空间的插件 sessionId')

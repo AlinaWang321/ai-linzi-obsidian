@@ -292,22 +292,6 @@
   padding-top: 8px;
 }
 
-.ai-linzi-toggle-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 14px;
-  font-size: var(--font-ui-smaller);
-  color: var(--text-muted);
-}
-
-.ai-linzi-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-}
-
 .ai-linzi-action-btn.is-active {
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
@@ -2942,4 +2926,376 @@ button.ai-linzi-vault-source-link:focus-visible {
   white-space: normal;
   overflow-wrap: anywhere;
   text-align: left;
+}
+
+/* 客户咨询简报：同 WebApp 的 navy + 暖米色 + amber 单张长图。 */
+.ai-linzi-consultation-source {
+  margin: 12px 0 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-secondary);
+}
+
+.ai-linzi-consultation-source-label {
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-consultation-source-path {
+  overflow-wrap: anywhere;
+  color: var(--text-normal);
+  font-weight: 650;
+}
+
+.ai-linzi-consultation-export-host {
+  position: fixed;
+  z-index: -10000;
+  top: 0;
+  left: -12000px;
+  width: 880px;
+  pointer-events: none;
+}
+
+.ai-linzi-consultation-card {
+  box-sizing: border-box;
+  width: 880px;
+  overflow: hidden;
+  border: 1px solid rgb(15 23 42 / 10%);
+  border-radius: 20px;
+  background: #fafaf7;
+  box-shadow: 0 4px 32px rgb(15 23 42 / 8%);
+  color: #1f2937;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.ai-linzi-consultation-header {
+  position: relative;
+  box-sizing: border-box;
+  padding: 36px 48px 32px;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  color: #fff;
+}
+
+.ai-linzi-consultation-header-label {
+  position: absolute;
+  top: 20px;
+  right: 32px;
+  color: rgb(248 250 252 / 50%);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+}
+
+.ai-linzi-consultation-header h1 {
+  margin: 0 0 10px;
+  color: #fff;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.ai-linzi-consultation-header blockquote {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: rgb(248 250 252 / 75%);
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+
+.ai-linzi-consultation-header blockquote p {
+  margin: 0;
+}
+
+.ai-linzi-consultation-body {
+  box-sizing: border-box;
+  padding: 36px 48px 32px;
+  color: #1f2937;
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.ai-linzi-consultation-body h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 28px 0 14px;
+  color: #0f172a;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.ai-linzi-consultation-body h2:first-child {
+  margin-top: 0;
+}
+
+.ai-linzi-consultation-section-icon {
+  display: inline-flex;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: #0f172a;
+  font-size: 16px;
+}
+
+.ai-linzi-consultation-section-icon.is-diagnosis {
+  background: #fef3c7;
+  color: #d97706;
+}
+
+.ai-linzi-consultation-section-icon.is-insight {
+  background: #e0e7ff;
+  color: #4338ca;
+}
+
+.ai-linzi-consultation-section-icon.is-path {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.ai-linzi-consultation-section-icon.is-products,
+.ai-linzi-consultation-section-icon.is-goal {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.ai-linzi-consultation-section-icon.is-summary {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.ai-linzi-consultation-section-icon.is-action {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.ai-linzi-consultation-section-icon.is-takeaway {
+  background: #fef9c3;
+  color: #a16207;
+}
+
+.ai-linzi-consultation-body h3 {
+  margin: 20px 0 6px;
+  padding-left: 12px;
+  border-left: 3px solid #d97706;
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.ai-linzi-consultation-body p {
+  margin: 8px 0;
+  color: inherit;
+  line-height: 1.75;
+}
+
+.ai-linzi-consultation-body strong {
+  color: inherit;
+  font-weight: 750;
+}
+
+.ai-linzi-consultation-body blockquote.ai-linzi-consultation-advice,
+.ai-linzi-consultation-body blockquote.ai-linzi-consultation-summary {
+  box-sizing: border-box;
+  border: 0;
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+.ai-linzi-consultation-body blockquote.ai-linzi-consultation-advice {
+  margin: 10px 0;
+  padding: 14px 18px 12px;
+  border-left: 4px solid #d97706;
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.ai-linzi-consultation-body blockquote.ai-linzi-consultation-summary {
+  position: relative;
+  margin: 16px 0;
+  padding: 24px 28px 24px 56px;
+  border-radius: 14px;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.ai-linzi-consultation-body blockquote.ai-linzi-consultation-summary::before {
+  position: absolute;
+  top: 12px;
+  left: 20px;
+  color: #d97706;
+  content: "“";
+  font-family: Georgia, serif;
+  font-size: 42px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.ai-linzi-consultation-body blockquote p {
+  margin: 0;
+}
+
+.ai-linzi-consultation-signature {
+  margin-top: 12px;
+  color: #d97706;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+}
+
+.ai-linzi-consultation-advice .ai-linzi-consultation-signature {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.ai-linzi-consultation-body table {
+  width: 100%;
+  margin: 14px 0;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  border-collapse: collapse;
+  background: #fff;
+  font-size: 14px;
+}
+
+.ai-linzi-consultation-body th,
+.ai-linzi-consultation-body td {
+  padding: 12px 16px;
+  border: 0;
+  border-top: 1px solid #f1f5f9;
+  color: #1f2937;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ai-linzi-consultation-body th {
+  border-top: 0;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.ai-linzi-consultation-structured-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.ai-linzi-consultation-structured-card {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 14px 12px;
+  border: 1.5px solid #dbe3f0;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.ai-linzi-consultation-layer {
+  margin-bottom: 6px;
+  color: #324e7d;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.ai-linzi-consultation-structured-title {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.ai-linzi-consultation-price {
+  margin: 6px 0;
+  color: #d97706;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.ai-linzi-consultation-structured-description {
+  color: #666;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.ai-linzi-consultation-body ul {
+  margin: 8px 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.ai-linzi-consultation-body li {
+  margin: 6px 0;
+  padding: 2px 0 2px 22px;
+  position: relative;
+  line-height: 1.7;
+}
+
+.ai-linzi-consultation-body li:not(.task-list-item)::before {
+  position: absolute;
+  top: 12px;
+  left: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d97706;
+  content: "";
+}
+
+.ai-linzi-consultation-body li.task-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  color: #1f2937;
+  line-height: 1.6;
+}
+
+.ai-linzi-consultation-body li.task-list-item input[type="checkbox"] {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: #0f172a;
+}
+
+.ai-linzi-consultation-footer {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 48px;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.ai-linzi-consultation-footer-site {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.ai-linzi-consultation-footer-date {
+  flex-shrink: 0;
+  font-family: monospace;
 }

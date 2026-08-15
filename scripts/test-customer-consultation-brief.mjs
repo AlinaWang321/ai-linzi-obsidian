@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict'
+import { build } from 'esbuild'
+import { mkdtemp, readFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const tempDir = await mkdtemp(path.join(os.tmpdir(), 'ai-linzi-consultation-brief-'))
+const outfile = path.join(tempDir, 'core.mjs')
+await build({
+  entryPoints: [fileURLToPath(new URL('../src/customer-consultation-brief-core.ts', import.meta.url))],
+  outfile,
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+})
+const core = await import(pathToFileURL(outfile).href)
+
+assert.equal(core.CUSTOMER_CONSULTATION_TRANSCRIPT_MIN, 800)
+assert.equal(core.CUSTOMER_CONSULTATION_TRANSCRIPT_MAX, 100_000)
+assert.equal(core.CUSTOMER_CONSULTATION_OUTPUT_FOLDER, '客户咨询简报')
+assert.equal(
+  core.customerConsultationPngBase('2026.08.15', '客户/A'),
+  '2026.08.15_客户 A_客户咨询简报',
+)
+assert.equal(core.normalizeConsultationBriefMarkdown('```markdown\n# 客户 A · 咨询简报\n```'), '# 客户 A · 咨询简报')
+
+const source = await readFile(new URL('../src/customer-consultation-brief.ts', import.meta.url), 'utf8')
+const actions = await readFile(new URL('../src/actions.ts', import.meta.url), 'utf8')
+assert.match(source, /本次只读取并锁定这一份逐字稿/)
+assert.match(source, /只生成给客户看的 PNG 长图/)
+assert.match(source, /\/api\/plugin\/v1\/skills\/consultation-brief/)
+assert.match(source, /createBinary\(path, png\)/)
+assert.match(source, /CUSTOMER_CONSULTATION_OUTPUT_FOLDER/)
+assert.doesNotMatch(source, /writeOutput\(/)
+assert.doesNotMatch(source, /toneMode/)
+assert.match(source, /toPng\(card/)
+assert.match(source, /ai-linzi-consultation-footer/)
+assert.match(source, /AI 霖子生成/)
+assert.match(actions, /const file = plugin\.rememberCurrentMarkdownFile\(\)/)
+
+console.log('customer consultation brief PNG tests passed')

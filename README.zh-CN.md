@@ -4,7 +4,7 @@ AI Linzi connects Alina's business coaching services to your local knowledge Vau
 
 ## Features
 
-- Chat with AI Linzi in a sidebar and optionally include the active note.
+- Chat with AI Linzi in a sidebar. When the request explicitly refers to the current note, the plugin reads that one note for the task.
 - Search Markdown, TXT, text-based PDF, and DOCX files locally before sending only a few relevant excerpts to the service.
 - Create and edit content, process long documents, and save results back to the Vault.
 - Generate or revise article illustrations and save successful images locally.
@@ -12,7 +12,7 @@ AI Linzi connects Alina's business coaching services to your local knowledge Vau
 
 ## Privacy and network access
 
-AI Linzi only sends the active note, selected documents, or small locally matched excerpts when the user explicitly enables or starts a cloud action. It does not upload the whole Vault and does not include third-party analytics. An AI Linzi account and connection key are required for cloud features. Notes and generated images remain in the user's Vault unless the user explicitly sends content to AI Linzi or WeChat services.
+AI Linzi only sends the active note when the request explicitly refers to it, documents the user selected, or small locally matched excerpts needed for a requested Vault task. It does not upload the whole Vault and does not include third-party analytics. An AI Linzi account and connection key are required for cloud features. Notes and generated images remain in the user's Vault unless the user explicitly sends content to AI Linzi or WeChat services.
 
 This public plugin is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration are not included in this repository.
 
@@ -22,6 +22,7 @@ This public plugin is a thin client. Private prompts, model routing, billing, ac
 
 ## 功能路线
 
+- **v0.7.18**：移除主对话「带上当前笔记」勾选项。用户明确说“总结当前笔记”“修改这篇文章”等任务时，AI 自动锁定并读取当时激活的一篇 Markdown，界面显示实际文件名；短跟进继续使用同一篇，普通闲聊不读取。新增内置技能「客户咨询简报」：锁定当前一份咨询逐字稿，固定复用 AI霖子 WebApp 的客户版提示词、模型、权限、限流、积分和用量记录，只生成一张 PNG 长图到 `AI霖子输出/客户咨询简报/`，不读取其他 Vault 内容，不落 Markdown 或 Word。销售复盘同步显示并锁定实际源笔记。
 - **v0.7.17**：移除主对话里的「智能搜索 Vault」与「AI 生图模式」开关。用户明确提出查找、读取、统计、整理或移动 Vault 文件时，AI 自动按需调用本机只读工具；移动/重命名仍先展示方案、确认后执行。生图与改图统一用自然语言；用户指定比例优先，否则公众号封面自动用 2.35:1（900×383）、小红书封面/卡片用 3:4、普通横版用 16:9、方图用 1:1。
 - **v0.7.16**：销售逐字稿复盘结果统一保存到输出根目录下的「销售复盘」文件夹；文件夹不存在时自动创建，已有同名文件继续安全加序号，不覆盖原文件。
 - **v0.7.12**：本地 Skills 菜单改为只显示“中文功能名 · Skill 文件夹名”，不再把长 description 铺满屏幕；主对话新增自然 AI 生图协议，小红书卡片、海报、长图、普通封面可直接按上下文生成 1—6 张图片并保存到 Vault，不再误导到“文章配图”。同组图片沿用首图风格，支持继续说“修改第 2 张……”进行多轮图片编辑。
@@ -37,8 +38,8 @@ This public plugin is a thin client. Private prompts, model routing, billing, ac
 - **v0.6.45**：修正小红书第一页的内容顺序：严格按公众号原文显示标题 → 原文摘要（有才显示）→ 第一张原文配图（有才显示）→ 正文开头；正文开头从后续分页中扣除，不会在第二页重复。
 - **v0.6.44**：新增公众号文章一键分发到小红书：在本机把公众号全文排成 1080×1440 的 3:4 PNG 卡片并生成 ZIP；封面配图完整显示、无外边框，图片在上、标题与原文摘要在下；正文使用宋体、小字号、高密度段落和金句加粗。生成后的小红书笔记只保留卡片图片和可发布配文，不再重复公众号全文；内容发布看板同步显示小红书生成/发布状态。
 - **v0.6.43**：修复 Obsidian 社区目录自动审核阻断项；静态光标样式改用 CSS class，manifest 描述不再以插件名开头；确认操作改用 Obsidian Modal，DOM 创建改用官方 helper，移除 `:has` 与 `!important`；官方 Release 仅发布受支持文件并生成构件来源证明；英文主 README 与中文说明分离。
-- **M1（已完成）**：安装、账号安全连接、测试连接、侧边栏流式对话和当前笔记上下文
-- **M2（已完成）**：技能调用、文章配图、公众号排版发布、内容看板、Vault 智能搜索和多文档选择
+- **M1（已完成）**：安装、账号安全连接、测试连接、侧边栏流式对话和按明确意图读取当前笔记
+- **M2（已完成）**：技能调用、客户咨询简报 PNG、文章配图、公众号排版发布、内容看板、Vault 按需搜索和多文档选择
 - **M3（已完成）**：长逐字稿与长文档任务、本地 TXT/PDF/DOCX 提取、失败续跑和结果存为笔记
 - **v0.7.14**：**动态创建知识库目录并应用到 AI霖子**：Luna 会根据用户场景规划目录；点名“一人公司驾驶舱”时默认建议 7 个编号主目录及 `05_System/Skills`。确认卡同时展示驾驶舱和本地 Skills 绑定，可继续对话修改后再确认，也可选择只创建文件夹。用户确认前不落盘；已有目录跳过，不移动、覆盖或删除现有内容。
 - **v0.6.42**：**对话直接创建文件夹（旧协议）**：对 AI 霖子说「帮我搭好知识库框架」，对话中出现文件夹确认卡，点击后只新建并跳过已有目录；v0.7.14 起升级为动态目录规划与设置绑定。
@@ -180,7 +181,7 @@ npm test           # 写作结构 → 配图回写 → 公众号 HTML 回归测�
 - **许可证**：本仓库中的公开插件薄客户端采用 [MIT License](LICENSE)。AI霖子名称与品牌素材、私有服务端、提示词、模型编排、计费系统、账号数据、知识库和课程内容不包含在本仓库中，也不因插件代码采用 MIT 而获得授权。
 - **账号与联网**：核心功能需要 AI霖子账号和连接密钥。只有用户主动发起对话、调用技能、喂入知识库、生成配图或发布公众号时，插件才会把该次操作所需的内容发送到 `https://chat.alinalinzi.com` 或相应的微信官方接口。
 - **账号权益**：部分 AI 功能需要有效的 AI霖子账号权益；账户状态与使用记录在 AI霖子网页版统一管理，插件界面不展示模型供应商或单次价格。
-- **本地文件访问**：用户明确要求查找、读取、统计、整理或移动 Vault 文件时，插件才会按需在本机使用受限工具，并只发送回答所需的少量结果；普通闲聊不会预扫 Vault，不上传整个 Vault，也不建立云端全文索引。当前笔记、主动选择的整篇文档、修改当前笔记、覆盖图片和发布公众号仍需要用户主动勾选或确认。
+- **本地文件访问**：用户明确要求查找、读取、统计、整理或移动 Vault 文件时，插件才会按需在本机使用受限工具，并只发送回答所需的少量结果；普通闲聊不会预扫 Vault，不上传整个 Vault，也不建立云端全文索引。用户明确点名“当前笔记/这篇文章”时，插件只读取并提示当时锁定的一篇；多文档整篇授权仍由用户主动选择，修改原笔记、覆盖图片和发布公众号仍需明确确认。
 - **本地 Skill 执行**：运行电脑程序默认关闭。用户主动开启后，Skill 每一步都必须展示程序、参数、工作目录、是否联网、预计输出，以及本步终端输出是否会临时交给 AI，并单独确认；终端输出默认不上传且不写入云端对话历史。只开放 Node.js、Python、FFmpeg、FFprobe，不接受 Shell/PowerShell 命令字符串，不允许内联代码、远程 FFmpeg 输入或覆盖已存在输出。脚本仍与 Obsidian 拥有相同的系统权限，因此只应运行可信 Skill。未被后续修改的本次生成文件可以移到系统废纸篓/回收站恢复。
 - **数据与遥测**：插件不加入第三方客户端行为追踪或广告 SDK。账号、积分、知识库和主对话记录按 AI霖子服务的数据规则保存；用户笔记与配图默认留在自己的 Vault。隐私说明见 [AI霖子隐私政策](https://chat.alinalinzi.com/privacy)。
 

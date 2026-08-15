@@ -133,8 +133,13 @@ import {
   localSkillActionSummary,
   type LocalSkillActionProposal,
 } from './local-skill-execution-core'
+import {
+  isExplicitCurrentNoteIntent,
+  shouldUseCurrentNote,
+} from './current-note-intent'
+import { runCustomerConsultationBrief } from './customer-consultation-brief'
 
-/** 五个动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
+/** 内置动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
   id: string
   name: string
@@ -152,6 +157,7 @@ export const SKILL_ACTIONS: {
   { id: 'wechat-draft', name: '发到公众号草稿箱(自动传图,需配置AppID)', fn: async (p) => sendToWechatDraft(p) },
   { id: 'xhs-cards', name: '小红书图文卡片:当前笔记 → 正文 + 3:4 PNG', fn: runXhsCards },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
+  { id: 'customer-consultation-brief', name: '客户咨询简报:当前逐字稿 → 客户版 PNG 长图', fn: runCustomerConsultationBrief },
   { id: 'sales-review', name: '销售复盘:诊断当前逐字稿', fn: runSalesReview },
   { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
 ]
@@ -162,10 +168,6 @@ interface AiLinziSettings {
   serverUrl: string
   /** SecretStorage 的内部条目名，仅用于兼容旧设置；不得在学员界面中暴露 */
   tokenSecretId: string
-  /** 一次性迁移标记：不再让旧版两个 true 默认值污染新主对话 */
-  cleanChatDefaultsV1: boolean
-  /** 「带上当前笔记」开关的默认值 */
-  attachNoteDefault: boolean
   /** @deprecated v0.7.17 起由明确的 Vault 对话意图按需触发，仅兼容旧 data.json。 */
   vaultSearchDefault: boolean
   /** 技能产出落盘的文件夹(相对 vault 根) */
@@ -198,8 +200,6 @@ interface AiLinziSettings {
 const DEFAULT_SETTINGS: AiLinziSettings = {
   serverUrl: 'https://chat.alinalinzi.com',
   tokenSecretId: '',
-  cleanChatDefaultsV1: false,
-  attachNoteDefault: false,
   vaultSearchDefault: false,
   outputFolder: 'AI霖子输出',
   illustrationCharacterReferencePath: '',
@@ -226,6 +226,9 @@ interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
   vaultSearchExcludedFolders?: string
   /** v0.6.27 及以前的插件内更新检查时间；官方市场版不再使用 */
   lastUpdateCheckAt?: number
+  /** v0.7.17 及以前的主对话长期勾选状态；v0.7.18 起按本轮明确意图自动读取。 */
+  attachNoteDefault?: boolean
+  cleanChatDefaultsV1?: boolean
 }
 
 const DEFAULT_TOKEN_SECRET_ID = 'ai-linzi-api-token'
@@ -827,7 +830,7 @@ export default class AiLinziPlugin extends Plugin {
     )
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
-        if (file) this.lastActiveFile = file
+        if (file?.extension.toLowerCase() === 'md') this.lastActiveFile = file
       }),
     )
 
@@ -893,7 +896,7 @@ export default class AiLinziPlugin extends Plugin {
 
   rememberCurrentMarkdownFile(): TFile | null {
     const active = this.app.workspace.getActiveFile()
-    if (active) {
+    if (active?.extension.toLowerCase() === 'md') {
       this.lastActiveFile = active
       return active
     }
@@ -907,7 +910,7 @@ export default class AiLinziPlugin extends Plugin {
 
     if (this.lastActiveFile) {
       const existing = this.app.vault.getAbstractFileByPath(this.lastActiveFile.path)
-      if (existing instanceof TFile) {
+      if (existing instanceof TFile && existing.extension.toLowerCase() === 'md') {
         this.lastActiveFile = existing
         return existing
       }
@@ -941,6 +944,8 @@ export default class AiLinziPlugin extends Plugin {
       wechatAppSecret: legacyWechatSecret,
       vaultSearchExcludedFolders: legacyVaultSearchExcludedFolders,
       lastUpdateCheckAt: legacyLastUpdateCheckAt,
+      attachNoteDefault: legacyAttachNoteDefault,
+      cleanChatDefaultsV1: legacyCleanChatDefaultsV1,
       conversations,
       illustrationJobs,
       vaultActionHistory,
@@ -957,21 +962,10 @@ export default class AiLinziPlugin extends Plugin {
       : []
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
     let migrated =
-      legacyVaultSearchExcludedFolders !== undefined || legacyLastUpdateCheckAt !== undefined
-    // 0.6.48 以前两个主对话上下文开关默认都是 true，用户很容易在不知情时
-    // 把当前笔记和 Vault 检索带进普通对话/自由生图。只迁移仍完整保留旧默认
-    // 组合的安装；若用户已经单独改过任一开关，则尊重其自定义。
-    if (!this.settings.cleanChatDefaultsV1) {
-      const stillUsingOldChatDefaults =
-        (safeSettings.attachNoteDefault === undefined || safeSettings.attachNoteDefault === true) &&
-        (safeSettings.vaultSearchDefault === undefined || safeSettings.vaultSearchDefault === true)
-      if (stillUsingOldChatDefaults) {
-        this.settings.attachNoteDefault = false
-        this.settings.vaultSearchDefault = false
-      }
-      this.settings.cleanChatDefaultsV1 = true
-      migrated = true
-    }
+      legacyVaultSearchExcludedFolders !== undefined ||
+      legacyLastUpdateCheckAt !== undefined ||
+      legacyAttachNoteDefault !== undefined ||
+      legacyCleanChatDefaultsV1 !== undefined
     // 学员正式版只连接 AI霖子官方后端，避免误按第三方教程把连接密钥和笔记
     // 发送到陌生服务器。localhost 仅保留给本机开发联调。
     if (
@@ -1406,7 +1400,6 @@ class ChatView extends ItemView {
   private plugin: AiLinziPlugin
   private messages: WireMessage[] = []
   private sessionId = newPluginSessionId()
-  private attachNote: boolean
   private localSkills: LocalSkillRegistry
   /** 普通主对话下一轮要识别的图片；压缩数据只驻留当前进程，发送后立即释放。 */
   private chatImageAttachments: LocalImageReference[] = []
@@ -1426,14 +1419,12 @@ class ChatView extends ItemView {
   private listEl!: HTMLElement
   private inputEl!: HTMLTextAreaElement
   private sendBtn!: HTMLButtonElement
-  private attachToggleEl!: HTMLInputElement
   private authorizedContentBtn!: HTMLButtonElement
   private authorizedContentStatusEl!: HTMLElement
 
   constructor(leaf: WorkspaceLeaf, plugin: AiLinziPlugin) {
     super(leaf)
     this.plugin = plugin
-    this.attachNote = plugin.settings.attachNoteDefault
     this.localSkills = new LocalSkillRegistry(
       plugin.app,
       () => plugin.settings.localSkillsFolder,
@@ -1469,7 +1460,6 @@ class ChatView extends ItemView {
       this.sessionId = newPluginSessionId()
       this.activeImageMessageId = ''
       this.clearAuthorizedContent()
-      this.resetContextTogglesToDefaults()
       if (this.mode === 'interview') this.exitInterviewMode()
       this.renderMessages()
     }
@@ -1521,25 +1511,6 @@ class ChatView extends ItemView {
       attr: { title: `查看 ${this.localSkills.root()}/ 中的本地 Skill` },
     })
     localSkillsBtn.onclick = (event: MouseEvent) => void this.showLocalSkillsMenu(event)
-
-    const toggleRow = footer.createDiv({ cls: 'ai-linzi-toggle-row' })
-    const label = toggleRow.createEl('label', { cls: 'ai-linzi-toggle' })
-    this.attachToggleEl = label.createEl('input', { type: 'checkbox' })
-    this.attachToggleEl.checked = this.attachNote
-    this.attachToggleEl.onchange = () => {
-      this.attachNote = this.attachToggleEl.checked
-      if (this.attachNote) {
-        const file = this.plugin.rememberCurrentMarkdownFile()
-        if (!file) {
-          this.attachNote = false
-          this.attachToggleEl.checked = false
-          new Notice('没有找到当前笔记。请先点开目标笔记，再勾选“主对话带上当前笔记”。', 6000)
-        } else {
-          new Notice(`已带上当前笔记：${file.basename}`, 3500)
-        }
-      }
-    }
-    label.createSpan({ text: ' 主对话带上当前笔记' })
 
     this.authorizedContentStatusEl = footer.createDiv({
       cls: 'ai-linzi-authorized-content-status',
@@ -1673,7 +1644,6 @@ class ChatView extends ItemView {
 
   private loadConvo(c: SavedConvo): void {
     this.clearAuthorizedContent()
-    this.resetContextTogglesToDefaults()
     this.messages = c.messages
     this.sessionId = normalizePluginSessionId(c.id)
     if (c.mode === 'interview' && this.mode !== 'interview') {
@@ -1686,11 +1656,6 @@ class ChatView extends ItemView {
       this.inputEl.placeholder = CHAT_INPUT_PLACEHOLDER
     }
     this.renderMessages()
-  }
-
-  private resetContextTogglesToDefaults(): void {
-    this.attachNote = this.plugin.settings.attachNoteDefault
-    if (this.attachToggleEl) this.attachToggleEl.checked = this.attachNote
   }
 
   private async showHistoryMenu(): Promise<void> {
@@ -1767,9 +1732,27 @@ class ChatView extends ItemView {
     ).open()
   }
 
-  private async currentNoteContext(): Promise<{ filename: string; text: string; path: string } | undefined> {
-    if (!this.attachNote) return undefined
-    const file = this.plugin.rememberCurrentMarkdownFile()
+  private recentCurrentNotePath(): string | undefined {
+    for (let index = this.messages.length - 1; index >= Math.max(0, this.messages.length - 6); index--) {
+      const source = this.messages[index].vaultSources?.find((item) =>
+        item.sourceId.startsWith('current-note:'),
+      )
+      if (source?.path) return source.path
+    }
+    return undefined
+  }
+
+  private async currentNoteContext(
+    lockedPath?: string,
+  ): Promise<{ filename: string; text: string; path: string } | undefined> {
+    const locked = lockedPath ? this.app.vault.getAbstractFileByPath(lockedPath) : null
+    // 连续对话必须保持上一轮锁定的同一篇。若文件已移动或删除就停止，绝不能
+    // 悄悄换成用户此刻打开的另一篇笔记。
+    const file = lockedPath
+      ? locked instanceof TFile && locked.extension.toLowerCase() === 'md'
+        ? locked
+        : undefined
+      : this.plugin.rememberCurrentMarkdownFile()
     if (!file) return undefined
     const text = await this.app.vault.cachedRead(file)
     if (!text.trim()) return undefined
@@ -2094,20 +2077,35 @@ class ChatView extends ItemView {
       }
       const localSkill =
         localSkillMatch.kind === 'matched' ? localSkillMatch.skill : undefined
-      const noteContext = await this.currentNoteContext()
-      if (this.attachNote && !noteContext) {
-        throw new Error('没有读取到当前笔记。请先点开目标笔记，重新勾选“主对话带上当前笔记”后再试。')
+      const illustrationEdit = isArticleIllustrationEditIntent(text)
+      const singleIllustrationIntent = isSingleArticleIllustrationIntent(text)
+      const recentCurrentNotePath = this.recentCurrentNotePath()
+      const explicitCurrentNote = isExplicitCurrentNoteIntent(text)
+      const continuingCurrentNote =
+        !explicitCurrentNote &&
+        Boolean(recentCurrentNotePath) &&
+        shouldUseCurrentNote(text, true)
+      const currentNoteRequested =
+        explicitCurrentNote ||
+        continuingCurrentNote ||
+        singleIllustrationIntent ||
+        localSkill?.output === 'update-current-note'
+      const noteContext = currentNoteRequested
+        ? await this.currentNoteContext(continuingCurrentNote ? recentCurrentNotePath : undefined)
+        : undefined
+      if (currentNoteRequested && !noteContext) {
+        throw new Error('没有读取到目标笔记。请先点开要处理的笔记，再重新发送这条要求。')
       }
       if (localSkill?.output === 'update-current-note' && !noteContext) {
         throw new Error(
-          `本地 Skill《${localSkill.name}》需要修改当前笔记。请打开目标笔记并勾选「主对话带上当前笔记」。`,
+          `本地 Skill《${localSkill.name}》需要修改当前笔记。请先打开目标笔记后重试。`,
         )
       }
+      if (noteContext) new Notice(`本轮只读取当前笔记：${noteContext.filename}`, 3500)
       const authorizedContent = await this.authorizedContentContext(noteContext?.path)
       // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
       // 图片修改会在 AI 回复下方显示专用入口，先预览候选图再由用户确认替换。
-      const illustrationEdit = isArticleIllustrationEditIntent(text)
-      const singleIllustration = Boolean(noteContext && isSingleArticleIllustrationIntent(text))
+      const singleIllustration = Boolean(noteContext && singleIllustrationIntent)
       const directNoteEdit = Boolean(
         noteContext && !illustrationEdit && !singleIllustration && isNoteEditIntent(text),
       )
@@ -2127,7 +2125,9 @@ class ChatView extends ItemView {
             (message.vaultSources?.length ?? 0) > 0 ||
             message.parts.some((part) => part.text.includes('<<<VAULT_ORGANIZE_PLAN>>>')),
         )
-      const autonomousVaultAccess = shouldUseVaultAgent(text, recentVaultContext)
+      const autonomousVaultAccess =
+        shouldUseVaultAgent(text, recentVaultContext) &&
+        (detectVaultAgentIntent(text) === 'organize' || !noteContext)
       const useVaultAgent =
         (autonomousVaultAccess || Boolean(localSkill)) &&
         this.authorizedContentPaths.length === 0 &&
@@ -2153,7 +2153,16 @@ class ChatView extends ItemView {
         : undefined
       if (localSkill) new Notice(`正在调用本地 Skill：${localSkill.name}`, 4000)
       let answer: string
-      let answerSources = [...vaultSearch.sources]
+      let answerSources = [
+        ...(noteContext
+          ? [{
+              sourceId: `current-note:${noteContext.path}`,
+              filename: noteContext.filename,
+              path: noteContext.path,
+            }]
+          : []),
+        ...vaultSearch.sources,
+      ]
 
       if (useVaultAgent) {
         const agentResult = await this.runVaultAgentLoop({
@@ -3378,7 +3387,7 @@ class ChatView extends ItemView {
         const starters = body.createDiv({ cls: 'ai-linzi-empty-starters' })
         starters.createDiv({ text: '3 个小技巧:' })
         const ul = starters.createEl('ul')
-        ul.createEl('li', { text: '勾选「主对话带上当前笔记」,让我基于这篇笔记给建议' })
+        ul.createEl('li', { text: '直接说“总结当前笔记”或“润色这篇文章”,我会只读取当前这一篇' })
         ul.createEl('li', { text: '点「调用技能」→ 选题雷达,把素材笔记变成 10 个选题' })
         ul.createEl('li', { text: '写好的核心笔记点「存入知识库」,让我长期记住你的定位' })
       }
@@ -3982,16 +3991,6 @@ class AiLinziSettingTab extends PluginSettingTab {
             this.plugin.settings.localSkillExecutionEnabled = value
             await this.plugin.saveSettings()
           }),
-      )
-
-    new Setting(containerEl)
-      .setName('默认带上当前笔记')
-      .setDesc('对话面板「带上当前笔记」开关的默认状态；只读取用户当前主动打开的这一篇笔记')
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.attachNoteDefault).onChange(async (v) => {
-          this.plugin.settings.attachNoteDefault = v
-          await this.plugin.saveSettings()
-        }),
       )
 
     new Setting(containerEl).setName('公众号发布(选配)').setHeading()
