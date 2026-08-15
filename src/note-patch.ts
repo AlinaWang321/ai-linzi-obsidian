@@ -31,6 +31,16 @@ const MAX_TEXT_LENGTH = 12_000
 export function isNoteEditIntent(text: string): boolean {
   const input = text.trim()
   if (!input) return false
+  // “把刚才的草稿再优化一下/输出一个可追加章节”是在继续加工聊天产物，
+  // 不是要求修改当前打开的笔记。若误进局部补丁协议，普通 Markdown 回复下方
+  // 会出现无意义的“未识别到可安全应用的修改”，甚至让模型误以为应操作当前页。
+  if (
+    /(?:这份|这个|刚才|刚刚|上面|前面|上述).{0,20}(?:草稿|回复|回答|答案|方案|章节|版本).{0,80}(?:优化|改写|精简|删掉|删除|润色|输出|整理)/.test(
+      input,
+    )
+  ) {
+    return false
+  }
   const editVerb = '(?:修改|改成|改为|换成|替换|删除|删掉|加入|加上|补充|润色|调整|统一|纠正|修正|改写|编辑)'
   const noteTarget = '(?:当前笔记|这篇(?:文章)?|本文|文章|正文|内容|标题|段落|文字|用词)'
   return (

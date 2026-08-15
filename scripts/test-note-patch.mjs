@@ -23,6 +23,10 @@ const notePatch = await loadTs('src/note-patch.ts')
 assert.equal(notePatch.isNoteEditIntent('把文章里面的“AI霖子”都加上框框，写成「AI霖子」'), true)
 assert.equal(notePatch.isNoteEditIntent('请润色这篇文章的开头两段'), true)
 assert.equal(notePatch.isNoteEditIntent('我想调整一下自己的商业模式'), false)
+assert.equal(
+  notePatch.isNoteEditIntent('把这份草稿再优化一下：删掉重复解释，输出一个可以直接追加的 Markdown 章节。'),
+  false,
+)
 
 const rawReply = `已找到 1 处需要修改，只会改这一段。
 

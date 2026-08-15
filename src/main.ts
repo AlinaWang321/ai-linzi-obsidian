@@ -3728,7 +3728,6 @@ class ChatView extends ItemView {
         const cleanText = folderResult.cleanText
         const patch = parseNotePatch(cleanText)
         const illustrationEdit = isArticleIllustrationEditIntent(previousUserText)
-        const editReply = this.mode === 'chat' && !illustrationEdit && isNoteEditIntent(previousUserText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
         if ((m.vaultSources?.length ?? 0) > 0) this.renderVaultSources(row, m.vaultSources ?? [])
         if ((m.localSkillRunIds?.length ?? 0) > 0) this.renderLocalSkillRunOffer(row, m)
@@ -3769,7 +3768,7 @@ class ChatView extends ItemView {
         // 只显示本轮真正需要的动作。普通回复不再固定挂“存为笔记/更新当前笔记”；
         // 用户用自然语言提出写入要求后，插件会显示锁定目标的专用确认卡。
         if (!vaultPlanResult.plan && text.trim().length > 0 && !text.startsWith('⚠️')) {
-          const hasMessageActions = Boolean(patch) || skillResult.suggestions.length > 0 || editReply
+          const hasMessageActions = Boolean(patch) || skillResult.suggestions.length > 0
           const bar = hasMessageActions
             ? row.createDiv({ cls: 'ai-linzi-msg-actions' })
             : null
@@ -3789,13 +3788,6 @@ class ChatView extends ItemView {
               cls: 'ai-linzi-suggested-skill',
             })
             if (skillBtn) skillBtn.onclick = () => void this.runSuggestedSkill(suggestion, previousUserText)
-          }
-          if (!patch && editReply) {
-            const unavailableBtn = bar?.createEl('button', { text: '⚠️ 未识别到可安全应用的修改' })
-            if (unavailableBtn) {
-              unavailableBtn.disabled = true
-              unavailableBtn.title = '请让 AI 重新读取当前笔记，并明确要修改的原文'
-            }
           }
         }
       } else {

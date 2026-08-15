@@ -338,6 +338,15 @@ function isDraftOnlyWriteIntent(normalized: string): boolean {
 
 export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   const normalized = text.normalize('NFKC').toLocaleLowerCase()
+  // “确认前不要写入”是在要求预览 + 二次确认的安全写入流程，不等于取消写入。
+  // 这类句子通常同时点名准确目标和追加/写入动作，必须先进入 organize，
+  // 否则模型会只口头说“已读取”，却不给真正可执行的确认卡。
+  if (
+    /(?:确认|同意|批准|我点确认).{0,12}(?:前|之前).{0,8}(?:不要|别)(?:真的)?(?:写入|写进|追加|保存|更新)/.test(normalized) &&
+    /(?:追加到|写入|写进|保存到|更新到|更新进|新建|创建).{0,80}(?:\.md|wiki|知识库|客户档案|学员档案|笔记|文档|文件)/.test(normalized)
+  ) {
+    return 'organize'
+  }
   if (/(?:不要|别)(?:再)?(?:帮我)?(?:先|直接|现在|立刻|立即)?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站|写入|写进|追加|保存|新建|创建|更新)/.test(normalized)) return 'answer'
   if (isDraftOnlyWriteIntent(normalized)) return 'answer'
   return /(?:请|帮我|把|将|需要|想要|能否|可以).*?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|^(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|(?:写入|追加到|保存到|新建|创建|更新).{0,40}(?:wiki|知识库|客户档案|学员档案|笔记|文档|文件)|(?:wiki|知识库|客户档案|学员档案|笔记|文档|文件).{0,40}(?:写入|追加|保存|新建|创建|更新)|\b(?:organize|move|rename|reorganize|delete|trash)\b/.test(

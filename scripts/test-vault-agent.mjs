@@ -35,6 +35,10 @@ assert.equal(core.detectVaultAgentIntent('别帮我删除这篇笔记'), 'answer
 assert.equal(core.detectVaultAgentIntent('先不要写入任何文件，只读取并生成草稿'), 'answer')
 assert.equal(core.detectVaultAgentIntent('整理成可写入客户档案的草稿，先不要直接更新档案'), 'answer')
 assert.equal(
+  core.detectVaultAgentIntent('请把刚才确认的 Markdown 章节追加到 02_Wiki/客户档案/客户甲.md。先读取目标档案，确认前不要写入。'),
+  'organize',
+)
+assert.equal(
   core.detectVaultAgentIntent('把这份草稿再优化一下，输出一个可以直接追加的 Markdown 章节'),
   'answer',
 )
