@@ -8,6 +8,8 @@
 export const VAULT_AGENT_MAX_ROUNDS = 6
 export const VAULT_AGENT_MAX_CALLS_PER_ROUND = 4
 export const VAULT_AGENT_MAX_PLAN_OPERATIONS = 60
+export const VAULT_NOTE_WRITE_MAX_CHARS = 30_000
+export const VAULT_NOTE_UPDATE_MAX_OPERATIONS = 30
 
 export type VaultAgentToolName =
   | 'vault_search'
@@ -34,12 +36,28 @@ export type VaultOrganizeOperation =
   | { type: 'create_folder'; path: string; reason?: string }
   | { type: 'move'; from: string; to: string; reason?: string }
   | { type: 'trash_note'; path: string; reason?: string }
+  | { type: 'create_note'; path: string; content: string; reason?: string }
+  | { type: 'append_note'; path: string; content: string; reason?: string }
+  | { type: 'replace_note'; path: string; content: string; reason?: string }
+  | {
+      type: 'update_note'
+      path: string
+      replacements: { old: string; new: string; all?: boolean; reason?: string }[]
+      reason?: string
+    }
 
 export interface VaultOrganizePlan {
   title: string
   summary: string
   operations: VaultOrganizeOperation[]
   notes: string[]
+}
+
+/** 方案生成时锁定的本地文件版本；只保存在插件本机会话。 */
+export interface VaultWriteSnapshot {
+  path: string
+  mtime: number
+  size: number
 }
 
 export interface VaultToolCallExtraction {
@@ -54,7 +72,7 @@ export interface VaultPlanExtraction {
   invalid: boolean
 }
 
-export type VaultAnswerRetryReason = 'deferred_answer' | 'missing_count'
+export type VaultAnswerRetryReason = 'deferred_answer' | 'missing_count' | 'missing_tool_use'
 
 export function isVaultAgentToolAllowed(
   name: VaultAgentToolName,
@@ -109,6 +127,12 @@ function safeJsonObject(raw: string): Record<string, unknown> | null {
 
 function shortText(value: unknown, max: number): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
+}
+
+function boundedContent(value: unknown, max = VAULT_NOTE_WRITE_MAX_CHARS): string | null {
+  if (typeof value !== 'string') return null
+  const content = value.trim()
+  return content && content.length <= max ? content : null
 }
 
 export function normalizeVaultRelativePath(value: unknown): string | null {
@@ -207,6 +231,40 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
     const path = normalizeVaultRelativePath(record.path)
     return path ? { type, path, reason } : null
   }
+  if (type === 'create_note' || type === 'append_note' || type === 'replace_note') {
+    const path = normalizeVaultRelativePath(record.path)
+    const content = boundedContent(record.content)
+    return path && content ? { type, path, content, reason } : null
+  }
+  if (type === 'update_note') {
+    const path = normalizeVaultRelativePath(record.path)
+    const rawReplacements = Array.isArray(record.replacements) ? record.replacements : null
+    if (!path || !rawReplacements || rawReplacements.length === 0 || rawReplacements.length > VAULT_NOTE_UPDATE_MAX_OPERATIONS) {
+      return null
+    }
+    const replacements = rawReplacements.map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+      const replacement = item as Record<string, unknown>
+      const oldText = boundedContent(replacement.old, 12_000)
+      const newText = typeof replacement.new === 'string' && replacement.new.length <= 12_000
+        ? replacement.new
+        : null
+      if (!oldText || newText === null || oldText === newText) return null
+      return {
+        old: oldText,
+        new: newText,
+        all: replacement.all === true || undefined,
+        reason: shortText(replacement.reason, 240) || undefined,
+      }
+    })
+    if (replacements.some((item) => item === null)) return null
+    return {
+      type,
+      path,
+      replacements: replacements as Extract<VaultOrganizeOperation, { type: 'update_note' }>['replacements'],
+      reason,
+    }
+  }
   return null
 }
 
@@ -248,6 +306,10 @@ export function extractVaultOrganizePlan(text: string): VaultPlanExtraction {
 export function operationLabel(operation: VaultOrganizeOperation): string {
   if (operation.type === 'create_folder') return `新建文件夹：${operation.path}`
   if (operation.type === 'trash_note') return `移入回收站：${operation.path}`
+  if (operation.type === 'create_note') return `新建笔记：${operation.path}`
+  if (operation.type === 'append_note') return `追加到笔记：${operation.path}`
+  if (operation.type === 'replace_note') return `整篇覆盖笔记：${operation.path}`
+  if (operation.type === 'update_note') return `局部更新笔记：${operation.path}`
   return `移动/重命名：${operation.from} → ${operation.to}`
 }
 
@@ -265,7 +327,7 @@ export function namespaceVaultToolCalls(
 export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   const normalized = text.normalize('NFKC').toLocaleLowerCase()
   if (/(?:不要|别)(?:再)?(?:帮我)?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)/.test(normalized)) return 'answer'
-  return /(?:请|帮我|把|将|需要|想要|能否|可以).*?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|^(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|\b(?:organize|move|rename|reorganize|delete|trash)\b/.test(
+  return /(?:请|帮我|把|将|需要|想要|能否|可以).*?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|^(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|(?:写入|追加到|保存到|新建|创建|更新).{0,40}(?:wiki|知识库|客户档案|学员档案|笔记|文档|文件)|(?:wiki|知识库|客户档案|学员档案|笔记|文档|文件).{0,40}(?:写入|追加|保存|新建|创建|更新)|\b(?:organize|move|rename|reorganize|delete|trash)\b/.test(
     normalized,
   )
     ? 'organize'
@@ -297,14 +359,18 @@ export function isExplicitCurrentNoteTrashRequest(text: string): boolean {
 export function shouldUseVaultAgent(text: string, continuingVaultTask = false): boolean {
   const normalized = text.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '')
   if (detectVaultAgentIntent(text) === 'organize') return true
+  const businessFileObject =
+    /(?:咨询(?:交付|服务)?逐字稿|交付(?:顾问)?咨询逐字稿|销售逐字稿|谈单逐字稿|咨询记录|销售记录|客户档案|学员档案|客户资料|学员资料|聊天记录|会议逐字稿|课程逐字稿|直播逐字稿|访谈逐字稿)/.test(normalized)
   const explicitVaultObject =
     /(?:vault|obsidian|知识库|数字大脑|第二大脑|我的大脑|文件仓库|资料仓库|文档仓库|本地仓库)/.test(normalized) ||
+    businessFileObject ||
     /(?:本地|我的|这个|那个|当前).{0,12}(?:笔记|文件|文件夹|目录|知识库|资料|文档|仓库)|(?:笔记|文件|文件夹|目录|知识库|资料库|文档|仓库).{0,12}(?:里|中|内|下|在哪里|在哪)/.test(normalized)
   const explicitVaultAction =
-    /(?:搜索|搜一下|搜一搜|查找|查一下|查一查|查查|查阅|找一下|找一找|找出|找到|在哪|哪里|有什么|哪些|翻找|读取|打开|查看|看看|列出|统计|汇总|盘点|总结|对比|整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)/.test(normalized)
+    /(?:搜索|搜一下|搜一搜|扫描|查找|查一下|查一查|查查|查阅|找一下|找一找|找出|找到|定位|在哪|哪里|有什么|哪些|翻找|读取|打开|查看|看看|列出|统计|汇总|盘点|总结|对比|整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站|写入|追加|保存到|新建|创建)/.test(normalized) ||
+    (businessFileObject && /^(?:请|帮我|麻烦)?(?:处理|分析|复盘|提炼|优化)/.test(normalized))
   if (explicitVaultObject && explicitVaultAction) return true
   if (!continuingVaultTask) return false
-  return /^(?:继续|再|那|这个|那个|它|它们|这些|那些|另外|然后|接着|同样|也|改成|移到|放到|归到|删掉|删除|移入回收站)/.test(normalized)
+  return /^(?:继续|再|那|这个|那个|它|它们|这些|那些|刚才|刚刚|上面|前面|这里|另外|然后|接着|同样|也|改成|移到|放到|归到|删掉|删除|移入回收站)/.test(normalized)
 }
 
 function isVaultCountQuestion(text: string): boolean {

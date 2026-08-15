@@ -17,11 +17,11 @@ for (const label of [
   '删除',
   '清空全部插件对话',
   '调用技能',
-  '存入知识库',
   '内容看板',
 ]) {
   assert.match(main, new RegExp(`text: '${label}'`), `缺少需要反馈的按钮：${label}`)
 }
+assert.doesNotMatch(main, /const kbBtn = actionsRow\.createEl/, '知识库动作不应再作为常驻按钮')
 
 assert.match(styles, /@keyframes ai-linzi-button-press/)
 assert.match(styles, /translateY\(1px\) scale\(0\.97\)/)

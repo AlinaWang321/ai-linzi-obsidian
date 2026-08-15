@@ -2858,6 +2858,29 @@ button.ai-linzi-vault-source-link:focus-visible {
   margin-top: 2px;
   color: var(--text-muted);
 }
+.ai-linzi-vault-plan-operations details {
+  margin-top: 6px;
+}
+.ai-linzi-vault-plan-operations summary {
+  color: var(--interactive-accent);
+  cursor: pointer;
+  font-size: 0.82em;
+}
+.ai-linzi-vault-write-preview {
+  box-sizing: border-box;
+  max-height: 280px;
+  margin: 6px 0 0;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-text);
+  font-size: 0.8em;
+}
 .ai-linzi-vault-plan-note {
   margin-top: 5px;
   color: var(--text-warning);

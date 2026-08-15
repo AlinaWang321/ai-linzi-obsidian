@@ -27,7 +27,6 @@ import { copyWechatFormatted, sendToWechatDraft } from './publish'
 import { prepareWechatArticle } from './article-format'
 import {
   applyNotePatch,
-  formatNotePatchMarkdown,
   isNoteEditIntent,
   parseNotePatch,
   type ParsedNotePatch,
@@ -36,6 +35,7 @@ import {
   chooseComputerAiImageReferences,
   chooseVaultAiImageReference,
   feedKnowledge,
+  feedKnowledgeWithResult,
   generateAiImage,
   generateArticleIllustrationFromChat,
   insertSavedAiImageIntoCurrentNote,
@@ -55,6 +55,11 @@ import {
   type LocalImageReference,
 } from './actions'
 import { extractCreateNoteBlocks, type CreateNoteBlock } from './create-note'
+import {
+  explicitMemoryContent,
+  isCurrentNoteKnowledgeSaveIntent,
+  isFullCurrentNoteReplaceIntent,
+} from './chat-action-intent'
 import {
   extractCreateFolderBlocks,
   vaultStructureSettingPatch,
@@ -108,6 +113,7 @@ import {
   type VaultAgentToolResult,
   type VaultAgentIntent,
   type VaultOrganizePlan,
+  type VaultWriteSnapshot,
 } from './vault-agent-core'
 import {
   formatLocalSkillList,
@@ -161,7 +167,7 @@ export const SKILL_ACTIONS: {
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
   { id: 'customer-consultation-brief', name: '客户咨询简报:选择逐字稿 → 客户版 PNG 长图', fn: runCustomerConsultationBrief },
   { id: 'sales-review', name: '销售复盘:选择逐字稿 → 销售诊断', fn: runSalesReview },
-  { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
+  { id: 'feed-knowledge', name: '存入 AI霖子知识库:当前笔记', fn: feedKnowledge },
 ]
 
 // ── 设置 ──────────────────────────────────────────────
@@ -340,6 +346,8 @@ interface WireMessage {
   imageAttachmentNames?: string[]
   /** 本地整理方案的执行日志 ID；方案正文仍在 parts 的本机副本中。 */
   vaultActionId?: string
+  /** 跨文件写入方案生成时锁定的文件版本；只保存路径/mtime/size，不含正文。 */
+  vaultWriteSnapshots?: VaultWriteSnapshot[]
   /** 本地 Skill 动作日志只保存元数据，不保存命令输出、系统路径或正文。 */
   localSkillRunIds?: string[]
 }
@@ -1096,8 +1104,15 @@ export default class AiLinziPlugin extends Plugin {
       : this.vaultActionHistory.find((record) => !record.undoneAt && record.moves.length > 0)
   }
 
-  async applyVaultPlan(plan: VaultOrganizePlan): Promise<VaultActionRecord> {
-    const record = await this.vaultAgent.applyPlan(plan)
+  captureVaultWriteSnapshots(plan: VaultOrganizePlan): VaultWriteSnapshot[] {
+    return this.vaultAgent.captureWriteSnapshots(plan)
+  }
+
+  async applyVaultPlan(
+    plan: VaultOrganizePlan,
+    writeSnapshots: VaultWriteSnapshot[] = [],
+  ): Promise<VaultActionRecord> {
+    const record = await this.vaultAgent.applyPlan(plan, writeSnapshots)
     this.vaultActionHistory = [record, ...this.vaultActionHistory].slice(0, 20)
     await this.saveSettings()
     return record
@@ -1478,7 +1493,8 @@ class ChatView extends ItemView {
     // 底部输入区
     const footer = root.createDiv({ cls: 'ai-linzi-footer' })
 
-    // 动作按钮行:技能与喂库的主入口(比正文右键菜单直观,对小白友好)
+    // 动作按钮行：只放导航类入口。保存笔记、更新笔记和沉淀知识都由用户
+    // 直接在对话中说明，真正写入时再显示针对性的确认卡，避免常驻按钮混淆。
     const actionsRow = footer.createDiv({ cls: 'ai-linzi-actions' })
     const skillBtn = actionsRow.createEl('button', { text: '调用技能', cls: 'ai-linzi-action-btn' })
     skillBtn.onclick = (evt: MouseEvent) => {
@@ -1494,8 +1510,6 @@ class ChatView extends ItemView {
       }
       menu.showAtMouseEvent(evt)
     }
-    const kbBtn = actionsRow.createEl('button', { text: '存入知识库', cls: 'ai-linzi-action-btn' })
-    kbBtn.onclick = () => void feedKnowledge(this.plugin)
     const dashboardBtn = actionsRow.createEl('button', { text: '内容看板', cls: 'ai-linzi-action-btn' })
     dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
     const cockpitBtn = actionsRow.createEl('button', {
@@ -2005,6 +2019,41 @@ class ChatView extends ItemView {
     return this.messages.map(({ id, role, parts }) => ({ id, role, parts }))
   }
 
+  /** 取得上一条可直接写入 Markdown 的 AI 正文；所有本机协议块都先剥离。 */
+  private lastAssistantContentForReplace(): string | undefined {
+    for (let index = this.messages.length - 2; index >= 0; index--) {
+      const message = this.messages[index]
+      if (message.role !== 'assistant' || message.imageResult || message.aiImageResult) continue
+      const raw = message.parts.map((part) => part.text).join('')
+      const vault = extractVaultOrganizePlan(raw)
+      const skill = extractPluginSkillSuggestions(vault.cleanText, '')
+      const localSkill = extractCreateLocalSkillBlocks(skill.cleanText)
+      const note = extractCreateNoteBlocks(localSkill.cleanText)
+      const folders = extractCreateFolderBlocks(note.cleanText)
+      const patch = parseNotePatch(folders.cleanText)
+      const clean = (patch?.displayText ?? folders.cleanText).trim()
+      if (clean && !clean.startsWith('⚠️')) return prepareWechatArticle(clean).body.trim()
+    }
+    return undefined
+  }
+
+  private async rememberExplicitFact(content: string): Promise<string> {
+    const data = (await this.plugin.api('/api/plugin/v1/memories/remember', {
+      method: 'POST',
+      body: { content },
+    })) as {
+      status?: 'inserted' | 'updated' | 'skipped' | 'failed'
+      content?: string
+      reason?: string
+    }
+    if (data.status === 'inserted') return `✅ 已存入事实记忆：${data.content ?? content}`
+    if (data.status === 'updated') return `✅ 已更新已有事实记忆：${data.content ?? content}`
+    if (data.status === 'skipped') {
+      return `没有写入事实记忆：${data.reason ?? '这段内容没有被确认是关于你本人的新事实'}。你可以把“关于我本人的事实”说得更明确后再试。`
+    }
+    throw new Error(data.reason ?? '事实记忆没有保存成功，请稍后再试')
+  }
+
   private async send() {
     const text = this.inputEl.value.trim()
     if (!text || this.sending) return
@@ -2042,6 +2091,30 @@ class ChatView extends ItemView {
         if (target) {
           this.activeImageMessageId = target.message.id
         }
+      }
+      if (isCurrentNoteKnowledgeSaveIntent(text)) {
+        // 发送瞬间锁定当前真正打开的 Markdown 标签页；等待 AI 推荐章节期间即使
+        // 用户切到别的笔记，也不会把来源换掉。
+        const lockedFile = this.plugin.rememberCurrentMarkdownFile()
+        if (!lockedFile) {
+          throw new Error('没有找到当前打开的笔记。请先打开要沉淀的笔记再发送。')
+        }
+        const result = await feedKnowledgeWithResult(this.plugin, lockedFile)
+        const reply = result.status === 'saved'
+          ? `✅ 已把「${lockedFile.path}」存入 AI霖子知识库的「${result.sectionTitle ?? '对应章节'}」。`
+          : result.status === 'cancelled'
+            ? `已取消，没有把「${lockedFile.path}」存入 AI霖子知识库。`
+            : `⚠️ 没有存入 AI霖子知识库：${result.message ?? '操作未完成'}`
+        this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: reply }] })
+        await this.persistNow()
+        return
+      }
+      const memoryContent = explicitMemoryContent(text)
+      if (memoryContent) {
+        const reply = await this.rememberExplicitFact(memoryContent)
+        this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: reply }] })
+        await this.persistNow()
+        return
       }
       if (this.longDocumentPath) {
         await this.startLongDocumentTask(text)
@@ -2098,6 +2171,43 @@ class ChatView extends ItemView {
         )
       }
       if (noteContext) new Notice(`本轮只读取当前笔记：${noteContext.filename}`, 3500)
+      if (isFullCurrentNoteReplaceIntent(text)) {
+        if (!noteContext) throw new Error('没有读取到要覆盖的当前笔记')
+        const replacement = this.lastAssistantContentForReplace()
+        if (!replacement) {
+          throw new Error('没有找到可用于覆盖的上一条 AI 正文，请先让 AI 生成完整成稿')
+        }
+        const plan: VaultOrganizePlan = {
+          title: `更新当前笔记「${noteContext.filename}」`,
+          summary: '用上一条 AI 正文替换发送瞬间锁定的当前笔记正文；原有 frontmatter 会保留。',
+          operations: [{
+            type: 'replace_note',
+            path: noteContext.path,
+            content: replacement,
+            reason: '用户明确要求用上一条 AI 回复整篇覆盖当前笔记',
+          }],
+          notes: ['确认前若目标笔记发生变化，插件会停止写入；可通过 Obsidian 文件恢复回滚。'],
+        }
+        const answer = [
+          '已锁定发送时打开的当前笔记，并准备好完整正文预览。确认前不会写入。',
+          '<<<VAULT_ORGANIZE_PLAN>>>',
+          JSON.stringify(plan),
+          '<<<VAULT_ORGANIZE_PLAN_END>>>',
+        ].join('\n')
+        this.messages.push({
+          id: uid(),
+          role: 'assistant',
+          parts: [{ type: 'text', text: answer }],
+          vaultSources: [{
+            sourceId: `current-note:${noteContext.path}`,
+            filename: noteContext.filename,
+            path: noteContext.path,
+          }],
+          vaultWriteSnapshots: this.plugin.captureVaultWriteSnapshots(plan),
+        })
+        await this.persistNow()
+        return
+      }
       const authorizedContent = await this.authorizedContentContext(noteContext?.path)
       // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
       // 图片修改会在 AI 回复下方显示专用入口，先预览候选图再由用户确认替换。
@@ -2121,8 +2231,15 @@ class ChatView extends ItemView {
             (message.vaultSources?.length ?? 0) > 0 ||
             message.parts.some((part) => part.text.includes('<<<VAULT_ORGANIZE_PLAN>>>')),
         )
+      const explicitVaultRequest = shouldUseVaultAgent(text, false)
+      const continuingVaultFileRequest =
+        !explicitVaultRequest &&
+        recentVaultContext &&
+        shouldUseVaultAgent(text, true) &&
+        /(?:读|搜索|搜|扫描|查|找|列出|打开|文件|笔记|目录|文件夹|路径|最新|上一份|下一份|另一份|写入|追加|保存|更新|移动|改名|删除|回收站)/u.test(text)
       const autonomousVaultAccess =
-        shouldUseVaultAgent(text, recentVaultContext) &&
+        !noteEdit &&
+        (explicitVaultRequest || continuingVaultFileRequest) &&
         (detectVaultAgentIntent(text) === 'organize' || !noteContext)
       const useVaultAgent =
         (autonomousVaultAccess || Boolean(localSkill)) &&
@@ -2233,11 +2350,15 @@ class ChatView extends ItemView {
       const visibleAnswer = [aiImageRequest.cleanText, imageProtocolWarning]
         .filter(Boolean)
         .join('\n\n') || '我已经理解图片要求，正在准备生成。'
+      const pendingVaultPlan = extractVaultOrganizePlan(visibleAnswer).plan
       this.messages.push({
         id: uid(),
         role: 'assistant',
         parts: [{ type: 'text', text: visibleAnswer }],
         vaultSources: answerSources,
+        vaultWriteSnapshots: pendingVaultPlan
+          ? this.plugin.captureVaultWriteSnapshots(pendingVaultPlan)
+          : undefined,
         localSkillRunIds,
       })
       await this.persistNow()
@@ -2690,6 +2811,7 @@ class ChatView extends ItemView {
     const toolResults: VaultAgentToolResult[] = []
     const sources: VaultMessageSource[] = []
     const localSkillRunIds: string[] = []
+    const verifiedWritePaths = new Set<string>()
     let lastText = ''
     let pendingRetryReason: VaultAnswerRetryReason | undefined
 
@@ -2779,6 +2901,38 @@ class ChatView extends ItemView {
       if (toolRequest.calls.length === 0) {
         const plan = extractVaultOrganizePlan(lastText)
         if (plan.invalid) throw new Error('AI 返回的 Vault 整理方案格式不安全，请重试')
+        // 明确的 Vault 文件任务至少必须有一条本机工具结果。没有真实结果时，
+        // “我现在扫描”或直接猜出的方案都只是口头承诺/幻觉，绝不能结束本轮。
+        if (input.vaultAccess && toolResults.length === 0) {
+          if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+            throw new Error('AI 没有实际调用 Vault 工具，已停止这次任务；请重试')
+          }
+          pendingRetryReason = 'missing_tool_use'
+          continue
+        }
+        const writeOperation = plan.plan?.operations.length === 1
+          ? plan.plan.operations[0]
+          : undefined
+        if (
+          writeOperation &&
+          (writeOperation.type === 'append_note' ||
+            writeOperation.type === 'replace_note' ||
+            writeOperation.type === 'update_note') &&
+          !verifiedWritePaths.has(writeOperation.path)
+        ) {
+          // 模型不能仅凭搜索片段就修改现有档案。客户端自动把模型点名的准确目标
+          // 做一次只读核验，再把结果交回下一轮；失败时模型只能改为新建或说明找不到。
+          const verification = await this.plugin.vaultAgent.executeReadCalls([{
+            id: `verify-write-target-${round}`,
+            name: 'read_note',
+            arguments: { path: writeOperation.path, offset: 0, maxChars: 16_000 },
+          }])
+          toolResults.push(...verification.results)
+          sources.push(...verification.sources)
+          if (verification.results[0]?.ok) verifiedWritePaths.add(writeOperation.path)
+          pendingRetryReason = undefined
+          continue
+        }
         if (input.intent === 'organize' && !plan.plan) {
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
             throw new Error('AI 没有生成可确认的 Vault 整理方案，请缩小范围后重试')
@@ -2793,7 +2947,9 @@ class ChatView extends ItemView {
               throw new Error(
                 retryReason === 'deferred_answer'
                   ? 'AI 只承诺稍后处理，没有在安全轮次内给出最终答案，请重试'
-                  : 'AI 没有在安全轮次内给出明确数量或可信的不足说明，请重试',
+                  : retryReason === 'missing_count'
+                    ? 'AI 没有在安全轮次内给出明确数量或可信的不足说明，请重试'
+                    : 'AI 没有实际调用 Vault 工具，请重试',
               )
             }
             pendingRetryReason = retryReason
@@ -2917,6 +3073,13 @@ class ChatView extends ItemView {
         readCalls,
         input.localSkillContext,
       )
+      for (const call of readCalls) {
+        if (call.name !== 'read_note') continue
+        const result = executed.results.find((item) => item.callId === call.id)
+        if (result?.ok && typeof call.arguments.path === 'string') {
+          verifiedWritePaths.add(call.arguments.path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+        }
+      }
       pendingRetryReason = undefined
       toolResults.push(...executed.results)
       sources.push(...executed.sources)
@@ -3230,8 +3393,16 @@ class ChatView extends ItemView {
     const trashOperation = plan.operations.length === 1 && plan.operations[0].type === 'trash_note'
       ? plan.operations[0]
       : null
+    const onlyOperation = plan.operations.length === 1 ? plan.operations[0] : null
+    const noteWriteOperation = onlyOperation &&
+      (onlyOperation.type === 'create_note' ||
+        onlyOperation.type === 'append_note' ||
+        onlyOperation.type === 'replace_note' ||
+        onlyOperation.type === 'update_note')
+      ? onlyOperation
+      : null
     card.createDiv({
-      text: `${trashOperation ? '🗑️' : '🗂️'} 待确认：${plan.title}`,
+      text: `${trashOperation ? '🗑️' : noteWriteOperation ? '📝' : '🗂️'} 待确认：${plan.title}`,
       cls: 'ai-linzi-create-note-title',
     })
     if (plan.summary) {
@@ -3242,6 +3413,28 @@ class ChatView extends ItemView {
       const item = operations.createEl('li')
       item.createDiv({ text: operationLabel(operation) })
       if (operation.reason) item.createEl('small', { text: operation.reason })
+      if (
+        operation.type === 'create_note' ||
+        operation.type === 'append_note' ||
+        operation.type === 'replace_note'
+      ) {
+        const details = item.createEl('details')
+        details.createEl('summary', {
+          text: operation.type === 'append_note' ? '查看待追加全文' : '查看待写入全文',
+        })
+        details.createEl('pre', {
+          text: operation.content,
+          cls: 'ai-linzi-vault-write-preview',
+        })
+      } else if (operation.type === 'update_note') {
+        const details = item.createEl('details')
+        details.createEl('summary', { text: `查看 ${operation.replacements.length} 处局部修改` })
+        for (const [index, replacement] of operation.replacements.entries()) {
+          const block = details.createDiv({ cls: 'ai-linzi-vault-write-preview' })
+          block.createEl('strong', { text: `修改 ${index + 1}` })
+          block.createEl('pre', { text: `原文：\n${replacement.old}\n\n改为：\n${replacement.new}` })
+        }
+      }
     }
     for (const note of plan.notes) {
       card.createDiv({ text: `注意：${note}`, cls: 'ai-linzi-vault-plan-note' })
@@ -3260,9 +3453,15 @@ class ChatView extends ItemView {
     const actions = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
     if (record) {
       const trashedCount = record.trashedNotes?.length ?? 0
+      const createdNote = record.createdNotes?.[0]
+      const updatedNote = record.updatedNotes?.[0]
       actions.createSpan({
         text: trashedCount > 0
           ? `✅ 已移入回收站：${record.trashedNotes?.[0]}`
+          : createdNote
+            ? `✅ 已新建笔记：${createdNote}`
+            : updatedNote
+              ? `✅ 已更新笔记：${updatedNote}`
           : `✅ 已执行：移动/重命名 ${record.moves.length} 项，新建文件夹 ${record.createdFolders.length} 个`,
         cls: 'ai-linzi-create-note-done',
       })
@@ -3296,7 +3495,11 @@ class ChatView extends ItemView {
     }
 
     const executeBtn = actions.createEl('button', {
-      text: trashOperation ? '移入回收站' : `确认执行 ${plan.operations.length} 项`,
+      text: trashOperation
+        ? '移入回收站'
+        : noteWriteOperation
+          ? noteWriteOperation.type === 'create_note' ? '确认新建笔记' : '确认写入笔记'
+          : `确认执行 ${plan.operations.length} 项`,
       cls: 'mod-cta',
     })
     executeBtn.onclick = () => {
@@ -3311,7 +3514,18 @@ class ChatView extends ItemView {
                   '插件不会永久删除；需要恢复时请到系统废纸篓/回收站（或 Obsidian .trash）操作。',
                 confirmLabel: '确认移入回收站',
               }
-            : {
+            : noteWriteOperation
+              ? {
+                  title: noteWriteOperation.type === 'create_note' ? '再次确认新建笔记' : '再次确认写入笔记',
+                  message:
+                    `目标路径：${noteWriteOperation.path}\n\n` +
+                    (noteWriteOperation.type === 'create_note'
+                      ? '只会新建这一篇 Markdown；缺少的父目录会同时创建。如果目标已存在就停止，绝不覆盖。'
+                      : '只会更新这一篇 Markdown；如果它在方案生成后有变化就停止。整篇替换会保留 frontmatter。') +
+                    '\n需要回滚时可使用 Obsidian 撤销或“文件恢复”。',
+                  confirmLabel: noteWriteOperation.type === 'create_note' ? '确认新建' : '确认写入',
+                }
+              : {
                 title: '执行 Vault 整理方案',
                 message:
                   `即将执行 ${plan.operations.length} 项操作。插件只会新建文件夹、移动或重命名；` +
@@ -3322,13 +3536,17 @@ class ChatView extends ItemView {
             executeBtn.disabled = false
             return
           }
-          const applied = await this.plugin.applyVaultPlan(plan)
+          const applied = await this.plugin.applyVaultPlan(plan, message.vaultWriteSnapshots)
           message.vaultActionId = applied.id
           await this.persistNow()
           this.renderMessages()
           new Notice(
             (applied.trashedNotes?.length ?? 0) > 0
               ? `✅ 已把「${applied.trashedNotes?.[0]}」移入回收站`
+              : (applied.createdNotes?.length ?? 0) > 0
+                ? `✅ 已新建笔记「${applied.createdNotes?.[0]}」`
+                : (applied.updatedNotes?.length ?? 0) > 0
+                  ? `✅ 已更新笔记「${applied.updatedNotes?.[0]}」`
               : `✅ 已完成「${plan.title}」：移动/重命名 ${applied.moves.length} 项，新建文件夹 ${applied.createdFolders.length} 个`,
             7000,
           )
@@ -3435,7 +3653,7 @@ class ChatView extends ItemView {
         const ul = starters.createEl('ul')
         ul.createEl('li', { text: '直接说“总结当前笔记”或“润色这篇文章”,我会只读取当前这一篇' })
         ul.createEl('li', { text: '点「调用技能」→ 选题雷达,把素材笔记变成 10 个选题' })
-        ul.createEl('li', { text: '写好的核心笔记点「存入知识库」,让我长期记住你的定位' })
+        ul.createEl('li', { text: '直接说“把当前笔记存入 AI霖子知识库”，沉淀长期定位和方法论' })
       }
       const link = body.createDiv({ cls: 'ai-linzi-empty-link' })
       link.createSpan({ text: '进入网页版 ' })
@@ -3520,69 +3738,35 @@ class ChatView extends ItemView {
           continue
         }
         if (patch) this.renderPatchCards(row, patch)
-        // 每条 AI 回复都能一键落盘——内容留在用户自己的 Obsidian 里才是关键(Alina 2026-07-21)
+        // 只显示本轮真正需要的动作。普通回复不再固定挂“存为笔记/更新当前笔记”；
+        // 用户用自然语言提出写入要求后，插件会显示锁定目标的专用确认卡。
         if (!vaultPlanResult.plan && text.trim().length > 0 && !text.startsWith('⚠️')) {
-          const bar = row.createDiv({ cls: 'ai-linzi-msg-actions' })
+          const hasMessageActions = Boolean(patch) || skillResult.suggestions.length > 0 || editReply
+          const bar = hasMessageActions
+            ? row.createDiv({ cls: 'ai-linzi-msg-actions' })
+            : null
           if (patch) {
-            const applyBtn = bar.createEl('button', {
+            const applyBtn = bar?.createEl('button', {
               text: `✅ 一键应用 ${patch.operations.length} 处修改`,
               cls: 'ai-linzi-apply-patch',
             })
-            applyBtn.onclick = () => void this.applyPatchToCurrentNote(patch, applyBtn)
+            if (applyBtn) applyBtn.onclick = () => void this.applyPatchToCurrentNote(patch, applyBtn)
           }
           for (const suggestion of skillResult.suggestions) {
-            const skillBtn = bar.createEl('button', {
+            const skillBtn = bar?.createEl('button', {
               text:
                 suggestion.actionId === 'illustration' && isArticleIllustrationEditIntent(previousUserText)
                   ? '🖼️ 修改当前文章配图'
                   : `⚡ ${suggestion.label}`,
               cls: 'ai-linzi-suggested-skill',
             })
-            skillBtn.onclick = () => void this.runSuggestedSkill(suggestion, previousUserText)
-          }
-          const saveBtn = bar.createEl('button', { text: '📝 存为笔记' })
-          saveBtn.onclick = async () => {
-            // 标题:往前找最近一条用户消息作主题;找不到用回复首行
-            let hint = previousUserText.slice(0, 24)
-            if (!hint) hint = text.split('\n')[0].replace(/[#*>]/g, '').trim().slice(0, 24) || '对话内容'
-            const savedText = patch ? formatNotePatchMarkdown(patch) : text
-            const article = prepareWechatArticle(savedText)
-            const isArticle = article.recognizedContainer
-            const f = await writeOutput(this.plugin, {
-              skill: isArticle ? '公众号写作' : '对话',
-              platform: isArticle ? '公众号' : '通用',
-              title: article.titleCandidates[0] || hint,
-              body: article.body,
-              summary: article.digest,
-              titleCandidates: article.titleCandidates,
-            })
-            new Notice(`✅ 已存为笔记:${f.basename}`)
+            if (skillBtn) skillBtn.onclick = () => void this.runSuggestedSkill(suggestion, previousUserText)
           }
           if (!patch && editReply) {
-            const unavailableBtn = bar.createEl('button', { text: '⚠️ 未识别到可安全应用的修改' })
-            unavailableBtn.disabled = true
-            unavailableBtn.title = '请让 AI 重新读取当前笔记，并明确要修改的原文'
-          } else if (!patch) {
-            // 非局部编辑回复仍保留“整篇更新”出口；它始终位于回复底部且需要二次确认。
-            const updateBtn = bar.createEl('button', { text: '✏️ 更新当前笔记' })
-            updateBtn.onclick = async () => {
-              const file = this.plugin.rememberCurrentMarkdownFile()
-              if (!file) {
-                new Notice('没有找到当前打开的笔记')
-                return
-              }
-              const ok = await confirmAction(this.app, {
-                title: '更新当前笔记',
-                message: `将用这条回复替换笔记「${file.basename}」的正文(文档属性 frontmatter 保留)。\n\n改错了不用慌:笔记内可 ⌘Z 撤销,或 设置 → 文件恢复 里回滚历史版本。`,
-                confirmLabel: '确认更新',
-              })
-              if (!ok) return
-              const article = prepareWechatArticle(text)
-              await this.app.vault.process(file, (content) => {
-                const fm = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(content)
-                return (fm ? fm[0] : '') + article.body.trim() + '\n'
-              })
-              new Notice(`✅ 已更新「${file.basename}」(可用 ⌘Z 或「文件恢复」回滚)`)
+            const unavailableBtn = bar?.createEl('button', { text: '⚠️ 未识别到可安全应用的修改' })
+            if (unavailableBtn) {
+              unavailableBtn.disabled = true
+              unavailableBtn.title = '请让 AI 重新读取当前笔记，并明确要修改的原文'
             }
           }
         }

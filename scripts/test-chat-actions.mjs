@@ -25,5 +25,17 @@ assert.match(skillList, /name: '客户咨询简报:选择逐字稿 → 客户版
 assert.match(skillList, /name: '销售复盘:选择逐字稿 → 销售诊断'/)
 assert.match(main, /text: 'CEO驾驶舱'/)
 assert.match(main, /cockpitBtn\.onclick = \(\) => void this\.plugin\.activateCockpit\(\)/)
+assert.doesNotMatch(main, /const kbBtn = actionsRow\.createEl/)
+const messageActionSection = main.slice(
+  main.indexOf('// 只显示本轮真正需要的动作'),
+  main.indexOf('private async runSuggestedSkill'),
+)
+assert.doesNotMatch(messageActionSection, /text: '📝 存为笔记'/)
+assert.doesNotMatch(messageActionSection, /text: '✏️ 更新当前笔记'/)
+assert.match(main, /feedKnowledgeWithResult\(this\.plugin, lockedFile\)/)
+assert.match(main, /\/api\/plugin\/v1\/memories\/remember/)
+assert.match(main, /pendingRetryReason = 'missing_tool_use'/)
+assert.match(main, /vaultWriteSnapshots: this\.plugin\.captureVaultWriteSnapshots\(plan\)/)
+assert.match(main, /applyVaultPlan\(plan, message\.vaultWriteSnapshots\)/)
 
 console.log('chat action order and cockpit shortcut tests passed')

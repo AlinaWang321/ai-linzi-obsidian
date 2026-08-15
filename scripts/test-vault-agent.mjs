@@ -44,6 +44,11 @@ assert.equal(core.shouldUseVaultAgent('帮我找一下文件里的咨询记录')
 assert.equal(core.shouldUseVaultAgent('帮我找一下仓库里的咨询记录'), true)
 assert.equal(core.shouldUseVaultAgent('查一下数字大脑中的客户交付记录'), true)
 assert.equal(core.shouldUseVaultAgent('看看文件仓库里有哪些销售逐字稿'), true)
+assert.equal(core.shouldUseVaultAgent('搜索咨询逐字稿'), true)
+assert.equal(core.shouldUseVaultAgent('处理咨询交付逐字稿'), true)
+assert.equal(core.shouldUseVaultAgent('从咨询交付逐字稿文件夹中扫描读取'), true)
+assert.equal(core.shouldUseVaultAgent('定位最新一份交付顾问咨询逐字稿'), true)
+assert.equal(core.shouldUseVaultAgent('分析销售逐字稿'), true)
 assert.equal(core.shouldUseVaultAgent('在 Obsidian 里找一下最新复盘'), true)
 assert.equal(core.shouldUseVaultAgent('我的产品定位笔记在哪里？'), true)
 assert.equal(core.shouldUseVaultAgent('请把这些文件整理到归档目录'), true)
@@ -132,6 +137,25 @@ const trashPlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
 assert.equal(trashPlan.invalid, false)
 assert.equal(trashPlan.plan?.operations[0].type, 'trash_note')
 assert.equal(core.operationLabel(trashPlan.plan.operations[0]), '移入回收站：inbox/重复内容.md')
+
+const appendPlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+{"title":"更新客户档案","summary":"追加咨询记录","operations":[{"type":"append_note","path":"02_Wiki/客户档案/客户甲.md","content":"## 2026-08-15 咨询记录\\n\\n已确认内容"}],"notes":["确认后写入"]}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+assert.equal(appendPlan.invalid, false)
+assert.equal(appendPlan.plan?.operations[0].type, 'append_note')
+assert.equal(core.operationLabel(appendPlan.plan.operations[0]), '追加到笔记：02_Wiki/客户档案/客户甲.md')
+
+const updatePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+{"title":"局部更新","summary":"精确替换","operations":[{"type":"update_note","path":"02_Wiki/客户档案/客户甲.md","replacements":[{"old":"旧行动计划","new":"新行动计划"}]}],"notes":[]}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+assert.equal(updatePlan.invalid, false)
+assert.equal(updatePlan.plan?.operations[0].type, 'update_note')
+
+const unsafeWritePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+{"title":"错误计划","summary":"越界","operations":[{"type":"create_note","path":"../客户甲.md","content":"内容"}],"notes":[]}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+assert.equal(unsafeWritePlan.invalid, true)
+assert.equal(core.VAULT_NOTE_WRITE_MAX_CHARS, 30000)
 
 assert.equal(core.normalizeVaultRelativePath('../secret.md'), null)
 assert.equal(core.normalizeVaultRelativePath('/absolute/file.md'), null)

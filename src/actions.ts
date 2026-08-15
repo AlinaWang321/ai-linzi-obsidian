@@ -630,7 +630,7 @@ class KbConfirmModal extends Modal {
   }
 
   onOpen() {
-    this.titleEl.setText('存入 AI霖子 知识库')
+    this.titleEl.setText('存入 AI霖子知识库')
     new Setting(this.contentEl)
       .setName('章节')
       .setDesc('AI 已按内容推荐,可手动调整')
@@ -647,7 +647,7 @@ class KbConfirmModal extends Modal {
       })
     new Setting(this.contentEl).addButton((b) =>
       b
-        .setButtonText('存入知识库')
+        .setButtonText('存入 AI霖子知识库')
         .setCta()
         .onClick(() => {
           if (!this.summary.trim()) {
@@ -667,9 +667,25 @@ class KbConfirmModal extends Modal {
   }
 }
 
-export async function feedKnowledge(plugin: AiLinziPlugin) {
-  const note = await getActiveNote(plugin)
-  if (!note) return
+export interface FeedKnowledgeResult {
+  status: 'saved' | 'cancelled' | 'failed'
+  filePath?: string
+  sectionTitle?: string
+  message?: string
+}
+
+/**
+ * 可返回结果的喂库入口，供主对话自然语言动作使用。
+ * lockedFile 必须在用户发送消息的瞬间取得，避免 AI 推荐章节期间切换标签页后读错来源。
+ */
+export async function feedKnowledgeWithResult(
+  plugin: AiLinziPlugin,
+  lockedFile?: TFile | null,
+): Promise<FeedKnowledgeResult> {
+  const note = lockedFile === undefined
+    ? await getActiveNote(plugin)
+    : await readNoteSnapshot(plugin, lockedFile)
+  if (!note) return { status: 'failed', message: '没有读取到要存入知识库的当前笔记' }
 
   const n = new Notice('🤖 AI 正在阅读笔记、推荐章节…', 0)
   let suggested: { sectionKey?: string; summary?: string }
@@ -686,8 +702,9 @@ export async function feedKnowledge(plugin: AiLinziPlugin) {
     }
   } catch (e) {
     n.hide()
-    new Notice(`❌ 喂库:${e instanceof Error ? e.message : String(e)}`, 8000)
-    return
+    const message = e instanceof Error ? e.message : String(e)
+    new Notice(`❌ 存入 AI霖子知识库：${message}`, 8000)
+    return { status: 'failed', filePath: note.file.path, message }
   }
   n.hide()
 
@@ -696,7 +713,9 @@ export async function feedKnowledge(plugin: AiLinziPlugin) {
     suggested.sectionKey ?? 'about',
     (suggested.summary ?? '').slice(0, LIMITS.KB_APPEND_CONTENT_MAX),
   ).result
-  if (!confirmed) return
+  if (!confirmed) {
+    return { status: 'cancelled', filePath: note.file.path }
+  }
 
   try {
     const data = (await plugin.api(
@@ -709,10 +728,18 @@ export async function feedKnowledge(plugin: AiLinziPlugin) {
     } else {
       new Notice(`✅ 已存入「${title}」(现 ${data.newChars} 字)`, 8000)
     }
+    return { status: 'saved', filePath: note.file.path, sectionTitle: title }
   } catch (e) {
     // starter_wall(403)/kb_section_full/kb_total_full(422) 的 error 文案服务端已写得很友好,直接透传
-    new Notice(`喂库:${e instanceof Error ? e.message : String(e)}`, 10000)
+    const message = e instanceof Error ? e.message : String(e)
+    new Notice(`存入 AI霖子知识库：${message}`, 10000)
+    return { status: 'failed', filePath: note.file.path, message }
   }
+}
+
+/** 命令面板/右键入口保持 Promise<void> 契约。 */
+export async function feedKnowledge(plugin: AiLinziPlugin): Promise<void> {
+  await feedKnowledgeWithResult(plugin)
 }
 
 // ── 文章配图(学员通用 · 极简小清新手绘人偶) ─────────
