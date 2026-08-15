@@ -18,6 +18,9 @@ const core = await import(pathToFileURL(outfile).href)
 
 for (const text of [
   '帮我总结当前笔记',
+  '请把当前这篇测试笔记删除，只能移入回收站',
+  '删除这篇笔记',
+  '把这份文档移入废纸篓',
   '润色这篇文章',
   '分析这份咨询逐字稿',
   '根据当前笔记给我一些商业建议',
