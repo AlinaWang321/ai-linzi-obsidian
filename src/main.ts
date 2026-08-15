@@ -3247,7 +3247,12 @@ class ChatView extends ItemView {
       card.createDiv({ text: `注意：${note}`, cls: 'ai-linzi-vault-plan-note' })
     }
 
-    const record = this.plugin.getVaultActionRecord(message.vaultActionId)
+    // getVaultActionRecord(undefined) 的历史语义是“最近一条可撤销记录”，只供全局
+    // 撤销命令使用。新方案消息没有 vaultActionId 时绝不能借用旧记录，否则会把
+    // 尚未执行的确认卡误显示成已执行，并隐藏真正的确认按钮。
+    const record = message.vaultActionId
+      ? this.plugin.getVaultActionRecord(message.vaultActionId)
+      : undefined
     if (record?.undoneAt) {
       card.createDiv({ text: '↩️ 本次移动/重命名已经撤销。', cls: 'ai-linzi-create-note-done' })
       return

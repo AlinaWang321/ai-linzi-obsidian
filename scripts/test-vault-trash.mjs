@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import esbuild from 'esbuild'
+import { readFile } from 'node:fs/promises'
 
 const obsidianMock = `
 export class App {}
@@ -126,5 +127,12 @@ await assert.rejects(
   /每次确认只能把一篇/,
 )
 assert.deepEqual(trashCalls, [{ path: note.path, system: true }])
+
+const mainSource = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
+assert.match(
+  mainSource,
+  /const record = message\.vaultActionId\s*\?\s*this\.plugin\.getVaultActionRecord\(message\.vaultActionId\)\s*:\s*undefined/,
+  '没有 vaultActionId 的新确认卡不得借用上一条移动记录冒充已执行',
+)
 
 console.log('Vault trash-note integration tests passed')
