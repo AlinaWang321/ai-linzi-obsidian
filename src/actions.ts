@@ -84,21 +84,32 @@ function clip(text: string, max: number, what: string): string {
   return text.slice(0, max)
 }
 
-async function getActiveNote(plugin: AiLinziPlugin): Promise<{ file: TFile; text: string } | null> {
+async function readNoteSnapshot(
+  plugin: AiLinziPlugin,
+  file: TFile | null,
+): Promise<{ file: TFile; text: string } | null> {
   const app = plugin.app
-  // 多标签或侧边栏获得焦点时，统一锁定最近真正激活的 Markdown 标签页；
-  // 图片、PDF 等非笔记文件不得覆盖销售复盘等技能的源文件。
-  const file = plugin.rememberCurrentMarkdownFile()
   if (!file) {
     new Notice('请先打开一篇笔记再运行技能')
     return null
   }
-  const text = (await app.vault.cachedRead(file)).trim()
-  if (!text) {
-    new Notice('当前笔记是空的,没有可用的内容')
+  const current = app.vault.getAbstractFileByPath(file.path)
+  if (!(current instanceof TFile)) {
+    new Notice(`启动技能时锁定的笔记已不存在：${file.path}`)
     return null
   }
-  return { file, text }
+  const text = (await app.vault.cachedRead(current)).trim()
+  if (!text) {
+    new Notice(`启动技能时锁定的笔记是空的：${current.path}`)
+    return null
+  }
+  return { file: current, text }
+}
+
+async function getActiveNote(plugin: AiLinziPlugin): Promise<{ file: TFile; text: string } | null> {
+  // 技能启动时就锁定真正激活的 Markdown 标签页。后续切换或浏览其他
+  // 笔记不会改变本轮输入；图片、PDF 等非笔记文件也不会覆盖源文件。
+  return readNoteSnapshot(plugin, plugin.rememberCurrentMarkdownFile())
 }
 
 const XHS_SUMMARY_KEYS = ['摘要', '一句话摘要', 'summary', 'description', 'digest'] as const
@@ -362,7 +373,9 @@ export async function runTopicRadar(plugin: AiLinziPlugin) {
   plugin.settings.defaultNiche = audience
   await plugin.saveSettings()
 
-  const note = input.useCurrentNote ? await getActiveNote(plugin) : null
+  // 弹窗打开时已经锁定 activeFile。用户确认后即使正在浏览别的笔记，
+  // 仍读取弹窗中显示并授权的原笔记，不能重新抓取“此刻当前笔记”。
+  const note = input.useCurrentNote ? await readNoteSnapshot(plugin, activeFile) : null
   if (input.useCurrentNote && !note) return
 
   const n = runningNotice('选题雷达')

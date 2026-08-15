@@ -33,6 +33,7 @@ export interface VaultAgentToolResult {
 export type VaultOrganizeOperation =
   | { type: 'create_folder'; path: string; reason?: string }
   | { type: 'move'; from: string; to: string; reason?: string }
+  | { type: 'trash_note'; path: string; reason?: string }
 
 export interface VaultOrganizePlan {
   title: string
@@ -202,6 +203,10 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
     if (!from || !to || from === to) return null
     return { type, from, to, reason }
   }
+  if (type === 'trash_note') {
+    const path = normalizeVaultRelativePath(record.path)
+    return path ? { type, path, reason } : null
+  }
   return null
 }
 
@@ -241,9 +246,9 @@ export function extractVaultOrganizePlan(text: string): VaultPlanExtraction {
 }
 
 export function operationLabel(operation: VaultOrganizeOperation): string {
-  return operation.type === 'create_folder'
-    ? `新建文件夹：${operation.path}`
-    : `移动/重命名：${operation.from} → ${operation.to}`
+  if (operation.type === 'create_folder') return `新建文件夹：${operation.path}`
+  if (operation.type === 'trash_note') return `移入回收站：${operation.path}`
+  return `移动/重命名：${operation.from} → ${operation.to}`
 }
 
 /** 模型可能跨轮复用 ID；插件本机加轮次和序号后再累计回传。 */
@@ -259,8 +264,8 @@ export function namespaceVaultToolCalls(
 
 export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   const normalized = text.normalize('NFKC').toLocaleLowerCase()
-  if (/不要(?:整理|移动|重命名|改名|归档|分类)/.test(normalized)) return 'answer'
-  return /(?:请|帮我|把|将|需要|想要|能否|可以).*?(?:整理|移动|重命名|改名|归档|分类)|\b(?:organize|move|rename|reorganize)\b/.test(
+  if (/(?:不要|别)(?:再)?(?:帮我)?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)/.test(normalized)) return 'answer'
+  return /(?:请|帮我|把|将|需要|想要|能否|可以).*?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|^(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|\b(?:organize|move|rename|reorganize|delete|trash)\b/.test(
     normalized,
   )
     ? 'organize'
@@ -279,10 +284,10 @@ export function shouldUseVaultAgent(text: string, continuingVaultTask = false): 
     /(?:vault|obsidian|知识库|数字大脑|第二大脑|我的大脑|文件仓库|资料仓库|文档仓库|本地仓库)/.test(normalized) ||
     /(?:本地|我的|这个|那个|当前).{0,12}(?:笔记|文件|文件夹|目录|知识库|资料|文档|仓库)|(?:笔记|文件|文件夹|目录|知识库|资料库|文档|仓库).{0,12}(?:里|中|内|下|在哪里|在哪)/.test(normalized)
   const explicitVaultAction =
-    /(?:搜索|搜一下|搜一搜|查找|查一下|查一查|查查|查阅|找一下|找一找|找出|找到|在哪|哪里|有什么|哪些|翻找|读取|打开|查看|看看|列出|统计|汇总|盘点|总结|对比|整理|移动|重命名|改名|归档|分类)/.test(normalized)
+    /(?:搜索|搜一下|搜一搜|查找|查一下|查一查|查查|查阅|找一下|找一找|找出|找到|在哪|哪里|有什么|哪些|翻找|读取|打开|查看|看看|列出|统计|汇总|盘点|总结|对比|整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)/.test(normalized)
   if (explicitVaultObject && explicitVaultAction) return true
   if (!continuingVaultTask) return false
-  return /^(?:继续|再|那|这个|那个|它|它们|这些|那些|另外|然后|接着|同样|也|改成|移到|放到|归到)/.test(normalized)
+  return /^(?:继续|再|那|这个|那个|它|它们|这些|那些|另外|然后|接着|同样|也|改成|移到|放到|归到|删掉|删除|移入回收站)/.test(normalized)
 }
 
 function isVaultCountQuestion(text: string): boolean {

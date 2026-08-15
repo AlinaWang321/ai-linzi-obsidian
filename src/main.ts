@@ -1092,7 +1092,7 @@ export default class AiLinziPlugin extends Plugin {
   getVaultActionRecord(id?: string): VaultActionRecord | undefined {
     return id
       ? this.vaultActionHistory.find((record) => record.id === id)
-      : this.vaultActionHistory.find((record) => !record.undoneAt)
+      : this.vaultActionHistory.find((record) => !record.undoneAt && record.moves.length > 0)
   }
 
   async applyVaultPlan(plan: VaultOrganizePlan): Promise<VaultActionRecord> {
@@ -1105,6 +1105,9 @@ export default class AiLinziPlugin extends Plugin {
   async undoVaultAction(id?: string): Promise<VaultActionRecord> {
     const record = this.getVaultActionRecord(id)
     if (!record) throw new Error('没有找到可撤销的 AI Vault 整理记录')
+    if (record.moves.length === 0) {
+      throw new Error('这次操作只有回收站笔记，请从系统废纸篓/回收站恢复')
+    }
     await this.vaultAgent.undo(record)
     record.undoneAt = Date.now()
     await this.saveSettings()
@@ -3187,15 +3190,18 @@ class ChatView extends ItemView {
     createOnlyBtn.onclick = () => execute(false)
   }
 
-  /** Vault 整理方案：预览 → 二次确认 → 本机执行；不删除、不覆盖，移动可撤销。 */
+  /** Vault 方案：预览 → 二次确认 → 本机执行；永久删除禁止，移动可撤销。 */
   private renderVaultPlanOffer(
     row: HTMLElement,
     plan: VaultOrganizePlan,
     message: WireMessage,
   ): void {
     const card = row.createDiv({ cls: 'ai-linzi-create-note-card ai-linzi-vault-plan-card' })
+    const trashOperation = plan.operations.length === 1 && plan.operations[0].type === 'trash_note'
+      ? plan.operations[0]
+      : null
     card.createDiv({
-      text: `🗂️ 待确认：${plan.title}`,
+      text: `${trashOperation ? '🗑️' : '🗂️'} 待确认：${plan.title}`,
       cls: 'ai-linzi-create-note-title',
     })
     if (plan.summary) {
@@ -3218,8 +3224,11 @@ class ChatView extends ItemView {
     }
     const actions = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
     if (record) {
+      const trashedCount = record.trashedNotes?.length ?? 0
       actions.createSpan({
-        text: `✅ 已执行：移动/重命名 ${record.moves.length} 项，新建文件夹 ${record.createdFolders.length} 个`,
+        text: trashedCount > 0
+          ? `✅ 已移入回收站：${record.trashedNotes?.[0]}`
+          : `✅ 已执行：移动/重命名 ${record.moves.length} 项，新建文件夹 ${record.createdFolders.length} 个`,
         cls: 'ai-linzi-create-note-done',
       })
       if (record.moves.length > 0) {
@@ -3252,20 +3261,28 @@ class ChatView extends ItemView {
     }
 
     const executeBtn = actions.createEl('button', {
-      text: `确认执行 ${plan.operations.length} 项`,
+      text: trashOperation ? '移入回收站' : `确认执行 ${plan.operations.length} 项`,
       cls: 'mod-cta',
     })
     executeBtn.onclick = () => {
       executeBtn.disabled = true
       void (async () => {
         try {
-          const ok = await confirmAction(this.app, {
-            title: '执行 Vault 整理方案',
-            message:
-              `即将执行 ${plan.operations.length} 项操作。插件只会新建文件夹、移动或重命名；` +
-              '不会删除文件，也不会覆盖同名文件。移动/重命名会记录在本机，可撤销。',
-            confirmLabel: '确认执行',
-          })
+          const ok = await confirmAction(this.app, trashOperation
+            ? {
+                title: '再次确认移入回收站',
+                message:
+                  `即将把「${trashOperation.path}」移入废纸篓/回收站。` +
+                  '插件不会永久删除；需要恢复时请到系统废纸篓/回收站（或 Obsidian .trash）操作。',
+                confirmLabel: '确认移入回收站',
+              }
+            : {
+                title: '执行 Vault 整理方案',
+                message:
+                  `即将执行 ${plan.operations.length} 项操作。插件只会新建文件夹、移动或重命名；` +
+                  '不会覆盖同名文件。移动/重命名会记录在本机，可撤销。',
+                confirmLabel: '确认执行',
+              })
           if (!ok) {
             executeBtn.disabled = false
             return
@@ -3275,12 +3292,14 @@ class ChatView extends ItemView {
           await this.persistNow()
           this.renderMessages()
           new Notice(
-            `✅ 已完成「${plan.title}」：移动/重命名 ${applied.moves.length} 项，新建文件夹 ${applied.createdFolders.length} 个`,
+            (applied.trashedNotes?.length ?? 0) > 0
+              ? `✅ 已把「${applied.trashedNotes?.[0]}」移入回收站`
+              : `✅ 已完成「${plan.title}」：移动/重命名 ${applied.moves.length} 项，新建文件夹 ${applied.createdFolders.length} 个`,
             7000,
           )
         } catch (error) {
           executeBtn.disabled = false
-          new Notice(`执行失败，未覆盖任何文件：${(error as Error).message}`, 9000)
+          new Notice(`执行失败：${(error as Error).message}`, 9000)
         }
       })()
     }

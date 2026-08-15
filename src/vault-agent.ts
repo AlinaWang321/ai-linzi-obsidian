@@ -33,6 +33,8 @@ export interface VaultActionRecord {
   planTitle: string
   moves: { from: string; to: string }[]
   createdFolders: string[]
+  /** 兼容旧 data.json；v0.7.22 起只会记录一次确认的一篇 Markdown 笔记。 */
+  trashedNotes?: string[]
   undoneAt?: number
 }
 
@@ -262,6 +264,10 @@ export class LocalVaultAgent {
   }
 
   async applyPlan(plan: VaultOrganizePlan): Promise<VaultActionRecord> {
+    const trashOps = plan.operations.filter(
+      (operation): operation is Extract<(typeof plan.operations)[number], { type: 'trash_note' }> =>
+        operation.type === 'trash_note',
+    )
     const moveOps = plan.operations.filter(
       (operation): operation is Extract<(typeof plan.operations)[number], { type: 'move' }> =>
         operation.type === 'move',
@@ -277,6 +283,30 @@ export class LocalVaultAgent {
       const paths = operation.type === 'move' ? [operation.from, operation.to] : [operation.path]
       if (paths.some((path) => this.protected(path))) {
         throw new Error(`方案涉及保护目录，已拒绝：${paths.join(' → ')}`)
+      }
+    }
+
+    if (trashOps.length > 0) {
+      if (trashOps.length !== 1 || plan.operations.length !== 1) {
+        throw new Error('为避免误删，每次确认只能把一篇 Markdown 笔记移入回收站')
+      }
+      const operation = trashOps[0]
+      const file = this.app.vault.getAbstractFileByPath(operation.path)
+      if (!(file instanceof TFile)) throw new Error(`没有找到可删除的笔记：${operation.path}`)
+      if (file.extension.toLocaleLowerCase() !== 'md') {
+        throw new Error('删除功能只允许把 Markdown 笔记移入回收站，不能删除附件或文件夹')
+      }
+      // Obsidian 的 system=true 会优先使用系统废纸篓/回收站；若系统不允许，
+      // Obsidian 会退回自己的 .trash。这里绝不调用 vault.delete() 永久删除。
+      await this.app.vault.trash(file, true)
+      this.search.clear()
+      return {
+        id: `vault-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: Date.now(),
+        planTitle: plan.title,
+        moves: [],
+        createdFolders: [],
+        trashedNotes: [operation.path],
       }
     }
 
@@ -357,10 +387,14 @@ export class LocalVaultAgent {
       planTitle: plan.title,
       moves: completedMoves,
       createdFolders: [...new Set(createdFolders)],
+      trashedNotes: [],
     }
   }
 
   async undo(record: VaultActionRecord): Promise<void> {
+    if ((record.trashedNotes?.length ?? 0) > 0 && record.moves.length === 0) {
+      throw new Error('回收站中的笔记请从系统废纸篓/回收站恢复，插件不会永久删除')
+    }
     if (record.undoneAt) throw new Error('这次整理已经撤销过了')
     for (const move of [...record.moves].reverse()) {
       const current = this.app.vault.getAbstractFileByPath(move.to)
