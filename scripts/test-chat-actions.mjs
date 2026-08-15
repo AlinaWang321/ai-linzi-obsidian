@@ -21,7 +21,8 @@ for (const marker of expectedOrder) {
   assert.ok(next > cursor, `调用技能顺序错误：${marker}`)
   cursor = next
 }
-assert.match(skillList, /name: '销售复盘:诊断当前逐字稿'/)
+assert.match(skillList, /name: '客户咨询简报:选择逐字稿 → 客户版 PNG 长图'/)
+assert.match(skillList, /name: '销售复盘:选择逐字稿 → 销售诊断'/)
 assert.match(main, /text: 'CEO驾驶舱'/)
 assert.match(main, /cockpitBtn\.onclick = \(\) => void this\.plugin\.activateCockpit\(\)/)
 

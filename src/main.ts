@@ -157,8 +157,8 @@ export const SKILL_ACTIONS: {
   { id: 'wechat-draft', name: '发到公众号草稿箱(自动传图,需配置AppID)', fn: async (p) => sendToWechatDraft(p) },
   { id: 'xhs-cards', name: '小红书图文卡片:当前笔记 → 正文 + 3:4 PNG', fn: runXhsCards },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
-  { id: 'customer-consultation-brief', name: '客户咨询简报:当前逐字稿 → 客户版 PNG 长图', fn: runCustomerConsultationBrief },
-  { id: 'sales-review', name: '销售复盘:诊断当前逐字稿', fn: runSalesReview },
+  { id: 'customer-consultation-brief', name: '客户咨询简报:选择逐字稿 → 客户版 PNG 长图', fn: runCustomerConsultationBrief },
+  { id: 'sales-review', name: '销售复盘:选择逐字稿 → 销售诊断', fn: runSalesReview },
   { id: 'feed-knowledge', name: '喂库:把当前笔记存入 AI霖子知识库', fn: feedKnowledge },
 ]
 
