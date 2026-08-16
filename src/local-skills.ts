@@ -159,6 +159,28 @@ export class LocalSkillRegistry {
     return (await this.refresh()).map((record) => record.descriptor)
   }
 
+  /** 继续上一轮 Skill 时按已锁定入口恢复；文件已删除/移出目录就返回 undefined。 */
+  async resolvePath(path: string): Promise<ResolvedLocalSkill | undefined> {
+    const record = (await this.refresh()).find((item) => item.descriptor.path === path)
+    if (!record) return undefined
+    if (record.content.length > LOCAL_SKILL_MAX_ENTRY_CHARS) {
+      throw new Error(
+        `“我的 Skills”中的《${record.descriptor.name}》有 ${record.content.length.toLocaleString('zh-CN')} 字，` +
+          `超过 ${LOCAL_SKILL_MAX_ENTRY_CHARS.toLocaleString('zh-CN')} 字的本地安全上限，请拆分到 references/ 后再试。`,
+      )
+    }
+    return {
+      name: record.descriptor.name,
+      description: record.descriptor.description,
+      output: record.descriptor.output,
+      content: record.content.slice(0, LOCAL_SKILL_MAX_CONTENT_CHARS),
+      entryChars: record.content.length,
+      entryTruncated: record.content.length > LOCAL_SKILL_MAX_CONTENT_CHARS,
+      fullContent: record.content,
+      path: record.descriptor.path,
+    }
+  }
+
   async resolve(
     message: string,
     options: { allowAutomatic?: boolean } = {},
@@ -172,25 +194,12 @@ export class LocalSkillRegistry {
     if (match.kind !== 'matched') return match
     const record = records.find((item) => item.descriptor.path === match.skill.path)
     if (!record) return { kind: 'missing' }
-    if (record.content.length > LOCAL_SKILL_MAX_ENTRY_CHARS) {
-      throw new Error(
-        `“我的 Skills”中的《${record.descriptor.name}》有 ${record.content.length.toLocaleString('zh-CN')} 字，` +
-          `超过 ${LOCAL_SKILL_MAX_ENTRY_CHARS.toLocaleString('zh-CN')} 字的本地安全上限，请拆分到 references/ 后再试。`,
-      )
-    }
+    const skill = await this.resolvePath(record.descriptor.path)
+    if (!skill) return { kind: 'missing' }
     return {
       kind: 'matched',
       automatic: match.automatic,
-      skill: {
-        name: record.descriptor.name,
-        description: record.descriptor.description,
-        output: record.descriptor.output,
-        content: record.content.slice(0, LOCAL_SKILL_MAX_CONTENT_CHARS),
-        entryChars: record.content.length,
-        entryTruncated: record.content.length > LOCAL_SKILL_MAX_CONTENT_CHARS,
-        fullContent: record.content,
-        path: record.descriptor.path,
-      },
+      skill,
     }
   }
 }

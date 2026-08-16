@@ -147,6 +147,10 @@ import {
   shouldUseCurrentNote,
 } from './current-note-intent'
 import { runCustomerConsultationBrief } from './customer-consultation-brief'
+import {
+  openCustomerCrmSyncModal,
+  readLocalCustomerProfile,
+} from './customer-profile-sync'
 
 /** 内置动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -313,6 +317,12 @@ interface PluginCapabilities {
           programs?: string[]
         }
       }
+      customerCrmSync?: {
+        available?: boolean
+        minPluginVersion?: string
+        matchingPriority?: string[]
+        requiresSeparateConfirmation?: boolean
+      }
       imageAttachments?: {
         available?: boolean
         maxImages?: number
@@ -351,6 +361,12 @@ interface WireMessage {
   vaultWriteSnapshots?: VaultWriteSnapshot[]
   /** 本地 Skill 动作日志只保存元数据，不保存命令输出、系统路径或正文。 */
   localSkillRunIds?: string[]
+  /** 本轮实际调用的本地 Skill 入口；只用于同一对话续跑，不上传到服务端。 */
+  localSkillPath?: string
+  /** 成功写入后识别到的本地客户档案；只存 Vault 路径，不存正文。 */
+  customerCrmSyncPath?: string
+  /** 用户二次确认后完成的 CRM 同步回执。 */
+  customerCrmSynced?: { id: number; label: string; syncedAt: number }
 }
 
 interface VaultMessageSource {
@@ -2020,6 +2036,14 @@ class ChatView extends ItemView {
     return this.messages.map(({ id, role, parts }) => ({ id, role, parts }))
   }
 
+  private recentLocalSkillPath(): string | undefined {
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      const path = this.messages[index].localSkillPath
+      if (path) return path
+    }
+    return undefined
+  }
+
   /** 取得上一条可直接写入 Markdown 的 AI 正文；所有本机协议块都先剥离。 */
   private lastAssistantContentForReplace(): string | undefined {
     for (let index = this.messages.length - 2; index >= 0; index--) {
@@ -2131,7 +2155,17 @@ class ChatView extends ItemView {
         await this.persistNow()
         return
       }
-      const localSkillMatch = await this.localSkills.resolve(text, { allowAutomatic: true })
+      let localSkillMatch = await this.localSkills.resolve(text, { allowAutomatic: true })
+      if (
+        localSkillMatch.kind === 'none' &&
+        /(?:继续|接着|下一步|上一份|下一份|最新一份|刚才|按照?(?:这个|刚才)|处理(?:这|它|最新)|更新已处理|写入客户档案)/u.test(text)
+      ) {
+        const previousPath = this.recentLocalSkillPath()
+        const continuedSkill = previousPath
+          ? await this.localSkills.resolvePath(previousPath)
+          : undefined
+        if (continuedSkill) localSkillMatch = { kind: 'matched', skill: continuedSkill }
+      }
       if (localSkillMatch.kind === 'missing') {
         throw new Error(
           `没有找到你点名的 Skill。可以说「查看我的 Skills」，` +
@@ -2375,6 +2409,7 @@ class ChatView extends ItemView {
           ? this.plugin.captureVaultWriteSnapshots(pendingVaultPlan)
           : undefined,
         localSkillRunIds,
+        localSkillPath: localSkill?.path,
       })
       await this.persistNow()
       if (aiImageRequest.requests.length > 0 && !answer.startsWith('⚠️')) {
@@ -3586,6 +3621,36 @@ class ChatView extends ItemView {
           })()
         }
       }
+      if (message.customerCrmSynced) {
+        actions.createSpan({
+          text: `☁️ 已同步 AI霖子 CRM：${message.customerCrmSynced.label}`,
+          cls: 'ai-linzi-create-note-done',
+        })
+      } else if (message.customerCrmSyncPath) {
+        const syncBtn = actions.createEl('button', { text: '查看 CRM 同步差异' })
+        syncBtn.onclick = () => {
+          syncBtn.disabled = true
+          void (async () => {
+            try {
+              const profile = await readLocalCustomerProfile(this.app, message.customerCrmSyncPath ?? '')
+              if (!profile) throw new Error('这篇笔记已不再符合客户档案格式，请先补充客户称呼等基础字段')
+              openCustomerCrmSyncModal(this.app, this.plugin, profile, async (customer) => {
+                message.customerCrmSynced = {
+                  id: customer.id,
+                  label: `${customer.customerCode || `${customer.seq}号`} · ${customer.name}`,
+                  syncedAt: Date.now(),
+                }
+                await this.persistNow()
+                this.renderMessages()
+              })
+            } catch (error) {
+              new Notice(`无法准备 CRM 同步：${(error as Error).message}`, 8000)
+            } finally {
+              syncBtn.disabled = false
+            }
+          })()
+        }
+      }
       return
     }
 
@@ -3635,6 +3700,11 @@ class ChatView extends ItemView {
           }
           const applied = await this.plugin.applyVaultPlan(plan, message.vaultWriteSnapshots)
           message.vaultActionId = applied.id
+          const writtenPath = applied.createdNotes?.[0] ?? applied.updatedNotes?.[0]
+          if (writtenPath) {
+            const profile = await readLocalCustomerProfile(this.app, writtenPath)
+            if (profile) message.customerCrmSyncPath = writtenPath
+          }
           await this.persistNow()
           this.renderMessages()
           new Notice(
