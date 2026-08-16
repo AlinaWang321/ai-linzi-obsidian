@@ -1,4 +1,4 @@
-import { execFile, type ExecFileException } from 'node:child_process'
+import { execFile, type ExecFileException } from 'child_process'
 import type { LocalSkillActionProgram } from './local-skill-execution-core'
 
 const MAX_PROCESS_OUTPUT_BYTES = 2 * 1024 * 1024

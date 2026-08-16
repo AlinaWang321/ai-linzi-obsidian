@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import Module, { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,6 +8,13 @@ const require = createRequire(import.meta.url)
 const originalLoad = Module._load
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url))
 const bundlePath = path.resolve(process.argv[2] ?? path.join(scriptDirectory, '..', 'main.js'))
+const bundleSource = readFileSync(bundlePath, 'utf8')
+
+assert.doesNotMatch(
+  bundleSource,
+  /require\(["']node:/,
+  '生产包不得使用 Obsidian 插件加载器可能无法识别的 node: 协议模块',
+)
 
 class EmptyComponent {
   constructor(app) {
@@ -86,6 +94,9 @@ console.warn = (...values) => warnings.push(values.map(String).join(' '))
 Module._load = (request, parent, isMain) => {
   if (request === 'obsidian') return obsidianMock
   if (request === 'electron') return {}
+  if (['fs', 'fs/promises', 'os', 'path', 'child_process'].includes(request)) {
+    throw new Error(`插件启动不得提前加载 Node 本地执行依赖：${request}`)
+  }
   return originalLoad(request, parent, isMain)
 }
 

@@ -138,10 +138,7 @@ import {
   LocalSkillRegistry,
   type ActiveLocalSkillContext,
 } from './local-skills'
-import {
-  LocalSkillExecutor,
-  type LocalSkillRunRecord,
-} from './local-skill-executor'
+import type { LocalSkillExecutor, LocalSkillRunRecord } from './local-skill-executor'
 import {
   localSkillActionSummary,
   type LocalSkillActionProposal,
@@ -151,7 +148,6 @@ import {
   selectCurrentOpenMarkdownPath,
   shouldUseCurrentNote,
 } from './current-note-intent'
-import { runCustomerConsultationBrief } from './customer-consultation-brief'
 import {
   openCustomerCrmSyncModal,
   readLocalCustomerProfile,
@@ -175,7 +171,14 @@ export const SKILL_ACTIONS: {
   { id: 'wechat-draft', name: '发到公众号草稿箱(自动传图,需配置AppID)', fn: async (p) => sendToWechatDraft(p) },
   { id: 'xhs-cards', name: '小红书图文卡片:当前笔记 → 正文 + 3:4 PNG', fn: runXhsCards },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
-  { id: 'customer-consultation-brief', name: '客户咨询简报:选择逐字稿 → 客户版 PNG 长图', fn: runCustomerConsultationBrief },
+  {
+    id: 'customer-consultation-brief',
+    name: '客户咨询简报:选择逐字稿 → 客户版 PNG 长图',
+    fn: async (p) => {
+      const { runCustomerConsultationBrief } = await import('./customer-consultation-brief')
+      return runCustomerConsultationBrief(p)
+    },
+  },
   { id: 'sales-review', name: '销售复盘:选择逐字稿 → 销售诊断', fn: runSalesReview },
   { id: 'feed-knowledge', name: '存入 AI霖子知识库:当前笔记', fn: feedKnowledge },
 ]
@@ -838,10 +841,7 @@ export default class AiLinziPlugin extends Plugin {
     () => this.settings.localSkillsFolder,
     () => this.settings.outputFolder,
   )
-  readonly localSkillExecutor = new LocalSkillExecutor(
-    this.app,
-    () => this.settings.outputFolder,
-  )
+  private localSkillExecutorPromise: Promise<LocalSkillExecutor> | null = null
   private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
   private savedConversations: SavedConvo[] = []
   private savedIllustrationJobs: unknown[] = []
@@ -1165,9 +1165,22 @@ export default class AiLinziPlugin extends Plugin {
   async undoLocalSkillRun(id: string): Promise<LocalSkillRunRecord> {
     const record = this.getLocalSkillRunRecord(id)
     if (!record) throw new Error('没有找到这次 Skill 执行记录')
-    await this.localSkillExecutor.undoCreatedOutputs(record)
+    const executor = await this.getLocalSkillExecutor()
+    await executor.undoCreatedOutputs(record)
     await this.saveSettings()
     return record
+  }
+
+  async getLocalSkillExecutor(): Promise<LocalSkillExecutor> {
+    if (!this.localSkillExecutorPromise) {
+      this.localSkillExecutorPromise = import('./local-skill-executor').then(
+        ({ LocalSkillExecutor }) => new LocalSkillExecutor(
+          this.app,
+          () => this.settings.outputFolder,
+        ),
+      )
+    }
+    return this.localSkillExecutorPromise
   }
 
   getLocalSkillRunRecord(id: string): LocalSkillRunRecord | undefined {
@@ -3115,7 +3128,8 @@ class ChatView extends ItemView {
           pendingRetryReason = undefined
           continue
         }
-        const prepared = this.plugin.localSkillExecutor.prepare(call.arguments)
+        const localSkillExecutor = await this.plugin.getLocalSkillExecutor()
+        const prepared = localSkillExecutor.prepare(call.arguments)
         if (!prepared.ok) throw new Error(`AI 提出的本地动作不安全：${prepared.error}`)
         const action = prepared.action
         const ok = await confirmLocalSkillAction(
@@ -3124,7 +3138,7 @@ class ChatView extends ItemView {
           action,
         )
         if (!ok) {
-          const record = this.plugin.localSkillExecutor.cancelledRecord(
+          const record = localSkillExecutor.cancelledRecord(
             input.localSkill?.name ?? '我的 Skill',
             action,
           )
@@ -3142,7 +3156,7 @@ class ChatView extends ItemView {
         const notice = new Notice(`正在本机执行：${action.label}…`, 0)
         try {
           try {
-            const executed = await this.plugin.localSkillExecutor.run(
+            const executed = await localSkillExecutor.run(
               input.localSkill?.name ?? '我的 Skill',
               action,
               input.localSkillContext as ActiveLocalSkillContext,
@@ -3163,13 +3177,13 @@ class ChatView extends ItemView {
               6000,
             )
           } catch (error) {
-            const failed = this.plugin.localSkillExecutor.failedRecord(
+            const failed = localSkillExecutor.failedRecord(
               input.localSkill?.name ?? '我的 Skill',
               action,
             )
             await this.plugin.recordLocalSkillRun(failed)
             localSkillRunIds.push(failed.id)
-            const safeError = this.plugin.localSkillExecutor.safeError(
+            const safeError = localSkillExecutor.safeError(
               error,
               input.localSkillContext as ActiveLocalSkillContext,
             )

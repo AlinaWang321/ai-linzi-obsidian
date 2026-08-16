@@ -1,6 +1,6 @@
-import { access, mkdir, realpath, stat } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, normalize, relative, resolve, sep } from 'node:path'
+import { promises as fs } from 'fs'
+import { tmpdir } from 'os'
+import { dirname, isAbsolute, normalize, relative, resolve, sep } from 'path'
 import { App, FileSystemAdapter, TFile, normalizePath } from 'obsidian'
 import type { ActiveLocalSkillContext } from './local-skills'
 import {
@@ -10,6 +10,8 @@ import {
   type LocalSkillActionProposal,
 } from './local-skill-execution-core'
 import { runLocalSkillProcess } from './local-skill-process'
+
+const { access, mkdir, realpath, stat } = fs
 
 const MAX_RESULT_CHARS = 16_000
 const MAX_SHARED_PROCESS_OUTPUT_CHARS = 4_000
