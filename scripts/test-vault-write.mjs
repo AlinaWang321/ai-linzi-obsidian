@@ -81,6 +81,14 @@ const app = {
       files.set(path, file)
       return file
     },
+    async createBinary(path, data) {
+      if (files.has(path)) throw new Error('exists')
+      const file = new module.TFile(path, '')
+      file.data = data
+      file.stat.size = data.byteLength
+      files.set(path, file)
+      return file
+    },
     async process(file, transform) {
       const next = transform(file.content)
       tick(file, next)
@@ -91,7 +99,7 @@ const app = {
     async renameFile() { throw new Error('本测试不应移动文件') },
   },
 }
-const agent = new module.LocalVaultAgent(app, search, () => '05_System/Skills')
+const agent = new module.LocalVaultAgent(app, search, () => '05_System/Skills', () => 'AI霖子输出')
 
 const profilePath = '02_Wiki/客户档案/客户甲.md'
 const profile = new module.TFile(profilePath, '---\n姓名: 客户甲\n---\n# 客户甲\n\n旧行动计划\n')
@@ -212,4 +220,46 @@ await assert.rejects(
   /每次确认只能写入一篇/,
 )
 
-console.log('Vault single-note write integration tests passed')
+const artifactPlan = {
+  title: '生成客户方案 Word',
+  summary: '本机生成，不覆盖',
+  operations: [{
+    type: 'create_artifact',
+    path: '$OUTPUT/文档/客户方案.docx',
+    format: 'docx',
+    title: '客户方案',
+    content: '# 客户方案\n\n## 下一步\n\n完成第一次交付。',
+    theme: 'brand',
+  }],
+  notes: [],
+}
+await agent.preflightPlan(artifactPlan)
+const artifactRecord = await agent.applyPlan(artifactPlan)
+assert.deepEqual(artifactRecord.createdArtifacts, ['AI霖子输出/文档/客户方案.docx'])
+assert.ok(files.get('AI霖子输出/文档/客户方案.docx').data instanceof ArrayBuffer)
+assert.equal(Buffer.from(files.get('AI霖子输出/文档/客户方案.docx').data).subarray(0, 2).toString(), 'PK')
+await assert.rejects(agent.applyPlan(artifactPlan), /目标文件已存在/)
+
+await assert.rejects(
+  agent.applyPlan({
+    title: '混合成品',
+    summary: '',
+    operations: [
+      artifactPlan.operations[0],
+      { type: 'create_folder', path: '不应创建' },
+    ],
+    notes: [],
+  }),
+  /每次确认只能生成一个成品文件/,
+)
+assert.equal(files.has('不应创建'), false)
+
+await assert.rejects(
+  agent.preflightPlan({
+    ...artifactPlan,
+    operations: [{ ...artifactPlan.operations[0], path: '05_System/Skills/越界.docx' }],
+  }),
+  /保护目录/,
+)
+
+console.log('Vault single-note and artifact write integration tests passed')

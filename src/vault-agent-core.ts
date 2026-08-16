@@ -5,6 +5,15 @@
  * mutation are validated and executed by the local Obsidian plugin.
  */
 
+import {
+  ARTIFACT_FORMATS,
+  ARTIFACT_MAX_CONTENT_CHARS,
+  ARTIFACT_MAX_TITLE_CHARS,
+  type ArtifactFormat,
+  type ArtifactTheme,
+  type CreateArtifactOperation,
+} from './artifact-renderer-core'
+
 export const VAULT_AGENT_MAX_ROUNDS = 6
 export const VAULT_AGENT_MAX_CALLS_PER_ROUND = 4
 export const VAULT_AGENT_MAX_PLAN_OPERATIONS = 60
@@ -39,6 +48,7 @@ export type VaultOrganizeOperation =
   | { type: 'create_note'; path: string; content: string; reason?: string }
   | { type: 'append_note'; path: string; content: string; reason?: string }
   | { type: 'replace_note'; path: string; content: string; reason?: string }
+  | CreateArtifactOperation
   | {
       type: 'update_note'
       path: string
@@ -142,6 +152,12 @@ function boundedContent(value: unknown, max = VAULT_NOTE_WRITE_MAX_CHARS): strin
   return content && content.length <= max ? content : null
 }
 
+function artifactExtension(path: string): string {
+  const filename = path.split('/').at(-1) ?? ''
+  const dot = filename.lastIndexOf('.')
+  return dot > 0 ? filename.slice(dot + 1).toLocaleLowerCase() : ''
+}
+
 export function normalizeVaultRelativePath(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
@@ -243,6 +259,26 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
     const content = boundedContent(record.content)
     return path && content ? { type, path, content, reason } : null
   }
+  if (type === 'create_artifact') {
+    const path = normalizeVaultRelativePath(record.path)
+    const format = shortText(record.format, 12).toLocaleLowerCase() as ArtifactFormat
+    const title = shortText(record.title, ARTIFACT_MAX_TITLE_CHARS)
+    const content = boundedContent(record.content, ARTIFACT_MAX_CONTENT_CHARS)
+    const themeValue = shortText(record.theme, 12).toLocaleLowerCase()
+    const theme = (themeValue === 'brand' || themeValue === 'clean')
+      ? themeValue as ArtifactTheme
+      : undefined
+    if (
+      !path ||
+      !ARTIFACT_FORMATS.includes(format) ||
+      artifactExtension(path) !== format ||
+      !title ||
+      !content
+    ) {
+      return null
+    }
+    return { type, path, format, title, content, theme, reason }
+  }
   if (type === 'update_note') {
     const path = normalizeVaultRelativePath(record.path)
     const rawReplacements = Array.isArray(record.replacements) ? record.replacements : []
@@ -337,6 +373,7 @@ export function operationLabel(operation: VaultOrganizeOperation): string {
   if (operation.type === 'append_note') return `追加到笔记：${operation.path}`
   if (operation.type === 'replace_note') return `整篇覆盖笔记：${operation.path}`
   if (operation.type === 'update_note') return `局部更新笔记：${operation.path}`
+  if (operation.type === 'create_artifact') return `生成 ${operation.format.toUpperCase()}：${operation.path}`
   return `移动/重命名：${operation.from} → ${operation.to}`
 }
 

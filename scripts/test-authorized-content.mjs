@@ -9,6 +9,9 @@ assert.match(main, /private chatImageAttachments: LocalImageReference\[\] = \[\]
 assert.match(main, /requireProAccess\('多笔记与文件夹授权'\)/)
 assert.match(main, /requireProAccess\('主对话图片附件'\)/)
 assert.match(main, /authorizedContent = await this\.authorizedContentContext\(noteContext\?\.path\)/)
+assert.match(main, /vaultAccess: this\.authorizedContentPaths\.length === 0/)
+const modelRouting = main.match(/const modelDecidesVaultUse =[\s\S]*?const useVaultAgent/)?.[0] ?? ''
+assert.doesNotMatch(modelRouting, /authorizedContentPaths/, '精确授权资料仍应能让 Luna 输出只新建的成品方案')
 assert.match(main, /imageAttachments: imageAttachments\.map/)
 assert.match(main, /从 Vault 选择图片/)
 assert.match(main, /从电脑上传图片/)

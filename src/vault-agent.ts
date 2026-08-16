@@ -19,6 +19,12 @@ import {
   splitFrontmatter,
 } from './note-patch'
 import { validateMarkdownAgainstTemplate } from './skill-template'
+import { renderArtifact } from './artifact-renderer'
+import {
+  ARTIFACT_MAX_CONTENT_CHARS,
+  resolveArtifactPath,
+  type CreateArtifactOperation,
+} from './artifact-renderer-core'
 
 const TOOL_OUTPUT_MAX_CHARS = 20_000
 const READ_NOTE_MAX_CHARS = 16_000
@@ -46,6 +52,8 @@ export interface VaultActionRecord {
   /** 只保存路径元数据；正文由 Obsidian 文件恢复负责，不进入 data.json。 */
   createdNotes?: string[]
   updatedNotes?: string[]
+  /** 本机渲染的新文件只记录路径，二进制内容绝不进入 data.json。 */
+  createdArtifacts?: string[]
   undoneAt?: number
 }
 
@@ -76,6 +84,7 @@ export class LocalVaultAgent {
     private readonly app: App,
     private readonly search: LocalVaultSearch,
     private readonly localSkillsRoot: () => string,
+    private readonly outputRoot: () => string,
   ) {}
 
   private protected(path: string): boolean {
@@ -154,6 +163,13 @@ export class LocalVaultAgent {
     plan: VaultOrganizePlan,
     skillContext?: ActiveLocalSkillContext,
   ): Promise<void> {
+    const artifactOperation = plan.operations.length === 1 && plan.operations[0].type === 'create_artifact'
+      ? plan.operations[0]
+      : undefined
+    if (artifactOperation) {
+      this.validateArtifactOperation(artifactOperation)
+      return
+    }
     const writeOperation = plan.operations.length === 1 &&
       (plan.operations[0].type === 'create_note' ||
         plan.operations[0].type === 'append_note' ||
@@ -170,6 +186,29 @@ export class LocalVaultAgent {
     }
     const template = await this.app.vault.cachedRead(templateFile)
     validateMarkdownAgainstTemplate(preview, template)
+  }
+
+  private artifactPath(operation: CreateArtifactOperation): string {
+    const resolved = normalizeVaultRelativePath(resolveArtifactPath(operation.path, this.outputRoot()))
+    if (!resolved) throw new Error('成品文件路径不合法')
+    return resolved
+  }
+
+  private validateArtifactOperation(operation: CreateArtifactOperation): string {
+    const path = this.artifactPath(operation)
+    if (this.protected(path)) throw new Error(`成品文件不能写入保护目录：${path}`)
+    if (fileExtension(path) !== operation.format) {
+      throw new Error(`文件扩展名必须与 ${operation.format.toUpperCase()} 格式一致`)
+    }
+    if (!operation.title.trim()) throw new Error('成品文件缺少标题')
+    if (!operation.content.trim()) throw new Error('成品文件缺少正文')
+    if (operation.content.length > ARTIFACT_MAX_CONTENT_CHARS) {
+      throw new Error(`成品正文超过 ${ARTIFACT_MAX_CONTENT_CHARS.toLocaleString()} 字，请拆分后生成`)
+    }
+    if (this.app.vault.getAbstractFileByPath(path)) {
+      throw new Error(`目标文件已存在，绝不覆盖：${path}`)
+    }
+    return path
   }
 
   async executeCalls(
@@ -386,12 +425,18 @@ export class LocalVaultAgent {
         operation.type === 'replace_note' ||
         operation.type === 'update_note',
     )
+    const artifactOps = plan.operations.filter(
+      (operation): operation is Extract<(typeof plan.operations)[number], { type: 'create_artifact' }> =>
+        operation.type === 'create_artifact',
+    )
     let lockedWriteSnapshot: VaultWriteSnapshot | undefined
     const sources = new Set<string>()
     const destinations = new Set<string>()
 
     for (const operation of plan.operations) {
-      const paths = operation.type === 'move' ? [operation.from, operation.to] : [operation.path]
+      const paths = operation.type === 'move'
+        ? [operation.from, operation.to]
+        : [operation.type === 'create_artifact' ? this.artifactPath(operation) : operation.path]
       if (paths.some((path) => this.protected(path))) {
         throw new Error(`方案涉及保护目录，已拒绝：${paths.join(' → ')}`)
       }
@@ -420,7 +465,15 @@ export class LocalVaultAgent {
         trashedNotes: [operation.path],
         createdNotes: [],
         updatedNotes: [],
+        createdArtifacts: [],
       }
+    }
+
+    if (artifactOps.length > 0) {
+      if (artifactOps.length !== 1 || plan.operations.length !== 1) {
+        throw new Error('为避免误写，每次确认只能生成一个成品文件，不能混入其他操作')
+      }
+      this.validateArtifactOperation(artifactOps[0])
     }
 
     if (noteWriteOps.length > 0) {
@@ -495,8 +548,28 @@ export class LocalVaultAgent {
     const completedMoves: { from: string; to: string }[] = []
     const createdNotes: string[] = []
     const updatedNotes: string[] = []
+    const createdArtifacts: string[] = []
     try {
       for (const operation of createOps) await ensureFolder(operation.path)
+      if (artifactOps.length === 1) {
+        const operation = artifactOps[0]
+        const path = this.validateArtifactOperation(operation)
+        // 先在内存中完整渲染；任何渲染错误都不会留下半成品文件。
+        const rendered = await renderArtifact(operation)
+        const parent = path.split('/').slice(0, -1).join('/')
+        if (parent) await ensureFolder(parent)
+        if (this.app.vault.getAbstractFileByPath(path)) {
+          throw new Error(`目标文件在确认后已经出现，绝不覆盖：${path}`)
+        }
+        if (rendered.binary) {
+          if (!(rendered.data instanceof ArrayBuffer)) throw new Error('二进制成品渲染结果无效')
+          await this.app.vault.createBinary(normalizePath(path), rendered.data)
+        } else {
+          if (typeof rendered.data !== 'string') throw new Error('HTML 成品渲染结果无效')
+          await this.app.vault.create(normalizePath(path), rendered.data)
+        }
+        createdArtifacts.push(path)
+      }
       if (noteWriteOps.length === 1) {
         const operation = noteWriteOps[0]
         const parent = operation.path.split('/').slice(0, -1).join('/')
@@ -590,6 +663,7 @@ export class LocalVaultAgent {
       trashedNotes: [],
       createdNotes,
       updatedNotes,
+      createdArtifacts,
     }
   }
 
@@ -599,6 +673,9 @@ export class LocalVaultAgent {
     }
     if (((record.createdNotes?.length ?? 0) > 0 || (record.updatedNotes?.length ?? 0) > 0) && record.moves.length === 0) {
       throw new Error('笔记写入请使用 Obsidian 撤销或“文件恢复”回滚，插件不会自动删除或覆盖恢复')
+    }
+    if ((record.createdArtifacts?.length ?? 0) > 0 && record.moves.length === 0) {
+      throw new Error('成品文件不会被插件自动删除；如需移除，请在 Obsidian 中移入回收站')
     }
     if (record.undoneAt) throw new Error('这次整理已经撤销过了')
     for (const move of [...record.moves].reverse()) {

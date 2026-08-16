@@ -24,6 +24,8 @@ for (const licenseName of [
   'pdfjs-apache-2.0.txt',
   'fflate-mit.txt',
   'html-to-image-mit.txt',
+  'docx-mit.txt',
+  'pdf-lib-mit.txt',
 ]) {
   await copyFile(
     join(root, 'docs/third-party-licenses', licenseName),

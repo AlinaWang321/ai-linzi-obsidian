@@ -187,6 +187,24 @@ assert.equal(frontmatterUpdatePlan.invalid, false)
 assert.equal(frontmatterUpdatePlan.plan?.operations[0].type, 'update_note')
 assert.match(frontmatterUpdatePlan.plan?.operations[0].frontmatter?.new ?? '', /状态: 已更新/)
 
+const artifactPlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+{"title":"生成方案 Word","summary":"本机生成","operations":[{"type":"create_artifact","path":"$OUTPUT/文档/客户方案.docx","format":"docx","title":"客户方案","content":"# 客户方案\\n\\n## 目标\\n\\n完成本月计划","theme":"brand"}],"notes":["确认后生成"]}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+assert.equal(artifactPlan.invalid, false)
+assert.equal(artifactPlan.plan?.operations[0].type, 'create_artifact')
+assert.equal(core.operationLabel(artifactPlan.plan.operations[0]), '生成 DOCX：$OUTPUT/文档/客户方案.docx')
+
+for (const invalidArtifact of [
+  { path: '$OUTPUT/文档/客户方案.pdf', format: 'docx' },
+  { path: '../客户方案.docx', format: 'docx' },
+  { path: '$OUTPUT/文档/客户方案.exe', format: 'exe' },
+]) {
+  const extracted = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+${JSON.stringify({ title: '错误成品', summary: '', operations: [{ type: 'create_artifact', title: '客户方案', content: '完整内容', ...invalidArtifact }], notes: [] })}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+  assert.equal(extracted.invalid, true)
+}
+
 const unsafeWritePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
 {"title":"错误计划","summary":"越界","operations":[{"type":"create_note","path":"../客户甲.md","content":"内容"}],"notes":[]}
 <<<VAULT_ORGANIZE_PLAN_END>>>`)

@@ -117,6 +117,11 @@ import {
   type VaultWriteSnapshot,
 } from './vault-agent-core'
 import {
+  artifactFormatLabel,
+  estimateArtifactUnits,
+  resolveArtifactPath,
+} from './artifact-renderer-core'
+import {
   formatLocalSkillList,
   isLocalSkillListIntent,
   localSkillMenuTitle,
@@ -831,6 +836,7 @@ export default class AiLinziPlugin extends Plugin {
     this.app,
     this.vaultSearch,
     () => this.settings.localSkillsFolder,
+    () => this.settings.outputFolder,
   )
   readonly localSkillExecutor = new LocalSkillExecutor(
     this.app,
@@ -2275,7 +2281,6 @@ class ChatView extends ItemView {
       // 长文专用任务继续走各自已验证的独立通道。
       const modelDecidesVaultUse =
         !noteEdit &&
-        this.authorizedContentPaths.length === 0 &&
         !this.longDocumentPath &&
         !singleIllustration &&
         !illustrationEdit &&
@@ -2324,7 +2329,9 @@ class ChatView extends ItemView {
           authorizedContent,
           localSkill: localSkillRequest,
           localSkillContext: localSkill ? this.localSkills.context(localSkill) : undefined,
-          vaultAccess: true,
+          // 已由用户精确勾选的整篇资料可以直接用于回答或生成成品，但这一轮不再
+          // 额外开放整个 Vault 工具，避免“精确授权”被扩大成未选择文件的读取。
+          vaultAccess: this.authorizedContentPaths.length === 0,
           vaultSearch: vaultSearch.context,
           noteEdit,
           noteImageIntent: singleIllustration,
@@ -2978,11 +2985,15 @@ class ChatView extends ItemView {
           pendingRetryReason = 'unexpected_plan'
           continue
         }
-        // 明确的 Vault 文件任务至少必须有一条本机工具结果。没有真实结果时，
+        const directArtifactPlan = plan.plan?.operations.length === 1 &&
+          plan.plan.operations[0].type === 'create_artifact'
+        // 明确的 Vault 文件检索/修改任务至少必须有一条本机工具结果。由当前对话或
+        // 已锁定当前笔记直接生成新成品时不强迫空搜 Vault；Luna 需要其他资料时会自行检索。
         // “我现在扫描”或直接猜出的方案都只是口头承诺/幻觉，绝不能结束本轮。
         if (
           input.vaultAccess &&
           toolResults.length === 0 &&
+          !directArtifactPlan &&
           (input.intent !== 'auto' || Boolean(plan.plan))
         ) {
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
@@ -3548,8 +3559,14 @@ class ChatView extends ItemView {
         onlyOperation.type === 'update_note')
       ? onlyOperation
       : null
+    const artifactOperation = onlyOperation?.type === 'create_artifact'
+      ? onlyOperation
+      : null
+    const artifactPath = artifactOperation
+      ? resolveArtifactPath(artifactOperation.path, this.plugin.settings.outputFolder)
+      : null
     card.createDiv({
-      text: `${trashOperation ? '🗑️' : noteWriteOperation ? '📝' : '🗂️'} 待确认：${plan.title}`,
+      text: `${trashOperation ? '🗑️' : noteWriteOperation ? '📝' : artifactOperation ? '📦' : '🗂️'} 待确认：${plan.title}`,
       cls: 'ai-linzi-create-note-title',
     })
     if (plan.summary) {
@@ -3558,7 +3575,11 @@ class ChatView extends ItemView {
     const operations = card.createEl('ol', { cls: 'ai-linzi-vault-plan-operations' })
     for (const operation of plan.operations) {
       const item = operations.createEl('li')
-      item.createDiv({ text: operationLabel(operation) })
+      item.createDiv({
+        text: operation.type === 'create_artifact'
+          ? `生成 ${artifactFormatLabel(operation.format)}：${resolveArtifactPath(operation.path, this.plugin.settings.outputFolder)}`
+          : operationLabel(operation),
+      })
       if (operation.reason) item.createEl('small', { text: operation.reason })
       if (
         operation.type === 'create_note' ||
@@ -3593,6 +3614,17 @@ class ChatView extends ItemView {
           block.createEl('strong', { text: `修改 ${index + 1}` })
           block.createEl('pre', { text: `原文：\n${replacement.old}\n\n改为：\n${replacement.new}` })
         }
+      } else if (operation.type === 'create_artifact') {
+        const estimate = estimateArtifactUnits(operation)
+        item.createEl('small', {
+          text: `格式：${artifactFormatLabel(operation.format)} · 主题：${operation.theme === 'clean' ? '简洁' : 'AI霖子品牌'} · 预计 ${estimate.count} ${estimate.label}`,
+        })
+        const details = item.createEl('details')
+        details.createEl('summary', { text: '查看成品内容全文' })
+        details.createEl('pre', {
+          text: operation.content,
+          cls: 'ai-linzi-vault-write-preview',
+        })
       }
     }
     for (const note of plan.notes) {
@@ -3614,6 +3646,7 @@ class ChatView extends ItemView {
       const trashedCount = record.trashedNotes?.length ?? 0
       const createdNote = record.createdNotes?.[0]
       const updatedNote = record.updatedNotes?.[0]
+      const createdArtifact = record.createdArtifacts?.[0]
       actions.createSpan({
         text: trashedCount > 0
           ? `✅ 已移入回收站：${record.trashedNotes?.[0]}`
@@ -3621,6 +3654,8 @@ class ChatView extends ItemView {
             ? `✅ 已新建笔记：${createdNote}`
             : updatedNote
               ? `✅ 已更新笔记：${updatedNote}`
+              : createdArtifact
+                ? `✅ 已生成成品：${createdArtifact}`
           : `✅ 已执行：移动/重命名 ${record.moves.length} 项，新建文件夹 ${record.createdFolders.length} 个`,
         cls: 'ai-linzi-create-note-done',
       })
@@ -3688,6 +3723,8 @@ class ChatView extends ItemView {
         ? '移入回收站'
         : noteWriteOperation
           ? noteWriteOperation.type === 'create_note' ? '确认新建笔记' : '确认写入笔记'
+          : artifactOperation
+            ? `确认生成 ${artifactFormatLabel(artifactOperation.format)}`
           : `确认执行 ${plan.operations.length} 项`,
       cls: 'mod-cta',
     })
@@ -3716,6 +3753,16 @@ class ChatView extends ItemView {
                     '\n需要回滚时可使用 Obsidian 撤销或“文件恢复”。',
                   confirmLabel: noteWriteOperation.type === 'create_note' ? '确认新建' : '确认写入',
                 }
+              : artifactOperation
+                ? {
+                    title: `再次确认生成 ${artifactFormatLabel(artifactOperation.format)}`,
+                    message:
+                      `目标路径：${artifactPath}\n\n` +
+                      `插件将在本机把上方预览内容渲染成 ${artifactFormatLabel(artifactOperation.format)} 文件。` +
+                      '缺少的父目录会同时创建；如果目标已存在就停止，绝不覆盖。' +
+                      '\n如需移除，请在 Obsidian 中把成品移入回收站。',
+                    confirmLabel: '确认生成',
+                  }
               : {
                 title: '执行 Vault 整理方案',
                 message:
@@ -3741,8 +3788,10 @@ class ChatView extends ItemView {
               ? `✅ 已把「${applied.trashedNotes?.[0]}」移入回收站`
               : (applied.createdNotes?.length ?? 0) > 0
                 ? `✅ 已新建笔记「${applied.createdNotes?.[0]}」`
-                : (applied.updatedNotes?.length ?? 0) > 0
+              : (applied.updatedNotes?.length ?? 0) > 0
                   ? `✅ 已更新笔记「${applied.updatedNotes?.[0]}」`
+                : (applied.createdArtifacts?.length ?? 0) > 0
+                  ? `✅ 已生成成品「${applied.createdArtifacts?.[0]}」`
               : `✅ 已完成「${plan.title}」：移动/重命名 ${applied.moves.length} 项，新建文件夹 ${applied.createdFolders.length} 个`,
             7000,
           )
