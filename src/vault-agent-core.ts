@@ -17,7 +17,7 @@ export type VaultAgentToolName =
   | 'read_note'
   | 'read_skill_file'
   | 'propose_skill_action'
-export type VaultAgentIntent = 'answer' | 'organize'
+export type VaultAgentIntent = 'auto' | 'answer' | 'organize'
 
 export interface VaultAgentToolCall {
   id: string
@@ -357,6 +357,36 @@ function isDraftOnlyWriteIntent(normalized: string): boolean {
   )
 }
 
+/** 只用于拒绝越权方案，不参与“是否给 Luna 工具”的能力路由。 */
+export function isVaultMutationExplicitlyDenied(text: string): boolean {
+  const normalized = text.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '')
+  if (
+    /(?:确认|同意|批准|我点确认).{0,12}(?:前|之前).{0,8}(?:不要|别)(?:真的)?(?:写入|写进|追加|保存|更新)/.test(
+      normalized,
+    )
+  ) {
+    return false
+  }
+  return (
+    isDraftOnlyWriteIntent(normalized) ||
+    /(?:先|暂时|现在)?(?:不要|别)(?:再)?(?:帮我)?(?:直接|真的|立刻|立即)?(?:写入|写进|追加|保存|新建|创建|更新|移动|改名|重命名|删除|删掉)/.test(
+      normalized,
+    ) ||
+    /(?:只|仅)(?:需要|要|做)?(?:读取|查找|搜索|分析|总结|生成|输出).{0,24}(?:草稿|建议|方案|内容|结果)?/.test(
+      normalized,
+    )
+  )
+}
+
+/** 删除必须由用户本轮明确说出；检索到的笔记内容不能替用户授予回收站权限。 */
+export function isExplicitVaultTrashIntent(text: string): boolean {
+  if (isVaultMutationExplicitlyDenied(text)) return false
+  const normalized = text.normalize('NFKC').toLocaleLowerCase()
+  return /(?:删除|删掉|移入(?:废纸篓|回收站)|放入(?:废纸篓|回收站)|丢到(?:废纸篓|回收站)|\b(?:delete|trash)\b)/.test(
+    normalized,
+  )
+}
+
 export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   const normalized = text.normalize('NFKC').toLocaleLowerCase()
   if (isStructuredNoteWriteIntent(text)) return 'organize'
@@ -407,30 +437,6 @@ export function isExplicitCurrentNoteTrashRequest(text: string): boolean {
   return trashAction && currentTarget
 }
 
-/**
- * v0.7.17 起不再要求用户先找开关。只有文字明确指向本地 Vault/文件任务，
- * 或正在继续上一轮已经授权的 Vault 对话时，才允许进入本机工具循环。
- * 普通闲聊不会因此读取或发送任何 Vault 片段。
- */
-export function shouldUseVaultAgent(text: string, continuingVaultTask = false): boolean {
-  const normalized = text.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '')
-  const draftOnlyWrite = isDraftOnlyWriteIntent(normalized)
-  if (detectVaultAgentIntent(text) === 'organize') return true
-  const businessFileObject =
-    /(?:咨询(?:交付|服务)?逐字稿|交付(?:顾问)?咨询逐字稿|销售逐字稿|谈单逐字稿|咨询记录|销售记录|客户档案|学员档案|客户资料|学员资料|聊天记录|会议逐字稿|课程逐字稿|直播逐字稿|访谈逐字稿)/.test(normalized)
-  const explicitVaultObject =
-    /(?:vault|obsidian|知识库|数字大脑|第二大脑|我的大脑|文件仓库|资料仓库|文档仓库|本地仓库)/.test(normalized) ||
-    businessFileObject ||
-    /(?:本地|我的|这个|那个|当前).{0,12}(?:笔记|文件|文件夹|目录|知识库|资料|文档|仓库)|(?:笔记|文件|文件夹|目录|知识库|资料库|文档|仓库).{0,12}(?:里|中|内|下|在哪里|在哪)/.test(normalized)
-  const explicitVaultAction =
-    /(?:搜索|搜一下|搜一搜|扫描|查找|查一下|查一查|查查|查阅|找一下|找一找|找出|找到|定位|在哪|哪里|有什么|哪些|翻找|读取|打开|查看|看看|列出|统计|汇总|盘点|总结|对比|整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)/.test(normalized) ||
-    (!draftOnlyWrite && /(?:写入|写进|追加|保存到|新建|创建)/.test(normalized)) ||
-    (businessFileObject && /^(?:请|帮我|麻烦)?(?:处理|分析|复盘|提炼|优化)/.test(normalized))
-  if (explicitVaultObject && explicitVaultAction) return true
-  if (!continuingVaultTask) return false
-  return /^(?:继续|再|那|这个|那个|它|它们|这些|那些|刚才|刚刚|上面|前面|这里|另外|然后|接着|同样|也|改成|移到|放到|归到|删掉|删除|移入回收站)/.test(normalized)
-}
-
 function isVaultCountQuestion(text: string): boolean {
   const normalized = text.normalize('NFKC').toLocaleLowerCase()
   return /(?:多少|几\s*(?:场|次|份|篇|个|条)|数量|统计|一共|总共|合计)/.test(normalized)
@@ -473,4 +479,31 @@ export function vaultAnswerRetryReason(
       normalized,
     )
   return hasCount || hasExplicitLimit ? undefined : 'missing_count'
+}
+
+/**
+ * 自主工具判断模式下的结果完整性护栏。它不决定是否进入 Vault 模式，只阻止
+ * 模型在没有任何本机工具结果时谎称“已经搜索/读取”，或错误声称自己没有权限。
+ */
+export function vaultAutoAnswerRetryReason(
+  answer: string,
+  hasVaultToolResults: boolean,
+): VaultAnswerRetryReason | undefined {
+  if (hasVaultToolResults) return undefined
+  const normalized = answer.normalize('NFKC').replace(/\s+/g, ' ').trim()
+  const unsupportedClaim =
+    /(?:我|这里|当前)(?:暂时)?(?:无法|不能|没法|没有权限).{0,30}(?:访问|搜索|检索|扫描|读取|查看|打开|修改|改写|更新|追加|覆盖|写入).{0,30}(?:vault|obsidian|知识库|本地|文件|笔记|档案|逐字稿)/i.test(
+      normalized,
+    )
+  const ungroundedSuccess =
+    /(?:我(?:已经|刚刚|已)?|已经|刚刚)(?:在.{0,20})?(?:搜索|检索|扫描|读取|查看|打开|找到|定位到|修改|更新|追加|覆盖|写入|新建|创建).{0,50}(?:vault|obsidian|知识库|本地|文件|笔记|档案|逐字稿)/i.test(
+      normalized,
+    )
+  const ungroundedWritePromise =
+    /(?:收到[，,。 ]*)?(?:我|这边)(?:现在|马上|立即|已经|已|刚刚|这就|会|将|把).{0,100}(?:追加|写入|更新|修改|改写|覆盖|新建|创建).{0,60}(?:vault|obsidian|知识库|本地|文件|笔记|档案)/i.test(
+      normalized,
+    )
+  return unsupportedClaim || ungroundedSuccess || ungroundedWritePromise
+    ? 'missing_tool_use'
+    : undefined
 }

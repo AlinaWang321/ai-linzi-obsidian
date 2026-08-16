@@ -95,20 +95,20 @@ import {
   type LongDocumentChunk,
 } from './long-document'
 import { LocalVaultSearch } from './vault-search'
-import { isConsultationCountQuestion, type VaultSearchResult } from './vault-search-core'
+import { type VaultSearchResult } from './vault-search-core'
 import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
   VAULT_AGENT_MAX_ROUNDS,
-  detectVaultAgentIntent,
   extractVaultOrganizePlan,
   extractVaultToolCalls,
-  deterministicVaultFactAnswer,
   isExplicitCurrentNoteTrashRequest,
+  isExplicitVaultTrashIntent,
   isStructuredNoteWriteIntent,
+  isVaultMutationExplicitlyDenied,
   isVaultAgentToolAllowed,
   namespaceVaultToolCalls,
   operationLabel,
-  shouldUseVaultAgent,
+  vaultAutoAnswerRetryReason,
   vaultAnswerRetryReason,
   type VaultAnswerRetryReason,
   type VaultAgentToolResult,
@@ -295,6 +295,10 @@ interface PluginCapabilities {
         maxCallsPerRound?: number
         tools?: string[]
         persistsToolResultsInHistory?: boolean
+        modelRoutingMinPluginVersion?: string
+        modelDecidesToolUse?: boolean
+        keywordRoutingRequired?: boolean
+        noPreScanBeforeToolCall?: boolean
       }
       vaultManagement?: {
         available?: boolean
@@ -2265,33 +2269,20 @@ class ChatView extends ItemView {
             !singleIllustration &&
             localSkill?.output === 'update-current-note',
         )
-      const recentVaultContext = this.messages
-        .slice(0, -1)
-        .slice(-6)
-        .some(
-          (message) =>
-            (message.vaultSources?.length ?? 0) > 0 ||
-            message.parts.some((part) => part.text.includes('<<<VAULT_ORGANIZE_PLAN>>>')),
-        )
-      const explicitVaultRequest = shouldUseVaultAgent(text, false)
-      const continuingVaultFileRequest =
-        !explicitVaultRequest &&
-        recentVaultContext &&
-        shouldUseVaultAgent(text, true) &&
-        /(?:读|搜索|搜|扫描|查|找|列出|打开|文件|笔记|目录|文件夹|路径|最新|上一份|下一份|另一份|写入|追加|保存|更新|移动|改名|删除|回收站)/u.test(text)
-      const autonomousVaultAccess =
+      // v0.7.30：不再由客户端关键词决定“这句话像不像 Vault 请求”。所有适合
+      // Luna 判断的纯文字主对话都提供本机工具能力；在模型真正发起 tool call 前，
+      // 插件不会扫描、读取或上传任何 Vault 内容。图片理解、当前笔记旧补丁协议、
+      // 长文专用任务继续走各自已验证的独立通道。
+      const modelDecidesVaultUse =
         !noteEdit &&
-        (explicitVaultRequest || continuingVaultFileRequest || automaticLocalSkill || isStructuredNoteWriteIntent(text)) &&
-        (detectVaultAgentIntent(text) === 'organize' || !noteContext)
-      const useVaultAgent =
-        (autonomousVaultAccess || Boolean(localSkill)) &&
         this.authorizedContentPaths.length === 0 &&
         !this.longDocumentPath &&
         !singleIllustration &&
         !illustrationEdit &&
         imageAttachments.length === 0
-      // v0.7.17 起取消手动搜索开关。明确的 Vault 请求进入工具循环，由模型按需
-      // 请求本机搜索；普通闲聊不预扫 Vault，也不会自动发送任何本地片段。
+      const useVaultAgent = modelDecidesVaultUse
+      // 没有手动搜索开关，也没有关键词预扫描。普通闲聊会在首轮直接回答；只有
+      // Luna 判断本轮确实依赖本地资料时，才进入后续本机工具循环。
       const vaultSearch: {
         context: undefined
         sources: VaultMessageSource[]
@@ -2333,11 +2324,11 @@ class ChatView extends ItemView {
           authorizedContent,
           localSkill: localSkillRequest,
           localSkillContext: localSkill ? this.localSkills.context(localSkill) : undefined,
-          vaultAccess: autonomousVaultAccess,
+          vaultAccess: true,
           vaultSearch: vaultSearch.context,
           noteEdit,
           noteImageIntent: singleIllustration,
-          intent: detectVaultAgentIntent(text),
+          intent: 'auto',
         })
         answer = agentResult.text
         var localSkillRunIds = agentResult.localSkillRunIds
@@ -2869,7 +2860,6 @@ class ChatView extends ItemView {
     // 本机仍只生成待确认卡，真正移入回收站前还会再次弹窗确认。
     if (
       input.noteContext &&
-      input.intent === 'organize' &&
       isExplicitCurrentNoteTrashRequest(input.question)
     ) {
       const plan: VaultOrganizePlan = {
@@ -2894,56 +2884,55 @@ class ChatView extends ItemView {
       }
     }
 
-    // 咨询场次属于本机可确定性统计：用户开启 Vault 搜索后直接扫描全量索引，
-    // 不等待模型碰运气决定是否调用工具，也不把前 8 条搜索结果当作总数。
-    if (input.vaultAccess && isConsultationCountQuestion(input.question)) {
-      new Notice('AI霖子正在本机全量统计咨询记录并去重…', 2500)
-      const seeded = await this.plugin.vaultAgent.executeReadCalls([
-        {
-          id: 'seed-consultation-count',
-          name: 'vault_search',
-          arguments: { query: input.question, maxResults: 8 },
-        },
-      ])
-      toolResults.push(...seeded.results)
-      sources.push(...seeded.sources)
-      const localFactAnswer = deterministicVaultFactAnswer(seeded.results)
-      if (localFactAnswer) {
-        return { text: localFactAnswer, sources, localSkillRunIds }
-      }
-    }
-
     for (let round = 0; round < VAULT_AGENT_MAX_ROUNDS; round++) {
       new Notice(
-        round === 0
-          ? 'AI霖子正在查看 Vault，需要时会继续翻阅相关文件…'
+        round === 0 && input.intent === 'auto'
+          ? 'AI霖子正在理解你的要求，需要时会自行查找知识库…'
+          : round === 0
+            ? 'AI霖子正在查看 Vault，需要时会继续翻阅相关文件…'
           : `AI霖子正在继续翻阅 Vault（第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮）…`,
         2500,
       )
-      const data = await this.plugin.api('/api/plugin/v1/chat', {
-        method: 'POST',
-        body: {
-          messages: this.messagesForApi(),
-          sessionId: this.sessionId,
-          stream: false,
-          noteContext: input.noteContext,
-          authorizedContent: input.authorizedContent,
-          vaultSearch: input.vaultSearch,
-          noteEdit: input.noteEdit,
-          noteImageIntent: input.noteImageIntent,
-          localSkill: input.localSkill,
-          vaultAgent: {
-            enabled: true,
-            vaultAccess: input.vaultAccess,
-            intent: input.intent,
-            round,
-            canRequestTools: round < VAULT_AGENT_MAX_ROUNDS - 1,
-            retryReason: pendingRetryReason,
-            toolResults,
+      const vaultAgentRequest = {
+        enabled: true as const,
+        vaultAccess: input.vaultAccess,
+        intent: input.intent,
+        round,
+        canRequestTools: round < VAULT_AGENT_MAX_ROUNDS - 1,
+        retryReason: pendingRetryReason,
+        toolResults,
+      }
+      if (round === 0 && input.intent === 'auto') {
+        const streamed = await this.sendStreaming(
+          input.noteContext,
+          input.authorizedContent,
+          input.localSkill,
+          input.vaultSearch,
+          [],
+          input.noteEdit,
+          input.noteImageIntent,
+          vaultAgentRequest,
+        )
+        if (streamed.kind === 'bizError') throw new Error(streamed.message)
+        lastText = streamed.text
+      } else {
+        const data = await this.plugin.api('/api/plugin/v1/chat', {
+          method: 'POST',
+          body: {
+            messages: this.messagesForApi(),
+            sessionId: this.sessionId,
+            stream: false,
+            noteContext: input.noteContext,
+            authorizedContent: input.authorizedContent,
+            vaultSearch: input.vaultSearch,
+            noteEdit: input.noteEdit,
+            noteImageIntent: input.noteImageIntent,
+            localSkill: input.localSkill,
+            vaultAgent: vaultAgentRequest,
           },
-        },
-      })
-      lastText = typeof data.text === 'string' ? data.text : ''
+        })
+        lastText = typeof data.text === 'string' ? data.text : ''
+      }
       if (!lastText.trim()) {
         if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
           throw new Error('Vault 工具循环连续没有返回可见内容，请重试')
@@ -2973,9 +2962,29 @@ class ChatView extends ItemView {
           pendingRetryReason = 'unexpected_plan'
           continue
         }
+        if (
+          input.intent === 'auto' &&
+          plan.plan &&
+          (isVaultMutationExplicitlyDenied(input.question) ||
+            (plan.plan.operations.some((operation) => operation.type === 'trash_note') &&
+              !isExplicitVaultTrashIntent(input.question)))
+        ) {
+          if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+            if (plan.cleanText.trim()) {
+              return { text: plan.cleanText.trim(), sources, localSkillRunIds }
+            }
+            throw new Error('AI 没有遵守本轮只读或删除授权边界，请重试')
+          }
+          pendingRetryReason = 'unexpected_plan'
+          continue
+        }
         // 明确的 Vault 文件任务至少必须有一条本机工具结果。没有真实结果时，
         // “我现在扫描”或直接猜出的方案都只是口头承诺/幻觉，绝不能结束本轮。
-        if (input.vaultAccess && toolResults.length === 0) {
+        if (
+          input.vaultAccess &&
+          toolResults.length === 0 &&
+          (input.intent !== 'auto' || Boolean(plan.plan))
+        ) {
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
             throw new Error('AI 没有实际调用 Vault 工具，已停止这次任务；请重试')
           }
@@ -3030,8 +3039,10 @@ class ChatView extends ItemView {
           // Luna 偶尔只说“接下来检查”却不调用工具；下一轮由后端注入协议纠正。
           continue
         }
-        if (input.intent === 'answer') {
-          const retryReason = vaultAnswerRetryReason(input.question, lastText)
+        if (input.intent === 'answer' || input.intent === 'auto') {
+          const retryReason =
+            vaultAutoAnswerRetryReason(lastText, toolResults.length > 0) ??
+            vaultAnswerRetryReason(input.question, lastText)
           if (retryReason) {
             if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
               throw new Error(
@@ -3212,6 +3223,15 @@ class ChatView extends ItemView {
     imageAttachments: LocalImageReference[],
     noteEdit: boolean,
     noteImageIntent: boolean,
+    vaultAgent?: {
+      enabled: true
+      vaultAccess: boolean
+      intent: VaultAgentIntent
+      round: number
+      canRequestTools: boolean
+      retryReason?: VaultAnswerRetryReason
+      toolResults: VaultAgentToolResult[]
+    },
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
@@ -3238,6 +3258,7 @@ class ChatView extends ItemView {
         noteEdit,
         noteImageIntent,
         localSkill,
+        vaultAgent,
       }),
     })
     if (!res.ok) {
@@ -3265,12 +3286,20 @@ class ChatView extends ItemView {
         full += decoder.decode(value, { stream: true })
         const patchAt = full.indexOf('<AI_LINZI_NOTE_PATCH>')
         const imageRequestAt = full.indexOf('<<<AI_LINZI_IMAGE_REQUEST>>>')
+        const vaultProtocolAt = vaultAgent ? full.indexOf('<<<') : -1
+        const vaultStatus = full.includes('<<<VAULT_ORGANIZE_PLAN>>>')
+          ? '正在准备安全确认方案…'
+          : '正在本机查找需要的资料…'
         body.setText(
           patchAt >= 0
             ? `${full.slice(0, patchAt).trim()}\n\n正在整理可一键应用的修改…`
             : imageRequestAt >= 0
               ? `${full.slice(0, imageRequestAt).trim()}\n\n正在准备 AI 生图任务…`
-            : full,
+              : vaultProtocolAt >= 0
+                ? `${full.slice(0, vaultProtocolAt).trim()}\n\n${vaultStatus}`
+                : vaultAgent
+                  ? full.slice(0, Math.max(0, full.length - 2))
+                  : full,
         )
         this.listEl.scrollTop = this.listEl.scrollHeight
       }

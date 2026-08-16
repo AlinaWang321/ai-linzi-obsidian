@@ -52,37 +52,15 @@ assert.equal(core.isExplicitCurrentNoteTrashRequest('删除这篇笔记'), true)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('把它移入回收站'), true)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('删除知识库里的重复笔记'), false)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('不要删除这篇笔记'), false)
-assert.equal(core.shouldUseVaultAgent('帮我找一下 Vault 里的产品定位笔记'), true)
-assert.equal(core.shouldUseVaultAgent('帮我找一下知识库里的咨询记录'), true)
-assert.equal(core.shouldUseVaultAgent('帮我找一下文件里的咨询记录'), true)
-assert.equal(core.shouldUseVaultAgent('帮我找一下仓库里的咨询记录'), true)
-assert.equal(core.shouldUseVaultAgent('查一下数字大脑中的客户交付记录'), true)
-assert.equal(core.shouldUseVaultAgent('看看文件仓库里有哪些销售逐字稿'), true)
-assert.equal(core.shouldUseVaultAgent('搜索咨询逐字稿'), true)
-assert.equal(core.shouldUseVaultAgent('处理咨询交付逐字稿'), true)
-assert.equal(core.shouldUseVaultAgent('从咨询交付逐字稿文件夹中扫描读取'), true)
-assert.equal(core.shouldUseVaultAgent('定位最新一份交付顾问咨询逐字稿'), true)
-assert.equal(core.shouldUseVaultAgent('分析销售逐字稿'), true)
-assert.equal(core.shouldUseVaultAgent('在 Obsidian 里找一下最新复盘'), true)
-assert.equal(core.shouldUseVaultAgent('我的产品定位笔记在哪里？'), true)
-assert.equal(core.shouldUseVaultAgent('请把这些文件整理到归档目录'), true)
-assert.equal(core.shouldUseVaultAgent('帮我删除知识库里的重复笔记'), true)
-assert.equal(core.shouldUseVaultAgent('你好，今天适合写什么内容？'), false)
-assert.equal(core.shouldUseVaultAgent('知识库应该怎么搭建？'), false)
-assert.equal(core.shouldUseVaultAgent('再看看那个文件', true), true)
-assert.equal(core.shouldUseVaultAgent('再给我三个标题', false), false)
+assert.equal(core.isVaultMutationExplicitlyDenied('先不要写入，只生成一份草稿'), true)
+assert.equal(core.isVaultMutationExplicitlyDenied('只读取并告诉我有哪些档案'), true)
 assert.equal(
-  core.shouldUseVaultAgent(
-    '把这份草稿再优化一下：保留长期客户档案真正需要的事实，输出一个可以直接追加的 Markdown 章节。',
-    true,
-  ),
+  core.isVaultMutationExplicitlyDenied('追加到客户甲.md，但确认前不要真的写入'),
   false,
 )
-assert.equal(
-  core.shouldUseVaultAgent('请把刚才确认的章节追加到 02_Wiki/客户档案/客户甲.md', true),
-  true,
-)
-
+assert.equal(core.isExplicitVaultTrashIntent('把知识库里的重复笔记移入回收站'), true)
+assert.equal(core.isExplicitVaultTrashIntent('不要删除任何笔记'), false)
+assert.equal(core.isExplicitVaultTrashIntent('如何整理重复笔记？'), false)
 assert.equal(
   core.vaultAnswerRetryReason(
     '合伙人的私教咨询有多少场',
@@ -120,6 +98,32 @@ assert.equal(
       output: JSON.stringify({ matches: [{ filename: '普通搜索.md' }] }),
     },
   ]),
+  undefined,
+)
+assert.equal(
+  core.vaultAutoAnswerRetryReason(
+    '我这里没法直接改写 Obsidian 里的客户档案文件，你可以手动复制。',
+    false,
+  ),
+  'missing_tool_use',
+)
+assert.equal(
+  core.vaultAutoAnswerRetryReason(
+    '收到，我现在把这两次咨询记录追加到小B的客户档案里。',
+    false,
+  ),
+  'missing_tool_use',
+)
+assert.equal(
+  core.vaultAutoAnswerRetryReason('我已经在知识库里找到小B的客户档案。', false),
+  'missing_tool_use',
+)
+assert.equal(
+  core.vaultAutoAnswerRetryReason('可以，我们先讨论客户档案模板应该包含哪些字段。', false),
+  undefined,
+)
+assert.equal(
+  core.vaultAutoAnswerRetryReason('已经依据刚刚读取的档案完成核对。', true),
   undefined,
 )
 assert.equal(
