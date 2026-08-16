@@ -99,21 +99,29 @@ import { type VaultSearchResult } from './vault-search-core'
 import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
   VAULT_AGENT_MAX_ROUNDS,
+  advanceVaultTask,
   extractVaultOrganizePlan,
   extractVaultToolCalls,
+  isCloudToolsTurnRequest,
   isExplicitCurrentNoteTrashRequest,
   isExplicitVaultTrashIntent,
   isStructuredNoteWriteIntent,
   isVaultMutationExplicitlyDenied,
   isVaultAgentToolAllowed,
+  isVaultTaskContinuation,
+  isVaultTaskExpired,
   namespaceVaultToolCalls,
   operationLabel,
+  upgradeVaultIntent,
   vaultAutoAnswerRetryReason,
   vaultAnswerRetryReason,
+  vaultWriteFlowRetryReason,
+  type PendingVaultTask,
   type VaultAnswerRetryReason,
   type VaultAgentToolResult,
   type VaultAgentIntent,
   type VaultOrganizePlan,
+  type VaultTaskEvent,
   type VaultWriteSnapshot,
 } from './vault-agent-core'
 import {
@@ -1135,6 +1143,14 @@ export default class AiLinziPlugin extends Plugin {
     return this.vaultAgent.captureWriteSnapshots(plan)
   }
 
+  /** 供跨轮任务状态记录文件版本快照；文件不存在时返回 null。 */
+  vaultFileStat(path: string): VaultWriteSnapshot | null {
+    const file = this.app.vault.getAbstractFileByPath(path)
+    return file instanceof TFile
+      ? { path: file.path, mtime: file.stat.mtime, size: file.stat.size }
+      : null
+  }
+
   async applyVaultPlan(
     plan: VaultOrganizePlan,
     writeSnapshots: VaultWriteSnapshot[] = [],
@@ -1466,6 +1482,11 @@ class ChatView extends ItemView {
   private longDocumentChars = 0
   private longDocumentTask: LongDocumentTaskState | null = null
   private sending = false
+  /**
+   * 跨用户轮次的 Vault 任务状态（阶段 A）。只存任务元数据与路径快照，正文与
+   * 工具输出只驻留进程内存；确认卡被执行/取消、任务正常收尾或超时后清空。
+   */
+  private pendingVaultTask: PendingVaultTask | null = null
   /** chat=日常对话;interview=访谈写作(多轮采访→成稿) */
   private mode: 'chat' | 'interview' = 'chat'
   private interviewBar!: HTMLElement
@@ -2875,6 +2896,63 @@ class ChatView extends ItemView {
     const verifiedWritePaths = new Set<string>()
     let lastText = ''
     let pendingRetryReason: VaultAnswerRetryReason | undefined
+    // 阶段 A：intent 只允许 auto → organize 单向升级；跨轮任务状态在会话上保存。
+    if (this.pendingVaultTask && isVaultTaskExpired(this.pendingVaultTask, Date.now())) {
+      this.pendingVaultTask = null
+    }
+    // 「对/继续」这类短确认才完整承接旧任务；较长的新消息只携带元数据，
+    // intent 不继承，避免旧写入任务把无关新话题拖进 organize 强制流程。
+    const taskContinuation =
+      Boolean(this.pendingVaultTask) && isVaultTaskContinuation(input.question)
+    let intent: VaultAgentIntent = upgradeVaultIntent(input.intent, {
+      question: input.question,
+      sawPlan: false,
+      pendingTask: taskContinuation ? this.pendingVaultTask : null,
+    })
+    // 承接上一轮未完成任务：按受控路径重新读取本地文件重建工具结果（不落盘正文）。
+    if (this.pendingVaultTask && input.vaultAccess && taskContinuation) {
+      const task = this.pendingVaultTask
+      const rehydratePaths = [
+        ...new Set([
+          ...task.sourcePaths.map((item) => item.path),
+          ...(task.targetPath ? [task.targetPath] : []),
+        ]),
+      ].slice(0, 6)
+      if (rehydratePaths.length > 0) {
+        const rehydrated = await this.plugin.vaultAgent.executeReadCalls(
+          rehydratePaths.map((path, index) => ({
+            id: `task-rehydrate-${index + 1}`,
+            name: 'read_note' as const,
+            arguments: { path, offset: 0, maxChars: 16_000 },
+          })),
+        )
+        toolResults.push(...rehydrated.results)
+        sources.push(...rehydrated.sources)
+        for (const [index, path] of rehydratePaths.entries()) {
+          if (rehydrated.results[index]?.ok && path === task.targetPath) {
+            verifiedWritePaths.add(path)
+          }
+        }
+        new Notice(`AI霖子正在继续上一轮任务：${task.goal.slice(0, 24)}…`, 3500)
+      }
+    }
+    const updateTask = (event: VaultTaskEvent) => {
+      const now = Date.now()
+      if (!this.pendingVaultTask) {
+        this.pendingVaultTask = {
+          id: `vault-task-${now}-${Math.random().toString(36).slice(2, 8)}`,
+          goal: input.question.slice(0, 300),
+          intent: intent === 'organize' ? 'organize' : 'answer',
+          stage: 'searching',
+          candidatePaths: [],
+          sourcePaths: [],
+          createdAt: now,
+          updatedAt: now,
+        }
+      }
+      this.pendingVaultTask = advanceVaultTask(this.pendingVaultTask, event, now)
+      if (intent === 'organize') this.pendingVaultTask.intent = 'organize'
+    }
 
     // 删除当前笔记不需要模型搜索：noteContext 已在发送瞬间锁定了准确路径。
     // 本机仍只生成待确认卡，真正移入回收站前还会再次弹窗确认。
@@ -2916,13 +2994,24 @@ class ChatView extends ItemView {
       const vaultAgentRequest = {
         enabled: true as const,
         vaultAccess: input.vaultAccess,
-        intent: input.intent,
+        intent,
         round,
         canRequestTools: round < VAULT_AGENT_MAX_ROUNDS - 1,
         retryReason: pendingRetryReason,
         toolResults,
+        // v0.7.35+：跨轮任务状态只传目标与阶段元数据；正文和片段绝不进请求。
+        pendingTask: this.pendingVaultTask
+          ? {
+              goal: this.pendingVaultTask.goal,
+              stage: this.pendingVaultTask.stage,
+              targetFilename: this.pendingVaultTask.targetPath?.split('/').at(-1),
+              candidateFilenames: this.pendingVaultTask.candidatePaths
+                .map((path) => path.split('/').at(-1) ?? path)
+                .slice(0, 8),
+            }
+          : undefined,
       }
-      if (round === 0 && input.intent === 'auto') {
+      if (round === 0 && intent === 'auto') {
         const streamed = await this.sendStreaming(
           input.noteContext,
           input.authorizedContent,
@@ -2961,6 +3050,30 @@ class ChatView extends ItemView {
         continue
       }
 
+      // v0.7.35+：首轮不挂云端写工具（换回 Luna 完整推理）。Luna 判断本轮是
+      // 任务/CRM 云端写入时单独输出标记，插件补一轮挂上工具执行——判断轮全
+      // 推理、执行轮零推理，两边都拿到各自需要的能力。
+      if (round === 0 && intent === 'auto' && isCloudToolsTurnRequest(lastText)) {
+        new Notice('AI霖子正在执行云端任务/客户记录…', 3000)
+        const data = await this.plugin.api('/api/plugin/v1/chat', {
+          method: 'POST',
+          body: {
+            messages: this.messagesForApi(),
+            sessionId: this.sessionId,
+            stream: false,
+            noteContext: input.noteContext,
+            authorizedContent: input.authorizedContent,
+            noteEdit: input.noteEdit,
+            noteImageIntent: input.noteImageIntent,
+            localSkill: input.localSkill,
+            vaultAgent: { ...vaultAgentRequest, cloudToolsTurn: true },
+          },
+        })
+        const cloudText = typeof data.text === 'string' ? data.text.trim() : ''
+        if (!cloudText) throw new Error('云端工具轮没有返回内容，请重试')
+        return { text: cloudText, sources, localSkillRunIds }
+      }
+
       const toolRequest = extractVaultToolCalls(lastText)
       if (toolRequest.invalid) throw new Error('AI 返回的 Vault 工具请求格式不安全，请重试')
       if (toolRequest.calls.length === 0) {
@@ -2981,6 +3094,14 @@ class ChatView extends ItemView {
           }
           pendingRetryReason = 'unexpected_plan'
           continue
+        }
+        // 模型产出方案即视为写入流程，intent 单向升级（用户明确只读除外，下面拦截）。
+        if (plan.plan) {
+          intent = upgradeVaultIntent(intent, {
+            question: input.question,
+            sawPlan: true,
+            pendingTask: this.pendingVaultTask,
+          })
         }
         if (
           input.intent === 'auto' &&
@@ -3034,7 +3155,12 @@ class ChatView extends ItemView {
           }])
           toolResults.push(...verification.results)
           sources.push(...verification.sources)
-          if (verification.results[0]?.ok) verifiedWritePaths.add(writeOperation.path)
+          if (verification.results[0]?.ok) {
+            verifiedWritePaths.add(writeOperation.path)
+            const stat = this.plugin.vaultFileStat(writeOperation.path)
+            if (stat) updateTask({ type: 'read', snapshot: stat, isTarget: true })
+            new Notice(`已核对目标档案原文：${writeOperation.path.split('/').at(-1)}`, 3000)
+          }
           pendingRetryReason = undefined
           continue
         }
@@ -3056,14 +3182,22 @@ class ChatView extends ItemView {
             continue
           }
         }
-        if (input.intent === 'organize' && !plan.plan) {
+        if (intent === 'organize' && !plan.plan) {
+          // 阶段 A：写入流程的结构化判定优先于文字匹配。已搜到目标却没读原文
+          // 就收尾 → stalled_write_flow；完全没动工具 → missing_tool_use。
+          const stalled = vaultWriteFlowRetryReason(
+            this.pendingVaultTask,
+            intent,
+            false,
+            false,
+          )
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
             throw new Error('AI 没有生成可确认的 Vault 整理方案，请缩小范围后重试')
           }
-          // Luna 偶尔只说“接下来检查”却不调用工具；下一轮由后端注入协议纠正。
+          pendingRetryReason = stalled ?? pendingRetryReason
           continue
         }
-        if (input.intent === 'answer' || input.intent === 'auto') {
+        if (intent === 'answer' || intent === 'auto') {
           const retryReason =
             vaultAutoAnswerRetryReason(lastText, toolResults.length > 0) ??
             vaultAnswerRetryReason(input.question, lastText)
@@ -3086,6 +3220,31 @@ class ChatView extends ItemView {
             pendingRetryReason = retryReason
             continue
           }
+        }
+        // 合法终态：产出通过预检的方案卡 → 任务停在 previewed 等用户确认；
+        // 纯问答正常收尾 → 任务结清。两种情况都不把中间状态带进下一轮新话题。
+        if (plan.plan) {
+          const planTarget = plan.plan.operations.length === 1 &&
+            (plan.plan.operations[0].type === 'append_note' ||
+              plan.plan.operations[0].type === 'replace_note' ||
+              plan.plan.operations[0].type === 'update_note' ||
+              plan.plan.operations[0].type === 'create_note')
+            ? plan.plan.operations[0].path
+            : undefined
+          if (planTarget) updateTask({ type: 'previewed', targetPath: planTarget })
+        } else {
+          if (
+            this.pendingVaultTask &&
+            !taskContinuation &&
+            this.pendingVaultTask.stage === 'previewed'
+          ) {
+            // 用户转向新话题：轻提示旧任务已放下，确认卡仍在对话里可点。
+            new Notice(
+              `上一项「${this.pendingVaultTask.goal.slice(0, 18)}…」还没确认写入；确认卡仍在对话中，需要继续时再说一声。`,
+              6000,
+            )
+          }
+          this.pendingVaultTask = null
         }
         return { text: lastText, sources, localSkillRunIds }
       }
@@ -3205,12 +3364,37 @@ class ChatView extends ItemView {
         readCalls,
         input.localSkillContext,
       )
+      const readFilenames: string[] = []
+      let searchHits = 0
       for (const call of readCalls) {
-        if (call.name !== 'read_note') continue
         const result = executed.results.find((item) => item.callId === call.id)
-        if (result?.ok && typeof call.arguments.path === 'string') {
-          verifiedWritePaths.add(call.arguments.path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+        if (!result?.ok) continue
+        if (call.name === 'read_note' && typeof call.arguments.path === 'string') {
+          const path = call.arguments.path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+          verifiedWritePaths.add(path)
+          const stat = this.plugin.vaultFileStat(path)
+          if (stat) {
+            updateTask({
+              type: 'read',
+              snapshot: stat,
+              isTarget: path === this.pendingVaultTask?.targetPath,
+            })
+          }
+          readFilenames.push(path.split('/').at(-1) ?? path)
         }
+        if (call.name === 'vault_search') {
+          const hitPaths = executed.sources
+            .filter((source) => source.sourceId === call.id)
+            .map((source) => source.path)
+          searchHits += hitPaths.length
+          if (hitPaths.length > 0) updateTask({ type: 'search', candidatePaths: hitPaths })
+        }
+      }
+      // 用户可见的真实进度，替代只报轮数的无信息提示。
+      if (readFilenames.length > 0) {
+        new Notice(`AI霖子已读取：${readFilenames.slice(0, 2).join('、')}`, 3000)
+      } else if (searchHits > 0) {
+        new Notice(`AI霖子已找到 ${searchHits} 个相关文件，正在继续核对…`, 3000)
       }
       pendingRetryReason = undefined
       toolResults.push(...executed.results)
@@ -3256,6 +3440,15 @@ class ChatView extends ItemView {
       canRequestTools: boolean
       retryReason?: VaultAnswerRetryReason
       toolResults: VaultAgentToolResult[]
+      /** v0.7.35+：跨轮任务元数据（不含正文与本地完整路径层级细节）。 */
+      pendingTask?: {
+        goal: string
+        stage: PendingVaultTask['stage']
+        targetFilename?: string
+        candidateFilenames: string[]
+      }
+      /** v0.7.35+：云端任务/CRM 工具执行轮标记。 */
+      cloudToolsTurn?: boolean
     },
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl } = this.plugin.settings
@@ -3790,6 +3983,8 @@ class ChatView extends ItemView {
           }
           const applied = await this.plugin.applyVaultPlan(plan, message.vaultWriteSnapshots)
           message.vaultActionId = applied.id
+          // 确认卡已执行 → 跨轮任务结清；下一句「继续」不再重新进入旧写入流程。
+          this.pendingVaultTask = null
           const writtenPath = applied.createdNotes?.[0] ?? applied.updatedNotes?.[0]
           if (writtenPath) {
             const profile = await readLocalCustomerProfile(this.app, writtenPath)

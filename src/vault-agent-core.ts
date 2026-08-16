@@ -90,6 +90,145 @@ export type VaultAnswerRetryReason =
   | 'invalid_plan'
   | 'empty_response'
   | 'unexpected_plan'
+  | 'stalled_write_flow'
+
+/**
+ * 跨用户轮次的 Vault 任务状态（2026-08-17 阶段 A）。
+ *
+ * 只保存任务元数据与路径快照；原始正文、搜索片段和工具输出只存进程内存，
+ * 跨轮恢复时按受控路径重新读取本地文件（见交接手册 §8.1）。用户说「对」
+ * 「继续」时，插件凭这份状态接续上一轮任务，而不是重新从 round 0 理解需求。
+ */
+export interface PendingVaultTask {
+  id: string
+  /** 用户原话摘要，跨轮提醒模型任务目标。 */
+  goal: string
+  intent: 'answer' | 'organize'
+  stage: 'searching' | 'searched' | 'source_read' | 'target_read' | 'previewed'
+  /** 搜索命中的候选路径（≤12，仅本机使用，不进云端历史）。 */
+  candidatePaths: string[]
+  /** 已读取来源的版本快照；恢复时 mtime/size 变化必须重读。 */
+  sourcePaths: VaultWriteSnapshot[]
+  targetPath?: string
+  createdAt: number
+  updatedAt: number
+}
+
+export const VAULT_TASK_MAX_AGE_MS = 30 * 60 * 1000
+export const VAULT_TASK_MAX_CANDIDATES = 12
+
+const VAULT_TASK_STAGE_ORDER: Record<PendingVaultTask['stage'], number> = {
+  searching: 0,
+  searched: 1,
+  source_read: 2,
+  target_read: 3,
+  previewed: 4,
+}
+
+export function vaultTaskStageAtLeast(
+  stage: PendingVaultTask['stage'],
+  min: PendingVaultTask['stage'],
+): boolean {
+  return VAULT_TASK_STAGE_ORDER[stage] >= VAULT_TASK_STAGE_ORDER[min]
+}
+
+export type VaultTaskEvent =
+  | { type: 'search'; candidatePaths: string[] }
+  | { type: 'read'; snapshot: VaultWriteSnapshot; isTarget: boolean }
+  | { type: 'previewed'; targetPath: string }
+
+/** 纯 reducer：按本机真实发生的工具事件推进任务阶段，绝不因模型措辞变化。 */
+export function advanceVaultTask(
+  task: PendingVaultTask,
+  event: VaultTaskEvent,
+  now: number,
+): PendingVaultTask {
+  const next: PendingVaultTask = { ...task, updatedAt: now }
+  if (event.type === 'search') {
+    const merged = [...new Set([...task.candidatePaths, ...event.candidatePaths])]
+    next.candidatePaths = merged.slice(0, VAULT_TASK_MAX_CANDIDATES)
+    if (!vaultTaskStageAtLeast(task.stage, 'searched')) next.stage = 'searched'
+    return next
+  }
+  if (event.type === 'read') {
+    const rest = task.sourcePaths.filter((item) => item.path !== event.snapshot.path)
+    next.sourcePaths = [...rest, event.snapshot].slice(-VAULT_TASK_MAX_CANDIDATES)
+    if (event.isTarget) {
+      next.targetPath = event.snapshot.path
+      if (!vaultTaskStageAtLeast(task.stage, 'target_read')) next.stage = 'target_read'
+    } else if (!vaultTaskStageAtLeast(task.stage, 'source_read')) {
+      next.stage = 'source_read'
+    }
+    return next
+  }
+  next.targetPath = event.targetPath
+  next.stage = 'previewed'
+  return next
+}
+
+export function isVaultTaskExpired(task: PendingVaultTask, now: number): boolean {
+  return now - task.updatedAt > VAULT_TASK_MAX_AGE_MS
+}
+
+/**
+ * 写入流程的结构化完成判定（阶段 A 核心）：合法终态只有三种——
+ * 本轮有真实工具调用 / 已产出通过预检的方案卡 / 明确声明缺信息。
+ * 「已搜到目标但没读原文就收尾」在这里被结构性拦截，与模型措辞无关。
+ */
+export function vaultWriteFlowRetryReason(
+  task: PendingVaultTask | null,
+  intent: VaultAgentIntent,
+  hasPlanCard: boolean,
+  hasToolCalls: boolean,
+): VaultAnswerRetryReason | undefined {
+  if (hasToolCalls || hasPlanCard) return undefined
+  if (intent !== 'organize') return undefined
+  if (!task) return 'missing_tool_use'
+  if (!vaultTaskStageAtLeast(task.stage, 'target_read')) return 'stalled_write_flow'
+  return undefined
+}
+
+/**
+ * intent 只允许 auto → organize 单向升级，写入任务进入 organize 后不得降级。
+ * 用户本轮明确拒绝写入时绝不升级——模型越权产出的方案不能反过来改变授权边界。
+ */
+export function upgradeVaultIntent(
+  current: VaultAgentIntent,
+  input: { question: string; sawPlan: boolean; pendingTask: PendingVaultTask | null },
+): VaultAgentIntent {
+  if (current === 'organize') return 'organize'
+  if (isVaultMutationExplicitlyDenied(input.question)) return current
+  if (input.sawPlan) return 'organize'
+  if (isStructuredNoteWriteIntent(input.question)) return 'organize'
+  if (input.pendingTask?.intent === 'organize') return 'organize'
+  return current
+}
+
+/**
+ * 「对」「继续」「就这样」这类短确认视为承接上一轮任务：完整恢复工具结果并
+ * 继承 intent。较长的新消息只携带任务元数据，由模型自行判断是否相关——新话题
+ * 正常收尾时任务会被清空，绝不把旧目标硬塞进无关请求。
+ */
+export function isVaultTaskContinuation(text: string): boolean {
+  const normalized = text
+    .normalize('NFKC')
+    .replace(/[\s。，！!？?～~、.]/g, '')
+    .toLocaleLowerCase()
+  if (!normalized) return false
+  if (normalized.length <= 6) return true
+  return normalized.length <= 12 &&
+    /^(?:对|嗯|好|行|可以|继续|接着|就这样|没问题|开始|去做|执行|确认|ok|okay|yes|go)/.test(normalized)
+}
+
+/** 云端工具轮标记：v0.7.35 起第 0 轮不挂云端写工具，模型判断需要时单独输出。 */
+export const CLOUD_TOOLS_TURN_MARKER = '<<<CLOUD_TOOLS_TURN>>>'
+
+export function isCloudToolsTurnRequest(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed.includes(CLOUD_TOOLS_TURN_MARKER)) return false
+  // 标记必须单独成段出现；混在长答复里视为普通文本，避免模型两头下注。
+  return trimmed.replace(CLOUD_TOOLS_TURN_MARKER, '').trim().length <= 120
+}
 
 export function isVaultAgentToolAllowed(
   name: VaultAgentToolName,
@@ -520,14 +659,24 @@ export function vaultAnswerRetryReason(
 
 /**
  * 自主工具判断模式下的结果完整性护栏。它不决定是否进入 Vault 模式，只阻止
- * 模型在没有任何本机工具结果时谎称“已经搜索/读取”，或错误声称自己没有权限。
+ * 模型谎称“已经搜索/读取/写入”或错误声称自己没有权限。
+ *
+ * 阶段 A（2026-08-17）：不再因为“已有任意一条工具结果”就整轮豁免——那正是
+ * “搜到目标却不读原文就收尾”能通过的原因。有工具结果时仍拦两类谎报：
+ * 声称无权限、声称已写入/将写入（写入只能以确认卡结束，由结构化判定把关）。
  */
 export function vaultAutoAnswerRetryReason(
   answer: string,
   hasVaultToolResults: boolean,
 ): VaultAnswerRetryReason | undefined {
-  if (hasVaultToolResults) return undefined
   const normalized = answer.normalize('NFKC').replace(/\s+/g, ' ').trim()
+  if (hasVaultToolResults) {
+    const claimsWriteDone =
+      /(?:已经|已|刚刚)(?:帮你)?(?:写入|追加|更新|修改|覆盖|保存)(?:到|进)?.{0,40}(?:档案|笔记|文件|知识库|wiki)/i.test(
+        normalized,
+      )
+    return claimsWriteDone ? 'missing_tool_use' : undefined
+  }
   const unsupportedClaim =
     /(?:我|这里|当前)(?:暂时)?(?:无法|不能|没法|没有权限).{0,30}(?:访问|搜索|检索|扫描|读取|查看|打开|修改|改写|更新|追加|覆盖|写入).{0,30}(?:vault|obsidian|知识库|本地|文件|笔记|档案|逐字稿)/i.test(
       normalized,
