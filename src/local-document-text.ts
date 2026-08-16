@@ -1,6 +1,4 @@
 import { unzipSync, strFromU8, type UnzipFileInfo } from 'fflate'
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
-import { WorkerMessageHandler } from 'pdfjs-dist/legacy/build/pdf.worker.mjs'
 
 export const LOCAL_SEARCH_EXTENSIONS = new Set(['md', 'txt', 'pdf', 'docx'])
 
@@ -12,14 +10,6 @@ export const LOCAL_SEARCH_FILE_LIMITS: Record<string, number> = {
 }
 
 const MAX_DOCX_XML_BYTES = 12 * 1024 * 1024
-
-// PDF.js normally loads a separate worker file. Obsidian community plugins are
-// distributed as one main.js, so expose the bundled worker handler as a local
-// fake worker. No CDN, remote script or server is involved.
-const pdfjsWindow = activeWindow as Window & {
-  pdfjsWorker?: { WorkerMessageHandler: typeof WorkerMessageHandler }
-}
-pdfjsWindow.pdfjsWorker ??= { WorkerMessageHandler }
 
 export function isLocalSearchExtension(extension: string): boolean {
   return LOCAL_SEARCH_EXTENSIONS.has(extension.toLocaleLowerCase())
@@ -64,6 +54,26 @@ export function extractDocxText(data: Uint8Array, maxChars: number): string {
 }
 
 export async function extractPdfText(data: Uint8Array, maxChars: number): Promise<string> {
+  // PDF.js touches DOMMatrix and other browser globals while its module is
+  // initialized. Some supported Windows/Obsidian combinations do not expose
+  // those globals until the workspace renderer is ready. Loading PDF.js during
+  // plugin startup would therefore make the whole plugin fail before a user
+  // ever asks to read a PDF. Keep the heavy parser completely lazy.
+  const [{ getDocument }, { WorkerMessageHandler }] = await Promise.all([
+    import('pdfjs-dist/legacy/build/pdf.mjs'),
+    import('pdfjs-dist/legacy/build/pdf.worker.mjs'),
+  ])
+  // Community plugins ship as one main.js, so expose the bundled worker handler
+  // as a local fake worker. No CDN, remote script or server is involved.
+  const runtimeWindow = (
+    globalThis as typeof globalThis & { activeWindow?: Window; window?: Window }
+  ).activeWindow ?? globalThis.window
+  if (!runtimeWindow) throw new Error('当前 Obsidian 窗口尚未就绪，请稍后重试读取 PDF')
+  const pdfjsWindow = runtimeWindow as Window & {
+    pdfjsWorker?: { WorkerMessageHandler: typeof WorkerMessageHandler }
+  }
+  pdfjsWindow.pdfjsWorker ??= { WorkerMessageHandler }
+
   const loadingTask = getDocument({
     data: data.slice(),
     password: '',

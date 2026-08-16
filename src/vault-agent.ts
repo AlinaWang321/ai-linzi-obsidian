@@ -19,7 +19,6 @@ import {
   splitFrontmatter,
 } from './note-patch'
 import { validateMarkdownAgainstTemplate } from './skill-template'
-import { renderArtifact } from './artifact-renderer'
 import {
   ARTIFACT_MAX_CONTENT_CHARS,
   resolveArtifactPath,
@@ -554,6 +553,9 @@ export class LocalVaultAgent {
       if (artifactOps.length === 1) {
         const operation = artifactOps[0]
         const path = this.validateArtifactOperation(operation)
+        // DOCX/PDF/PPTX 渲染依赖体积较大，也可能访问只在完整浏览器窗口中
+        // 提供的 API。仅在用户确认生成成品后加载，不能拖垮插件启动。
+        const { renderArtifact } = await import('./artifact-renderer')
         // 先在内存中完整渲染；任何渲染错误都不会留下半成品文件。
         const rendered = await renderArtifact(operation)
         const parent = path.split('/').slice(0, -1).join('/')
