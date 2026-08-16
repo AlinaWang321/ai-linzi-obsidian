@@ -1,10 +1,13 @@
 /**
  * Vault 本地 Skill 的纯函数核心。
  *
- * v1 只接受用户显式调用，不做语义猜测：
+ * 默认只接受用户显式调用，不做语义猜测：
  * - `用咨询简报技能处理当前笔记`
  * - `调用 咨询简报`
  * - `/咨询简报`
+ *
+ * v0.7.28 起，Skill 作者还可以在正文的“AI霖子自动调用”章节主动列出
+ * 完整动作短语。插件只做确定性短语匹配，description 不参与自动调用。
  *
  * Skill 正文只在命中后由 local-skills.ts 读取，并且只进入当前一轮请求。
  */
@@ -67,6 +70,10 @@ export interface LocalSkillDescriptor {
   displayName: string
   description: string
   triggers: string[]
+  /** 用户在 SKILL.md 正文中主动声明的精确自然语言触发短语。 */
+  autoTriggers: string[]
+  /** 可选的结构校验模板路径；运行时只授权读取这一文件。 */
+  templatePath?: string
   output: LocalSkillOutput
   path: string
 }
@@ -75,7 +82,7 @@ export type LocalSkillMatch =
   | { kind: 'none' }
   | { kind: 'missing' }
   | { kind: 'ambiguous'; skills: LocalSkillDescriptor[] }
-  | { kind: 'matched'; skill: LocalSkillDescriptor }
+  | { kind: 'matched'; skill: LocalSkillDescriptor; automatic?: boolean }
 
 function normalizePath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
@@ -171,6 +178,36 @@ export function localSkillDisplayNameFromMarkdown(content: string): string {
   return heading.replace(/[*_`[\]]/g, '').trim().slice(0, 80)
 }
 
+function markdownSection(content: string, title: RegExp): string {
+  const lines = content.split(/\r?\n/)
+  const start = lines.findIndex((line) => /^#{2,6}\s+/.test(line) && title.test(line.replace(/^#{2,6}\s+/, '').trim()))
+  if (start < 0) return ''
+  const body: string[] = []
+  for (let index = start + 1; index < lines.length; index++) {
+    if (/^#{1,6}\s+/.test(lines[index])) break
+    body.push(lines[index])
+  }
+  return body.join('\n').trim()
+}
+
+/** 只有 Skill 作者主动列出的完整短语才允许自动调用，普通 description 不参与猜测。 */
+export function localSkillAutoTriggersFromMarkdown(content: string): string[] {
+  const section = markdownSection(content, /^(?:AI\s*霖子\s*)?自动(?:调用|触发)$/iu)
+  if (!section) return []
+  return [...new Set(section
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*+]\s+/, '').replace(/^`|`$/g, '').trim())
+    .filter((line) => line.length >= 4 && line.length <= 80))]
+    .slice(0, 12)
+}
+
+export function localSkillTemplatePathFromMarkdown(content: string): string | undefined {
+  const section = markdownSection(content, /^(?:AI\s*霖子\s*)?模板校验$/iu)
+  if (!section) return undefined
+  const linked = /\[?[^\]\n]*\]?\(([^)\r\n]+)\)|`([^`\r\n]+)`|([^\s\r\n]+\.(?:md|txt))/iu.exec(section)
+  return (linked?.[1] || linked?.[2] || linked?.[3])?.trim()
+}
+
 export function isLocalSkillPath(path: string, configuredRoot = LOCAL_SKILL_ROOT): boolean {
   const normalized = normalizePath(path)
   const lower = normalized.toLocaleLowerCase()
@@ -218,6 +255,8 @@ export function buildLocalSkillDescriptor(
     displayName,
     description: description.slice(0, 240),
     triggers,
+    autoTriggers: localSkillAutoTriggersFromMarkdown(content),
+    templatePath: localSkillTemplatePathFromMarkdown(content),
     output: normalizeOutput(
       frontmatter.output ??
         frontmatter.outputMode ??
@@ -280,9 +319,28 @@ function invocationContext(message: string): {
 export function matchLocalSkillInvocation(
   message: string,
   skills: LocalSkillDescriptor[],
+  options: { allowAutomatic?: boolean } = {},
 ): LocalSkillMatch {
   const context = invocationContext(message)
-  if (!context.explicit && !context.slash) return { kind: 'none' }
+  if (!context.explicit && !context.slash) {
+    if (!options.allowAutomatic) return { kind: 'none' }
+    const normalized = context.normalized
+    const automatic = skills
+      .map((skill) => {
+        const trigger = skill.autoTriggers
+          .map((value) => ({ value, normalized: normalizeText(value) }))
+          .filter((item) => item.normalized.length >= 4 && normalized.includes(item.normalized))
+          .sort((left, right) => right.normalized.length - left.normalized.length)[0]
+        return trigger ? { skill, score: trigger.normalized.length } : null
+      })
+      .filter((item): item is { skill: LocalSkillDescriptor; score: number } => Boolean(item))
+      .sort((left, right) => right.score - left.score)
+    if (automatic.length === 0) return { kind: 'none' }
+    const top = automatic.filter((item) => item.score === automatic[0].score)
+    return top.length === 1
+      ? { kind: 'matched', skill: top[0].skill, automatic: true }
+      : { kind: 'ambiguous', skills: top.map((item) => item.skill) }
+  }
 
   const candidates = skills
     .map((skill) => {
@@ -310,7 +368,7 @@ export function matchLocalSkillInvocation(
   const topScore = candidates[0].score
   const top = candidates.filter((candidate) => candidate.score === topScore)
   if (top.length > 1) return { kind: 'ambiguous', skills: top.map((item) => item.skill) }
-  return { kind: 'matched', skill: top[0].skill }
+  return { kind: 'matched', skill: top[0].skill, automatic: false }
 }
 
 export function formatLocalSkillList(

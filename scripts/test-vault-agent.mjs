@@ -43,6 +43,10 @@ assert.equal(
   'answer',
 )
 assert.equal(core.detectVaultAgentIntent('总结这篇文章'), 'answer')
+assert.equal(core.detectVaultAgentIntent('把当前客户档案按统一模板补全'), 'organize')
+assert.equal(core.isStructuredNoteWriteIntent('修改当前笔记的 YAML 属性'), true)
+assert.equal(core.isStructuredNoteWriteIntent('把当前客户档案的咨询次数更新为 2'), true)
+assert.equal(core.isStructuredNoteWriteIntent('客户档案模板应该怎么设计？'), false)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('请把当前这篇测试笔记删除，只能移入回收站'), true)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('删除这篇笔记'), true)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('把它移入回收站'), true)
@@ -171,6 +175,13 @@ const updatePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
 <<<VAULT_ORGANIZE_PLAN_END>>>`)
 assert.equal(updatePlan.invalid, false)
 assert.equal(updatePlan.plan?.operations[0].type, 'update_note')
+
+const frontmatterUpdatePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+{"title":"更新属性","summary":"精确替换 YAML","operations":[{"type":"update_note","path":"02_Wiki/客户档案/客户甲.md","frontmatter":{"old":"---\\n姓名: 客户甲\\n---","new":"---\\n姓名: 客户甲\\n状态: 已更新\\n---"}}],"notes":[]}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+assert.equal(frontmatterUpdatePlan.invalid, false)
+assert.equal(frontmatterUpdatePlan.plan?.operations[0].type, 'update_note')
+assert.match(frontmatterUpdatePlan.plan?.operations[0].frontmatter?.new ?? '', /状态: 已更新/)
 
 const unsafeWritePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
 {"title":"错误计划","summary":"越界","operations":[{"type":"create_note","path":"../客户甲.md","content":"内容"}],"notes":[]}

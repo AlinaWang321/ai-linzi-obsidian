@@ -16,6 +16,12 @@ export class TFolder {
   constructor(path) { this.path = path; this.name = path.split('/').at(-1); this.children = [] }
 }
 export const normalizePath = (value) => value.replaceAll('\\\\', '/').replace(/^\\.\\//, '')
+export const parseYaml = (value) => {
+  if (!value.trim() || value.includes('无效 YAML')) throw new Error('bad yaml')
+  return Object.fromEntries(value.split(/\\r?\\n/).filter((line) => /^[^ \\t:#][^:]*:/.test(line)).map((line) => {
+    const at = line.indexOf(':'); return [line.slice(0, at).trim(), line.slice(at + 1).trim()]
+  }))
+}
 `
 
 const built = await esbuild.build({
@@ -79,6 +85,7 @@ const app = {
       const next = transform(file.content)
       tick(file, next)
     },
+    async cachedRead(file) { return file.content },
   },
   fileManager: {
     async renameFile() { throw new Error('本测试不应移动文件') },
@@ -112,6 +119,36 @@ await agent.applyPlan(updatePlan, agent.captureWriteSnapshots(updatePlan))
 assert.match(profile.content, /新行动计划/)
 assert.doesNotMatch(profile.content, /旧行动计划/)
 
+const frontmatterPlan = {
+  title: '更新客户档案属性',
+  summary: '',
+  operations: [{
+    type: 'update_note',
+    path: profilePath,
+    frontmatter: {
+      old: '---\n姓名: 客户甲\n---',
+      new: '---\n姓名: 客户甲\n档案状态: 已更新\n---',
+    },
+  }],
+  notes: [],
+}
+await agent.preflightPlan(frontmatterPlan)
+await agent.applyPlan(frontmatterPlan, agent.captureWriteSnapshots(frontmatterPlan))
+assert.match(profile.content, /档案状态: 已更新/)
+await assert.rejects(
+  agent.preflightPlan({
+    ...frontmatterPlan,
+    operations: [{
+      ...frontmatterPlan.operations[0],
+      frontmatter: {
+        old: '---\n姓名: 错误对象\n---',
+        new: '---\n姓名: 客户甲\n档案状态: 错误\n---',
+      },
+    }],
+  }),
+  /YAML 属性原文与目标笔记不一致/,
+)
+
 const replacePlan = {
   title: '整篇更新',
   summary: '',
@@ -119,7 +156,7 @@ const replacePlan = {
   notes: [],
 }
 await agent.applyPlan(replacePlan, agent.captureWriteSnapshots(replacePlan))
-assert.equal(profile.content, '---\n姓名: 客户甲\n---\n# 客户甲最终档案\n\n最终内容\n')
+assert.equal(profile.content, '---\n姓名: 客户甲\n档案状态: 已更新\n---\n# 客户甲最终档案\n\n最终内容\n')
 
 const stalePlan = {
   title: '过期方案',
@@ -138,6 +175,24 @@ const createPlan = {
   operations: [{ type: 'create_note', path: '02_Wiki/新客户/客户乙.md', content: '# 客户乙' }],
   notes: [],
 }
+const templatePath = '05_System/Skills/customer-profile/references/客户档案模板.md'
+files.set(templatePath, new module.TFile(
+  templatePath,
+  '---\n客户称呼: "{{客户称呼}}"\n档案状态: "{{档案状态}}"\n---\n# {{客户称呼}}\n\n## 一、基本背景\n\n## 二、行动计划\n',
+))
+await assert.rejects(
+  agent.preflightPlan(createPlan, { templatePath }),
+  /未通过 Skill 模板预检/,
+)
+const templatedCreatePlan = {
+  ...createPlan,
+  operations: [{
+    type: 'create_note',
+    path: '02_Wiki/新客户/客户丙.md',
+    content: '---\n客户称呼: 客户丙\n档案状态: 初次整理\n---\n# 客户丙\n\n## 一、基本背景\n\n待补充\n\n## 二、行动计划\n\n待确认',
+  }],
+}
+await agent.preflightPlan(templatedCreatePlan, { templatePath })
 const createRecord = await agent.applyPlan(createPlan)
 assert.deepEqual(createRecord.createdNotes, ['02_Wiki/新客户/客户乙.md'])
 assert.ok(files.get('02_Wiki/新客户') instanceof module.TFolder)

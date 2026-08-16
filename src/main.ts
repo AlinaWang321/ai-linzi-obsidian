@@ -104,6 +104,7 @@ import {
   extractVaultToolCalls,
   deterministicVaultFactAnswer,
   isExplicitCurrentNoteTrashRequest,
+  isStructuredNoteWriteIntent,
   isVaultAgentToolAllowed,
   namespaceVaultToolCalls,
   operationLabel,
@@ -2130,7 +2131,7 @@ class ChatView extends ItemView {
         await this.persistNow()
         return
       }
-      const localSkillMatch = await this.localSkills.resolve(text)
+      const localSkillMatch = await this.localSkills.resolve(text, { allowAutomatic: true })
       if (localSkillMatch.kind === 'missing') {
         throw new Error(
           `没有找到你点名的 Skill。可以说「查看我的 Skills」，` +
@@ -2146,6 +2147,8 @@ class ChatView extends ItemView {
       }
       const localSkill =
         localSkillMatch.kind === 'matched' ? localSkillMatch.skill : undefined
+      const automaticLocalSkill =
+        localSkillMatch.kind === 'matched' && localSkillMatch.automatic === true
       const illustrationEdit = isArticleIllustrationEditIntent(text)
       const singleIllustrationIntent = isSingleArticleIllustrationIntent(text)
       const recentCurrentNotePath = this.recentCurrentNotePath()
@@ -2213,7 +2216,12 @@ class ChatView extends ItemView {
       // 图片修改会在 AI 回复下方显示专用入口，先预览候选图再由用户确认替换。
       const singleIllustration = Boolean(noteContext && singleIllustrationIntent)
       const directNoteEdit = Boolean(
-        noteContext && !illustrationEdit && !singleIllustration && isNoteEditIntent(text),
+        noteContext &&
+          !illustrationEdit &&
+          !singleIllustration &&
+          !automaticLocalSkill &&
+          !isStructuredNoteWriteIntent(text) &&
+          isNoteEditIntent(text),
       )
       const noteEdit =
         directNoteEdit ||
@@ -2239,7 +2247,7 @@ class ChatView extends ItemView {
         /(?:读|搜索|搜|扫描|查|找|列出|打开|文件|笔记|目录|文件夹|路径|最新|上一份|下一份|另一份|写入|追加|保存|更新|移动|改名|删除|回收站)/u.test(text)
       const autonomousVaultAccess =
         !noteEdit &&
-        (explicitVaultRequest || continuingVaultFileRequest) &&
+        (explicitVaultRequest || continuingVaultFileRequest || automaticLocalSkill || isStructuredNoteWriteIntent(text)) &&
         (detectVaultAgentIntent(text) === 'organize' || !noteContext)
       const useVaultAgent =
         (autonomousVaultAccess || Boolean(localSkill)) &&
@@ -2264,7 +2272,14 @@ class ChatView extends ItemView {
             entryTruncated: localSkill.entryTruncated,
           }
         : undefined
-      if (localSkill) new Notice(`正在调用我的 Skill：${localSkill.name}`, 4000)
+      if (localSkill) {
+        new Notice(
+          automaticLocalSkill
+            ? `已按你的自动触发规则调用 Skill：${localSkill.name}`
+            : `正在调用我的 Skill：${localSkill.name}`,
+          4000,
+        )
+      }
       let answer: string
       let answerSources = [
         ...(noteContext
@@ -2955,6 +2970,24 @@ class ChatView extends ItemView {
           pendingRetryReason = undefined
           continue
         }
+        if (plan.plan) {
+          try {
+            await this.plugin.vaultAgent.preflightPlan(plan.plan, input.localSkillContext)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+              throw new Error(`写入方案未通过本机预检：${message}`)
+            }
+            toolResults.push({
+              callId: `preflight-write-plan-${round + 1}`,
+              name: 'read_note',
+              ok: false,
+              output: `写入方案未通过本机预检：${message}。请依据已经读取的目标原文和 Skill 模板重新生成，不要重复原方案。`,
+            })
+            pendingRetryReason = 'invalid_plan'
+            continue
+          }
+        }
         if (input.intent === 'organize' && !plan.plan) {
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
             throw new Error('AI 没有生成可确认的 Vault 整理方案，请缩小范围后重试')
@@ -3217,13 +3250,18 @@ class ChatView extends ItemView {
   /**
    * 对话创建本地 Skill 确认卡(v0.6.47)：
    * - 目标目录只来自本机设置，不接受模型路径；
-   * - 固定写成 `<root>/<portable-name>/SKILL.md`；
-   * - 只新建、不覆盖，已存在时要求用户换名。
+   * - v0.7.28 起可新建 SKILL.md + references/scripts/assets 文本文件；
+   * - 所有路径均被解析器限制在 Skill 自己的目录内，只新建、不覆盖。
    */
   private renderCreateLocalSkillOffers(row: HTMLElement, blocks: CreateLocalSkillBlock[]) {
     for (const block of blocks) {
       const root = this.localSkills.root()
-      const filePath = normalizePath(`${root}/${block.name}/SKILL.md`)
+      const skillRoot = normalizePath(`${root}/${block.name}`)
+      const files = block.files.map((file) => ({
+        ...file,
+        vaultPath: normalizePath(`${skillRoot}/${file.path}`),
+      }))
+      const filePath = normalizePath(`${skillRoot}/SKILL.md`)
       const card = row.createDiv({ cls: 'ai-linzi-create-note-card' })
       card.createDiv({
         text: `🧩 待创建 AI 工作流:${block.name}`,
@@ -3231,35 +3269,52 @@ class ChatView extends ItemView {
       })
       card.createDiv({ text: block.description, cls: 'ai-linzi-create-note-preview' })
       card.createDiv({
-        text: `保存位置:${filePath}`,
+        text: `保存位置:${skillRoot}/（共 ${files.length} 个文件）`,
         cls: 'ai-linzi-create-note-preview',
       })
+      for (const file of files) {
+        const details = card.createEl('details')
+        details.createEl('summary', { text: `查看 ${file.path}` })
+        details.createEl('pre', { text: file.content, cls: 'ai-linzi-vault-write-preview' })
+      }
       const actionsRow = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
-      const createBtn = actionsRow.createEl('button', { text: '创建 SKILL.md' })
+      const createBtn = actionsRow.createEl('button', {
+        text: files.length === 1 ? '创建 SKILL.md' : `创建完整 Skill（${files.length} 个文件）`,
+      })
       createBtn.onclick = () => {
         createBtn.disabled = true
         void (async () => {
           try {
-            if (this.app.vault.getAbstractFileByPath(filePath)) {
-              throw new Error(`已存在 ${filePath}，为避免覆盖请让 AI 换一个 Skill 名称`)
+            if (this.app.vault.getAbstractFileByPath(skillRoot)) {
+              throw new Error(`已存在 ${skillRoot}/，为避免混入旧文件请让 AI 换一个 Skill 名称`)
             }
-            const parent = filePath.split('/').slice(0, -1)
-            let current = ''
-            for (const segment of parent) {
-              current = current ? `${current}/${segment}` : segment
-              if (this.app.vault.getAbstractFileByPath(current)) continue
-              await this.app.vault.createFolder(current)
+            const conflicts = files.filter((file) => this.app.vault.getAbstractFileByPath(file.vaultPath))
+            if (conflicts.length > 0) {
+              throw new Error(`已存在 ${conflicts[0].vaultPath}，为避免覆盖请让 AI 换一个 Skill 名称`)
             }
-            const file = await this.app.vault.create(filePath, block.content)
+            for (const file of files) {
+              const parent = file.vaultPath.split('/').slice(0, -1)
+              let current = ''
+              for (const segment of parent) {
+                current = current ? `${current}/${segment}` : segment
+                if (this.app.vault.getAbstractFileByPath(current)) continue
+                await this.app.vault.createFolder(current)
+              }
+            }
+            const created = []
+            for (const file of files) {
+              created.push(await this.app.vault.create(file.vaultPath, file.content))
+            }
+            const entry = created.find((file) => file.path === filePath) ?? created[0]
             card.empty()
             const done = card.createDiv({ cls: 'ai-linzi-create-note-done' })
-            done.createSpan({ text: '✅ 已创建:' })
-            const link = done.createEl('a', { text: file.path, href: '#' })
+            done.createSpan({ text: `✅ 已创建完整 Skill（${created.length} 个文件）:` })
+            const link = done.createEl('a', { text: entry.path, href: '#' })
             link.onclick = (event) => {
               event.preventDefault()
-              void this.app.workspace.openLinkText(file.path, '', false)
+              void this.app.workspace.openLinkText(entry.path, '', false)
             }
-            new Notice(`已创建到“我的 Skills”：${file.path}`, 6000)
+            new Notice(`已创建到“我的 Skills”：${skillRoot}/`, 6000)
           } catch (error) {
             createBtn.disabled = false
             new Notice(`创建失败:${(error as Error).message}`, 7000)
@@ -3456,8 +3511,20 @@ class ChatView extends ItemView {
         })
       } else if (operation.type === 'update_note') {
         const details = item.createEl('details')
-        details.createEl('summary', { text: `查看 ${operation.replacements.length} 处局部修改` })
-        for (const [index, replacement] of operation.replacements.entries()) {
+        const replacementCount = operation.replacements?.length ?? 0
+        details.createEl('summary', {
+          text: operation.frontmatter
+            ? `查看 YAML 属性${replacementCount > 0 ? `和 ${replacementCount} 处正文` : ''}修改`
+            : `查看 ${replacementCount} 处局部修改`,
+        })
+        if (operation.frontmatter) {
+          const block = details.createDiv({ cls: 'ai-linzi-vault-write-preview' })
+          block.createEl('strong', { text: 'YAML 属性' })
+          block.createEl('pre', {
+            text: `原文：\n${operation.frontmatter.old}\n\n改为：\n${operation.frontmatter.new}`,
+          })
+        }
+        for (const [index, replacement] of (operation.replacements ?? []).entries()) {
           const block = details.createDiv({ cls: 'ai-linzi-vault-write-preview' })
           block.createEl('strong', { text: `修改 ${index + 1}` })
           block.createEl('pre', { text: `原文：\n${replacement.old}\n\n改为：\n${replacement.new}` })
@@ -3549,7 +3616,9 @@ class ChatView extends ItemView {
                     `目标路径：${noteWriteOperation.path}\n\n` +
                     (noteWriteOperation.type === 'create_note'
                       ? '只会新建这一篇 Markdown；缺少的父目录会同时创建。如果目标已存在就停止，绝不覆盖。'
-                      : '只会更新这一篇 Markdown；如果它在方案生成后有变化就停止。整篇替换会保留 frontmatter。') +
+                      : noteWriteOperation.type === 'update_note' && noteWriteOperation.frontmatter
+                        ? '只会更新这一篇 Markdown；YAML 原文、格式与目标版本已在本机预检，确认前发生变化就停止。'
+                        : '只会更新这一篇 Markdown；如果它在方案生成后有变化就停止。整篇替换会保留 frontmatter。') +
                     '\n需要回滚时可使用 Obsidian 撤销或“文件恢复”。',
                   confirmLabel: noteWriteOperation.type === 'create_note' ? '确认新建' : '确认写入',
                 }

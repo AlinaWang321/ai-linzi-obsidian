@@ -19,6 +19,7 @@ async function loadTs(entry) {
 }
 
 const notePatch = await loadTs('src/note-patch.ts')
+const skillTemplate = await loadTs('src/skill-template.ts')
 
 assert.equal(notePatch.isNoteEditIntent('把文章里面的“AI霖子”都加上框框，写成「AI霖子」'), true)
 assert.equal(notePatch.isNoteEditIntent('请润色这篇文章的开头两段'), true)
@@ -47,6 +48,34 @@ const applied = notePatch.applyNotePatch(withFrontmatter, parsed)
 assert.equal(applied.content, '---\ntitle: 测试\n---\n\n第一段。\n\n新句子。\n')
 assert.equal(applied.replacements, 1)
 assert.match(applied.content, /^---\ntitle: 测试\n---/)
+
+const structured = notePatch.applyStructuredNoteUpdate(
+  withFrontmatter,
+  [{ old: '旧句子。', new: '新句子。' }],
+  {
+    old: '---\ntitle: 测试\n---',
+    new: '---\ntitle: 测试\n状态: 已更新\n---',
+  },
+)
+assert.equal(
+  structured.content,
+  '---\ntitle: 测试\n状态: 已更新\n---\n\n第一段。\n\n新句子。\n',
+)
+assert.equal(structured.frontmatterUpdated, true)
+assert.throws(
+  () => notePatch.applyStructuredNoteUpdate(withFrontmatter, [], {
+    old: '---\ntitle: 错误原文\n---',
+    new: '---\ntitle: 测试\n状态: 已更新\n---',
+  }),
+  /YAML 属性原文与目标笔记不一致/,
+)
+assert.throws(
+  () => notePatch.applyStructuredNoteUpdate(withFrontmatter, [], {
+    old: 'title: 测试',
+    new: 'title: 新标题',
+  }),
+  /包含两行 ---/,
+)
 
 const wrapPatch = {
   displayText: '统一加上书名号。',
@@ -85,6 +114,44 @@ assert.equal(notePatch.parseNotePatch('没有协议标记的普通回复'), null
 assert.equal(
   notePatch.parseNotePatch('<AI_LINZI_NOTE_PATCH>{bad json}</AI_LINZI_NOTE_PATCH>'),
   null,
+)
+
+const customerTemplate = `---
+客户称呼: "{{客户称呼}}"
+档案状态: "{{档案状态}}"
+---
+# {{客户称呼}}
+
+## 一、基本背景
+
+## 二、行动计划`
+const validCustomerProfile = `---
+客户称呼: 小B
+档案状态: 初次整理
+---
+# 小B
+
+## 一、基本背景
+
+内容
+
+## 二、行动计划
+
+内容`
+assert.doesNotThrow(() => skillTemplate.validateMarkdownAgainstTemplate(validCustomerProfile, customerTemplate))
+assert.throws(
+  () => skillTemplate.validateMarkdownAgainstTemplate(
+    validCustomerProfile.replace('档案状态: 初次整理\n', ''),
+    customerTemplate,
+  ),
+  /缺少 YAML 字段：档案状态/,
+)
+assert.throws(
+  () => skillTemplate.validateMarkdownAgainstTemplate(
+    validCustomerProfile.replace('## 二、行动计划', '## 二、其他'),
+    customerTemplate,
+  ),
+  /缺少章节：二、行动计划/,
 )
 
 console.log('note patch regression tests passed')

@@ -59,6 +59,39 @@ assert.equal(
   'matched',
 )
 
+const customerProfile = core.buildLocalSkillDescriptor(
+  'system/skills/customer-profile/SKILL.md',
+  { name: 'customer-profile', description: '按统一模板创建或更新客户档案' },
+  `# 客户档案管理
+
+## AI霖子自动调用
+- 创建客户档案
+- 更新客户档案
+- 补全客户档案
+
+## AI霖子模板校验
+[客户档案模板](references/客户档案模板.md)
+
+## AI霖子输出方式
+chat`,
+)
+assert.ok(customerProfile)
+assert.deepEqual(customerProfile.autoTriggers, ['创建客户档案', '更新客户档案', '补全客户档案'])
+assert.equal(customerProfile.templatePath, 'references/客户档案模板.md')
+assert.equal(
+  core.matchLocalSkillInvocation('根据最新逐字稿创建客户档案', [customerProfile], { allowAutomatic: true }).automatic,
+  true,
+)
+assert.equal(
+  core.matchLocalSkillInvocation('客户档案模板应该怎么设计？', [customerProfile], { allowAutomatic: true }).kind,
+  'none',
+)
+assert.equal(
+  core.matchLocalSkillInvocation('根据最新逐字稿创建客户档案', [customerProfile]).kind,
+  'none',
+  '没有显式开启自动触发时保持旧的安全边界',
+)
+
 assert.equal(
   core.matchLocalSkillInvocation('用咨询简报技能处理当前笔记', [consultation, weekly]).skill
     .name,

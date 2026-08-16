@@ -39,7 +39,7 @@ assert.match(actions, /export async function saveAiImageToVault/)
 assert.match(actions, /mode: 'single'/, '当前笔记补图必须走插件专用单图接口')
 assert.match(
   main,
-  /const illustrationEdit = isArticleIllustrationEditIntent\(text\)[\s\S]*?const singleIllustration = Boolean\([\s\S]*?!illustrationEdit && !singleIllustration && isNoteEditIntent\(text\)/,
+  /const illustrationEdit = isArticleIllustrationEditIntent\(text\)[\s\S]*?const directNoteEdit = Boolean\([\s\S]*?!illustrationEdit[\s\S]*?!singleIllustration[\s\S]*?isNoteEditIntent\(text\)/,
   '修改或新增文章配图的请求不能误送进正文局部补丁协议',
 )
 assert.match(main, /noteImageIntent: singleIllustration/)

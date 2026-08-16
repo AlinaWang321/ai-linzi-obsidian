@@ -16,6 +16,7 @@ export class TFolder {
   constructor(path) { this.path = path; this.name = path.split('/').at(-1); this.children = [] }
 }
 export const normalizePath = (value) => value.replaceAll('\\\\', '/').replace(/^\\.\\//, '')
+export const parseYaml = () => ({})
 `
 
 const built = await esbuild.build({

@@ -34,8 +34,58 @@ create-note`
   assert.equal(result.blocks[0].name, 'consultation-brief')
   assert.equal(result.blocks[0].description, '把咨询逐字稿整理成客户可读简报')
   assert.equal(result.blocks[0].content, portable)
+  assert.deepEqual(result.blocks[0].files, [{ path: 'SKILL.md', content: portable }])
   assert.ok(!result.cleanText.includes('<<<'))
   console.log('  ✓ 标准 Skill 提取与标记剥离')
+}
+
+{
+  const bundle = `<<<新建Skill name=customer-profile>>>
+<<<Skill文件 path=SKILL.md>>>
+---
+name: customer-profile
+description: 按统一模板创建或更新客户档案
+---
+# 客户档案管理
+
+## AI霖子自动调用
+- 创建客户档案
+
+## AI霖子模板校验
+[模板](references/客户档案模板.md)
+<<<Skill文件结束>>>
+<<<Skill文件 path=references/客户档案模板.md>>>
+---
+客户称呼: "{{客户称呼}}"
+---
+# {{客户称呼}}
+<<<Skill文件结束>>>
+<<<新建Skill结束>>>`
+  const result = skill.extractCreateLocalSkillBlocks(bundle)
+  assert.equal(result.blocks.length, 1)
+  assert.equal(result.blocks[0].files.length, 2)
+  assert.equal(result.blocks[0].files[1].path, 'references/客户档案模板.md')
+  assert.equal(skill.normalizeSkillBundlePath('../secret.md'), null)
+  assert.equal(skill.normalizeSkillBundlePath('assets/theme.css'), 'assets/theme.css')
+  assert.equal(skill.normalizeSkillBundlePath('bin/run.exe'), null)
+  console.log('  ✓ 完整 Skill 文件夹与 references 安全提取')
+}
+
+{
+  const unsafeBundle = `<<<新建Skill name=customer-profile>>>
+<<<Skill文件 path=SKILL.md>>>
+---
+name: customer-profile
+description: 测试
+---
+# 测试
+<<<Skill文件结束>>>
+<<<Skill文件 path=../secret.md>>>
+越界
+<<<Skill文件结束>>>
+<<<新建Skill结束>>>`
+  assert.equal(skill.extractCreateLocalSkillBlocks(unsafeBundle).blocks.length, 0)
+  console.log('  ✓ Skill 子文件越界整包拒绝')
 }
 
 {

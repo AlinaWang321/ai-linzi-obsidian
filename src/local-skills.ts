@@ -37,6 +37,8 @@ export interface ActiveLocalSkillContext {
   directory: string
   entryPath: string
   linkedPaths: string[]
+  /** Skill 主动指定的结构校验模板；只在生成写入方案前本机读取。 */
+  templatePath?: string
   /** Mutable, process-only authorization: scripts must be completely read before execution. */
   fullyReadPaths: string[]
   /** Continuous read coverage from character zero; skipped ranges never authorize execution. */
@@ -45,7 +47,7 @@ export interface ActiveLocalSkillContext {
 
 export type ResolvedLocalSkillMatch =
   | Exclude<LocalSkillMatch, { kind: 'matched' }>
-  | { kind: 'matched'; skill: ResolvedLocalSkill }
+  | { kind: 'matched'; skill: ResolvedLocalSkill; automatic?: boolean }
 
 function parseFrontmatter(text: string): Record<string, unknown> {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text.replace(/^\uFEFF/, ''))
@@ -64,7 +66,8 @@ function parseFrontmatter(text: string): Record<string, unknown> {
  * 本地 Skill 注册表只存在当前 Obsidian 进程内：
  * - 不写 data.json；
  * - 不上传目录清单；
- * - 只在用户明确调用后发送被命中的单个 Skill 正文。
+ * - 只在用户明确调用，或命中 Skill 自己声明的完整自动触发短语后，
+ *   发送被命中的单个 Skill 正文。
  */
 export class LocalSkillRegistry {
   private cache = new Map<string, CachedLocalSkill>()
@@ -81,16 +84,36 @@ export class LocalSkillRegistry {
   context(skill: ResolvedLocalSkill): ActiveLocalSkillContext {
     const entryPath = skill.path.replace(/\\/g, '/')
     const directory = entryPath.split('/').slice(0, -1).join('/')
+    const linkedPaths = extractLinkedVaultPaths(
+      skill.fullContent,
+      directory,
+      this.root(),
+      this.app,
+    )
+    const descriptor = buildLocalSkillDescriptor(
+      skill.path,
+      parseFrontmatter(skill.fullContent),
+      skill.fullContent,
+      this.root(),
+    )
+    const templatePath = descriptor?.templatePath
+      ? localSkillLinkedPathCandidates(
+          descriptor.templatePath,
+          directory,
+          this.root(),
+        ).find((path) => linkedPaths.includes(path))
+      : undefined
+    if (descriptor?.templatePath && !templatePath) {
+      throw new Error(
+        `Skill《${skill.name}》指定的模板不存在或未被授权：${descriptor.templatePath}`,
+      )
+    }
     return {
       root: this.root(),
       directory,
       entryPath,
-      linkedPaths: extractLinkedVaultPaths(
-        skill.fullContent,
-        directory,
-        this.root(),
-        this.app,
-      ),
+      linkedPaths,
+      templatePath,
       fullyReadPaths: skill.entryTruncated ? [] : [entryPath],
       readThroughByPath: {
         [entryPath]: skill.entryTruncated ? skill.content.length : skill.fullContent.length,
@@ -136,11 +159,15 @@ export class LocalSkillRegistry {
     return (await this.refresh()).map((record) => record.descriptor)
   }
 
-  async resolve(message: string): Promise<ResolvedLocalSkillMatch> {
+  async resolve(
+    message: string,
+    options: { allowAutomatic?: boolean } = {},
+  ): Promise<ResolvedLocalSkillMatch> {
     const records = await this.refresh()
     const match = matchLocalSkillInvocation(
       message,
       records.map((record) => record.descriptor),
+      options,
     )
     if (match.kind !== 'matched') return match
     const record = records.find((item) => item.descriptor.path === match.skill.path)
@@ -153,6 +180,7 @@ export class LocalSkillRegistry {
     }
     return {
       kind: 'matched',
+      automatic: match.automatic,
       skill: {
         name: record.descriptor.name,
         description: record.descriptor.description,

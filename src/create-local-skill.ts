@@ -1,5 +1,5 @@
 /**
- * 对话直接创建本地 Skill · 标记块协议(v0.6.47)。
+ * 对话直接创建本地 Skill · 标记块协议(v0.6.47，v0.7.28 扩展文件夹)。
  *
  * 服务端只在用户明确要求创建工作流/Skill 时输出：
  *   <<<新建Skill name=consultation-brief>>>
@@ -24,6 +24,7 @@ export interface CreateLocalSkillBlock {
   name: string
   description: string
   content: string
+  files: { path: string; content: string }[]
 }
 
 export interface CreateLocalSkillExtraction {
@@ -32,10 +33,18 @@ export interface CreateLocalSkillExtraction {
 }
 
 export const CREATE_LOCAL_SKILL_MAX_BLOCKS = 1
+export const CREATE_LOCAL_SKILL_MAX_FILES = 12
+export const CREATE_LOCAL_SKILL_MAX_TOTAL_CHARS = 60_000
 export const PORTABLE_SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 const BLOCK_RE =
   /<<<新建Skill\s+name=([^>\n]{1,100})>>>\r?\n?([\s\S]*?)\r?\n?<<<新建Skill结束>>>/giu
+const FILE_BLOCK_RE =
+  /<<<Skill文件\s+path=([^>\n]{1,160})>>>\r?\n?([\s\S]*?)\r?\n?<<<Skill文件结束>>>/giu
+const TEXT_FILE_EXTENSIONS = new Set([
+  'md', 'txt', 'json', 'yaml', 'yml', 'toml', 'csv', 'html', 'htm', 'css', 'svg',
+  'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'py', 'ps1', 'sh',
+])
 
 function unquoteYamlScalar(value: string): string {
   const trimmed = value.trim()
@@ -55,6 +64,18 @@ function unquoteYamlScalar(value: string): string {
 
 export function isPortableSkillName(value: string): boolean {
   return value.length >= 1 && value.length <= 64 && PORTABLE_SKILL_NAME_RE.test(value)
+}
+
+export function normalizeSkillBundlePath(value: string): string | null {
+  const normalized = value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!normalized || normalized.length > 160 || /[\u0000-\u001f:*?"<>|]/.test(normalized)) return null
+  const parts = normalized.split('/')
+  if (parts.some((part) => !part || part === '.' || part === '..' || part.startsWith('.'))) return null
+  if (normalized.toLocaleLowerCase() === 'skill.md') return 'SKILL.md'
+  if (!['references', 'scripts', 'assets'].includes(parts[0].toLocaleLowerCase())) return null
+  if (parts.length < 2 || parts.length > 4) return null
+  const extension = parts.at(-1)?.split('.').at(-1)?.toLocaleLowerCase() ?? ''
+  return TEXT_FILE_EXTENSIONS.has(extension) ? parts.join('/') : null
 }
 
 /**
@@ -95,7 +116,45 @@ export function parsePortableSkillContent(
   ) {
     return null
   }
-  return { name, description, content }
+  return { name, description, content, files: [{ path: 'SKILL.md', content }] }
+}
+
+export function parsePortableSkillBundle(
+  markerName: string,
+  rawContent: string,
+): CreateLocalSkillBlock | null {
+  if (!/<<<Skill文件/iu.test(rawContent)) {
+    return parsePortableSkillContent(markerName, rawContent)
+  }
+  const files: { path: string; content: string }[] = []
+  let invalidFile = false
+  const remainder = rawContent.replace(FILE_BLOCK_RE, (_match, rawPath: string, rawFile: string) => {
+    const path = normalizeSkillBundlePath(rawPath)
+    const content = rawFile.replace(/^\uFEFF/, '').trim()
+    if (!path || !content || files.some((file) => file.path.toLocaleLowerCase() === path.toLocaleLowerCase())) {
+      invalidFile = true
+    } else {
+      files.push({ path, content })
+    }
+    return ''
+  }).trim()
+  if (
+    invalidFile ||
+    remainder ||
+    files.length === 0 ||
+    files.length > CREATE_LOCAL_SKILL_MAX_FILES ||
+    files.reduce((sum, file) => sum + file.content.length, 0) > CREATE_LOCAL_SKILL_MAX_TOTAL_CHARS
+  ) {
+    return null
+  }
+  const entry = files.find((file) => file.path === 'SKILL.md')
+  if (!entry) return null
+  const parsedEntry = parsePortableSkillContent(markerName, entry.content)
+  if (!parsedEntry) return null
+  return {
+    ...parsedEntry,
+    files,
+  }
 }
 
 export function extractCreateLocalSkillBlocks(text: string): CreateLocalSkillExtraction {
@@ -103,7 +162,7 @@ export function extractCreateLocalSkillBlocks(text: string): CreateLocalSkillExt
   const cleanText = text
     .replace(BLOCK_RE, (_match, rawName: string, rawContent: string) => {
       if (blocks.length < CREATE_LOCAL_SKILL_MAX_BLOCKS) {
-        const block = parsePortableSkillContent(rawName, rawContent)
+        const block = parsePortableSkillBundle(rawName, rawContent)
         if (block) blocks.push(block)
       }
       return ''

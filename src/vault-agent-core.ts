@@ -42,7 +42,8 @@ export type VaultOrganizeOperation =
   | {
       type: 'update_note'
       path: string
-      replacements: { old: string; new: string; all?: boolean; reason?: string }[]
+      replacements?: { old: string; new: string; all?: boolean; reason?: string }[]
+      frontmatter?: { old: string; new: string; reason?: string }
       reason?: string
     }
 
@@ -244,8 +245,25 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
   }
   if (type === 'update_note') {
     const path = normalizeVaultRelativePath(record.path)
-    const rawReplacements = Array.isArray(record.replacements) ? record.replacements : null
-    if (!path || !rawReplacements || rawReplacements.length === 0 || rawReplacements.length > VAULT_NOTE_UPDATE_MAX_OPERATIONS) {
+    const rawReplacements = Array.isArray(record.replacements) ? record.replacements : []
+    const rawFrontmatter = record.frontmatter && typeof record.frontmatter === 'object' && !Array.isArray(record.frontmatter)
+      ? (record.frontmatter as Record<string, unknown>)
+      : null
+    const frontmatterOld = rawFrontmatter ? boundedContent(rawFrontmatter.old, 12_000) : null
+    const frontmatterNew = rawFrontmatter ? boundedContent(rawFrontmatter.new, 12_000) : null
+    const frontmatter = rawFrontmatter && frontmatterOld && frontmatterNew && frontmatterOld !== frontmatterNew
+      ? {
+          old: frontmatterOld,
+          new: frontmatterNew,
+          reason: shortText(rawFrontmatter.reason, 240) || undefined,
+        }
+      : undefined
+    if (
+      !path ||
+      rawReplacements.length > VAULT_NOTE_UPDATE_MAX_OPERATIONS ||
+      (rawReplacements.length === 0 && !frontmatter) ||
+      (rawFrontmatter && !frontmatter)
+    ) {
       return null
     }
     const replacements = rawReplacements.map((item) => {
@@ -267,7 +285,10 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
     return {
       type,
       path,
-      replacements: replacements as Extract<VaultOrganizeOperation, { type: 'update_note' }>['replacements'],
+      replacements: replacements.length > 0
+        ? replacements as NonNullable<Extract<VaultOrganizeOperation, { type: 'update_note' }>['replacements']>
+        : undefined,
+      frontmatter,
       reason,
     }
   }
@@ -338,6 +359,7 @@ function isDraftOnlyWriteIntent(normalized: string): boolean {
 
 export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   const normalized = text.normalize('NFKC').toLocaleLowerCase()
+  if (isStructuredNoteWriteIntent(text)) return 'organize'
   // “确认前不要写入”是在要求预览 + 二次确认的安全写入流程，不等于取消写入。
   // 这类句子通常同时点名准确目标和追加/写入动作，必须先进入 organize，
   // 否则模型会只口头说“已读取”，却不给真正可执行的确认卡。
@@ -354,6 +376,18 @@ export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   )
     ? 'organize'
     : 'answer'
+}
+
+/**
+ * YAML/frontmatter、模板结构或客户档案字段不能走只修改正文的旧补丁协议。
+ * 这些明确请求必须进入带预检和二次确认的单笔记写入流程。
+ */
+export function isStructuredNoteWriteIntent(text: string): boolean {
+  const normalized = text.normalize('NFKC').toLocaleLowerCase()
+  const edit = /(?:修改|更新|补全|完善|统一|套用|按照|按|改成|改为|新增|添加|写入|覆盖)/.test(normalized)
+  const structure = /(?:yaml|frontmatter|文档属性|笔记属性|属性字段|统一模板|固定模板|客户档案模板|学员档案模板|tags?\b)/.test(normalized)
+  const customerProfile = /(?:客户档案|学员档案)/.test(normalized) && /(?:字段|模板|格式|结构|客户称呼|真实姓名|档案状态|咨询次数|咨询日期|报名日期|到期日期|续费日期|推荐人|微信id|手机号)/.test(normalized)
+  return edit && (structure || customerProfile)
 }
 
 /**

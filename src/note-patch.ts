@@ -19,6 +19,18 @@ export interface ApplyNotePatchResult {
   alreadyApplied: number
 }
 
+export interface NoteFrontmatterPatch {
+  /** 必须是目标笔记当前完整的 YAML/frontmatter（含两行 ---）。 */
+  old: string
+  /** 修改后的完整 YAML/frontmatter（含两行 ---）。 */
+  new: string
+  reason?: string
+}
+
+export interface ApplyStructuredNoteUpdateResult extends ApplyNotePatchResult {
+  frontmatterUpdated: boolean
+}
+
 const PATCH_OPEN = '<AI_LINZI_NOTE_PATCH>'
 const PATCH_CLOSE = '</AI_LINZI_NOTE_PATCH>'
 const MAX_OPERATIONS = 30
@@ -111,9 +123,31 @@ export function formatNotePatchMarkdown(patch: ParsedNotePatch): string {
   return `${patch.displayText}\n\n## 修改清单\n\n${blocks.join('\n\n---\n\n')}`.trim()
 }
 
-function splitFrontmatter(content: string): { frontmatter: string; body: string } {
+export function splitFrontmatter(content: string): { frontmatter: string; body: string } {
   const match = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)
   return match ? { frontmatter: match[0], body: content.slice(match[0].length) } : { frontmatter: '', body: content }
+}
+
+function normalizeFrontmatterBlock(value: string): string {
+  return value.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim()
+}
+
+export function isCompleteFrontmatterBlock(value: string): boolean {
+  const normalized = normalizeFrontmatterBlock(value)
+  return /^---\n[\s\S]*\n---$/.test(normalized)
+}
+
+/** 供整篇替换与预检共用；只替换正文，原 YAML 原样保留。 */
+export function replaceNoteBody(content: string, body: string): string {
+  const { frontmatter } = splitFrontmatter(content)
+  return `${frontmatter}${body.trim()}\n`
+}
+
+/** 供追加执行与预检共用，重复内容不会再次追加。 */
+export function appendNoteContent(content: string, addition: string): string {
+  const normalized = addition.trim()
+  if (content.includes(normalized)) return content
+  return `${content.trimEnd()}\n\n${normalized}\n`
 }
 
 /**
@@ -189,4 +223,45 @@ export function applyNotePatch(content: string, patch: ParsedNotePatch): ApplyNo
   }
 
   return { content: frontmatter + draft, replacements, alreadyApplied }
+}
+
+/**
+ * 在一次原子计算中同时预演正文局部修改与完整 frontmatter 更新。
+ * frontmatter 必须完整、逐字对应当前内容；任何一处不匹配都会抛错，调用方不会写盘。
+ */
+export function applyStructuredNoteUpdate(
+  content: string,
+  replacements: NotePatchOperation[] = [],
+  frontmatterPatch?: NoteFrontmatterPatch,
+): ApplyStructuredNoteUpdateResult {
+  const patchedBody = replacements.length > 0
+    ? applyNotePatch(content, { displayText: '', operations: replacements })
+    : { content, replacements: 0, alreadyApplied: 0 }
+  if (!frontmatterPatch) {
+    return { ...patchedBody, frontmatterUpdated: false }
+  }
+  if (!isCompleteFrontmatterBlock(frontmatterPatch.old) || !isCompleteFrontmatterBlock(frontmatterPatch.new)) {
+    throw new Error('YAML 属性修改必须提供包含两行 --- 的完整原文和完整新内容，笔记未写入。')
+  }
+  const current = splitFrontmatter(patchedBody.content)
+  if (!current.frontmatter) {
+    throw new Error('目标笔记没有 YAML 属性，无法按原文安全更新，笔记未写入。')
+  }
+  const currentNormalized = normalizeFrontmatterBlock(current.frontmatter)
+  const oldNormalized = normalizeFrontmatterBlock(frontmatterPatch.old)
+  const newNormalized = normalizeFrontmatterBlock(frontmatterPatch.new)
+  if (currentNormalized === newNormalized) {
+    return { ...patchedBody, frontmatterUpdated: false, alreadyApplied: patchedBody.alreadyApplied + 1 }
+  }
+  if (currentNormalized !== oldNormalized) {
+    throw new Error('YAML 属性原文与目标笔记不一致，笔记未写入。请让 AI 重新读取后再生成方案。')
+  }
+  const newline = content.includes('\r\n') ? '\r\n' : '\n'
+  const nextFrontmatter = `${newNormalized.replace(/\n/g, newline)}${newline}`
+  return {
+    content: nextFrontmatter + current.body,
+    replacements: patchedBody.replacements,
+    alreadyApplied: patchedBody.alreadyApplied,
+    frontmatterUpdated: true,
+  }
 }

@@ -1,4 +1,4 @@
-import { App, TFile, TFolder, normalizePath } from 'obsidian'
+import { App, TFile, TFolder, normalizePath, parseYaml } from 'obsidian'
 import { isLocalSearchExtension } from './local-document-text'
 import { LocalVaultSearch } from './vault-search'
 import {
@@ -12,7 +12,13 @@ import {
 } from './vault-agent-core'
 import type { ActiveLocalSkillContext } from './local-skills'
 import { extendContiguousRead, localSkillLinkedPathCandidates } from './local-skill-core'
-import { applyNotePatch } from './note-patch'
+import {
+  appendNoteContent,
+  applyStructuredNoteUpdate,
+  replaceNoteBody,
+  splitFrontmatter,
+} from './note-patch'
+import { validateMarkdownAgainstTemplate } from './skill-template'
 
 const TOOL_OUTPUT_MAX_CHARS = 20_000
 const READ_NOTE_MAX_CHARS = 16_000
@@ -93,6 +99,77 @@ export class LocalVaultAgent {
         return { path: file.path, mtime: file.stat.mtime, size: file.stat.size }
       })
       .filter((snapshot): snapshot is VaultWriteSnapshot => Boolean(snapshot))
+  }
+
+  private validateYamlFrontmatter(content: string): void {
+    const { frontmatter } = splitFrontmatter(content)
+    if (!frontmatter) return
+    const yaml = frontmatter
+      .replace(/^---\r?\n/, '')
+      .replace(/\r?\n---(?:\r?\n|$)$/, '')
+    let parsed: unknown
+    try {
+      parsed = parseYaml(yaml)
+    } catch {
+      throw new Error('待写入的 YAML 属性格式无效')
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('待写入的 YAML 属性必须是键值结构')
+    }
+  }
+
+  private async previewNoteWrite(
+    operation: Extract<VaultOrganizePlan['operations'][number], {
+      type: 'create_note' | 'append_note' | 'replace_note' | 'update_note'
+    }>,
+  ): Promise<string> {
+    if (operation.type === 'create_note') {
+      if (this.app.vault.getAbstractFileByPath(operation.path)) {
+        throw new Error(`目标笔记已存在，不能覆盖：${operation.path}`)
+      }
+      this.validateYamlFrontmatter(operation.content)
+      return `${operation.content.trim()}\n`
+    }
+    const file = this.app.vault.getAbstractFileByPath(operation.path)
+    if (!(file instanceof TFile)) throw new Error(`目标笔记不存在：${operation.path}`)
+    const content = await this.app.vault.cachedRead(file)
+    const next = operation.type === 'append_note'
+      ? appendNoteContent(content, operation.content)
+      : operation.type === 'replace_note'
+        ? replaceNoteBody(content, operation.content)
+        : applyStructuredNoteUpdate(
+            content,
+            operation.replacements ?? [],
+            operation.frontmatter,
+          ).content
+    this.validateYamlFrontmatter(next)
+    return next
+  }
+
+  /**
+   * 确认卡出现前先在本机做一次完整 dry-run。失败只返回给工具循环重做方案，
+   * 用户不会再看到一个注定无法执行的按钮。
+   */
+  async preflightPlan(
+    plan: VaultOrganizePlan,
+    skillContext?: ActiveLocalSkillContext,
+  ): Promise<void> {
+    const writeOperation = plan.operations.length === 1 &&
+      (plan.operations[0].type === 'create_note' ||
+        plan.operations[0].type === 'append_note' ||
+        plan.operations[0].type === 'replace_note' ||
+        plan.operations[0].type === 'update_note')
+      ? plan.operations[0]
+      : undefined
+    if (!writeOperation) return
+    const preview = await this.previewNoteWrite(writeOperation)
+    if (!skillContext?.templatePath) return
+    const templateFile = this.app.vault.getAbstractFileByPath(skillContext.templatePath)
+    if (!(templateFile instanceof TFile)) {
+      throw new Error(`Skill 模板已经移动或删除：${skillContext.templatePath}`)
+    }
+    const template = await this.app.vault.cachedRead(templateFile)
+    validateMarkdownAgainstTemplate(preview, template)
   }
 
   async executeCalls(
@@ -438,9 +515,9 @@ export class LocalVaultAgent {
             throw new Error(`目标笔记在确认前已经变化，已停止写入：${operation.path}`)
           }
           await this.app.vault.process(file, (content) => {
-            const addition = operation.content.trim()
-            if (content.includes(addition)) return content
-            return `${content.trimEnd()}\n\n${addition}\n`
+            const next = appendNoteContent(content, operation.content)
+            this.validateYamlFrontmatter(next)
+            return next
           })
           updatedNotes.push(operation.path)
         } else if (operation.type === 'replace_note') {
@@ -454,8 +531,9 @@ export class LocalVaultAgent {
             throw new Error(`目标笔记在确认前已经变化，已停止写入：${operation.path}`)
           }
           await this.app.vault.process(file, (content) => {
-            const frontmatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0] ?? ''
-            return `${frontmatter}${operation.content.trim()}\n`
+            const next = replaceNoteBody(content, operation.content)
+            this.validateYamlFrontmatter(next)
+            return next
           })
           updatedNotes.push(operation.path)
         } else {
@@ -468,12 +546,15 @@ export class LocalVaultAgent {
           ) {
             throw new Error(`目标笔记在确认前已经变化，已停止写入：${operation.path}`)
           }
-          await this.app.vault.process(file, (content) =>
-            applyNotePatch(content, {
-              displayText: '',
-              operations: operation.replacements,
-            }).content,
-          )
+          await this.app.vault.process(file, (content) => {
+            const next = applyStructuredNoteUpdate(
+              content,
+              operation.replacements ?? [],
+              operation.frontmatter,
+            ).content
+            this.validateYamlFrontmatter(next)
+            return next
+          })
           updatedNotes.push(operation.path)
         }
       }
