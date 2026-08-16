@@ -81,11 +81,15 @@ export function isInsideOutputFolder(path: string, outputFolder: string): boolea
   return Boolean(root && (clean === root || clean.startsWith(`${root}/`)))
 }
 
-/** 排除配图提示词、平台数据等辅助文件；这些 Markdown 不是内容卡片。 */
+/**
+ * 内容看板只统计三类可发布内容：公众号文章、口播脚本、小红书。
+ * 其他 AI霖子输出（选题、朋友圈、销售复盘、客户档案等）不属于内容看板口径。
+ */
 export function isDashboardContentPath(path: string, outputFolder: string): boolean {
   if (!isInsideOutputFolder(path, outputFolder)) return false
   const relative = cleanPath(path).slice(cleanPath(outputFolder).length).replace(/^\//, '')
-  return !/^(?:公众号文章\/配图|内容看板)(?:\/|$)/.test(relative)
+  if (/^公众号文章\/配图(?:\/|$)/.test(relative)) return false
+  return /^(?:公众号文章|口播脚本|小红书)(?:\/|$)/.test(relative)
 }
 
 function cleanPath(value: string): string {

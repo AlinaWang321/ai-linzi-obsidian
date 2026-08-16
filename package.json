@@ -1,6 +1,6 @@
 {
 	"name": "ai-linzi-obsidian-plugin",
-	"version": "0.7.26",
+	"version": "0.7.27",
 	"description": "AI霖子 Obsidian 插件",
 	"license": "MIT",
 	"main": "main.js",

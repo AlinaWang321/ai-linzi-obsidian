@@ -19,10 +19,23 @@ assert.equal(state.isInsideOutputFolder('AI霖子输出/公众号文章/测试.m
 assert.equal(state.isInsideOutputFolder('AI霖子输出2/测试.md', 'AI霖子输出'), false)
 assert.equal(state.isInsideOutputFolder('04_Output/公众号文章/测试.md', 'AI霖子输出'), false)
 assert.equal(state.isDashboardContentPath('AI霖子输出/公众号文章/2026.07.21_测试.md', 'AI霖子输出'), true)
+assert.equal(state.isDashboardContentPath('AI霖子输出/口播脚本/2026.07.21_测试.md', 'AI霖子输出'), true)
+assert.equal(state.isDashboardContentPath('AI霖子输出/小红书/2026.07.21_测试.md', 'AI霖子输出'), true)
+assert.equal(state.isDashboardContentPath('自定义输出/小红书/2026.07.21_测试.md', '自定义输出'), true)
 assert.equal(
   state.isDashboardContentPath('AI霖子输出/公众号文章/配图/测试/AI霖子正文配图_PROMPTS.md', 'AI霖子输出'),
   false,
 )
+for (const path of [
+  'AI霖子输出/2026.07.21_根目录文章.md',
+  'AI霖子输出/选题/2026.07.21_测试.md',
+  'AI霖子输出/朋友圈/2026.07.21_测试.md',
+  'AI霖子输出/销售复盘/2026.07.21_测试.md',
+  'AI霖子输出/客户档案/2026.07.21_测试.md',
+  'AI霖子输出/内容看板/平台数据.md',
+]) {
+  assert.equal(state.isDashboardContentPath(path, 'AI霖子输出'), false, `${path} 不应进入内容看板`)
+}
 
 const base = {
   path: 'AI霖子输出/2026.07.21_测试.md',
