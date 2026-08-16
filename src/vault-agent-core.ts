@@ -624,10 +624,32 @@ function isVaultCountQuestion(text: string): boolean {
  * 这里只做协议级完成校验，不判断答案是否正确；准确性仍由本机全量统计、
  * list_folder/read_note 等确定性工具和最终证据共同保证。
  */
+/**
+ * 句级结构判定：最终答复的收尾句是否在宣告「我接下来还要做本机动作」。
+ * 一个真正完成的回答不会以宣告后续读取/整理收尾；面向用户的建议
+ * （句中含「你/您」）不算。这比逐词扩充承诺正则稳健：换措辞逃不掉句式。
+ */
+export function isTrailingActionAnnouncement(answer: string): boolean {
+  const normalized = answer.normalize('NFKC').replace(/\s+/g, '').trim()
+  const sentences = normalized.split(/[。！？!?]/).filter(Boolean)
+  const last = sentences.at(-1) ?? ''
+  if (!last) return false
+  // 「建议你继续读」＝用户是执行者，豁免；「给你一份预览」的你只是接收者，不豁免。
+  if (/[你您](?:们)?[^，,；;]{0,4}(?:继续|再|先|去|可以|试|读|查|看|翻)/.test(last)) return false
+  // 「需要的话我可以继续…」是条件式主动提议，不是把承诺当结论。
+  if (/(?:需要|如果|若|要不要|想不想|吗)/.test(last)) return false
+  return (
+    /我/.test(last) &&
+    /(?:继续|接下来|然后|稍后|随后|下一步|现在|马上|立刻|这就|先)/.test(last) &&
+    /(?:读取|检索|搜索|查|核对|翻阅|整理|生成|输出|追加|写入|补进|补充|更新)/.test(last)
+  )
+}
+
 export function vaultAnswerRetryReason(
   question: string,
   answer: string,
 ): VaultAnswerRetryReason | undefined {
+  if (isTrailingActionAnnouncement(answer)) return 'deferred_answer'
   const normalized = answer.normalize('NFKC').replace(/\s+/g, ' ').trim()
   const deferred =
     /(?:等我|待我|稍后|接下来|下一步|我先|我会继续).{0,120}(?:查|检索|核对|去重|统计|检查|读取|翻阅).{0,120}(?:再|然后|之后|后|就会).{0,80}(?:给你|告诉你|回复|回答|汇报|输出|准确|结果|结论|场次|数量)/.test(

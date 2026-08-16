@@ -133,4 +133,42 @@ console.log('[test-vault-task-state]')
   console.log('  ✓ 7. 任务超时自动作废')
 }
 
+// ── 8. 收尾句宣告后续动作 = 未完成（真实 Luna E2E 中捕获的逃逸措辞）──
+{
+  // 2026-08-17 生产 Luna 实测原话：绕过所有旧正则，必须被句级判定拦下
+  assert.equal(
+    core.isTrailingActionAnnouncement(
+      '小霖，我先确认了：小B一共做过 2 次咨询，分别是 2026-08-10 和 2026-08-15。我现在继续读取最近一次咨询的完整内容，再把可核实的要点整理成客户档案追加方案。',
+    ),
+    true,
+  )
+  assert.equal(
+    core.vaultAnswerRetryReason('小B做过几次咨询？帮我补进她的客户档案', '我现在继续读取档案原文，然后生成追加方案。'),
+    'deferred_answer',
+  )
+  // 完整答案不误伤
+  assert.equal(
+    core.isTrailingActionAnnouncement('小B一共做过 2 次咨询，分别是 8 月 10 日和 8 月 15 日。'),
+    false,
+  )
+  // E2E 逃逸变体 #2（2026-08-17 实测）：「你」是接收者不是执行者，必须拦
+  assert.equal(
+    core.isTrailingActionAnnouncement(
+      '我查到小B之前一共做过 2 次咨询。我先读取最近一次咨询逐字稿和她现有客户档案，整理完后给你一份追加内容预览，确认后再写入。',
+    ),
+    true,
+  )
+  // 面向用户的建议不误伤（「你」是执行者）
+  assert.equal(
+    core.isTrailingActionAnnouncement('建议你之后继续读取那两份逐字稿，效果更好。'),
+    false,
+  )
+  // 条件式主动提议不误伤
+  assert.equal(
+    core.isTrailingActionAnnouncement('需要的话我可以继续帮你补充更多标题。'),
+    false,
+  )
+  console.log('  ✓ 8. 收尾句宣告「我继续读取/整理」不能作为终态')
+}
+
 console.log('[test-vault-task-state] 全部通过')
