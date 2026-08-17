@@ -13,7 +13,9 @@
  */
 import type { ParsedXhsCardDocument, XhsCardBlock } from './xhs-card-core'
 import {
+  findStructuralCut,
   shouldUseXhsSideBySideLayout,
+  sliceXhsBlockText,
   XHS_BODY_IMAGE_MAX_HEIGHT,
   XHS_SIDE_IMAGE_MAX_HEIGHT,
   XHS_SIDE_IMAGE_WIDTH,
@@ -268,6 +270,82 @@ function drawContainedImage(
 }
 
 // ── 经典/黑白极简:封面页 + 正文页 ────────────────────
+
+export interface CoverFillResult {
+  coverBlocks: XhsCardBlock[]
+  remainingBlocks: XhsCardBlock[]
+}
+
+/**
+ * 把封面装满(2026-08-17 Alina 拍板:封面与正文页一样,不留大空白):
+ * 用与 drawCover 完全相同的字体几何预演光标,按块装填;段落/引用装不下时
+ * 按句读(限最后一行内回退)或行边界切开装满封面,剩余接到正文页。
+ * 标题块不切(本就短),遇到正文配图停止(配图属于正文页)。
+ * 短文章因此可能一张封面卡装完,不再产生稀疏的第二页。
+ */
+export function fillCoverBlocks(
+  context: Ctx,
+  palette: XhsPagePalette,
+  document: ParsedXhsCardDocument,
+  coverImage: DrawableImage | null,
+  blocks: XhsCardBlock[],
+): CoverFillResult {
+  setFont(context, 58, 700, palette.headingFamily)
+  const titleLines = wrapText(context, document.title, 940).slice(0, 4)
+  let cursor = 108 + titleLines.length * 76 + 14
+  if (document.excerpt) {
+    setFont(context, 27, 400, palette.headingFamily)
+    cursor += wrapText(context, document.excerpt, 938).slice(0, coverImage ? 2 : 4).length * 43 + 20
+  }
+  if (coverImage) {
+    const scale = Math.min(940 / coverImage.naturalWidth, 420 / coverImage.naturalHeight)
+    cursor += coverImage.naturalHeight * scale + 30
+  }
+  const limit = palette.showPageNumber ? 1330 : 1360
+
+  const coverBlocks: XhsCardBlock[] = []
+  const remainingBlocks: XhsCardBlock[] = []
+  for (const block of blocks) {
+    if (remainingBlocks.length > 0 || block.kind === 'image') {
+      remainingBlocks.push(block)
+      continue
+    }
+    if (block.kind === 'heading') {
+      setFont(context, 34, 700, palette.headingFamily)
+      const height = 28 + wrapText(context, block.text, 900).length * 50 + 24
+      if (cursor + height > limit) {
+        remainingBlocks.push(block)
+        continue
+      }
+      coverBlocks.push(block)
+      cursor += height
+      continue
+    }
+    const quote = block.kind === 'quote'
+    const gap = quote ? 24 : 28
+    const wrap = (target: XhsCardBlock) =>
+      wrapRichText(context, target, quote ? 870 : 940, 29, quote ? 500 : 400, 700, 0, palette.bodyFamily, palette.kinsoku)
+    const lines = wrap(block)
+    const height = lines.length * 52 + gap
+    if (cursor + height <= limit) {
+      coverBlocks.push(block)
+      cursor += height
+      continue
+    }
+    const fitLines = Math.floor((limit - cursor - gap) / 52)
+    if (fitLines < 1 || fitLines >= lines.length) {
+      remainingBlocks.push(block)
+      continue
+    }
+    const cut = findStructuralCut(block.text, lines[fitLines].start, lines[fitLines - 1].start)
+    const head = sliceXhsBlockText(block, 0, cut)
+    const tail = sliceXhsBlockText(block, cut, block.text.length)
+    coverBlocks.push(head)
+    cursor = limit
+    if (tail.text.trim()) remainingBlocks.push(tail)
+  }
+  return { coverBlocks, remainingBlocks }
+}
 
 export function drawCover(
   context: Ctx,

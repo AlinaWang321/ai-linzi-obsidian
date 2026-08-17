@@ -515,26 +515,52 @@ export interface XTweetLayoutBudget {
   paragraphGap: number
   /** 图片下间距(px) */
   imageGap: number
-  /** 文本块按当前字体真实换行后的行数(运行时用 canvas 测量,测试注入估算) */
-  lineCount: (block: XhsCardBlock) => number
+  /** 文本块按当前字体真实换行的各行起始字符位(运行时用 canvas 测量,测试注入估算) */
+  wrapLines: (block: XhsCardBlock) => { start: number }[]
   /** 图片块绘制高度(调用方已按最大高度钳制) */
   imageHeight: (block: XhsCardBlock) => number
 }
 
+/** 按字符区间切出子块,加粗区间同步换算;from=0 时保留章节序号。 */
+export function sliceXhsBlockText(block: XhsCardBlock, from: number, to: number): XhsCardBlock {
+  const boldRanges = (block.boldRanges ?? [])
+    .map((range) => ({
+      start: Math.max(range.start, from) - from,
+      end: Math.min(range.end, to) - from,
+    }))
+    .filter((range) => range.start < range.end)
+  return {
+    ...block,
+    text: block.text.slice(from, to),
+    sectionIndex: from === 0 ? block.sectionIndex : undefined,
+    boldRanges,
+  }
+}
+
+const SENTENCE_END = new Set('。！？；…!?;')
+
 /**
- * X 风格分页:严格按块边界装页——当前页装不下整块就整块翻到下一张,
- * 永不从段落中间切开,配合 pageBodyHeight 硬边界,正文不可能压进底部互动条。
- * 超长段落先按 charLimit 预切(splitLongText 句读优先),保证单块必然小于一页;
- * 最后一张卡短一点是有意设计(推文本就长短不一),不做填充。
+ * 在 (minOffset, maxOffset] 内找最靠后的句读切点;找不到就按行边界(maxOffset)切。
+ * minOffset 限定只在装得下的最后一行内回退,避免句子太长时切点大幅提前、
+ * 页尾重新出现大段空白——为对齐句读最多牺牲一行。
+ */
+export function findStructuralCut(text: string, maxOffset: number, minOffset: number): number {
+  for (let index = Math.min(maxOffset, text.length) - 1; index > minOffset; index--) {
+    if (SENTENCE_END.has(text[index])) return index + 1
+  }
+  return maxOffset
+}
+
+/**
+ * X 风格分页(2026-08-17 Alina 二次拍板:装满优先):每页尽量装满,文本块
+ * 装不下时按结构切断——优先句读、其次行边界——装满当前页,剩余接到下一页;
+ * 不把整段搬走留大空白。图片不可切,装不下才整张翻页。pageBodyHeight 是
+ * 硬边界,切分后逐块重测行数,正文不可能压进底部互动条。
  */
 export function paginateXTweetBlocks(
   blocks: XhsCardBlock[],
   budget: XTweetLayoutBudget,
-  charLimit = 160,
 ): XhsCardPage[] {
-  const normalized = blocks.flatMap((block) =>
-    block.kind === 'image' ? [block] : splitBlock(block, charLimit),
-  )
   const pages: XhsCardPage[] = []
   let current: XhsCardBlock[] = []
   let used = 0
@@ -543,14 +569,43 @@ export function paginateXTweetBlocks(
     current = []
     used = 0
   }
-  for (const block of normalized) {
-    const height =
-      block.kind === 'image'
-        ? budget.imageHeight(block) + budget.imageGap
-        : budget.lineCount(block) * budget.lineHeight + budget.paragraphGap
-    if (current.length > 0 && used + height > budget.pageBodyHeight) flush()
-    current.push(block)
-    used += height
+
+  for (const block of blocks) {
+    if (block.kind === 'image') {
+      const height = budget.imageHeight(block) + budget.imageGap
+      if (current.length > 0 && used + height > budget.pageBodyHeight) flush()
+      current.push(block)
+      used += height
+      continue
+    }
+    let rest: XhsCardBlock | null = block
+    while (rest) {
+      const lines = budget.wrapLines(rest)
+      const height = lines.length * budget.lineHeight + budget.paragraphGap
+      if (used + height <= budget.pageBodyHeight) {
+        current.push(rest)
+        used += height
+        rest = null
+        continue
+      }
+      const remaining = budget.pageBodyHeight - used - budget.paragraphGap
+      const fitLines = Math.floor(remaining / budget.lineHeight)
+      // 本页剩余空间连一行都放不下:翻页后在整页空间里重新装填
+      if (current.length > 0 && (fitLines < 1 || fitLines >= lines.length)) {
+        flush()
+        continue
+      }
+      // 空页兜底钳制:至少切一行、至多留一行给尾块,保证每轮严格前进
+      const safeFit = Math.min(Math.max(fitLines, 1), lines.length - 1)
+      const lineCut = lines[safeFit].start
+      const cut = findStructuralCut(rest.text, lineCut, lines[safeFit - 1].start)
+      const head = sliceXhsBlockText(rest, 0, cut)
+      // 句读回退被限制在最后一行内,head 必然仍装得下(≤ safeFit 行)
+      current.push(head)
+      flush()
+      rest = sliceXhsBlockText(rest, cut, rest.text.length)
+      if (!rest.text.trim()) rest = null
+    }
   }
   flush()
   return pages

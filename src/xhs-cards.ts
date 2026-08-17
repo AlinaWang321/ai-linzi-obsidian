@@ -7,7 +7,6 @@ import {
   paginateXTweetBlocks,
   parseXhsCardDocument,
   stableContentFingerprint,
-  takeXhsCoverIntro,
   type XhsCardBlock,
 } from './xhs-card-core'
 import {
@@ -16,6 +15,7 @@ import {
   drawBodyPage,
   drawCover,
   drawXTweetPage,
+  fillCoverBlocks,
   paletteForStyle,
   wrapRichText,
   X_TWEET_LAYOUT,
@@ -201,6 +201,9 @@ export async function generateXhsCardPackage(
 
   const styleId: XhsCardStyleId = input.style ?? 'classic'
   const palette = paletteForStyle(styleId)
+  const measureCanvas = window.document.createElement('canvas')
+  const measure = measureCanvas.getContext('2d')
+  if (!measure) throw new Error('当前环境不支持 Canvas，无法生成卡片')
   let renderPage: (context: CanvasRenderingContext2D, index: number) => void
   let total: number
   if (styleId === 'x-dark') {
@@ -219,17 +222,14 @@ export async function generateXhsCardPackage(
             : block,
       ),
     ]
-    const measureCanvas = window.document.createElement('canvas')
-    const measure = measureCanvas.getContext('2d')
-    if (!measure) throw new Error('当前环境不支持 Canvas，无法生成卡片')
     const L = X_TWEET_LAYOUT
     const xPages = paginateXTweetBlocks(flattened, {
       pageBodyHeight: L.bodyBottom - L.bodyTop,
       lineHeight: L.lineHeight,
       paragraphGap: L.paragraphGap,
       imageGap: L.imageGap,
-      lineCount: (block) =>
-        wrapRichText(measure, block, L.bodyWidth, L.fontSize, 400, 700, 0, 'sans', true).length,
+      wrapLines: (block) =>
+        wrapRichText(measure, block, L.bodyWidth, L.fontSize, 400, 700, 0, 'sans', true),
       imageHeight: (block) => {
         const image = sourceImages.get(block)
         if (!image) return 0
@@ -259,7 +259,14 @@ export async function generateXhsCardPackage(
     renderPage = (context, index) =>
       drawXTweetPage(context, xPages[index]?.blocks ?? [], sourceImages, options)
   } else {
-    const { coverBlocks, remainingBlocks } = takeXhsCoverIntro(renderableBlocks)
+    // 封面与正文页同规则装满(2026-08-17 Alina 拍板);短文章可单卡装完
+    const { coverBlocks, remainingBlocks } = fillCoverBlocks(
+      measure,
+      palette,
+      parsed,
+      coverImage,
+      renderableBlocks,
+    )
     const pages = remainingBlocks.length > 0 ? paginateXhsCardBlocks(remainingBlocks) : []
     total = pages.length + 1
     renderPage = (context, index) => {

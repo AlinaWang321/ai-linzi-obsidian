@@ -328,51 +328,105 @@ assert.ok(endingImagePage?.blocks.some((block) => block.kind !== 'image'))
 assert.equal(cards.stableContentFingerprint('same'), cards.stableContentFingerprint('same'))
 assert.notEqual(cards.stableContentFingerprint('same'), cards.stableContentFingerprint('different'))
 
-// ── X 推文风分页:块边界 + 硬边界不可越过 ──────────────
+// ── X 推文风分页:装满优先(句读/行边界切分)+ 硬边界不可越过 ──
+const X_PER_LINE = 20
 const X_BUDGET = {
-  pageBodyHeight: 878,
+  pageBodyHeight: 878, // floor((878-44)/82)=10 行/页
   lineHeight: 82,
   paragraphGap: 44,
   imageGap: 40,
-  // 估算测量:CJK 字宽≈字号,920px 一行约 20 字
-  lineCount: (block) => Math.max(1, Math.ceil(block.text.length / 20)),
+  // 估算测量:CJK 字宽≈字号,一行 20 字
+  wrapLines: (block) => {
+    const count = Math.max(1, Math.ceil(block.text.length / X_PER_LINE))
+    return Array.from({ length: count }, (_, index) => ({ start: index * X_PER_LINE }))
+  },
   imageHeight: () => 400,
 }
 const xBlockHeight = (block) =>
   block.kind === 'image'
     ? X_BUDGET.imageHeight(block) + X_BUDGET.imageGap
-    : X_BUDGET.lineCount(block) * X_BUDGET.lineHeight + X_BUDGET.paragraphGap
+    : X_BUDGET.wrapLines(block).length * X_BUDGET.lineHeight + X_BUDGET.paragraphGap
 
 const xParagraph = (text) => ({ kind: 'paragraph', text })
-const xPages = cards.paginateXTweetBlocks(
-  [
-    xParagraph('第一段,大约四十个字。'.repeat(4)),
-    xParagraph('第二段短句。'),
-    { kind: 'image', text: '', imageSource: 'a.png' },
-    xParagraph('第三段,继续写一些内容让分页发生。'.repeat(5)),
-    xParagraph('第四段结尾。'),
-  ],
-  X_BUDGET,
-)
+const xSentence = '这一句正好二十个字用来测试分页效果好。' // 19 字 + 句号
+const xInput = [
+  xParagraph(xSentence.repeat(9)), // 180 字 = 9 行,占满近一页
+  xParagraph(xSentence.repeat(9)),
+  { kind: 'image', text: '', imageSource: 'a.png' },
+  xParagraph('尾段收束。'),
+]
+const xPages = cards.paginateXTweetBlocks(xInput, X_BUDGET)
 assert.ok(xPages.length >= 2, 'X 分页应产生多页')
 for (const page of xPages) {
   const used = page.blocks.reduce((sum, block) => sum + xBlockHeight(block), 0)
   assert.ok(used <= X_BUDGET.pageBodyHeight, `每页内容高度(${used})不得超过正文区硬边界`)
 }
-// 块边界:所有输入文本原样出现在输出里,长段被句读预切但不丢字
-const xJoined = xPages.flatMap((page) => page.blocks.map((block) => block.text)).join('')
-assert.ok(xJoined.includes('第二段短句。') && xJoined.includes('第四段结尾。'))
-
-// 超长单段必须被预切成小于一页的块,而不是原样超页
-const longPages = cards.paginateXTweetBlocks([xParagraph('长句子不断重复。'.repeat(80))], X_BUDGET)
-for (const page of longPages) {
-  for (const block of page.blocks) {
-    assert.ok(
-      xBlockHeight(block) <= X_BUDGET.pageBodyHeight,
-      '超长段落必须先按句读预切,单块不得超过一页',
-    )
-  }
+// 装满优先:除最后一页外,每页剩余空间必须放不下下一行(松弛 < 一行+段距)
+for (let index = 0; index < xPages.length - 1; index++) {
+  const used = xPages[index].blocks.reduce((sum, block) => sum + xBlockHeight(block), 0)
+  const nextIsImage = xPages[index + 1].blocks[0]?.kind === 'image'
+  const nextNeed = nextIsImage ? 440 : X_BUDGET.lineHeight + X_BUDGET.paragraphGap
+  assert.ok(
+    X_BUDGET.pageBodyHeight - used < nextNeed,
+    `第 ${index + 1} 页应装满(剩余 ${X_BUDGET.pageBodyHeight - used}px 还装得下下一块的开头)`,
+  )
 }
+// 切分优先句读:被切开的页尾文本块以句读结尾
+const firstPageLastText = xPages[0].blocks.filter((block) => block.kind !== 'image').at(-1)
+assert.match(firstPageLastText.text, /[。！？；…!?;]$/, '页尾切点应落在句读上')
+// 不丢字:输入输出全文一致
+const xJoined = xPages.flatMap((page) => page.blocks.filter((b) => b.kind !== 'image').map((b) => b.text)).join('')
+assert.equal(xJoined, xInput.filter((b) => b.kind !== 'image').map((b) => b.text).join(''))
+// 图片不可切:整张出现且只出现一次
+assert.equal(xPages.flatMap((page) => page.blocks.filter((b) => b.kind === 'image')).length, 1)
+
+// 超长单段(无句读)在整页空间里按行边界连续切,页页装满且不丢字
+const noPunct = '连续不断没有标点的长句子'.repeat(40)
+const longPages = cards.paginateXTweetBlocks([xParagraph(noPunct)], X_BUDGET)
+assert.ok(longPages.length >= 2)
+for (const page of longPages) {
+  const used = page.blocks.reduce((sum, block) => sum + xBlockHeight(block), 0)
+  assert.ok(used <= X_BUDGET.pageBodyHeight)
+}
+assert.equal(longPages.flatMap((p) => p.blocks.map((b) => b.text)).join(''), noPunct)
+
+// ── 封面装满(fillCoverBlocks):与正文页同规则,不留大空白 ──
+const renderResult = await build({
+  entryPoints: ['src/xhs-card-render.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  write: false,
+  logLevel: 'silent',
+})
+const renderModule = { exports: {} }
+new Function('module', 'exports', renderResult.outputFiles[0].text)(renderModule, renderModule.exports)
+const renderLib = renderModule.exports
+const stubCtx = { font: '', measureText: (text) => ({ width: Array.from(text).length * 20 }) }
+const coverDoc = { title: '短标题', excerpt: '', hashtags: [], blocks: [] }
+const coverPara = (text) => ({ kind: 'paragraph', text })
+const paletteMono = renderLib.MONO_PALETTE
+// 短文章:全部装进封面,单卡完成
+const shortFill = renderLib.fillCoverBlocks(stubCtx, paletteMono, coverDoc, null, [coverPara('只有一小段。')])
+assert.equal(shortFill.remainingBlocks.length, 0, '短文章应一张封面卡装完')
+// 长文章:封面装满后按句读切,剩余进正文页,不丢字
+const coverSentence = '封面段落也用二十个字一句来测试装满。'
+const longBlocks = [coverPara(coverSentence.repeat(60)), coverPara('后续段落。')]
+const longFill = renderLib.fillCoverBlocks(stubCtx, paletteMono, coverDoc, null, longBlocks)
+assert.ok(longFill.coverBlocks.length >= 1 && longFill.remainingBlocks.length >= 1)
+assert.match(longFill.coverBlocks.at(-1).text, /[。！？；…!?;]$/, '封面切点应落在句读上')
+assert.equal(
+  [...longFill.coverBlocks, ...longFill.remainingBlocks].map((b) => b.text).join(''),
+  longBlocks.map((b) => b.text).join(''),
+)
+// 遇到配图停止:配图与其后内容全部留给正文页
+const imageFill = renderLib.fillCoverBlocks(stubCtx, paletteMono, coverDoc, null, [
+  coverPara('第一段。'),
+  { kind: 'image', text: '', imageSource: 'b.png' },
+  coverPara('图后段落。'),
+])
+assert.equal(imageFill.coverBlocks.length, 1)
+assert.equal(imageFill.remainingBlocks[0].kind, 'image')
 
 // ── 风格清单与渲染层接线 ─────────────────────────────
 const { readFile } = await import('node:fs/promises')
