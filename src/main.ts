@@ -134,6 +134,10 @@ import {
   resolveArtifactPath,
 } from './artifact-renderer-core'
 import {
+  presentationFormatLabel,
+  resolvePresentationPaths,
+} from './presentation-renderer-core'
+import {
   formatLocalSkillList,
   isLocalSkillListIntent,
   localSkillMenuTitle,
@@ -3137,7 +3141,8 @@ class ChatView extends ItemView {
           continue
         }
         const directArtifactPlan = plan.plan?.operations.length === 1 &&
-          plan.plan.operations[0].type === 'create_artifact'
+          (plan.plan.operations[0].type === 'create_artifact' ||
+            plan.plan.operations[0].type === 'create_presentation')
         // 明确的 Vault 文件检索/修改任务至少必须有一条本机工具结果。由当前对话或
         // 已锁定当前笔记直接生成新成品时不强迫空搜 Vault；Luna 需要其他资料时会自行检索。
         // “我现在扫描”或直接猜出的方案都只是口头承诺/幻觉，绝不能结束本轮。
@@ -3789,8 +3794,14 @@ class ChatView extends ItemView {
     const artifactPath = artifactOperation
       ? resolveArtifactPath(artifactOperation.path, this.plugin.settings.outputFolder)
       : null
+    const presentationOperation = onlyOperation?.type === 'create_presentation'
+      ? onlyOperation
+      : null
+    const presentationPaths = presentationOperation
+      ? resolvePresentationPaths(presentationOperation, this.plugin.settings.outputFolder)
+      : []
     card.createDiv({
-      text: `${trashOperation ? '🗑️' : noteWriteOperation ? '📝' : artifactOperation ? '📦' : '🗂️'} 待确认：${plan.title}`,
+      text: `${trashOperation ? '🗑️' : noteWriteOperation ? '📝' : presentationOperation ? '📊' : artifactOperation ? '📦' : '🗂️'} 待确认：${plan.title}`,
       cls: 'ai-linzi-create-note-title',
     })
     if (plan.summary) {
@@ -3802,6 +3813,8 @@ class ChatView extends ItemView {
       item.createDiv({
         text: operation.type === 'create_artifact'
           ? `生成 ${artifactFormatLabel(operation.format)}：${resolveArtifactPath(operation.path, this.plugin.settings.outputFolder)}`
+          : operation.type === 'create_presentation'
+            ? `生成演示文稿：${resolvePresentationPaths(operation, this.plugin.settings.outputFolder).join('、')}`
           : operationLabel(operation),
       })
       if (operation.reason) item.createEl('small', { text: operation.reason })
@@ -3849,6 +3862,29 @@ class ChatView extends ItemView {
           text: operation.content,
           cls: 'ai-linzi-vault-write-preview',
         })
+      } else if (operation.type === 'create_presentation') {
+        item.createEl('small', {
+          text: `格式：${operation.formats.map(presentationFormatLabel).join(' + ')} · 主题：${operation.theme.name || '自定义'} · ${operation.slides.length} 页 · 16:9`,
+        })
+        const details = item.createEl('details')
+        details.createEl('summary', { text: `查看 ${operation.slides.length} 页内容与版式` })
+        details.createEl('pre', {
+          text: operation.slides.map((slide, index) => {
+            const parts = [
+              `${index + 1}. [${slide.type}] ${slide.title}`,
+              slide.subtitle,
+              slide.body,
+              ...(slide.bullets ?? []).map((value) => `• ${value}`),
+              ...(slide.cards ?? []).map((card) => `• ${card.title}${card.body ? `：${card.body}` : ''}`),
+              ...(slide.columns ?? []).flatMap((column) => [column.title, ...column.items.map((value) => `• ${value}`)]),
+              ...(slide.steps ?? []).map((step) => `• ${step.title}${step.body ? `：${step.body}` : ''}`),
+              ...(slide.metrics ?? []).map((metric) => `• ${metric.value}｜${metric.label}`),
+              slide.quote,
+            ].filter(Boolean)
+            return parts.join('\n')
+          }).join('\n\n'),
+          cls: 'ai-linzi-vault-write-preview',
+        })
       }
     }
     for (const note of plan.notes) {
@@ -3871,6 +3907,7 @@ class ChatView extends ItemView {
       const createdNote = record.createdNotes?.[0]
       const updatedNote = record.updatedNotes?.[0]
       const createdArtifact = record.createdArtifacts?.[0]
+      const createdArtifactCount = record.createdArtifacts?.length ?? 0
       actions.createSpan({
         text: trashedCount > 0
           ? `✅ 已移入回收站：${record.trashedNotes?.[0]}`
@@ -3879,7 +3916,9 @@ class ChatView extends ItemView {
             : updatedNote
               ? `✅ 已更新笔记：${updatedNote}`
               : createdArtifact
-                ? `✅ 已生成成品：${createdArtifact}`
+                ? createdArtifactCount > 1
+                  ? `✅ 已生成 ${createdArtifactCount} 个演示文件：${record.createdArtifacts?.join('、')}`
+                  : `✅ 已生成成品：${createdArtifact}`
           : `✅ 已执行：移动/重命名 ${record.moves.length} 项，新建文件夹 ${record.createdFolders.length} 个`,
         cls: 'ai-linzi-create-note-done',
       })
@@ -3949,6 +3988,8 @@ class ChatView extends ItemView {
           ? noteWriteOperation.type === 'create_note' ? '确认新建笔记' : '确认写入笔记'
           : artifactOperation
             ? `确认生成 ${artifactFormatLabel(artifactOperation.format)}`
+          : presentationOperation
+            ? `确认生成 ${presentationOperation.slides.length} 页演示文稿`
           : `确认执行 ${plan.operations.length} 项`,
       cls: 'mod-cta',
     })
@@ -3984,6 +4025,16 @@ class ChatView extends ItemView {
                       `目标路径：${artifactPath}\n\n` +
                       `插件将在本机把上方预览内容渲染成 ${artifactFormatLabel(artifactOperation.format)} 文件。` +
                       '缺少的父目录会同时创建；如果目标已存在就停止，绝不覆盖。' +
+                      '\n如需移除，请在 Obsidian 中把成品移入回收站。',
+                    confirmLabel: '确认生成',
+                  }
+              : presentationOperation
+                ? {
+                    title: `再次确认生成 ${presentationOperation.slides.length} 页演示文稿`,
+                    message:
+                      `目标文件：\n${presentationPaths.join('\n')}\n\n` +
+                      '插件将在本机从同一份版式结构生成可交互 HTML、原生可编辑 PowerPoint 和/或 PDF。' +
+                      '缺少的父目录会同时创建；任一目标已存在都会停止，绝不覆盖。' +
                       '\n如需移除，请在 Obsidian 中把成品移入回收站。',
                     confirmLabel: '确认生成',
                   }

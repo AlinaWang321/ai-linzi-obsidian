@@ -25,6 +25,13 @@ import {
   resolveArtifactPath,
   type CreateArtifactOperation,
 } from './artifact-renderer-core'
+import {
+  PRESENTATION_MAX_SLIDES,
+  PRESENTATION_MAX_TOTAL_CHARS,
+  presentationCharacterCount,
+  resolvePresentationPaths,
+  type CreatePresentationOperation,
+} from './presentation-renderer-core'
 
 const TOOL_OUTPUT_MAX_CHARS = 20_000
 const READ_NOTE_MAX_CHARS = 16_000
@@ -170,6 +177,13 @@ export class LocalVaultAgent {
       this.validateArtifactOperation(artifactOperation)
       return
     }
+    const presentationOperation = plan.operations.length === 1 && plan.operations[0].type === 'create_presentation'
+      ? plan.operations[0]
+      : undefined
+    if (presentationOperation) {
+      this.validatePresentationOperation(presentationOperation)
+      return
+    }
     const writeOperation = plan.operations.length === 1 &&
       (plan.operations[0].type === 'create_note' ||
         plan.operations[0].type === 'append_note' ||
@@ -209,6 +223,31 @@ export class LocalVaultAgent {
       throw new Error(`目标文件已存在，绝不覆盖：${path}`)
     }
     return path
+  }
+
+  private presentationPaths(operation: CreatePresentationOperation): string[] {
+    const paths = resolvePresentationPaths(operation, this.outputRoot()).map((path) =>
+      normalizeVaultRelativePath(path),
+    )
+    if (paths.some((path) => !path)) throw new Error('演示文稿文件路径不合法')
+    return paths as string[]
+  }
+
+  private validatePresentationOperation(operation: CreatePresentationOperation): string[] {
+    const paths = this.presentationPaths(operation)
+    if (new Set(paths).size !== paths.length) throw new Error('演示文稿格式重复')
+    if (!operation.title.trim()) throw new Error('演示文稿缺少标题')
+    if (operation.slides.length === 0 || operation.slides.length > PRESENTATION_MAX_SLIDES) {
+      throw new Error(`演示文稿页数必须为 1–${PRESENTATION_MAX_SLIDES} 页`)
+    }
+    if (presentationCharacterCount(operation) > PRESENTATION_MAX_TOTAL_CHARS) {
+      throw new Error(`演示文稿内容超过 ${PRESENTATION_MAX_TOTAL_CHARS.toLocaleString()} 字，请拆分后生成`)
+    }
+    for (const path of paths) {
+      if (this.protected(path)) throw new Error(`演示文稿不能写入保护目录：${path}`)
+      if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`目标文件已存在，绝不覆盖：${path}`)
+    }
+    return paths
   }
 
   async executeCalls(
@@ -429,6 +468,10 @@ export class LocalVaultAgent {
       (operation): operation is Extract<(typeof plan.operations)[number], { type: 'create_artifact' }> =>
         operation.type === 'create_artifact',
     )
+    const presentationOps = plan.operations.filter(
+      (operation): operation is Extract<(typeof plan.operations)[number], { type: 'create_presentation' }> =>
+        operation.type === 'create_presentation',
+    )
     let lockedWriteSnapshot: VaultWriteSnapshot | undefined
     const sources = new Set<string>()
     const destinations = new Set<string>()
@@ -436,7 +479,11 @@ export class LocalVaultAgent {
     for (const operation of plan.operations) {
       const paths = operation.type === 'move'
         ? [operation.from, operation.to]
-        : [operation.type === 'create_artifact' ? this.artifactPath(operation) : operation.path]
+        : operation.type === 'create_artifact'
+          ? [this.artifactPath(operation)]
+          : operation.type === 'create_presentation'
+            ? this.presentationPaths(operation)
+            : [operation.path]
       const blocked = paths.filter((path) =>
         shouldBlockPlanPath(path, operation.type, this.localSkillsRoot()),
       )
@@ -477,6 +524,13 @@ export class LocalVaultAgent {
         throw new Error('为避免误写，每次确认只能生成一个成品文件，不能混入其他操作')
       }
       this.validateArtifactOperation(artifactOps[0])
+    }
+
+    if (presentationOps.length > 0) {
+      if (presentationOps.length !== 1 || plan.operations.length !== 1) {
+        throw new Error('为避免误写，每次确认只能生成一套演示文稿，不能混入其他操作')
+      }
+      this.validatePresentationOperation(presentationOps[0])
     }
 
     if (noteWriteOps.length > 0) {
@@ -575,6 +629,34 @@ export class LocalVaultAgent {
           await this.app.vault.create(normalizePath(path), rendered.data)
         }
         createdArtifacts.push(path)
+      }
+      if (presentationOps.length === 1) {
+        const operation = presentationOps[0]
+        const paths = this.validatePresentationOperation(operation)
+        // 与普通成品一样，复杂渲染器只在用户二次确认后动态加载，避免扩大启动面。
+        const { renderPresentation } = await import('./presentation-renderer')
+        // 三种格式先全部在内存中渲染成功，再开始写盘，避免渲染失败留下半套文件。
+        const renderedFiles = await renderPresentation(operation)
+        if (renderedFiles.length !== paths.length) throw new Error('演示文稿渲染结果数量不完整')
+        for (const path of paths) {
+          const parent = path.split('/').slice(0, -1).join('/')
+          if (parent) await ensureFolder(parent)
+          if (this.app.vault.getAbstractFileByPath(path)) {
+            throw new Error(`目标文件在确认后已经出现，绝不覆盖：${path}`)
+          }
+        }
+        for (let index = 0; index < renderedFiles.length; index++) {
+          const rendered = renderedFiles[index]
+          const path = paths[index]
+          if (rendered.binary) {
+            if (!(rendered.data instanceof ArrayBuffer)) throw new Error('演示文稿二进制渲染结果无效')
+            await this.app.vault.createBinary(normalizePath(path), rendered.data)
+          } else {
+            if (typeof rendered.data !== 'string') throw new Error('演示 HTML 渲染结果无效')
+            await this.app.vault.create(normalizePath(path), rendered.data)
+          }
+          createdArtifacts.push(path)
+        }
       }
       if (noteWriteOps.length === 1) {
         const operation = noteWriteOps[0]

@@ -240,6 +240,45 @@ assert.ok(files.get('AI霖子输出/文档/客户方案.docx').data instanceof A
 assert.equal(Buffer.from(files.get('AI霖子输出/文档/客户方案.docx').data).subarray(0, 2).toString(), 'PK')
 await assert.rejects(agent.applyPlan(artifactPlan), /目标文件已存在/)
 
+const presentationPlan = {
+  title: '生成客户演示',
+  summary: '本机生成 HTML 和可编辑 PPT',
+  operations: [{
+    type: 'create_presentation',
+    basePath: '$OUTPUT/演示文稿/客户方案',
+    formats: ['html', 'pptx'],
+    title: '客户方案',
+    theme: {
+      name: '深海暖金', primary: '102544', accent: 'F39800', background: 'F7F2E8',
+      surface: 'FFFFFF', text: '172033', muted: '667085',
+      headingFont: 'Microsoft YaHei', bodyFont: 'Microsoft YaHei', shape: 'rounded',
+    },
+    slides: [
+      { type: 'cover', title: '客户方案', subtitle: '从问题到行动路径' },
+      { type: 'bullets', title: '三项行动', bullets: ['明确目标', '完成交付', '复盘结果'] },
+      { type: 'closing', title: '从今天开始行动' },
+    ],
+  }],
+  notes: [],
+}
+await agent.preflightPlan(presentationPlan)
+const presentationRecord = await agent.applyPlan(presentationPlan)
+assert.deepEqual(presentationRecord.createdArtifacts, [
+  'AI霖子输出/演示文稿/客户方案.html',
+  'AI霖子输出/演示文稿/客户方案.pptx',
+])
+assert.match(files.get('AI霖子输出/演示文稿/客户方案.html').content, /class="slide slide-cover"/)
+assert.equal(Buffer.from(files.get('AI霖子输出/演示文稿/客户方案.pptx').data).subarray(0, 2).toString(), 'PK')
+await assert.rejects(agent.preflightPlan(presentationPlan), /目标文件已存在/)
+
+await assert.rejects(
+  agent.preflightPlan({
+    ...presentationPlan,
+    operations: [{ ...presentationPlan.operations[0], basePath: '05_System/Skills/越界演示' }],
+  }),
+  /保护目录/,
+)
+
 await assert.rejects(
   agent.applyPlan({
     title: '混合成品',

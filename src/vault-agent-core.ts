@@ -13,6 +13,17 @@ import {
   type ArtifactTheme,
   type CreateArtifactOperation,
 } from './artifact-renderer-core'
+import {
+  PRESENTATION_FORMATS,
+  PRESENTATION_MAX_SLIDES,
+  PRESENTATION_MAX_TITLE_CHARS,
+  PRESENTATION_MAX_TOTAL_CHARS,
+  normalizePresentationSlide,
+  normalizePresentationTheme,
+  presentationCharacterCount,
+  type CreatePresentationOperation,
+  type PresentationFormat,
+} from './presentation-renderer-core'
 
 export const VAULT_AGENT_MAX_ROUNDS = 6
 export const VAULT_AGENT_MAX_CALLS_PER_ROUND = 4
@@ -49,6 +60,7 @@ export type VaultOrganizeOperation =
   | { type: 'append_note'; path: string; content: string; reason?: string }
   | { type: 'replace_note'; path: string; content: string; reason?: string }
   | CreateArtifactOperation
+  | CreatePresentationOperation
   | {
       type: 'update_note'
       path: string
@@ -454,6 +466,42 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
     }
     return { type, path, format, title, content, theme, reason }
   }
+  if (type === 'create_presentation') {
+    const basePath = normalizeVaultRelativePath(record.basePath)
+    const title = shortText(record.title, PRESENTATION_MAX_TITLE_CHARS)
+    const subtitle = shortText(record.subtitle, 260) || undefined
+    const rawFormats = Array.isArray(record.formats) ? record.formats : []
+    const formats = [...new Set(rawFormats.map((item) => shortText(item, 12).toLocaleLowerCase()))]
+      .filter((item): item is PresentationFormat => PRESENTATION_FORMATS.includes(item as PresentationFormat))
+    const rawSlides = Array.isArray(record.slides) ? record.slides : []
+    const slides = rawSlides
+      .map(normalizePresentationSlide)
+      .filter((slide): slide is NonNullable<typeof slide> => Boolean(slide))
+    if (
+      !basePath ||
+      /\.(?:html|pptx|pdf)$/i.test(basePath) ||
+      !title ||
+      formats.length === 0 ||
+      formats.length !== rawFormats.length ||
+      slides.length === 0 ||
+      slides.length !== rawSlides.length ||
+      slides.length > PRESENTATION_MAX_SLIDES
+    ) {
+      return null
+    }
+    const operation: CreatePresentationOperation = {
+      type,
+      basePath,
+      formats,
+      title,
+      subtitle,
+      theme: normalizePresentationTheme(record.theme),
+      slides,
+      reason,
+    }
+    if (presentationCharacterCount(operation) > PRESENTATION_MAX_TOTAL_CHARS) return null
+    return operation
+  }
   if (type === 'update_note') {
     const path = normalizeVaultRelativePath(record.path)
     const rawReplacements = Array.isArray(record.replacements) ? record.replacements : []
@@ -549,6 +597,7 @@ export function operationLabel(operation: VaultOrganizeOperation): string {
   if (operation.type === 'replace_note') return `整篇覆盖笔记：${operation.path}`
   if (operation.type === 'update_note') return `局部更新笔记：${operation.path}`
   if (operation.type === 'create_artifact') return `生成 ${operation.format.toUpperCase()}：${operation.path}`
+  if (operation.type === 'create_presentation') return `生成演示文稿：${operation.basePath}（${operation.formats.join('/').toUpperCase()}）`
   return `移动/重命名：${operation.from} → ${operation.to}`
 }
 
