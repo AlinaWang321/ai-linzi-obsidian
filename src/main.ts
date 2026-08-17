@@ -26,6 +26,7 @@ import {
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
 import { WECHAT_THEMES, getWechatTheme } from './wechat-themes'
 import { XHS_CARD_STYLES, getXhsCardStyle } from './xhs-card-styles'
+import { chooseXhsAvatarFile, saveXhsAvatarToVault } from './xhs-style-picker'
 import { VaultImageBrowserModal } from './vault-image-browser'
 import { prepareWechatArticle } from './article-format'
 import {
@@ -4732,6 +4733,20 @@ class AiLinziSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings()
           this.display()
         }).open()
+      }),
+    )
+    avatarSetting.addButton((b) =>
+      b.setButtonText('从电脑上传').onClick(() => {
+        chooseXhsAvatarFile(async (file) => {
+          try {
+            this.plugin.settings.xhsCardAvatarPath = await saveXhsAvatarToVault(this.plugin, file)
+            await this.plugin.saveSettings()
+            this.display()
+            new Notice('✅ 头像已保存到你的 Vault,生成卡片时在本机绘制,不会上传')
+          } catch (error) {
+            new Notice(`头像保存失败:${error instanceof Error ? error.message : String(error)}`, 8000)
+          }
+        })
       }),
     )
     avatarSetting.addButton((b) =>

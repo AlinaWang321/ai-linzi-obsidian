@@ -5,10 +5,50 @@
  * 取消即中止、零积分消耗。选 X 推文风且昵称/@账号未配置时,直接在卡内补填,
  * 确认时一并存入设置;头像在 设置 → AI霖子 → 小红书卡片 里选择(可选)。
  */
-import { Modal, Notice, type App } from 'obsidian'
+import { Modal, Notice, normalizePath, type App } from 'obsidian'
 import type AiLinziPlugin from './main'
 import { XHS_CARD_STYLES, getXhsCardStyle } from './xhs-card-styles'
 import type { XhsCardStyleId } from './xhs-card-render'
+import { VaultImageBrowserModal } from './vault-image-browser'
+
+/** 弹系统文件选择器选一张头像图(PNG/JPG/WebP)。 */
+export function chooseXhsAvatarFile(onChoose: (file: File) => void | Promise<void>): void {
+  const input = createEl('input', {
+    cls: 'ai-linzi-file-input',
+    attr: { type: 'file', accept: 'image/png,image/jpeg,image/webp' },
+  })
+  activeDocument.body.appendChild(input)
+  input.onchange = () => {
+    const file = input.files?.[0]
+    void Promise.resolve(file ? onChoose(file) : undefined).finally(() => input.remove())
+  }
+  input.oncancel = () => input.remove()
+  input.click()
+}
+
+/** 电脑图片存进用户 Vault(品牌素材),返回相对路径;头像只在本机绘制,不上传。 */
+export async function saveXhsAvatarToVault(plugin: AiLinziPlugin, file: File): Promise<string> {
+  const ext = (file.name.split('.').pop() || '').toLowerCase()
+  const safeExt = ['png', 'jpg', 'jpeg', 'webp'].includes(ext) ? ext : 'png'
+  const folder = normalizePath(`${plugin.settings.outputFolder || 'AI霖子输出'}/品牌素材`)
+  const parts = folder.split('/')
+  let current = ''
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part
+    if (!plugin.app.vault.getAbstractFileByPath(current)) {
+      await plugin.app.vault.createFolder(current).catch(() => {})
+    }
+  }
+  const now = new Date()
+  const pad = (value: number) => String(value).padStart(2, '0')
+  const stamp = `${now.getFullYear()}.${pad(now.getMonth() + 1)}.${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  let path = normalizePath(`${folder}/${stamp}_X头像.${safeExt}`)
+  for (let index = 2; plugin.app.vault.getAbstractFileByPath(path); index++) {
+    path = normalizePath(`${folder}/${stamp}_X头像_${index}.${safeExt}`)
+  }
+  await plugin.app.vault.createBinary(path, await file.arrayBuffer())
+  return path
+}
 
 export interface XhsStyleChoice {
   styleId: XhsCardStyleId
@@ -61,11 +101,50 @@ class XhsStylePickerModal extends Modal {
           attr: { type: 'text', placeholder: '例如:alinalinzi(不用带@)' },
         })
         this.handleInput.value = this.plugin.settings.xhsCardHandle
+
+        const avatarRow = this.identityEl.createDiv({ cls: 'ai-linzi-xhs-identity-row' })
+        avatarRow.createSpan({ text: '头像' })
+        const avatarControls = avatarRow.createDiv({ cls: 'ai-linzi-xhs-avatar-controls' })
+        const avatarStatus = this.identityEl.createDiv({ cls: 'ai-linzi-xhs-avatar-status' })
+        const refreshAvatar = () => {
+          const path = this.plugin.settings.xhsCardAvatarPath
+          if (!path) {
+            avatarStatus.setText('未设置头像——将使用昵称首字的蓝色圆标(可选)')
+          } else if (this.plugin.app.vault.getAbstractFileByPath(normalizePath(path))) {
+            avatarStatus.setText(`当前头像:${path}`)
+          } else {
+            avatarStatus.setText(`原头像已不存在(${path}),请重新选择`)
+          }
+        }
+        const setAvatar = async (path: string) => {
+          this.plugin.settings.xhsCardAvatarPath = path
+          await this.plugin.saveSettings()
+          refreshAvatar()
+        }
+        avatarControls.createEl('button', { text: '从 Vault 选' }).addEventListener('click', () => {
+          new VaultImageBrowserModal(this.app, async (file) => {
+            await setAvatar(file.path)
+          }).open()
+        })
+        avatarControls.createEl('button', { text: '从电脑上传' }).addEventListener('click', () => {
+          chooseXhsAvatarFile(async (file) => {
+            try {
+              await setAvatar(await saveXhsAvatarToVault(this.plugin, file))
+              new Notice('✅ 头像已保存到你的 Vault,生成卡片时在本机绘制,不会上传')
+            } catch (error) {
+              new Notice(`头像保存失败:${error instanceof Error ? error.message : String(error)}`, 8000)
+            }
+          })
+        })
+        avatarControls.createEl('button', { text: '清除' }).addEventListener('click', () => {
+          void setAvatar('')
+        })
+        refreshAvatar()
+
         this.identityEl.createDiv({
           cls: 'ai-linzi-wtheme-hint',
-          text: '填一次会记住,随时可在 设置 → AI霖子 → 小红书卡片 修改;头像也在那里选择(可选,不设则用首字圆标)。',
+          text: '填一次会记住,随时可在 设置 → AI霖子 → 小红书卡片 修改。',
         })
-        // 点输入框不应触发卡片切换以外的行为;仍允许冒泡选中本卡
       }
 
       card.addEventListener('click', () => {

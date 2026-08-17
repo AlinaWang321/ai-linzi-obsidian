@@ -461,6 +461,12 @@ assert.match(xSection, /X_FAKE_METRICS/, 'X 推文页必须绘制底部互动条
 const cardsSource = await readFile(new URL('../src/xhs-cards.ts', import.meta.url), 'utf8')
 assert.match(cardsSource, /input\.style \?\? 'classic'/, '缺省风格必须是经典彩色,旧调用输出不变')
 assert.match(cardsSource, /paginateXTweetBlocks\(flattened/, 'X 风格必须走推文分页器')
+const pickerSource = await readFile(new URL('../src/xhs-style-picker.ts', import.meta.url), 'utf8')
+assert.match(pickerSource, /从电脑上传/, 'X 头像必须支持从电脑上传')
+assert.match(pickerSource, /VaultImageBrowserModal/, 'X 头像必须支持从 Vault 选择')
+assert.match(pickerSource, /setAvatar\(''\)/, 'X 头像必须可清除')
+assert.match(pickerSource, /createBinary/, '电脑头像必须保存进用户 Vault 本机绘制')
+
 const actionsSource = await readFile(new URL('../src/actions.ts', import.meta.url), 'utf8')
 const pickerCalls = actionsSource.match(/await pickXhsCardStyle\(plugin\)/g) ?? []
 assert.equal(pickerCalls.length, 2, '卡片技能与多平台分发都必须先经过风格选择卡')
