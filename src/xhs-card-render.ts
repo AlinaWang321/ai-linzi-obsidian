@@ -656,9 +656,11 @@ function drawXBadge(context: Ctx, centerX: number, centerY: number, radius: numb
 
 function drawXAvatar(context: Ctx, options: XTweetPageOptions) {
   const L = X_TWEET_LAYOUT
-  const size = 116
+  // 头部整体按真实 X 截图比例校准(Alina 2026-08-17 发参考截图拍板):
+  // 头像≈正文字号的 1.9 倍,昵称≈0.87 倍,@行更小;此前 116/46/36 的头部偏重。
+  const size = 72
   const centerX = L.pad + size / 2
-  const centerY = 88 + size / 2
+  const centerY = 96 + size / 2
   context.save()
   context.beginPath()
   context.arc(centerX, centerY, size / 2, 0, Math.PI * 2)
@@ -676,16 +678,16 @@ function drawXAvatar(context: Ctx, options: XTweetPageOptions) {
       drawHeight,
     )
   } else {
-    const gradient = context.createLinearGradient(L.pad, 88, L.pad + size, 88 + size)
+    const gradient = context.createLinearGradient(L.pad, 96, L.pad + size, 96 + size)
     gradient.addColorStop(0, '#2B6CB0')
     gradient.addColorStop(1, '#63B3ED')
     context.fillStyle = gradient
-    context.fillRect(L.pad, 88, size, size)
+    context.fillRect(L.pad, 96, size, size)
     const initial = Array.from(options.nickname.trim())[0] ?? 'A'
     context.fillStyle = '#FFFFFF'
-    setFont(context, 56, 800, 'sans')
+    setFont(context, 36, 800, 'sans')
     context.textAlign = 'center'
-    context.fillText(initial, centerX, centerY + 20)
+    context.fillText(initial, centerX, centerY + 13)
     context.textAlign = 'left'
   }
   context.restore()
@@ -718,17 +720,17 @@ export function drawXTweetPage(
   const L = X_TWEET_LAYOUT
   drawPaper(context, X_BG)
 
-  // 头部:头像 + 昵称 + 蓝勾 + @账号
+  // 头部:头像 + 昵称 + 蓝勾 + @账号(尺寸按真实 X 截图比例,见 drawXAvatar 注释)
   drawXAvatar(context, options)
   context.fillStyle = X_INK
-  setFont(context, 46, 800, 'sans')
-  const nameX = L.pad + 146
-  context.fillText(options.nickname, nameX, 152)
+  setFont(context, 32, 800, 'sans')
+  const nameX = L.pad + 104
+  context.fillText(options.nickname, nameX, 124)
   const nameWidth = context.measureText(options.nickname).width
-  drawXBadge(context, nameX + nameWidth + 36, 138, 20)
+  drawXBadge(context, nameX + nameWidth + 24, 114, 15)
   context.fillStyle = X_MUTED
-  setFont(context, 36, 400, 'sans')
-  context.fillText(`@${options.handle}`, nameX, 206)
+  setFont(context, 28, 400, 'sans')
+  context.fillText(`@${options.handle}`, nameX, 166)
 
   // 正文:块边界分页已由 paginateXTweetBlocks 保证不越过 bodyBottom
   let y = L.bodyTop + 62
