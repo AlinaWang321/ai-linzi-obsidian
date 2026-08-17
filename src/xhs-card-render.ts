@@ -594,9 +594,11 @@ export const X_TWEET_LAYOUT = {
   bodyTop: 272,
   /** 正文区下沿硬边界(底部框架之上,含安全距) */
   bodyBottom: 1150,
-  fontSize: 44,
-  lineHeight: 82,
-  paragraphGap: 44,
+  // 正文 40px(Alina 2026-08-17 拍板「X 样式文字再小一点」,自 44 下调);
+  // 行高/段距按原比例跟随,分页测量走同一份常量,无需另改。
+  fontSize: 40,
+  lineHeight: 74,
+  paragraphGap: 40,
   imageGap: 40,
   imageMaxHeight: 500,
 } as const
