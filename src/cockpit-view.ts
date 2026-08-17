@@ -73,6 +73,12 @@ interface LocalStats {
   pipeline: { topic: number; draft: number; ready: number; monthPublished: number }
 }
 
+/** 第二大脑统计认定的内容文件类型：笔记 + 白板/数据库 + 常见文档格式。 */
+const COCKPIT_COUNTED_EXTENSIONS = new Set([
+  'md', 'canvas', 'base', 'txt', 'html',
+  'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'csv',
+])
+
 function localDate(ts: number): string {
   const d = new Date(ts)
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -96,7 +102,12 @@ export function scanLocalStats(plugin: AiLinziPlugin): LocalStats {
   const now = new Date()
   const weekStart = startOfWeekMs(now)
   const monthPrefix = localDate(now.getTime()).slice(0, 7)
-  const files = plugin.app.vault.getMarkdownFiles()
+  // 第二大脑统计的是「内容资产」，不只 Markdown：客户把 PDF/Word/PPT 等资料放进
+  // Raw/Inbox 时也必须被数进去（2026-08-17 No.283 反馈：Raw 全是 PDF 却显示 0）。
+  // 图片/音视频等附件不算，避免配图把数字灌水。
+  const files = plugin.app.vault
+    .getFiles()
+    .filter((file) => COCKPIT_COUNTED_EXTENSIONS.has(file.extension.toLocaleLowerCase()))
   const { cockpitInboxFolder, cockpitSourcesFolder, cockpitKnowledgeFolder, cockpitOutputFolder, outputFolder } =
     plugin.settings
 
@@ -124,7 +135,8 @@ export function scanLocalStats(plugin: AiLinziPlugin): LocalStats {
     if (folders[0].path && inFolder(file.path, folders[0].path)) {
       inboxFiles.push({ file, days: Math.floor((Date.now() - file.stat.ctime) / 86400_000) })
     }
-    if (isDashboardContentPath(file.path, outputRoot)) {
+    // 内容流水线记录只认 Markdown：PDF/Word 等资料没有 frontmatter，不进选题/草稿看板。
+    if (file.extension === 'md' && isDashboardContentPath(file.path, outputRoot)) {
       const cache = plugin.app.metadataCache.getFileCache(file)
       const record = deriveContentRecord({
         path: file.path,
@@ -231,11 +243,12 @@ class DayDetailModal extends Modal {
     const root = this.contentEl
     root.empty()
 
-    // ── 🏠 当天的笔记(创建于当天) ──
+    // ── 🏠 当天的笔记(创建于当天;口径与第二大脑一致,含 PDF/Word 等内容文件) ──
     const localSection = root.createDiv()
     localSection.createEl('h4', { text: '🏠 当天的笔记' })
     const files = this.plugin.app.vault
-      .getMarkdownFiles()
+      .getFiles()
+      .filter((f) => COCKPIT_COUNTED_EXTENSIONS.has(f.extension.toLocaleLowerCase()))
       .filter((f) => localDate(f.stat.ctime) === this.date)
       .sort((a, b) => a.stat.ctime - b.stat.ctime)
     if (files.length === 0) {
@@ -895,7 +908,7 @@ export class CockpitView extends ItemView {
       el.createDiv({ text: n, cls: `ai-linzi-cockpit-brain-num${jade ? ' is-jade' : ''}` })
       el.createDiv({ text: t, cls: 'ai-linzi-cockpit-brain-cap' })
     }
-    big(String(local.totalNotes), '全库笔记')
+    big(String(local.totalNotes), '全库文件')
     big(`+${local.weekNew}`, '本周新增', true)
     const configured = local.folders.filter((f) => f.path)
     if (configured.length === 0) {

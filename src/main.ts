@@ -104,6 +104,7 @@ import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
   VAULT_AGENT_MAX_ROUNDS,
   advanceVaultTask,
+  buildVaultExecuteFailureToolResult,
   extractVaultOrganizePlan,
   extractVaultToolCalls,
   isCloudToolsTurnRequest,
@@ -394,6 +395,8 @@ interface WireMessage {
   imageAttachmentNames?: string[]
   /** 本地整理方案的执行日志 ID；方案正文仍在 parts 的本机副本中。 */
   vaultActionId?: string
+  /** 确认执行整理方案失败的本机错误；只存本机历史，用于卡片提示与下一轮纠错。 */
+  vaultExecuteError?: { message: string; at: number }
   /** 跨文件写入方案生成时锁定的文件版本；只保存路径/mtime/size，不含正文。 */
   vaultWriteSnapshots?: VaultWriteSnapshot[]
   /** 本地 Skill 动作日志只保存元数据，不保存命令输出、系统路径或正文。 */
@@ -2953,6 +2956,13 @@ class ChatView extends ItemView {
         new Notice(`AI霖子正在继续上一轮任务：${task.goal.slice(0, 24)}…`, 3500)
       }
     }
+    // 上一份已确认的方案在本机执行失败过：开场把失败原因作为合成工具结果交回
+    // 模型（一次性），让它核对真实路径后给出修正方案，而不是继续口头答应。
+    if (this.pendingVaultTask?.lastExecuteError && input.vaultAccess) {
+      const failure = this.pendingVaultTask.lastExecuteError
+      toolResults.push(buildVaultExecuteFailureToolResult(failure.planTitle, failure.message))
+      this.pendingVaultTask = { ...this.pendingVaultTask, lastExecuteError: undefined }
+    }
     const updateTask = (event: VaultTaskEvent) => {
       const now = Date.now()
       if (!this.pendingVaultTask) {
@@ -3187,13 +3197,16 @@ class ChatView extends ItemView {
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
-              throw new Error(`写入方案未通过本机预检：${message}`)
+              throw new Error(`方案未通过本机预检：${message}`)
             }
             toolResults.push({
               callId: `preflight-write-plan-${round + 1}`,
               name: 'read_note',
               ok: false,
-              output: `写入方案未通过本机预检：${message}。请依据已经读取的目标原文和 Skill 模板重新生成，不要重复原方案。`,
+              output:
+                `方案未通过本机预检：${message}。` +
+                '请先用 list_folder/vault_search/read_note 核对真实路径、现状与目标原文，' +
+                '再重新生成方案；不要原样重复上一份方案。',
             })
             pendingRetryReason = 'invalid_plan'
             continue
@@ -3865,6 +3878,14 @@ class ChatView extends ItemView {
       card.createDiv({ text: '↩️ 本次移动/重命名已经撤销。', cls: 'ai-linzi-create-note-done' })
       return
     }
+    if (message.vaultExecuteError && !record) {
+      card.createDiv({
+        text:
+          `⚠️ 上次执行失败：${message.vaultExecuteError.message}` +
+          '（失败原因已反馈给 AI，直接说「重新生成方案」即可修正）',
+        cls: 'ai-linzi-vault-plan-note',
+      })
+    }
     const actions = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
     if (record) {
       const trashedCount = record.trashedNotes?.length ?? 0
@@ -4000,6 +4021,7 @@ class ChatView extends ItemView {
           }
           const applied = await this.plugin.applyVaultPlan(plan, message.vaultWriteSnapshots)
           message.vaultActionId = applied.id
+          message.vaultExecuteError = undefined
           // 确认卡已执行 → 跨轮任务结清；下一句「继续」不再重新进入旧写入流程。
           this.pendingVaultTask = null
           const writtenPath = applied.createdNotes?.[0] ?? applied.updatedNotes?.[0]
@@ -4023,7 +4045,28 @@ class ChatView extends ItemView {
           )
         } catch (error) {
           executeBtn.disabled = false
-          new Notice(`执行失败：${(error as Error).message}`, 9000)
+          const failureMessage = error instanceof Error ? error.message : String(error)
+          // 失败必须让模型知道：写进本机消息卡片，并挂到跨轮任务上，
+          // 下一轮开场作为合成工具结果交回（见 runVaultAgentLoop 开头）。
+          const now = Date.now()
+          message.vaultExecuteError = { message: failureMessage, at: now }
+          const lastExecuteError = { planTitle: plan.title, message: failureMessage, at: now }
+          this.pendingVaultTask = this.pendingVaultTask
+            ? { ...this.pendingVaultTask, intent: 'organize', lastExecuteError, updatedAt: now }
+            : {
+                id: `vault-task-${now}-${Math.random().toString(36).slice(2, 8)}`,
+                goal: `执行整理方案「${plan.title.slice(0, 60)}」`,
+                intent: 'organize',
+                stage: 'searched',
+                candidatePaths: [],
+                sourcePaths: [],
+                lastExecuteError,
+                createdAt: now,
+                updatedAt: now,
+              }
+          await this.persistNow()
+          this.renderMessages()
+          new Notice(`执行失败：${failureMessage}`, 9000)
         }
       })()
     }

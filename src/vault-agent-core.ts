@@ -110,6 +110,8 @@ export interface PendingVaultTask {
   /** 已读取来源的版本快照；恢复时 mtime/size 变化必须重读。 */
   sourcePaths: VaultWriteSnapshot[]
   targetPath?: string
+  /** 用户确认执行后本机失败的原因；下一轮开场作为合成工具结果一次性交回模型。 */
+  lastExecuteError?: { planTitle: string; message: string; at: number }
   createdAt: number
   updatedAt: number
 }
@@ -371,6 +373,163 @@ export function shouldBlockPlanPath(
   if (!reason) return false
   if (reason === 'skills-root' && operationType === 'create_folder') return false
   return true
+}
+
+/** 预检时对 Vault 的最小只读视图：某个路径当前是什么。 */
+export type VaultPathKind = 'file' | 'folder' | null
+
+/**
+ * 整理方案（新建文件夹/移动/删除）的本机预检：在渲染确认卡之前把注定执行
+ * 失败的方案拦下来，并一次列出全部问题，反馈给模型自我纠正。
+ *
+ * 背景（2026-08-17 客户反馈）：模型跳过 list_folder 直接猜路径时，旧流程要等
+ * 用户点「确认执行」才在 applyPlan 里抛「源文件不存在」，且错误只弹 Notice，
+ * 模型毫不知情，下一轮继续口头答应。本函数只校验不执行；applyPlan 在确认
+ * 瞬间仍按同样规则复检（确认前本地状态可能变化）。校验口径必须与 applyPlan
+ * 一致，改任何一边都要同步另一边。
+ */
+export function collectOrganizePlanProblems(
+  plan: VaultOrganizePlan,
+  pathKind: (path: string) => VaultPathKind,
+  localSkillsRoot = 'system/skills',
+): string[] {
+  const problems: string[] = []
+  const push = (text: string) => {
+    if (!problems.includes(text)) problems.push(text)
+  }
+  const opCount = plan.operations.length
+  const trashOps = plan.operations.filter(
+    (operation): operation is Extract<VaultOrganizeOperation, { type: 'trash_note' }> =>
+      operation.type === 'trash_note',
+  )
+  const noteWriteOps = plan.operations.filter(
+    (operation): operation is Extract<
+      VaultOrganizeOperation,
+      { type: 'create_note' | 'append_note' | 'replace_note' | 'update_note' }
+    > =>
+      operation.type === 'create_note' ||
+      operation.type === 'append_note' ||
+      operation.type === 'replace_note' ||
+      operation.type === 'update_note',
+  )
+  const artifactOps = plan.operations.filter(
+    (operation): operation is CreateArtifactOperation => operation.type === 'create_artifact',
+  )
+  const moveOps = plan.operations.filter(
+    (operation): operation is Extract<VaultOrganizeOperation, { type: 'move' }> =>
+      operation.type === 'move',
+  )
+  const createOps = plan.operations.filter(
+    (operation): operation is Extract<VaultOrganizeOperation, { type: 'create_folder' }> =>
+      operation.type === 'create_folder',
+  )
+
+  for (const operation of plan.operations) {
+    // create_artifact 的实际落盘路径依赖输出根目录设置，由 validateArtifactOperation 单独校验。
+    if (operation.type === 'create_artifact') continue
+    const paths = operation.type === 'move' ? [operation.from, operation.to] : [operation.path]
+    for (const path of paths) {
+      if (shouldBlockPlanPath(path, operation.type, localSkillsRoot)) {
+        push(`方案涉及保护目录，已拒绝：${path}`)
+      }
+    }
+  }
+  if (trashOps.length > 0 && opCount !== 1) {
+    push('为避免误删，每次确认只能把一篇 Markdown 笔记移入回收站')
+  }
+  if (noteWriteOps.length > 0 && opCount !== 1) {
+    push('为避免跨文件误写，每次确认只能写入一篇 Markdown 笔记，不能混入其他操作')
+  }
+  if (artifactOps.length > 0 && opCount !== 1) {
+    push('为避免误写，每次确认只能生成一个成品文件，不能混入其他操作')
+  }
+  for (const operation of trashOps) {
+    if (artifactExtension(operation.path) !== 'md') {
+      push('删除功能只允许把 Markdown 笔记移入回收站，不能删除附件或文件夹')
+    } else if (pathKind(operation.path) !== 'file') {
+      push(`没有找到可删除的笔记：${operation.path}`)
+    }
+  }
+  for (const operation of noteWriteOps) {
+    if (artifactExtension(operation.path) !== 'md') {
+      push('跨文件写入只允许 Markdown 笔记，不能修改附件或其他文件类型')
+      continue
+    }
+    const kind = pathKind(operation.path)
+    if (operation.type === 'create_note') {
+      if (kind) push(`目标笔记已存在，绝不覆盖：${operation.path}`)
+    } else if (kind !== 'file') {
+      push(`没有找到要写入的笔记：${operation.path}`)
+    }
+  }
+  const sources = new Set<string>()
+  const destinations = new Set<string>()
+  for (const operation of moveOps) {
+    if (sources.has(operation.from)) push(`重复移动同一路径：${operation.from}`)
+    if (destinations.has(operation.to)) push(`多个文件指向同一位置：${operation.to}`)
+    sources.add(operation.from)
+    destinations.add(operation.to)
+    const sourceKind = pathKind(operation.from)
+    if (!sourceKind) {
+      push(`源文件不存在：${operation.from}`)
+      continue
+    }
+    if (pathKind(operation.to)) push(`目标已存在，绝不覆盖：${operation.to}`)
+    if (sourceKind === 'file' && artifactExtension(operation.from) !== artifactExtension(operation.to)) {
+      push(`移动/重命名不能改变文件类型：${operation.from}`)
+    }
+    if (sourceKind === 'folder' && operation.to.startsWith(`${operation.from}/`)) {
+      push(`不能把文件夹移动到自己内部：${operation.from}`)
+    }
+  }
+  const moveSources = [...sources]
+  for (let index = 0; index < moveSources.length; index++) {
+    for (let other = index + 1; other < moveSources.length; other++) {
+      if (
+        moveSources[index].startsWith(`${moveSources[other]}/`) ||
+        moveSources[other].startsWith(`${moveSources[index]}/`)
+      ) {
+        push('同一方案不能同时移动父文件夹和其中的子文件，请让 AI 拆成两次')
+      }
+    }
+  }
+  // 执行时 ensureFolder 会自动补建缺失的父目录；只有「路径段已被文件占用」会失败。
+  const ensureFolderConflicts = (path: string) => {
+    if (!path) return
+    let current = ''
+    for (const segment of path.split('/')) {
+      current = current ? `${current}/${segment}` : segment
+      if (pathKind(current) === 'file') push(`目标父路径不是文件夹：${current}`)
+    }
+  }
+  for (const operation of createOps) ensureFolderConflicts(operation.path)
+  for (const operation of moveOps) {
+    ensureFolderConflicts(operation.to.split('/').slice(0, -1).join('/'))
+  }
+  for (const operation of noteWriteOps) {
+    ensureFolderConflicts(operation.path.split('/').slice(0, -1).join('/'))
+  }
+  return problems
+}
+
+/**
+ * 用户点「确认执行」后本机执行失败时，把失败原因作为下一轮的合成工具结果交回
+ * 模型（复用 read_note 结果通道，服务端按既有校验放行）。没有这一步，失败只
+ * 出现在 9 秒的 Notice 里，模型毫不知情，只会继续口头答应。
+ */
+export function buildVaultExecuteFailureToolResult(
+  planTitle: string,
+  errorMessage: string,
+): VaultAgentToolResult {
+  return {
+    callId: 'vault-execute-failure',
+    name: 'read_note',
+    ok: false,
+    output:
+      `用户已确认执行整理方案「${planTitle.slice(0, 60)}」，但本机执行失败：${errorMessage.slice(0, 400)}。` +
+      '请先用 list_folder 或 vault_search 核对真实路径与现状，再生成修正后的新方案；' +
+      '不要原样重复失败的方案，也不要声称已完成。',
+  }
 }
 
 export function extractVaultToolCalls(text: string): VaultToolCallExtraction {

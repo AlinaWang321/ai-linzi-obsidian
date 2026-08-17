@@ -2,6 +2,7 @@ import { App, TFile, TFolder, normalizePath, parseYaml } from 'obsidian'
 import { isLocalSearchExtension } from './local-document-text'
 import { LocalVaultSearch } from './vault-search'
 import {
+  collectOrganizePlanProblems,
   isProtectedVaultPath,
   normalizeVaultRelativePath,
   shouldBlockPlanPath,
@@ -163,6 +164,17 @@ export class LocalVaultAgent {
     plan: VaultOrganizePlan,
     skillContext?: ActiveLocalSkillContext,
   ): Promise<void> {
+    // 新建文件夹/移动/删除方案的全量路径校验（2026-08-17 客户反馈补上）：
+    // 模型猜错路径时在这里一次列出全部问题打回重做，而不是等用户确认后才炸。
+    const problems = collectOrganizePlanProblems(
+      plan,
+      (path) => {
+        const item = this.app.vault.getAbstractFileByPath(normalizePath(path))
+        return item instanceof TFolder ? 'folder' : item instanceof TFile ? 'file' : null
+      },
+      this.localSkillsRoot(),
+    )
+    if (problems.length > 0) throw new Error(problems.join('；'))
     const artifactOperation = plan.operations.length === 1 && plan.operations[0].type === 'create_artifact'
       ? plan.operations[0]
       : undefined

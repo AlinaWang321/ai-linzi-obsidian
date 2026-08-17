@@ -15,4 +15,14 @@ assert.match(styles, /\.ai-linzi-cockpit-tabs \{[^}]*flex-wrap: wrap;/)
 assert.match(styles, /\.ai-linzi-cockpit-task-due/)
 assert.match(styles, /\.ai-linzi-cockpit-task\.is-overdue/)
 
+// 第二大脑统计口径：内容文件不只 Markdown——PDF/Word/PPT 等也计入（2026-08-17
+// No.283 反馈 Raw 全是 PDF 却显示 0）；内容流水线看板仍只认 Markdown。
+assert.match(source, /const COCKPIT_COUNTED_EXTENSIONS = new Set\(\[/)
+assert.match(source, /'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'csv',/)
+assert.match(source, /\.getFiles\(\)/)
+assert.match(source, /COCKPIT_COUNTED_EXTENSIONS\.has\(file\.extension\.toLocaleLowerCase\(\)\)/)
+assert.match(source, /file\.extension === 'md' && isDashboardContentPath/)
+assert.match(source, /'全库文件'/)
+assert.doesNotMatch(source, /getMarkdownFiles/)
+
 console.log('cockpit customer todo contract tests passed')

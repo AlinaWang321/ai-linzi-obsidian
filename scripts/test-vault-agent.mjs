@@ -262,4 +262,99 @@ const actionProposal = core.extractVaultToolCalls(`<<<VAULT_TOOL_CALLS>>>
 assert.equal(actionProposal.invalid, false)
 assert.equal(actionProposal.calls[0].name, 'propose_skill_action')
 
+// ── 整理方案预检：确认卡出现前拦下注定失败的方案（2026-08-17 客户反馈）──
+{
+  const vault = new Map([
+    ['01_Raw', 'folder'],
+    ['01_Raw/卢欣怡', 'folder'],
+    ['01_Raw/卢欣怡/职业测评.pdf', 'file'],
+    ['02_Wiki', 'folder'],
+    ['02_Wiki/占位.md', 'file'],
+  ])
+  const lookup = (path) => vault.get(path) ?? null
+
+  // 合法方案：新建文件夹 + 移动真实存在的 PDF → 零问题
+  const okPlan = {
+    title: '整理卢欣怡资料',
+    summary: '',
+    notes: [],
+    operations: [
+      { type: 'create_folder', path: '02_Wiki/卢欣怡' },
+      { type: 'move', from: '01_Raw/卢欣怡/职业测评.pdf', to: '02_Wiki/卢欣怡/职业测评.pdf' },
+    ],
+  }
+  assert.deepEqual(core.collectOrganizePlanProblems(okPlan, lookup, '05_System/Skills'), [])
+
+  // 猜错的源路径 + 保护目录 + 目标已存在：一次列出全部问题
+  const badPlan = {
+    title: '整理',
+    summary: '',
+    notes: [],
+    operations: [
+      { type: 'move', from: '01_Raw/不存在.pdf', to: '02_Wiki/x.pdf' },
+      { type: 'move', from: '01_Raw/卢欣怡/职业测评.pdf', to: '02_Wiki/占位.md' },
+      { type: 'move', from: '.obsidian/app.json', to: '02_Wiki/app.json' },
+    ],
+  }
+  const problems = core.collectOrganizePlanProblems(badPlan, lookup, '05_System/Skills')
+  assert.ok(problems.some((item) => item.includes('源文件不存在：01_Raw/不存在.pdf')), problems.join(' / '))
+  assert.ok(problems.some((item) => item.includes('目标已存在')), problems.join(' / '))
+  assert.ok(problems.some((item) => item.includes('不能改变文件类型')), problems.join(' / '))
+  assert.ok(problems.some((item) => item.includes('保护目录')), problems.join(' / '))
+
+  // 组合约束：删除必须单独成方案
+  const mixedTrash = {
+    title: '',
+    summary: '',
+    notes: [],
+    operations: [
+      { type: 'trash_note', path: '02_Wiki/占位.md' },
+      { type: 'create_folder', path: '02_Wiki/新目录' },
+    ],
+  }
+  assert.ok(
+    core.collectOrganizePlanProblems(mixedTrash, lookup, '05_System/Skills')
+      .some((item) => item.includes('每次确认只能把一篇 Markdown 笔记移入回收站')),
+  )
+
+  // 目标父路径被文件占用（执行时 ensureFolder 必炸）→ 预检就要报
+  const fileAsFolder = {
+    title: '',
+    summary: '',
+    notes: [],
+    operations: [
+      { type: 'move', from: '01_Raw/卢欣怡/职业测评.pdf', to: '02_Wiki/占位.md/职业测评.pdf' },
+    ],
+  }
+  assert.ok(
+    core.collectOrganizePlanProblems(fileAsFolder, lookup, '05_System/Skills')
+      .some((item) => item.includes('目标父路径不是文件夹：02_Wiki/占位.md')),
+  )
+
+  // 移动文件夹到自己内部 + 父子同移
+  const selfMove = {
+    title: '',
+    summary: '',
+    notes: [],
+    operations: [
+      { type: 'move', from: '01_Raw/卢欣怡', to: '01_Raw/卢欣怡/子目录' },
+      { type: 'move', from: '01_Raw/卢欣怡/职业测评.pdf', to: '02_Wiki/职业测评.pdf' },
+    ],
+  }
+  const selfMoveProblems = core.collectOrganizePlanProblems(selfMove, lookup, '05_System/Skills')
+  assert.ok(selfMoveProblems.some((item) => item.includes('不能把文件夹移动到自己内部')))
+  assert.ok(selfMoveProblems.some((item) => item.includes('不能同时移动父文件夹和其中的子文件')))
+}
+
+// 确认执行失败 → 合成工具结果交回模型（复用 read_note 通道）
+{
+  const failure = core.buildVaultExecuteFailureToolResult('整理卢欣怡资料', '源文件不存在：01_Raw/x.pdf')
+  assert.equal(failure.callId, 'vault-execute-failure')
+  assert.equal(failure.name, 'read_note')
+  assert.equal(failure.ok, false)
+  assert.ok(failure.output.includes('本机执行失败'))
+  assert.ok(failure.output.includes('源文件不存在：01_Raw/x.pdf'))
+  assert.ok(failure.output.includes('list_folder'))
+}
+
 console.log('vault agent protocol tests passed')
