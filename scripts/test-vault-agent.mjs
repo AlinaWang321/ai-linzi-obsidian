@@ -194,6 +194,46 @@ assert.equal(artifactPlan.invalid, false)
 assert.equal(artifactPlan.plan?.operations[0].type, 'create_artifact')
 assert.equal(core.operationLabel(artifactPlan.plan.operations[0]), '生成 DOCX：$OUTPUT/文档/客户方案.docx')
 
+const presentationPlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+${JSON.stringify({
+  title: '生成演示文稿',
+  summary: '本机生成 HTML 和可编辑 PPT',
+  operations: [{
+    type: 'create_presentation',
+    basePath: '$OUTPUT/演示文稿/客户方案',
+    formats: ['html', 'pptx'],
+    title: '客户方案',
+    theme: {
+      name: '深海暖金', primary: '102544', accent: 'F39800', background: 'F7F2E8',
+      surface: 'FFFFFF', text: '172033', muted: '667085',
+      headingFont: 'Microsoft YaHei', bodyFont: 'Microsoft YaHei', shape: 'rounded',
+    },
+    slides: [
+      { type: 'cover', title: '客户方案', subtitle: '从问题到行动路径' },
+      { type: 'cards', title: '三项重点', cards: [{ title: '定位', body: '明确目标' }, { title: '产品', body: '形成交付' }] },
+      { type: 'closing', title: '下一步，开始行动' },
+    ],
+  }],
+  notes: ['确认后才写盘'],
+})}
+<<<VAULT_ORGANIZE_PLAN_END>>>
+`)
+assert.equal(presentationPlan.invalid, false)
+assert.equal(presentationPlan.plan?.operations[0].type, 'create_presentation')
+assert.match(core.operationLabel(presentationPlan.plan.operations[0]), /HTML\/PPTX/)
+
+for (const invalidPresentation of [
+  { formats: ['pptx', 'pptx'] },
+  { basePath: '$OUTPUT/演示文稿/错误.pptx' },
+  { slides: [{ type: 'comparison', title: '缺一列', columns: [{ title: 'A', items: ['x'] }] }] },
+]) {
+  const operation = { ...presentationPlan.plan.operations[0], ...invalidPresentation }
+  const extracted = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+${JSON.stringify({ title: '错误演示', summary: '', operations: [operation], notes: [] })}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+  assert.equal(extracted.invalid, true)
+}
+
 for (const invalidArtifact of [
   { path: '$OUTPUT/文档/客户方案.pdf', format: 'docx' },
   { path: '../客户方案.docx', format: 'docx' },
