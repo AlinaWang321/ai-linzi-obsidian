@@ -729,14 +729,20 @@ export function drawXTweetPage(
 
   // 正文:块边界分页已由 paginateXTweetBlocks 保证不越过 bodyBottom
   let y = L.bodyTop + 62
+  // 正文真实视觉底部:文字取末行基线+字降部,图片取实际下缘;分隔线跟随它收口。
+  let visualBottom = L.bodyTop
   for (const block of blocks) {
     if (block.kind === 'image') {
       const image = sourceImages.get(block)
-      if (image) y += drawXImage(context, image, y - 44) + L.imageGap
+      if (image) {
+        const height = drawXImage(context, image, y - 44)
+        visualBottom = y - 44 + height
+        y += height + L.imageGap
+      }
       continue
     }
     const lines = wrapRichText(context, block, L.bodyWidth, L.fontSize, 400, 700, 0, 'sans', true)
-    y = drawRichLines(
+    const next = drawRichLines(
       context,
       block,
       lines,
@@ -749,16 +755,19 @@ export function drawXTweetPage(
       X_INK,
       X_BOLD_INK,
       'sans',
-    ) + L.paragraphGap
+    )
+    visualBottom = next - L.lineHeight + 14
+    y = next + L.paragraphGap
   }
 
-  // 底部固定框架:分隔线 + 装饰互动条(时间戳/Views 行 2026-08-17 Alina 拍板去掉,
-  // 正文区顺势下探;互动条下移到与左右 pad 对称的底边距)
+  // 底部框架:分隔线+互动条跟随正文收口(2026-08-17 Alina 拍板「正文到分割线再收窄」)。
+  // 满页封顶在固定位 1276,翻页时框架不跳;内容短的页上提贴住正文,间隔恒定 44。
+  const lineY = Math.min(visualBottom + 44, 1276)
   context.fillStyle = X_LINE
-  context.fillRect(L.pad, 1276, L.bodyWidth, 2)
+  context.fillRect(L.pad, lineY, L.bodyWidth, 2)
 
   const iconSize = 46
-  const iconY = 1314
+  const iconY = lineY + 38
   const starts = [88, 344, 600]
   setFont(context, 34, 400, 'sans')
   const last = X_FAKE_METRICS[X_FAKE_METRICS.length - 1]
