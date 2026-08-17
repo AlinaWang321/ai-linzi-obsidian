@@ -24,6 +24,7 @@ import {
   requestUrl,
 } from 'obsidian'
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
+import { WECHAT_THEMES, getWechatTheme } from './wechat-themes'
 import { prepareWechatArticle } from './article-format'
 import {
   applyNotePatch,
@@ -210,6 +211,8 @@ interface AiLinziSettings {
   wechatAppSecretId: string
   /** 文末品牌小卡「排版与配图 · AI霖子」(默认开,可关) */
   brandFooter: boolean
+  /** 公众号排版主题(一键复制/发草稿箱共用;选择卡确认时记住) */
+  wechatThemeId: string
   /** 驾驶舱目录映射(相对 vault 根;留空=该卡不统计)。新安装默认一人公司驾驶舱编号目录 */
   cockpitInboxFolder: string
   cockpitSourcesFolder: string
@@ -236,6 +239,7 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   wechatAppId: '',
   wechatAppSecretId: '',
   brandFooter: true,
+  wechatThemeId: 'classic-blue',
   cockpitInboxFolder: '000_Inbox',
   cockpitSourcesFolder: '01_Raw',
   cockpitKnowledgeFolder: '02_Wiki',
@@ -4670,6 +4674,18 @@ class AiLinziSettingTab extends PluginSettingTab {
       )
 
     new Setting(containerEl).setName('公众号发布(选配)').setHeading()
+
+    new Setting(containerEl)
+      .setName('默认排版主题')
+      .setDesc('「一键复制」和「发到草稿箱」的版式。每次排版时也会弹选择卡,可临时换,换了会记住。')
+      .addDropdown((d) => {
+        for (const theme of WECHAT_THEMES) d.addOption(theme.id, `${theme.name} · ${theme.tagline}`)
+        d.setValue(getWechatTheme(this.plugin.settings.wechatThemeId).id)
+        d.onChange(async (v) => {
+          this.plugin.settings.wechatThemeId = getWechatTheme(v).id
+          await this.plugin.saveSettings()
+        })
+      })
 
     new Setting(containerEl)
       .setName('公众号 AppID')

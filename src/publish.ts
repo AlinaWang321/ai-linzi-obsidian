@@ -1,34 +1,31 @@
 /**
- * 公众号发布 · v0.3
+ * 公众号发布 · v0.4
  *
  * ① 一键排版复制:笔记 md → 内联样式富文本(公众号编辑器可直接粘贴)。
- *    版式以 Alina 发布工作台为基准(亮蓝标题+黄色结构强调+暖底引用块),
- *    但不包含 Alina 的个人眉题与页尾 slogan,保持学员通用。
+ *    版式支持多套主题(见 wechat-themes.ts);默认「经典亮蓝」即原版
+ *    Alina 发布工作台版式(亮蓝标题+黄色结构强调+暖底引用块),
+ *    不包含 Alina 的个人眉题与页尾 slogan,保持学员通用。
  * ② 直发草稿箱:用学员自己的 AppID/AppSecret 从本机直连微信接口。
  *    AppSecret 只从 Obsidian SecretStorage 读取，不写入插件 data.json；
  *    仍需在公众号后台把本机 IP 加入白名单。
  *    图片自动走微信素材接口上传替换;第一张图作封面(草稿必须有封面)。
+ *
+ * 两个入口动作前都会弹主题选择卡(预选并记住上次选择,取消即中止)。
  */
 import { Notice, TFile, requestUrl } from 'obsidian'
 import { marked } from 'marked'
 import type AiLinziPlugin from './main'
 import { prepareWechatArticle, stripFrontmatter } from './article-format'
-
-// ── 版式主题(移植自 Alina 发布工作台排版 2026-07-21;两处调整:Part胶囊14px/大标题#0057FF) ──
-const THEME = {
-  ink: '#2b2b2b',
-  inkMute: '#7d7d7d',
-  navy: '#1f3f7c',
-  blueBright: '#0057FF',
-  linkBlue: '#1f63c5',
-  yellow: '#f5c518',
-  yellowSoft: '#fce38a',
-  quoteBg: '#fff9dc',
-  quoteInk: '#4f4a3f',
-  imgBorder: '#e3e8f0',
-  line: '#e8ebf1',
-  bgSoft: '#f4f6f9',
-}
+import {
+  DEFAULT_WECHAT_THEME,
+  type WechatTheme,
+  h2Style,
+  paragraphStyle,
+  pillStyle,
+  quoteStyle,
+  strongStyle,
+} from './wechat-themes'
+import { pickWechatTheme } from './wechat-theme-picker'
 
 const FONT =
   "-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif"
@@ -55,16 +52,15 @@ export function extractImages(md: string): { md: string; imgs: ImgRef[] } {
   return { md: out, imgs }
 }
 
-function partPill(label: string): string {
-  return `<p style="display:inline-block;margin:34px 0 10px;padding:6px 14px;border-radius:999px;background:${THEME.yellowSoft};color:${THEME.navy};font-size:14px;line-height:1.4;font-weight:700;letter-spacing:2px;">${label}</p>`
+function partPill(label: string, t: WechatTheme): string {
+  return `<p style="${pillStyle(t)}">${label}</p>`
 }
 
 /**
  * 给 marked 产出的 HTML 写入公众号可保留的内联样式。
  * 这里先识别 Part、图注、引用块等结构,再处理普通标签,避免把图注误排成 Part 标签。
  */
-export function styleHtml(html: string): string {
-  const T = THEME
+export function styleHtml(html: string, t: WechatTheme = DEFAULT_WECHAT_THEME): string {
   let out = html
 
   // 文章来自 AI 或用户笔记；预览/粘贴前移除可执行标签与事件属性。
@@ -81,45 +77,45 @@ export function styleHtml(html: string): string {
   // 标题语法(## PART 01)必须继续走下方 H2 大标题规则,不能在这里吞掉。
   out = out.replace(
     /<p>\s*<(em|strong)>\s*(PART\s*(?:\d+|[一二三四五六七八九十]+))\s*<\/\1>\s*<\/p>/gi,
-    (_all, _emphasis, label: string) => partPill(label.toUpperCase()),
+    (_all, _emphasis, label: string) => partPill(label.toUpperCase(), t),
   )
-  // 独立斜体行是图片说明/注释,沿用原版的居中灰字,不再误做黄色胶囊。
+  // 独立斜体行是图片说明/注释,沿用原版的居中灰字,不再误做结构胶囊。
   out = out.replace(
     /<p>\s*<em>([\s\S]*?)<\/em>\s*<\/p>/g,
-    `<p style="margin:0 12px 26px;color:${T.inkMute};font-size:13px;line-height:1.7;text-align:center;">$1</p>`,
+    `<p style="margin:0 12px 26px;color:${t.inkMute};font-size:13px;line-height:1.7;text-align:center;">$1</p>`,
   )
 
   // marked 会在 blockquote 内再包 p;先处理内层,避免继承普通正文的 18px 下边距。
   out = out.replace(/<blockquote>([\s\S]*?)<\/blockquote>/g, (_all, inner: string) => {
     const quoteBody = inner
-      .replaceAll('<p>', `<p style="margin:0 0 8px;color:${T.quoteInk};font-size:16px;line-height:1.85;text-align:left;">`)
-      .replaceAll('<ul>', `<ul style="margin:0;padding-left:1.35em;color:${T.quoteInk};font-size:16px;line-height:1.85;">`)
-      .replaceAll('<ol>', `<ol style="margin:0;padding-left:1.35em;color:${T.quoteInk};font-size:16px;line-height:1.85;">`)
-    return `<blockquote style="margin:22px 0;padding:14px 18px;border-left:4px solid ${T.yellow};background:${T.quoteBg};color:${T.quoteInk};font-size:16px;line-height:1.85;">${quoteBody}</blockquote>`
+      .replaceAll('<p>', `<p style="margin:0 0 8px;color:${t.quoteInk};font-size:16px;line-height:1.85;text-align:left;">`)
+      .replaceAll('<ul>', `<ul style="margin:0;padding-left:1.35em;color:${t.quoteInk};font-size:16px;line-height:1.85;">`)
+      .replaceAll('<ol>', `<ol style="margin:0;padding-left:1.35em;color:${t.quoteInk};font-size:16px;line-height:1.85;">`)
+    return `<blockquote style="${quoteStyle(t)}">${quoteBody}</blockquote>`
   })
 
   // 代码块必须先于行内 code 处理,否则会出现双层小胶囊。
   out = out.replace(
     /<pre><code(?: class="[^"]*")?>([\s\S]*?)<\/code><\/pre>/g,
-    `<pre style="margin:22px 0;padding:14px 16px;overflow-x:auto;border:1px solid ${T.line};border-radius:6px;background:${T.bgSoft};color:${T.ink};font-size:13px;line-height:1.75;white-space:pre-wrap;word-break:break-word;"><code style="padding:0;background:transparent;color:inherit;font-size:inherit;">$1</code></pre>`,
+    `<pre style="margin:22px 0;padding:14px 16px;overflow-x:auto;border:1px solid ${t.line};border-radius:6px;background:${t.bgSoft};color:${t.ink};font-size:13px;line-height:1.75;white-space:pre-wrap;word-break:break-word;"><code style="padding:0;background:transparent;color:inherit;font-size:inherit;">$1</code></pre>`,
   )
 
   return out
-    .replaceAll('<p>', `<p style="margin:0 0 18px;color:${T.ink};font-size:16px;line-height:1.95;text-align:justify;letter-spacing:0;">`)
-    // 大标题:原版黄色左边条;按 Alina 确认改为亮蓝 #0057FF。
-    .replaceAll('<h1>', `<h2 style="margin:4px 0 22px;padding-left:13px;border-left:4px solid ${T.yellow};color:${T.blueBright};font-size:23px;line-height:1.45;font-weight:800;letter-spacing:0;">`)
+    .replaceAll('<p>', `<p style="${paragraphStyle(t)}">`)
+    // 大标题按主题变体渲染;默认「经典亮蓝」=原版黄色左边条+亮蓝 #0057FF(Alina 确认)。
+    .replaceAll('<h1>', `<h2 style="${h2Style(t)}">`)
     .replaceAll('</h1>', '</h2>')
-    .replaceAll('<h2>', `<h2 style="margin:4px 0 22px;padding-left:13px;border-left:4px solid ${T.yellow};color:${T.blueBright};font-size:23px;line-height:1.45;font-weight:800;letter-spacing:0;">`)
-    .replaceAll('<h3>', `<h3 style="margin:28px 0 14px;color:${T.navy};font-size:18px;line-height:1.55;font-weight:700;letter-spacing:0;">`)
-    .replaceAll('<h4>', `<h4 style="margin:24px 0 12px;color:${T.navy};font-size:16px;line-height:1.6;font-weight:700;letter-spacing:0;">`)
-    .replaceAll('<ul>', `<ul style="margin:0 0 20px;padding-left:1.4em;color:${T.ink};font-size:16px;line-height:1.85;">`)
-    .replaceAll('<ol>', `<ol style="margin:0 0 20px;padding-left:1.4em;color:${T.ink};font-size:16px;line-height:1.85;">`)
+    .replaceAll('<h2>', `<h2 style="${h2Style(t)}">`)
+    .replaceAll('<h3>', `<h3 style="margin:28px 0 14px;color:${t.deep};font-size:18px;line-height:1.55;font-weight:700;letter-spacing:0;">`)
+    .replaceAll('<h4>', `<h4 style="margin:24px 0 12px;color:${t.deep};font-size:16px;line-height:1.6;font-weight:700;letter-spacing:0;">`)
+    .replaceAll('<ul>', `<ul style="margin:0 0 20px;padding-left:1.4em;color:${t.ink};font-size:16px;line-height:1.85;">`)
+    .replaceAll('<ol>', `<ol style="margin:0 0 20px;padding-left:1.4em;color:${t.ink};font-size:16px;line-height:1.85;">`)
     .replaceAll('<li>', `<li style="margin:0 0 8px;">`)
-    // 正文金句与大标题统一使用品牌亮蓝；普通正文仍保留深色，避免整页过亮。
-    .replaceAll('<strong>', `<strong style="color:${T.blueBright};font-weight:700;">`)
-    .replaceAll('<hr>', `<hr style="margin:32px auto;border:none;border-top:1px solid ${T.line};width:100%;">`)
-    .replaceAll('<code>', `<code style="padding:2px 5px;border-radius:4px;background:#eef4ff;color:${T.navy};font-size:14px;">`)
-    .replace(/<a href="([^"]*)"([^>]*)>/g, `<a href="$1"$2 style="color:${T.linkBlue};font-weight:700;text-decoration:underline;text-decoration-color:${T.yellow};text-underline-offset:3px;word-break:break-all;">`)
+    // 正文金句与大标题统一使用主题强调色；普通正文仍保留深色，避免整页过亮。
+    .replaceAll('<strong>', `<strong style="${strongStyle(t)}">`)
+    .replaceAll('<hr>', `<hr style="margin:32px auto;border:none;border-top:1px solid ${t.line};width:100%;">`)
+    .replaceAll('<code>', `<code style="padding:2px 5px;border-radius:4px;background:${t.codeBg};color:${t.deep};font-size:14px;">`)
+    .replace(/<a href="([^"]*)"([^>]*)>/g, `<a href="$1"$2 style="color:${t.link};font-weight:700;text-decoration:underline;text-decoration-color:${t.mark};text-underline-offset:3px;word-break:break-all;">`)
 }
 
 function wrapSection(inner: string): string {
@@ -127,28 +123,33 @@ function wrapSection(inner: string): string {
 }
 
 /** 文末品牌小卡(设置可关):读者问「怎么排的」,答案在文末 */
-function brandFooterHtml(): string {
+function brandFooterHtml(t: WechatTheme): string {
   return (
-    `<section style="margin:40px 0 0;padding:17px 16px;border:1px solid ${THEME.line};border-radius:8px;background:#fbfcfe;text-align:center;">` +
-    `<span style="display:inline-block;width:7px;height:7px;margin:0 8px 1px 0;border-radius:50%;background:${THEME.yellow};"></span>` +
-    `<span style="color:${THEME.navy};font-size:13px;line-height:1.7;font-weight:700;letter-spacing:.5px;">AI霖子</span>` +
-    `<span style="color:${THEME.inkMute};font-size:12px;line-height:1.7;letter-spacing:.5px;"> · 公众号排版与配图</span>` +
+    `<section style="margin:40px 0 0;padding:17px 16px;border:1px solid ${t.line};border-radius:8px;background:${t.footerBg};text-align:center;">` +
+    `<span style="display:inline-block;width:7px;height:7px;margin:0 8px 1px 0;border-radius:50%;background:${t.mark};"></span>` +
+    `<span style="color:${t.deep};font-size:13px;line-height:1.7;font-weight:700;letter-spacing:.5px;">AI霖子</span>` +
+    `<span style="color:${t.inkMute};font-size:12px;line-height:1.7;letter-spacing:.5px;"> · 公众号排版与配图</span>` +
     `</section>`
   )
 }
 
 /** 通用转换:imgResolver 决定每张图输出什么(复制场景=占位提示;草稿场景=微信图床 img) */
-export function mdToWechatHtml(mdRaw: string, imgHtml: (img: ImgRef) => string, withFooter = false): string {
+export function mdToWechatHtml(
+  mdRaw: string,
+  imgHtml: (img: ImgRef) => string,
+  withFooter = false,
+  theme: WechatTheme = DEFAULT_WECHAT_THEME,
+): string {
   const prepared = prepareWechatArticle(mdRaw)
   const { md, imgs } = extractImages(prepared.body)
   let html = marked.parse(md, { async: false })
-  html = styleHtml(html)
+  html = styleHtml(html, theme)
   for (const img of imgs) {
     // 占位符被包进了 <p> 里,连壳一起换
     const wrapped = new RegExp(`<p[^>]*>\\s*${img.placeholder}\\s*</p>|${img.placeholder}`)
     html = html.replace(wrapped, imgHtml(img))
   }
-  return wrapSection(html + (withFooter ? brandFooterHtml() : ''))
+  return wrapSection(html + (withFooter ? brandFooterHtml(theme) : ''))
 }
 
 function escapeAttr(text: string): string {
@@ -214,8 +215,8 @@ export function isDedicatedWechatCover(img: Pick<ImgRef, 'src' | 'alt'>): boolea
 }
 
 /** 用独立 section 固定图片块边界，避免公众号编辑器把图片吸附进标题或相邻段落。 */
-export function wechatImageHtml(url: string, alt = ''): string {
-  return `<section style="display:block;margin:26px 0 10px;padding:0;text-align:center;"><img src="${escapeAttr(url)}" alt="${escapeAttr(alt)}" style="display:block;width:100%;max-width:100%;height:auto;margin:0 auto;border:1px solid ${THEME.imgBorder};border-radius:5px;"></section>`
+export function wechatImageHtml(url: string, alt = '', t: WechatTheme = DEFAULT_WECHAT_THEME): string {
+  return `<section style="display:block;margin:26px 0 10px;padding:0;text-align:center;"><img src="${escapeAttr(url)}" alt="${escapeAttr(alt)}" style="display:block;width:100%;max-width:100%;height:auto;margin:0 auto;border:1px solid ${t.imgBorder};border-radius:5px;"></section>`
 }
 
 async function currentNote(plugin: AiLinziPlugin): Promise<{ file: TFile; body: string; digest: string } | null> {
@@ -238,15 +239,17 @@ async function currentNote(plugin: AiLinziPlugin): Promise<{ file: TFile; body: 
 export async function copyWechatFormatted(plugin: AiLinziPlugin) {
   const note = await currentNote(plugin)
   if (!note) return
+  const theme = await pickWechatTheme(plugin)
+  if (!theme) return
   let localImgCount = 0
   const html = mdToWechatHtml(note.body, (img) => {
     if (isDedicatedWechatCover(img)) return ''
     if (/^https?:\/\//.test(img.src)) {
-      return wechatImageHtml(img.src, img.alt)
+      return wechatImageHtml(img.src, img.alt, theme)
     }
     localImgCount++
-    return `<p style="margin:1.2em 0;padding:10px;background:${THEME.bgSoft};border-radius:6px;color:${THEME.inkMute};font-size:13px;text-align:center;">📷 此处有本地图片「${img.alt || img.src}」——粘贴后请在公众号编辑器手动插入</p>`
-  }, plugin.settings.brandFooter)
+    return `<p style="margin:1.2em 0;padding:10px;background:${theme.bgSoft};border-radius:6px;color:${theme.inkMute};font-size:13px;text-align:center;">📷 此处有本地图片「${img.alt || img.src}」——粘贴后请在公众号编辑器手动插入</p>`
+  }, plugin.settings.brandFooter, theme)
   const plain = note.body
   await navigator.clipboard.write([
     new ClipboardItem({
@@ -353,6 +356,8 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
   }
   const note = await currentNote(plugin)
   if (!note) return
+  const theme = await pickWechatTheme(plugin)
+  if (!theme) return
 
   const n = new Notice('📮 正在发送到公众号草稿箱…', 0)
   try {
@@ -395,8 +400,8 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
     const html = mdToWechatHtml(note.body, (img) => {
       if (dedicatedCover && img.placeholder === dedicatedCover.placeholder) return ''
       const url = /^https?:\/\//.test(img.src) ? img.src : urlMap.get(img.src)
-      return url ? wechatImageHtml(url, img.alt) : ''
-    }, plugin.settings.brandFooter)
+      return url ? wechatImageHtml(url, img.alt, theme) : ''
+    }, plugin.settings.brandFooter, theme)
 
     // 标题:frontmatter title > 去日期前缀的文件名
     const frontmatter = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter

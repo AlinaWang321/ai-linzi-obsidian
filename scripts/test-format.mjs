@@ -141,7 +141,45 @@ assert.match(imageBlock, /^<section/)
 assert.match(imageBlock, /<img src="https:\/\/example\.com\/a\.png"/)
 assert.match(imageBlock, /<\/section>$/)
 
+// ── 公众号排版主题库 ──────────────────────────────
+const themes = await loadTs('src/wechat-themes.ts')
+assert.ok(Array.isArray(themes.WECHAT_THEMES) && themes.WECHAT_THEMES.length >= 4, '至少提供 4 套排版主题')
+const themeIds = themes.WECHAT_THEMES.map((t) => t.id)
+assert.equal(new Set(themeIds).size, themeIds.length, '主题 id 不得重复')
+assert.equal(themes.DEFAULT_WECHAT_THEME.id, 'classic-blue', '经典亮蓝必须是默认主题')
+assert.equal(themes.getWechatTheme('不存在的历史id').id, 'classic-blue', '未知主题 id 必须回退默认')
+
+// 默认主题输出必须与主题库里的 classic-blue 完全一致(老用户升级零变化)
+const classic = themes.getWechatTheme('classic-blue')
+assert.equal(
+  publisher.mdToWechatHtml(writerOutput, () => ''),
+  publisher.mdToWechatHtml(writerOutput, () => '', false, classic),
+)
+
+// 每套主题都能完整渲染,颜色正确落到强调元素上
+const themeSample = writerOutput.replace('这是正文。', '这是正文。\n\n> 引用一句话。')
+for (const theme of themes.WECHAT_THEMES) {
+  const themed = publisher.mdToWechatHtml(themeSample, () => '', true, theme)
+  assert.match(themed, /^<section/)
+  assert.doesNotMatch(themed, /undefined/)
+  assert.ok(themed.includes(`color:${theme.accent}`), `主题 ${theme.id} 的强调色应出现在输出中`)
+  assert.ok(themed.includes(`background:${theme.quoteBg}`), `主题 ${theme.id} 的引用底色应出现在输出中`)
+}
+
+// 标题与胶囊变体确实生效,且主题之间不串色
+const mono = themes.getWechatTheme('mono-ink')
+const monoHtml = publisher.mdToWechatHtml(themeSample, () => '', false, mono)
+assert.doesNotMatch(monoHtml, /#0057FF/, '非默认主题不得残留经典亮蓝的颜色')
+assert.match(monoHtml, /<h2 style="[^"]*border-bottom/, '极简黑白的大标题应为下划线变体')
+assert.match(monoHtml, /<p style="[^"]*border:1px solid #111111[^"]*">PART 04<\/p>/, '极简黑白的 PART 胶囊应为描边变体')
+const warm = themes.getWechatTheme('warm-clay')
+const warmHtml = publisher.mdToWechatHtml(themeSample, () => '', false, warm)
+assert.match(warmHtml, /<h2 style="[^"]*border-radius:6px;background:/, '暖橙杂志的大标题应为底色块变体')
+
 const publishSource = await readFile(new URL('../src/publish.ts', import.meta.url), 'utf8')
+assert.match(publishSource, /pickWechatTheme\(plugin\)/, '排版与发草稿箱入口必须先经过主题选择卡')
+const pickerSource = await readFile(new URL('../src/wechat-theme-picker.ts', import.meta.url), 'utf8')
+assert.match(pickerSource, /wechatThemeId/, '主题选择卡必须记住上次选择')
 const sendDraftStart = publishSource.indexOf('export async function sendToWechatDraft')
 assert.ok(sendDraftStart >= 0, '必须保留公众号草稿箱发送入口')
 const sendDraftSource = publishSource.slice(sendDraftStart)

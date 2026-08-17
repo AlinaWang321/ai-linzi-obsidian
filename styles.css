@@ -3322,3 +3322,72 @@ button.ai-linzi-vault-source-link:focus-visible {
   flex-shrink: 0;
   font-family: monospace;
 }
+
+/* ── 公众号排版主题选择卡 ─────────────────────────── */
+.ai-linzi-wtheme-modal {
+  width: 520px;
+  max-width: 92vw;
+}
+.ai-linzi-wtheme-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 6px 0 2px;
+  max-height: 58vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.ai-linzi-wtheme-card {
+  border: 1.5px solid var(--background-modifier-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.ai-linzi-wtheme-card:hover {
+  border-color: var(--text-muted);
+}
+.ai-linzi-wtheme-card.is-selected {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+.ai-linzi-wtheme-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.ai-linzi-wtheme-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+}
+.ai-linzi-wtheme-name {
+  font-weight: 700;
+  margin-left: 4px;
+}
+.ai-linzi-wtheme-tagline {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+/* 预览底永远白色:公众号文章页就是白底,深色模式下也照实展示 */
+.ai-linzi-wtheme-preview {
+  background: #ffffff;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.ai-linzi-wtheme-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 10px;
+}
+.ai-linzi-wtheme-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
