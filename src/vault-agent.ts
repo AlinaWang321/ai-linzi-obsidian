@@ -4,6 +4,7 @@ import { LocalVaultSearch } from './vault-search'
 import {
   isProtectedVaultPath,
   normalizeVaultRelativePath,
+  shouldBlockPlanPath,
   type VaultAgentToolCall,
   type VaultAgentToolName,
   type VaultAgentToolResult,
@@ -436,8 +437,11 @@ export class LocalVaultAgent {
       const paths = operation.type === 'move'
         ? [operation.from, operation.to]
         : [operation.type === 'create_artifact' ? this.artifactPath(operation) : operation.path]
-      if (paths.some((path) => this.protected(path))) {
-        throw new Error(`方案涉及保护目录，已拒绝：${paths.join(' → ')}`)
+      const blocked = paths.filter((path) =>
+        shouldBlockPlanPath(path, operation.type, this.localSkillsRoot()),
+      )
+      if (blocked.length > 0) {
+        throw new Error(`方案涉及保护目录，已拒绝：${blocked.join(' → ')}`)
       }
     }
 

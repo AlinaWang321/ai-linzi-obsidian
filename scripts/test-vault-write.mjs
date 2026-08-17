@@ -262,4 +262,40 @@ await assert.rejects(
   /保护目录/,
 )
 
+// 「一键生成目录」回归（2026-08-17 客户报的 bug）：
+// 模型生成的骨架方案里带着 05_System/Skills，旧逻辑整份 8 项方案连坐被拒，
+// 用户看到「执行失败：方案涉及保护目录」，一个文件夹都建不出来。
+const scaffoldPlan = {
+  title: '搭建大脑骨架',
+  summary: '',
+  operations: [
+    { type: 'create_folder', path: '01_Raw' },
+    { type: 'create_folder', path: '02_Wiki' },
+    { type: 'create_folder', path: '03_Dashboard' },
+    { type: 'create_folder', path: '04_Output' },
+    { type: 'create_folder', path: '05_System' },
+    { type: 'create_folder', path: '05_System/Skills' },
+    { type: 'create_folder', path: '06_Archive' },
+  ],
+  notes: [],
+}
+const scaffoldRecord = await agent.applyPlan(scaffoldPlan)
+// Skill 目录必须是「本次真的新建出来」的，不能只是没报错
+assert.equal(scaffoldRecord.createdFolders.includes('05_System/Skills'), true)
+// 其余 6 个也都要落地（已存在的会被 ensureFolder 跳过，所以查最终状态而不是 createdFolders）
+for (const operation of scaffoldPlan.operations) {
+  assert.equal(files.get(operation.path) instanceof module.TFolder, true, `${operation.path} 应存在`)
+}
+
+// 但方案里只要有「往 Skill 目录写内容」就照样整份拒绝
+await assert.rejects(
+  agent.applyPlan({
+    title: '越界',
+    summary: '',
+    operations: [{ type: 'create_folder', path: '07_New' }, { type: 'move', from: '02_Wiki/x.md', to: '05_System/Skills/x.md' }],
+    notes: [],
+  }),
+  /保护目录/,
+)
+
 console.log('Vault single-note and artifact write integration tests passed')

@@ -218,6 +218,24 @@ assert.equal(core.isProtectedVaultPath('AGENTS.md'), true)
 assert.equal(core.isProtectedVaultPath('system/skills/demo/SKILL.md'), true)
 assert.equal(core.isProtectedVaultPath('㊙️财务/收入.md'), false)
 assert.equal(core.isProtectedVaultPath('wiki/产品.md'), false)
+
+// 保护原因分类：Skill 目录跟隐藏目录/回收站/AGENTS.md 性质不同
+assert.equal(core.protectedVaultPathReason('05_System/Skills', '05_System/Skills'), 'skills-root')
+assert.equal(core.protectedVaultPathReason('.obsidian/plugins', '05_System/Skills'), 'hidden')
+assert.equal(core.protectedVaultPathReason('.trash/旧稿.md', '05_System/Skills'), 'trash')
+assert.equal(core.protectedVaultPathReason('AGENTS.md', '05_System/Skills'), 'agent-file')
+assert.equal(core.protectedVaultPathReason('02_Wiki/产品.md', '05_System/Skills'), null)
+
+// 「一键生成目录」把 Skill 目录列进方案时，新建空文件夹放行……
+assert.equal(core.shouldBlockPlanPath('05_System/Skills', 'create_folder', '05_System/Skills'), false)
+assert.equal(core.shouldBlockPlanPath('05_System', 'create_folder', '05_System/Skills'), false)
+// ……但读写里面的内容照样拦死
+assert.equal(core.shouldBlockPlanPath('05_System/Skills/demo/SKILL.md', 'create_note', '05_System/Skills'), true)
+assert.equal(core.shouldBlockPlanPath('05_System/Skills/x.docx', 'create_artifact', '05_System/Skills'), true)
+assert.equal(core.shouldBlockPlanPath('05_System/Skills/a.md', 'move', '05_System/Skills'), true)
+// 隐藏目录 / 回收站 即使是 create_folder 也绝不放行
+assert.equal(core.shouldBlockPlanPath('.obsidian/plugins', 'create_folder', '05_System/Skills'), true)
+assert.equal(core.shouldBlockPlanPath('.trash/x', 'create_folder', '05_System/Skills'), true)
 assert.equal(core.VAULT_AGENT_MAX_ROUNDS, 6)
 assert.equal(
   core.isVaultAgentToolAllowed('read_skill_file', { vault: false, localSkill: true }),

@@ -319,22 +319,58 @@ export function normalizeVaultRelativePath(value: unknown): string | null {
   return parts.join('/')
 }
 
-export function isProtectedVaultPath(path: string, localSkillsRoot = 'system/skills'): boolean {
+/**
+ * 路径为什么被保护。null = 不受保护。
+ *
+ * 分开返回原因是因为「本地 Skill 目录」和其他几类保护性质不同：
+ * 隐藏目录 / 回收站 / AGENTS.md 这些是**任何操作**都不许碰；
+ * 而 Skill 目录只是不许 AI 读写里面的内容，**新建这个空文件夹本身是无害的**。
+ * 见 shouldBlockPlanPath()。
+ */
+export type ProtectedVaultPathReason = 'hidden' | 'trash' | 'agent-file' | 'skills-root'
+
+export function protectedVaultPathReason(
+  path: string,
+  localSkillsRoot = 'system/skills',
+): ProtectedVaultPathReason | null {
   const normalized = path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
   const lower = normalized.toLocaleLowerCase()
   const root = localSkillsRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLocaleLowerCase()
   const basename = lower.split('/').at(-1) ?? ''
-  return (
-    lower.split('/').some((part) => part.startsWith('.')) ||
-    lower === 'trash' ||
-    lower.startsWith('trash/') ||
-    lower === '.trash' ||
-    lower.startsWith('.trash/') ||
-    basename === 'agents.md' ||
-    basename === 'claude.md' ||
-    basename === '_sub-agent-summaries.md' ||
-    Boolean(root && (lower === root || lower.startsWith(`${root}/`)))
-  )
+  if (lower === '.trash' || lower.startsWith('.trash/')) return 'trash'
+  if (lower.split('/').some((part) => part.startsWith('.'))) return 'hidden'
+  if (lower === 'trash' || lower.startsWith('trash/')) return 'trash'
+  if (basename === 'agents.md' || basename === 'claude.md' || basename === '_sub-agent-summaries.md') {
+    return 'agent-file'
+  }
+  if (root && (lower === root || lower.startsWith(`${root}/`))) return 'skills-root'
+  return null
+}
+
+export function isProtectedVaultPath(path: string, localSkillsRoot = 'system/skills'): boolean {
+  return protectedVaultPathReason(path, localSkillsRoot) !== null
+}
+
+/**
+ * 整理方案里的某个路径要不要拦。
+ *
+ * 只有 create_folder 落在本地 Skill 目录时放行——新建空文件夹既读不到也覆盖不了
+ * 任何 Skill 内容，而拦下来会让整份方案连坐失败。
+ *
+ * 背景（2026-08-17）：插件默认 localSkillsFolder = `05_System/Skills`，而「一键生成
+ * 目录」由模型生成方案，它经常会把 `05_System/Skills` 一起列进去。旧逻辑只要方案里
+ * 有一个受保护路径就把**整份 8 项方案**拒掉，用户看到「执行失败：方案涉及保护目录」，
+ * 一个文件夹都建不出来。
+ */
+export function shouldBlockPlanPath(
+  path: string,
+  operationType: string,
+  localSkillsRoot = 'system/skills',
+): boolean {
+  const reason = protectedVaultPathReason(path, localSkillsRoot)
+  if (!reason) return false
+  if (reason === 'skills-root' && operationType === 'create_folder') return false
+  return true
 }
 
 export function extractVaultToolCalls(text: string): VaultToolCallExtraction {
