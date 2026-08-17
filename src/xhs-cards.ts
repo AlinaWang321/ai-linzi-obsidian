@@ -4,27 +4,24 @@ import type AiLinziPlugin from './main'
 import {
   composeGeneratedXhsNote,
   paginateXhsCardBlocks,
+  paginateXTweetBlocks,
   parseXhsCardDocument,
-  shouldUseXhsSideBySideLayout,
   stableContentFingerprint,
   takeXhsCoverIntro,
-  XHS_BODY_IMAGE_MAX_HEIGHT,
-  XHS_SIDE_IMAGE_MAX_HEIGHT,
-  XHS_SIDE_IMAGE_WIDTH,
-  type ParsedXhsCardDocument,
   type XhsCardBlock,
 } from './xhs-card-core'
-
-const CARD_WIDTH = 1080
-const CARD_HEIGHT = 1440
-const BLUE = '#1265E8'
-const ORANGE = '#F4B900'
-const TITLE = '#252D38'
-const INK = '#33383F'
-const MUTED = '#7C8796'
-const PAPER = '#FFFFFF'
-const SERIF_FONT = '"Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", serif'
-const SANS_FONT = '"PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif'
+import {
+  CARD_HEIGHT,
+  CARD_WIDTH,
+  drawBodyPage,
+  drawCover,
+  drawXTweetPage,
+  paletteForStyle,
+  wrapRichText,
+  X_TWEET_LAYOUT,
+  type XhsCardStyleId,
+} from './xhs-card-render'
+import { getXhsCardStyle } from './xhs-card-styles'
 
 export interface XhsCardPackage {
   folderPath: string
@@ -45,6 +42,10 @@ interface GenerateXhsCardsInput {
   summary?: string
   /** 3 个备选标题、小红书正文和话题词；写在卡片图片之前，不参与卡片分页。 */
   caption?: string
+  /** 卡片风格;缺省 classic 保证旧调用输出不变 */
+  style?: XhsCardStyleId
+  /** X 风格的身份信息(来自设置;头像路径可为空,回退首字圆标) */
+  xIdentity?: { nickname: string; handle: string; avatarPath: string }
 }
 
 function isoDate(): string {
@@ -78,174 +79,6 @@ function uniqueFolder(plugin: AiLinziPlugin, base: string): string {
     path = normalizePath(`${base}_${index}`)
   }
   return path
-}
-
-function roundedRect(
-  context: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-) {
-  context.beginPath()
-  context.roundRect(x, y, width, height, radius)
-}
-
-function drawPaper(context: CanvasRenderingContext2D) {
-  context.fillStyle = PAPER
-  context.fillRect(0, 0, CARD_WIDTH, CARD_HEIGHT)
-}
-
-function setFont(
-  context: CanvasRenderingContext2D,
-  size: number,
-  weight = 500,
-  family: 'serif' | 'sans' = 'serif',
-) {
-  context.font = `${weight} ${size}px ${family === 'serif' ? SERIF_FONT : SANS_FONT}`
-}
-
-function wrapText(context: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
-  const lines: string[] = []
-  let current = ''
-  for (const char of text) {
-    const candidate = current + char
-    if (current && context.measureText(candidate).width > maxWidth) {
-      lines.push(current)
-      current = char
-    } else {
-      current = candidate
-    }
-  }
-  if (current) lines.push(current)
-  return lines
-}
-
-function drawLines(
-  context: CanvasRenderingContext2D,
-  lines: string[],
-  x: number,
-  y: number,
-  lineHeight: number,
-  maxLines?: number,
-): number {
-  const visible = typeof maxLines === 'number' ? lines.slice(0, maxLines) : lines
-  visible.forEach((line, index) => context.fillText(line, x, y + index * lineHeight))
-  return y + visible.length * lineHeight
-}
-
-function drawPageChrome(context: CanvasRenderingContext2D, page: number, total: number) {
-  context.fillStyle = MUTED
-  setFont(context, 22, 400, 'sans')
-  context.textAlign = 'right'
-  context.fillText(`${String(page).padStart(2, '0')} / ${String(total).padStart(2, '0')}`, 1008, 1380)
-  context.textAlign = 'left'
-}
-
-interface RichLine {
-  text: string
-  start: number
-  xOffset: number
-}
-
-function boldAt(block: XhsCardBlock, index: number): boolean {
-  return Boolean(block.boldRanges?.some((range) => index >= range.start && index < range.end))
-}
-
-function wrapRichText(
-  context: CanvasRenderingContext2D,
-  block: XhsCardBlock,
-  maxWidth: number,
-  size: number,
-  weight: number,
-  boldWeight: number,
-  firstLineIndent = 0,
-): RichLine[] {
-  const lines: RichLine[] = []
-  let start = 0
-  let width = 0
-  for (let index = 0; index < block.text.length; index++) {
-    setFont(context, size, boldAt(block, index) ? boldWeight : weight)
-    const charWidth = context.measureText(block.text[index]).width
-    const lineMaxWidth = maxWidth - (lines.length === 0 ? firstLineIndent : 0)
-    if (index > start && width + charWidth > lineMaxWidth) {
-      lines.push({
-        text: block.text.slice(start, index),
-        start,
-        xOffset: lines.length === 0 ? firstLineIndent : 0,
-      })
-      start = index
-      width = charWidth
-    } else {
-      width += charWidth
-    }
-  }
-  if (start < block.text.length) {
-    lines.push({
-      text: block.text.slice(start),
-      start,
-      xOffset: lines.length === 0 ? firstLineIndent : 0,
-    })
-  }
-  return lines
-}
-
-function drawRichLines(
-  context: CanvasRenderingContext2D,
-  block: XhsCardBlock,
-  lines: RichLine[],
-  x: number,
-  y: number,
-  lineHeight: number,
-  size: number,
-  weight: number,
-  boldWeight: number,
-  color: string,
-  boldColor: string,
-): number {
-  lines.forEach((line, lineIndex) => {
-    let cursor = x + line.xOffset
-    let segment = ''
-    let segmentBold = boldAt(block, line.start)
-    const flush = () => {
-      if (!segment) return
-      setFont(context, size, segmentBold ? boldWeight : weight)
-      context.fillStyle = segmentBold ? boldColor : color
-      context.fillText(segment, cursor, y + lineIndex * lineHeight)
-      cursor += context.measureText(segment).width
-      segment = ''
-    }
-    for (let index = 0; index < line.text.length; index++) {
-      const currentBold = boldAt(block, line.start + index)
-      if (segment && currentBold !== segmentBold) flush()
-      segmentBold = currentBold
-      segment += line.text[index]
-    }
-    flush()
-  })
-  return y + lines.length * lineHeight
-}
-
-function drawContainedImage(
-  context: CanvasRenderingContext2D,
-  image: HTMLImageElement,
-  x: number,
-  y: number,
-  width: number,
-  maxHeight: number,
-): number {
-  const scale = Math.min(width / image.naturalWidth, maxHeight / image.naturalHeight)
-  const drawWidth = image.naturalWidth * scale
-  const drawHeight = image.naturalHeight * scale
-  context.drawImage(
-    image,
-    x + (width - drawWidth) / 2,
-    y,
-    drawWidth,
-    drawHeight,
-  )
-  return drawHeight
 }
 
 async function canvasPng(canvas: HTMLCanvasElement): Promise<Uint8Array> {
@@ -289,211 +122,6 @@ async function loadSourceImage(
   throw new Error(`找不到图片：${source}`)
 }
 
-function drawCover(
-  context: CanvasRenderingContext2D,
-  document: ParsedXhsCardDocument,
-  coverBlocks: XhsCardBlock[],
-  image: HTMLImageElement | null,
-  total: number,
-) {
-  drawPaper(context)
-  drawPageChrome(context, 1, total)
-
-  context.fillStyle = TITLE
-  setFont(context, 58, 700)
-  const titleLines = wrapText(context, document.title, 940).slice(0, 4)
-  let cursor = drawLines(context, titleLines, 70, 108, 76) + 14
-
-  context.fillStyle = MUTED
-  setFont(context, 27, 400)
-  if (document.excerpt) {
-    const excerptLines = wrapText(context, document.excerpt, 938).slice(0, image ? 2 : 4)
-    cursor = drawLines(context, excerptLines, 70, cursor, 43) + 20
-  }
-
-  if (image) {
-    const imageHeight = drawContainedImage(context, image, 70, cursor, 940, 420)
-    cursor += imageHeight + 30
-  }
-
-  for (const block of coverBlocks) {
-    if (block.kind === 'heading') {
-      if (cursor > 108) cursor += 28
-      context.fillStyle = BLUE
-      setFont(context, 34, 700)
-      const lines = wrapText(context, block.text, 900)
-      cursor = drawLines(context, lines, 84, cursor, 50) + 24
-      continue
-    }
-    if (block.kind === 'quote') {
-      const lines = wrapRichText(context, block, 870, 29, 500, 700)
-      context.fillStyle = BLUE
-      roundedRect(context, 70, cursor - 29, 5, Math.max(50, lines.length * 52 - 4), 3)
-      context.fill()
-      cursor =
-        drawRichLines(context, block, lines, 96, cursor, 52, 29, 500, 700, INK, '#172235') +
-        24
-      continue
-    }
-    const lines = wrapRichText(context, block, 940, 29, 400, 700, 0)
-    cursor =
-      drawRichLines(context, block, lines, 70, cursor, 52, 29, 400, 700, INK, '#172235') +
-      28
-  }
-}
-
-function drawBodyPage(
-  context: CanvasRenderingContext2D,
-  blocks: XhsCardBlock[],
-  sourceImages: ReadonlyMap<XhsCardBlock, HTMLImageElement>,
-  page: number,
-  total: number,
-) {
-  drawPaper(context)
-  drawPageChrome(context, page, total)
-  let y = 104
-
-  for (let index = 0; index < blocks.length; index++) {
-    const block = blocks[index]
-    if (block.kind === 'image') {
-      const image = sourceImages.get(block)
-      const next = blocks[index + 1]
-      if (image && shouldUseXhsSideBySideLayout(block, next)) {
-        const text = next as XhsCardBlock
-        const textX = 548
-        const textWidth = 460
-        const imageHeight = drawContainedImage(
-          context,
-          image,
-          70,
-          y,
-          XHS_SIDE_IMAGE_WIDTH,
-          XHS_SIDE_IMAGE_MAX_HEIGHT,
-        )
-        let textBottom = y
-        if (text.kind === 'quote') {
-          const lines = wrapRichText(context, text, textWidth - 32, 30, 560, 700)
-          context.fillStyle = BLUE
-          roundedRect(context, textX, y - 31, 6, Math.max(56, lines.length * 58 - 4), 3)
-          context.fill()
-          textBottom = drawRichLines(
-            context,
-            text,
-            lines,
-            textX + 28,
-            y,
-            58,
-            30,
-            560,
-            700,
-            TITLE,
-            '#172235',
-          )
-        } else {
-          const lines = wrapRichText(context, text, textWidth, 30, 400, 700, 0)
-          textBottom = drawRichLines(
-            context,
-            text,
-            lines,
-            textX,
-            y,
-            56,
-            30,
-            400,
-            700,
-            INK,
-            '#172235',
-          )
-        }
-        y = Math.max(y + imageHeight, textBottom) + 40
-        index++
-      } else if (image) {
-        y +=
-          drawContainedImage(
-            context,
-            image,
-            70,
-            y,
-            940,
-            Math.min(XHS_BODY_IMAGE_MAX_HEIGHT, block.imageMaxHeight ?? XHS_BODY_IMAGE_MAX_HEIGHT),
-          ) +
-          40
-      }
-      continue
-    }
-    if (block.kind === 'heading') {
-      const primary = block.level !== 3
-      if (y > 104) y += primary ? 48 : 36
-      if (primary) {
-        if (block.sectionIndex) {
-          context.fillStyle = '#FFE38A'
-          roundedRect(context, 70, y - 46, 224, 72, 36)
-          context.fill()
-          context.fillStyle = '#28518F'
-          setFont(context, 28, 650, 'sans')
-          context.textAlign = 'center'
-          context.fillText(`PART ${String(block.sectionIndex).padStart(2, '0')}`, 182, y + 2)
-          context.textAlign = 'left'
-          y += 112
-        }
-        context.fillStyle = ORANGE
-        roundedRect(context, 70, y - 45, 7, 62, 3)
-        context.fill()
-        context.fillStyle = BLUE
-        setFont(context, 46, 700)
-        const lines = wrapText(context, block.text, 898)
-        y = drawLines(context, lines, 105, y, 62) + 40
-      } else {
-        context.fillStyle = ORANGE
-        context.beginPath()
-        context.arc(78, y - 11, 6, 0, Math.PI * 2)
-        context.fill()
-        context.fillStyle = BLUE
-        setFont(context, 38, 700)
-        const lines = wrapText(context, block.text, 900)
-        y = drawLines(context, lines, 102, y, 56) + 32
-      }
-      continue
-    }
-    if (block.kind === 'quote') {
-      const lines = wrapRichText(context, block, 880, 33, 560, 700)
-      context.fillStyle = BLUE
-      roundedRect(context, 70, y - 33, 6, Math.max(56, lines.length * 60 - 4), 3)
-      context.fill()
-      y =
-        drawRichLines(
-          context,
-          block,
-          lines,
-          102,
-          y,
-          60,
-          33,
-          560,
-          700,
-          TITLE,
-          '#172235',
-        ) + 34
-      continue
-    }
-    const lines = wrapRichText(context, block, 940, 32, 400, 700, 0)
-    y =
-      drawRichLines(
-        context,
-        block,
-        lines,
-        70,
-        y,
-        58,
-        32,
-        400,
-        700,
-        INK,
-        '#172235',
-      ) + 36
-  }
-}
-
 async function replaceWithGeneratedXhsNote(
   plugin: AiLinziPlugin,
   noteFile: TFile,
@@ -517,6 +145,7 @@ async function updateCardFrontmatter(
   await plugin.app.fileManager.processFrontMatter(input.noteFile, (fm: Record<string, unknown>) => {
     fm['小红书状态'] = '已生成小红书图文'
     fm['小红书生成时间'] = date
+    fm['小红书卡片风格'] = getXhsCardStyle(input.style).name
     fm['小红书卡片目录'] = result.folderPath
     fm['小红书卡片ZIP'] = result.zipPath
     fm['来源路径'] = input.sourceFile.path
@@ -569,9 +198,75 @@ export async function generateXhsCardPackage(
   const renderableBlocks = parsed.blocks.filter(
     (block) => block.kind !== 'image' || (block !== coverImageBlock && sourceImages.has(block)),
   )
-  const { coverBlocks, remainingBlocks } = takeXhsCoverIntro(renderableBlocks)
-  const pages = remainingBlocks.length > 0 ? paginateXhsCardBlocks(remainingBlocks) : []
-  const total = pages.length + 1
+
+  const styleId: XhsCardStyleId = input.style ?? 'classic'
+  const palette = paletteForStyle(styleId)
+  let renderPage: (context: CanvasRenderingContext2D, index: number) => void
+  let total: number
+  if (styleId === 'x-dark') {
+    // X 推文卡:无封面页,标题与小标题压平成加粗段落;每页完整推文框。
+    const xRenderable = parsed.blocks.filter(
+      (block) => block.kind !== 'image' || sourceImages.has(block),
+    )
+    const fullBold = (text: string) => [{ start: 0, end: text.length }]
+    const flattened: XhsCardBlock[] = [
+      { kind: 'paragraph', text: parsed.title, boldRanges: fullBold(parsed.title) },
+      ...xRenderable.map((block): XhsCardBlock =>
+        block.kind === 'heading'
+          ? { kind: 'paragraph', text: block.text, boldRanges: fullBold(block.text) }
+          : block.kind === 'quote'
+            ? { ...block, kind: 'paragraph' }
+            : block,
+      ),
+    ]
+    const measureCanvas = window.document.createElement('canvas')
+    const measure = measureCanvas.getContext('2d')
+    if (!measure) throw new Error('当前环境不支持 Canvas，无法生成卡片')
+    const L = X_TWEET_LAYOUT
+    const xPages = paginateXTweetBlocks(flattened, {
+      pageBodyHeight: L.bodyBottom - L.bodyTop,
+      lineHeight: L.lineHeight,
+      paragraphGap: L.paragraphGap,
+      imageGap: L.imageGap,
+      lineCount: (block) =>
+        wrapRichText(measure, block, L.bodyWidth, L.fontSize, 400, 700, 0, 'sans', true).length,
+      imageHeight: (block) => {
+        const image = sourceImages.get(block)
+        if (!image) return 0
+        const scale = Math.min(L.bodyWidth / image.naturalWidth, L.imageMaxHeight / image.naturalHeight)
+        return image.naturalHeight * scale
+      },
+    })
+    const identity = input.xIdentity ?? { nickname: '', handle: '', avatarPath: '' }
+    let avatar: HTMLImageElement | null = null
+    if (identity.avatarPath) {
+      try {
+        const file = plugin.app.vault.getAbstractFileByPath(normalizePath(identity.avatarPath))
+        if (file instanceof TFile) {
+          avatar = await loadImageFromBinary(await plugin.app.vault.readBinary(file))
+        }
+      } catch {
+        avatar = null
+      }
+    }
+    const options = {
+      nickname: identity.nickname.trim() || 'AI霖子用户',
+      handle: identity.handle.trim().replace(/^@+/, '') || 'yourname',
+      avatar,
+      dateText: isoDate().replace(/-/g, '/'),
+    }
+    total = Math.max(xPages.length, 1)
+    renderPage = (context, index) =>
+      drawXTweetPage(context, xPages[index]?.blocks ?? [], sourceImages, options)
+  } else {
+    const { coverBlocks, remainingBlocks } = takeXhsCoverIntro(renderableBlocks)
+    const pages = remainingBlocks.length > 0 ? paginateXhsCardBlocks(remainingBlocks) : []
+    total = pages.length + 1
+    renderPage = (context, index) => {
+      if (index === 0) drawCover(context, palette, parsed, coverBlocks, coverImage, total)
+      else drawBodyPage(context, palette, pages[index - 1].blocks, sourceImages, index + 1, total)
+    }
+  }
   const root = normalizePath(plugin.settings.outputFolder || 'AI霖子输出')
   const folderPath = uniqueFolder(
     plugin,
@@ -587,8 +282,7 @@ export async function generateXhsCardPackage(
     canvas.height = CARD_HEIGHT
     const context = canvas.getContext('2d')
     if (!context) throw new Error('当前环境不支持 Canvas，无法生成卡片')
-    if (index === 0) drawCover(context, parsed, coverBlocks, coverImage, total)
-    else drawBodyPage(context, pages[index - 1].blocks, sourceImages, index + 1, total)
+    renderPage(context, index)
     const png = await canvasPng(canvas)
     const filename = `${String(index + 1).padStart(2, '0')}.png`
     const path = normalizePath(`${folderPath}/${filename}`)
@@ -607,6 +301,7 @@ export async function generateXhsCardPackage(
       {
         version: 2,
         format: 'xiaohongshu-image-post',
+        style: styleId,
         width: CARD_WIDTH,
         height: CARD_HEIGHT,
         generatedAt: new Date().toISOString(),

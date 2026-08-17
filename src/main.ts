@@ -25,6 +25,8 @@ import {
 } from 'obsidian'
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
 import { WECHAT_THEMES, getWechatTheme } from './wechat-themes'
+import { XHS_CARD_STYLES, getXhsCardStyle } from './xhs-card-styles'
+import { VaultImageBrowserModal } from './vault-image-browser'
 import { prepareWechatArticle } from './article-format'
 import {
   applyNotePatch,
@@ -213,6 +215,12 @@ interface AiLinziSettings {
   brandFooter: boolean
   /** 公众号排版主题(一键复制/发草稿箱共用;选择卡确认时记住) */
   wechatThemeId: string
+  /** 小红书卡片风格(卡片技能/多平台分发共用;选择卡确认时记住) */
+  xhsCardStyleId: string
+  /** X 推文风卡片的昵称与 @账号(不含@);头像为 Vault 内图片路径,可留空 */
+  xhsCardNickname: string
+  xhsCardHandle: string
+  xhsCardAvatarPath: string
   /** 驾驶舱目录映射(相对 vault 根;留空=该卡不统计)。新安装默认一人公司驾驶舱编号目录 */
   cockpitInboxFolder: string
   cockpitSourcesFolder: string
@@ -240,6 +248,10 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   wechatAppSecretId: '',
   brandFooter: true,
   wechatThemeId: 'classic-blue',
+  xhsCardStyleId: 'classic',
+  xhsCardNickname: '',
+  xhsCardHandle: '',
+  xhsCardAvatarPath: '',
   cockpitInboxFolder: '000_Inbox',
   cockpitSourcesFolder: '01_Raw',
   cockpitKnowledgeFolder: '02_Wiki',
@@ -4672,6 +4684,63 @@ class AiLinziSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings()
           }),
       )
+
+    new Setting(containerEl).setName('小红书卡片').setHeading()
+
+    new Setting(containerEl)
+      .setName('默认卡片风格')
+      .setDesc('「小红书图文卡片」和「多平台分发」的卡片版式。每次生成时也会弹选择卡,可临时换,换了会记住。')
+      .addDropdown((d) => {
+        for (const style of XHS_CARD_STYLES) d.addOption(style.id, style.name)
+        d.setValue(getXhsCardStyle(this.plugin.settings.xhsCardStyleId).id)
+        d.onChange(async (v) => {
+          this.plugin.settings.xhsCardStyleId = getXhsCardStyle(v).id
+          await this.plugin.saveSettings()
+        })
+      })
+
+    new Setting(containerEl)
+      .setName('X 推文风 · 昵称')
+      .setDesc('显示在卡片头像旁。生成时选择卡里也能填。')
+      .addText((t) =>
+        t.setValue(this.plugin.settings.xhsCardNickname).onChange(async (v) => {
+          this.plugin.settings.xhsCardNickname = v.trim()
+          await this.plugin.saveSettings()
+        }),
+      )
+
+    new Setting(containerEl)
+      .setName('X 推文风 · @账号')
+      .setDesc('昵称下方的账号标识,不用带 @。')
+      .addText((t) =>
+        t.setValue(this.plugin.settings.xhsCardHandle).onChange(async (v) => {
+          this.plugin.settings.xhsCardHandle = v.trim().replace(/^@+/, '')
+          await this.plugin.saveSettings()
+        }),
+      )
+
+    const avatarSetting = new Setting(containerEl).setName('X 推文风 · 头像(可选)')
+    avatarSetting.setDesc(
+      this.plugin.settings.xhsCardAvatarPath
+        ? `当前:${this.plugin.settings.xhsCardAvatarPath}`
+        : '不设置则用昵称首字的蓝色圆标。图片只保存在你的 Vault,生成卡片时在本机绘制。',
+    )
+    avatarSetting.addButton((b) =>
+      b.setButtonText('从 Vault 选择').onClick(() => {
+        new VaultImageBrowserModal(this.app, async (file) => {
+          this.plugin.settings.xhsCardAvatarPath = file.path
+          await this.plugin.saveSettings()
+          this.display()
+        }).open()
+      }),
+    )
+    avatarSetting.addButton((b) =>
+      b.setButtonText('清除').onClick(async () => {
+        this.plugin.settings.xhsCardAvatarPath = ''
+        await this.plugin.saveSettings()
+        this.display()
+      }),
+    )
 
     new Setting(containerEl).setName('公众号发布(选配)').setHeading()
 

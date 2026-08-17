@@ -328,4 +328,90 @@ assert.ok(endingImagePage?.blocks.some((block) => block.kind !== 'image'))
 assert.equal(cards.stableContentFingerprint('same'), cards.stableContentFingerprint('same'))
 assert.notEqual(cards.stableContentFingerprint('same'), cards.stableContentFingerprint('different'))
 
+// ── X 推文风分页:块边界 + 硬边界不可越过 ──────────────
+const X_BUDGET = {
+  pageBodyHeight: 878,
+  lineHeight: 82,
+  paragraphGap: 44,
+  imageGap: 40,
+  // 估算测量:CJK 字宽≈字号,920px 一行约 20 字
+  lineCount: (block) => Math.max(1, Math.ceil(block.text.length / 20)),
+  imageHeight: () => 400,
+}
+const xBlockHeight = (block) =>
+  block.kind === 'image'
+    ? X_BUDGET.imageHeight(block) + X_BUDGET.imageGap
+    : X_BUDGET.lineCount(block) * X_BUDGET.lineHeight + X_BUDGET.paragraphGap
+
+const xParagraph = (text) => ({ kind: 'paragraph', text })
+const xPages = cards.paginateXTweetBlocks(
+  [
+    xParagraph('第一段,大约四十个字。'.repeat(4)),
+    xParagraph('第二段短句。'),
+    { kind: 'image', text: '', imageSource: 'a.png' },
+    xParagraph('第三段,继续写一些内容让分页发生。'.repeat(5)),
+    xParagraph('第四段结尾。'),
+  ],
+  X_BUDGET,
+)
+assert.ok(xPages.length >= 2, 'X 分页应产生多页')
+for (const page of xPages) {
+  const used = page.blocks.reduce((sum, block) => sum + xBlockHeight(block), 0)
+  assert.ok(used <= X_BUDGET.pageBodyHeight, `每页内容高度(${used})不得超过正文区硬边界`)
+}
+// 块边界:所有输入文本原样出现在输出里,长段被句读预切但不丢字
+const xJoined = xPages.flatMap((page) => page.blocks.map((block) => block.text)).join('')
+assert.ok(xJoined.includes('第二段短句。') && xJoined.includes('第四段结尾。'))
+
+// 超长单段必须被预切成小于一页的块,而不是原样超页
+const longPages = cards.paginateXTweetBlocks([xParagraph('长句子不断重复。'.repeat(80))], X_BUDGET)
+for (const page of longPages) {
+  for (const block of page.blocks) {
+    assert.ok(
+      xBlockHeight(block) <= X_BUDGET.pageBodyHeight,
+      '超长段落必须先按句读预切,单块不得超过一页',
+    )
+  }
+}
+
+// ── 风格清单与渲染层接线 ─────────────────────────────
+const { readFile } = await import('node:fs/promises')
+const styleResult = await build({
+  entryPoints: ['src/xhs-card-styles.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  write: false,
+  logLevel: 'silent',
+})
+const styleModule = { exports: {} }
+new Function('module', 'exports', styleResult.outputFiles[0].text)(styleModule, styleModule.exports)
+const styles = styleModule.exports
+assert.deepEqual(
+  styles.XHS_CARD_STYLES.map((style) => style.id),
+  ['classic', 'mono', 'x-dark'],
+)
+assert.equal(styles.getXhsCardStyle('不存在').id, 'classic', '未知风格必须回退经典彩色')
+
+const renderSource = await readFile(new URL('../src/xhs-card-render.ts', import.meta.url), 'utf8')
+assert.match(renderSource, /paper: '#FFFFFF',\n  title: '#252D38',\n  ink: '#33383F',/, '经典调色板取值不得偏离旧常量')
+assert.match(renderSource, /showPageNumber: true/, '经典风格保留页码')
+const monoBlock = renderSource.slice(renderSource.indexOf('MONO_PALETTE'))
+assert.match(monoBlock, /showPageNumber: false/, '黑白极简不带页码')
+assert.doesNotMatch(renderSource, /drawPageChrome\(context,\s*[^,]+,\s*\d+,\s*\d+\)[\s\S]{0,400}drawXTweetPage/, 'X 页面不绘制页码')
+const xSection = renderSource.slice(renderSource.indexOf('export function drawXTweetPage'))
+assert.doesNotMatch(xSection, /drawPageChrome/, 'X 推文页不得出现页码绘制')
+assert.match(xSection, /drawXAvatar/, 'X 推文页必须绘制头部')
+assert.match(xSection, /X_FAKE_METRICS/, 'X 推文页必须绘制底部互动条')
+
+const cardsSource = await readFile(new URL('../src/xhs-cards.ts', import.meta.url), 'utf8')
+assert.match(cardsSource, /input\.style \?\? 'classic'/, '缺省风格必须是经典彩色,旧调用输出不变')
+assert.match(cardsSource, /paginateXTweetBlocks\(flattened/, 'X 风格必须走推文分页器')
+const actionsSource = await readFile(new URL('../src/actions.ts', import.meta.url), 'utf8')
+const pickerCalls = actionsSource.match(/await pickXhsCardStyle\(plugin\)/g) ?? []
+assert.equal(pickerCalls.length, 2, '卡片技能与多平台分发都必须先经过风格选择卡')
+for (const match of actionsSource.matchAll(/pickXhsCardStyle\(plugin\)[\s\S]{0,120}/g)) {
+  assert.match(match[0], /if \(!styleChoice\) return/, '取消选择必须在服务端调用前中止')
+}
+
 console.log('xhs card core regression tests passed')

@@ -3391,3 +3391,30 @@ button.ai-linzi-vault-source-link:focus-visible {
   gap: 8px;
   margin-top: 12px;
 }
+
+/* ── 小红书卡片风格选择卡:X 身份内联填写 ─────────────── */
+.ai-linzi-xhs-identity {
+  display: none;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+.ai-linzi-xhs-identity.is-visible {
+  display: block;
+}
+.ai-linzi-xhs-identity-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.ai-linzi-xhs-identity-row > span {
+  flex-shrink: 0;
+  width: 56px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.ai-linzi-xhs-identity-row > input {
+  flex: 1;
+}

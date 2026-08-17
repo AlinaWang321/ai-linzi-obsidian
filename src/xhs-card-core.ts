@@ -504,6 +504,58 @@ function compactSideBySidePageBreaks(pages: XhsCardPage[], maxUnits: number): vo
   }
 }
 
+// ── X 风格(推文卡)分页 ─────────────────────────────────
+
+export interface XTweetLayoutBudget {
+  /** 正文区总高度(px):卡高减去每页固定的头部与底部框架,是不可越过的硬边界 */
+  pageBodyHeight: number
+  /** 正文行高(px) */
+  lineHeight: number
+  /** 段落间距(px) */
+  paragraphGap: number
+  /** 图片下间距(px) */
+  imageGap: number
+  /** 文本块按当前字体真实换行后的行数(运行时用 canvas 测量,测试注入估算) */
+  lineCount: (block: XhsCardBlock) => number
+  /** 图片块绘制高度(调用方已按最大高度钳制) */
+  imageHeight: (block: XhsCardBlock) => number
+}
+
+/**
+ * X 风格分页:严格按块边界装页——当前页装不下整块就整块翻到下一张,
+ * 永不从段落中间切开,配合 pageBodyHeight 硬边界,正文不可能压进底部互动条。
+ * 超长段落先按 charLimit 预切(splitLongText 句读优先),保证单块必然小于一页;
+ * 最后一张卡短一点是有意设计(推文本就长短不一),不做填充。
+ */
+export function paginateXTweetBlocks(
+  blocks: XhsCardBlock[],
+  budget: XTweetLayoutBudget,
+  charLimit = 160,
+): XhsCardPage[] {
+  const normalized = blocks.flatMap((block) =>
+    block.kind === 'image' ? [block] : splitBlock(block, charLimit),
+  )
+  const pages: XhsCardPage[] = []
+  let current: XhsCardBlock[] = []
+  let used = 0
+  const flush = () => {
+    if (current.length > 0) pages.push({ blocks: current })
+    current = []
+    used = 0
+  }
+  for (const block of normalized) {
+    const height =
+      block.kind === 'image'
+        ? budget.imageHeight(block) + budget.imageGap
+        : budget.lineCount(block) * budget.lineHeight + budget.paragraphGap
+    if (current.length > 0 && used + height > budget.pageBodyHeight) flush()
+    current.push(block)
+    used += height
+  }
+  flush()
+  return pages
+}
+
 function splitBlock(block: XhsCardBlock, limit: number): XhsCardBlock[] {
   if (block.kind === 'image') return [block]
   const chunks = splitLongText(block.text, limit)

@@ -26,6 +26,7 @@ import { canonicalContentFields } from './content-state'
 import { outputSubfolder } from './output-routing'
 import { VaultImageBrowserModal } from './vault-image-browser'
 import { generateXhsCardPackage, XhsCardGalleryModal } from './xhs-cards'
+import { pickXhsCardStyle } from './xhs-style-picker'
 import { selectTranscriptSource } from './transcript-source'
 
 // ── 与服务端对齐的常量 ─────────────────────────────
@@ -453,6 +454,9 @@ export async function runDistribute(plugin: AiLinziPlugin) {
     new Notice(`当前笔记只有 ${article.length} 字——分发需要一篇写好的文章(≥100 字)`)
     return
   }
+  // 卡片风格在扣积分的服务端调用之前确认;取消=整次分发中止,零消耗。
+  const styleChoice = await pickXhsCardStyle(plugin)
+  if (!styleChoice) return
 
   const n = runningNotice('多平台分发')
   try {
@@ -484,6 +488,8 @@ export async function runDistribute(plugin: AiLinziPlugin) {
             markdown: article,
             summary: xhsSummary,
             caption: r.text,
+            style: styleChoice.styleId,
+            xIdentity: xhsIdentityFromSettings(plugin),
           })
         } catch (error) {
           xhsCardError = error instanceof Error ? error.message : String(error)
@@ -510,6 +516,14 @@ export async function runDistribute(plugin: AiLinziPlugin) {
  * 单独生成小红书图文：服务端只改写一次小红书正文，不额外生成口播/朋友圈；
  * 随后在本地把当前 Markdown 与原文配图混排成 3:4 PNG。
  */
+function xhsIdentityFromSettings(plugin: AiLinziPlugin) {
+  return {
+    nickname: plugin.settings.xhsCardNickname,
+    handle: plugin.settings.xhsCardHandle,
+    avatarPath: plugin.settings.xhsCardAvatarPath,
+  }
+}
+
 export async function runXhsCards(plugin: AiLinziPlugin) {
   const note = await getActiveNote(plugin)
   if (!note) return
@@ -518,6 +532,9 @@ export async function runXhsCards(plugin: AiLinziPlugin) {
     new Notice(`当前笔记只有 ${markdown.length} 字——生成卡片需要至少 100 字`)
     return
   }
+  // 风格确认在服务端改写调用之前;取消=中止,零积分消耗。
+  const styleChoice = await pickXhsCardStyle(plugin)
+  if (!styleChoice) return
   const n = runningNotice('生成小红书正文和 3:4 卡片')
   try {
     const summary = sourceArticleSummary(plugin, note.file)
@@ -547,6 +564,8 @@ export async function runXhsCards(plugin: AiLinziPlugin) {
       markdown,
       summary,
       caption,
+      style: styleChoice.styleId,
+      xIdentity: xhsIdentityFromSettings(plugin),
     })
     const skipped = result.skippedSourceImages.length
       ? `；${result.skippedSourceImages.length} 张原文图片未找到`
