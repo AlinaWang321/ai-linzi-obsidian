@@ -592,8 +592,8 @@ export const X_TWEET_LAYOUT = {
   bodyWidth: 920,
   /** 正文区上沿(头部框架之下;2026-08-17 随头部缩小同步上提,收窄留白) */
   bodyTop: 208,
-  /** 正文区下沿硬边界(底部框架之上,含安全距;同日下探,贴近互动条) */
-  bodyBottom: 1180,
+  /** 正文区下沿硬边界(底部框架之上,含安全距;时间戳行删除后下探到分隔线上方) */
+  bodyBottom: 1236,
   // 正文 36px(Alina 2026-08-17 看 34/36 对比样片后拍板;原 44→40→36);
   // 行高/段距按原比例跟随,分页测量走同一份常量,无需另改。
   fontSize: 36,
@@ -610,9 +610,6 @@ const X_FAKE_METRICS: { icon: keyof typeof X_ICON_PATHS; count: string }[] = [
   { icon: 'like', count: '56.4K' },
   { icon: 'bookmark', count: '4.7K' },
 ]
-const X_FAKE_TIME = '上午 11:10'
-const X_FAKE_VIEWS = '26.4K'
-
 /** 24 视图框内自绘图标(非官方素材) */
 const X_ICON_PATHS = {
   reply: 'M12 3C6.9 3 3 6.6 3 11c0 2.2 1 4.2 2.6 5.7L5 21l4.2-1.6c.9.2 1.8.4 2.8.4 5.1 0 9-3.6 9-8S17.1 3 12 3z',
@@ -625,8 +622,6 @@ export interface XTweetPageOptions {
   nickname: string
   handle: string
   avatar: DrawableImage | null
-  /** 生成日期(YYYY/MM/DD);时间与互动数字固定为装饰值 */
-  dateText: string
 }
 
 function drawXIcon(context: Ctx, icon: keyof typeof X_ICON_PATHS, x: number, y: number, size: number) {
@@ -757,26 +752,13 @@ export function drawXTweetPage(
     ) + L.paragraphGap
   }
 
-  // 底部固定框架:时间戳 + 分隔线 + 装饰互动条
-  setFont(context, 32, 400, 'sans')
-  context.fillStyle = X_MUTED
-  let cursor = L.pad
-  const timePrefix = `${X_FAKE_TIME} · ${options.dateText} · `
-  context.fillText(timePrefix, cursor, 1240)
-  cursor += context.measureText(timePrefix).width
-  setFont(context, 32, 700, 'sans')
-  context.fillStyle = X_INK
-  context.fillText(X_FAKE_VIEWS, cursor, 1240)
-  cursor += context.measureText(X_FAKE_VIEWS).width
-  setFont(context, 32, 400, 'sans')
-  context.fillStyle = X_MUTED
-  context.fillText(' Views', cursor, 1240)
-
+  // 底部固定框架:分隔线 + 装饰互动条(时间戳/Views 行 2026-08-17 Alina 拍板去掉,
+  // 正文区顺势下探;互动条下移到与左右 pad 对称的底边距)
   context.fillStyle = X_LINE
-  context.fillRect(L.pad, 1268, L.bodyWidth, 2)
+  context.fillRect(L.pad, 1276, L.bodyWidth, 2)
 
   const iconSize = 46
-  const iconY = 1306
+  const iconY = 1314
   const starts = [88, 344, 600]
   setFont(context, 34, 400, 'sans')
   const last = X_FAKE_METRICS[X_FAKE_METRICS.length - 1]

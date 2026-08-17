@@ -99,7 +99,7 @@ for (const styleId of ['classic', 'mono']) {
       render.wrapRichText(measure, block, L.bodyWidth, L.fontSize, 400, 700, 0, 'sans', true),
     imageHeight: () => 0,
   })
-  const options = { nickname: 'Alina霖子', handle: 'alinalinzi', avatar: null, dateText: '2026/08/17' }
+  const options = { nickname: 'Alina霖子', handle: 'alinalinzi', avatar: null }
   for (let index = 0; index < pages.length; index++) {
     await savePage(`x-dark-${String(index + 1).padStart(2, '0')}.png`, (context) =>
       render.drawXTweetPage(context, pages[index].blocks, new Map(), options),

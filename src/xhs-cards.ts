@@ -253,7 +253,6 @@ export async function generateXhsCardPackage(
       nickname: identity.nickname.trim() || 'AI霖子用户',
       handle: identity.handle.trim().replace(/^@+/, '') || 'yourname',
       avatar,
-      dateText: isoDate().replace(/-/g, '/'),
     }
     total = Math.max(xPages.length, 1)
     renderPage = (context, index) =>
