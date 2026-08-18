@@ -185,6 +185,22 @@ console.log('[test-vault-task-state]')
     ),
     'organize',
   )
+  // 0.7.48 追加（Alina 08-18 深夜截图实测的第三批逃逸句式）：
+  // 「给我」前缀与「处理 + 文件对象」此前不在识别词表 → mutationAsk 判 false →
+  // 全程宽松校验 → 连续四轮承诺句。两句原话钉进回归。
+  assert.equal(
+    core.detectVaultAgentIntent('现在给我按照分类处理raw文件夹里的文件，然后整理到wiki对应的文件夹里'),
+    'organize',
+  )
+  assert.equal(
+    core.detectVaultAgentIntent('你现在处理一下我的 RAW 文件夹的文件，把它们放到 wiki 文件夹里去'),
+    'organize',
+  )
+  // 误伤防线：没有文件对象的「处理」、以及请教型疑问句，仍是普通对话
+  assert.equal(core.detectVaultAgentIntent('帮我处理一下这个客户的异议'), 'answer')
+  assert.equal(core.detectVaultAgentIntent('这种情况怎么处理比较好'), 'answer')
+  assert.equal(core.detectVaultAgentIntent('逐字稿一般怎么处理比较好？'), 'answer')
+  assert.equal(core.detectVaultAgentIntent('这些资料如何整理才对'), 'answer')
   // 「全部整理/继续」单看措辞不算 organize——必须靠承接机制补齐（这正是任务不能被清空的原因）
   assert.equal(core.detectVaultAgentIntent('全部整理'), 'answer')
   assert.equal(core.isVaultTaskContinuation('全部整理'), true)

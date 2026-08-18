@@ -222,7 +222,7 @@ class CustomerConsultationBriefModal extends Modal {
     source.createDiv({ text: '本次只读取并锁定这一份逐字稿', cls: 'ai-linzi-consultation-source-label' })
     source.createDiv({ text: this.sourceFile.path, cls: 'ai-linzi-consultation-source-path' })
     this.contentEl.createEl('p', {
-      text: '只生成给客户看的 PNG 长图；不会读取 Vault 其他笔记，也不会把逐字稿写入知识库。建议客户称呼使用昵称或化名。',
+      text: '只生成给客户看的 PNG 长图；不会读取 Vault 其他笔记，也不会把逐字稿写入知识库。',
       cls: 'setting-item-description',
     })
 
