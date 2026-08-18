@@ -14,8 +14,15 @@ import {
   type CreateArtifactOperation,
 } from './artifact-renderer-core'
 
-export const VAULT_AGENT_MAX_ROUNDS = 6
+/**
+ * 2026-08-18 Alina 拍板开放（打卡营实测：批量/长文档整理在 6 轮 + 10 万字符下
+ * 反复撞「总量超出安全上限」）：轮次 6→12，本机结果预算 10 万→36 万字符。
+ * Luna 上下文 105 万 token（输入 92.2 万），预算远未触顶；成本由用户积分承担，
+ * Alina 明确接受。预算用尽不再报错断头，改为提示模型立即收尾（见下方函数）。
+ */
+export const VAULT_AGENT_MAX_ROUNDS = 12
 export const VAULT_AGENT_MAX_CALLS_PER_ROUND = 4
+export const VAULT_AGENT_MAX_TOTAL_RESULT_CHARS = 360_000
 export const VAULT_AGENT_MAX_PLAN_OPERATIONS = 60
 export const VAULT_NOTE_WRITE_MAX_CHARS = 30_000
 export const VAULT_NOTE_UPDATE_MAX_OPERATIONS = 30
@@ -527,6 +534,58 @@ export function collectOrganizePlanProblems(
  * 模型（复用 read_note 结果通道，服务端按既有校验放行）。没有这一步，失败只
  * 出现在 9 秒的 Notice 里，模型毫不知情，只会继续口头答应。
  */
+export const VAULT_AGENT_BUDGET_EXHAUSTED_NOTE =
+  '本机工具结果预算已用满，不能再读取更多内容。请立即基于已读材料收尾：' +
+  '整理/写入任务现在就产出待确认方案；材料不够就说明还差哪些、建议用户分批处理。不要再请求任何工具。'
+
+/**
+ * 把新一批工具结果并入累计列表（2026-08-18 预算开放配套）：
+ * ① 内容完全相同的重复读取（承接回灌 + 模型重复读同一段）只保留一份，不重复占预算；
+ * ② 超出预算时截断最后一条并追加「预算已用满」提示，让模型立即收尾——
+ *    此前是整轮 400 报错断头（「Vault 工具结果总量超出安全上限」），任务全部作废。
+ * exhausted 为真后调用方应关闭后续工具轮（canRequestTools=false）。
+ */
+export function appendToolResultsWithinBudget(
+  existing: VaultAgentToolResult[],
+  incoming: VaultAgentToolResult[],
+  cap = VAULT_AGENT_MAX_TOTAL_RESULT_CHARS,
+): { results: VaultAgentToolResult[]; exhausted: boolean } {
+  const results = [...existing]
+  const seen = new Set(
+    results.filter((item) => item.ok).map((item) => `${item.name}\n${item.output}`),
+  )
+  let total = results.reduce((sum, item) => sum + item.output.length, 0)
+  let exhausted = false
+  for (const item of incoming) {
+    const key = `${item.name}\n${item.output}`
+    if (item.ok && seen.has(key)) continue
+    const remaining = cap - total
+    if (remaining <= 0) {
+      exhausted = true
+      break
+    }
+    if (item.output.length > remaining) {
+      const output = `${item.output.slice(0, Math.max(0, remaining - 40))}…[已达本机结果预算上限，内容截断]`
+      results.push({ ...item, output })
+      total += output.length
+      exhausted = true
+      break
+    }
+    results.push(item)
+    if (item.ok) seen.add(key)
+    total += item.output.length
+  }
+  if (exhausted && !results.some((item) => item.output === VAULT_AGENT_BUDGET_EXHAUSTED_NOTE)) {
+    results.push({
+      callId: `budget-exhausted-${results.length + 1}`,
+      name: 'read_note',
+      ok: false,
+      output: VAULT_AGENT_BUDGET_EXHAUSTED_NOTE,
+    })
+  }
+  return { results, exhausted }
+}
+
 export function buildVaultExecuteFailureToolResult(
   planTitle: string,
   errorMessage: string,

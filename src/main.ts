@@ -105,6 +105,7 @@ import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
   VAULT_AGENT_MAX_ROUNDS,
   advanceVaultTask,
+  appendToolResultsWithinBudget,
   buildVaultExecuteFailureToolResult,
   detectVaultAgentIntent,
   extractVaultOrganizePlan,
@@ -2968,12 +2969,23 @@ class ChatView extends ItemView {
     sources: VaultMessageSource[]
     localSkillRunIds?: string[]
   }> {
-    const toolResults: VaultAgentToolResult[] = []
+    let toolResults: VaultAgentToolResult[] = []
     const sources: VaultMessageSource[] = []
     const localSkillRunIds: string[] = []
     const verifiedWritePaths = new Set<string>()
     let lastText = ''
     let pendingRetryReason: VaultAnswerRetryReason | undefined
+    // 本机结果预算（2026-08-18 开放到 36 万字符）：满了不再报错断头，
+    // 改为提示模型基于已读内容收尾，并关闭后续工具轮。
+    let toolBudgetExhausted = false
+    const appendToolResults = (incoming: VaultAgentToolResult[]) => {
+      const merged = appendToolResultsWithinBudget(toolResults, incoming)
+      toolResults = merged.results
+      if (merged.exhausted && !toolBudgetExhausted) {
+        toolBudgetExhausted = true
+        new Notice('本次任务读取量较大，AI霖子将基于已读内容收尾；更多材料建议分批处理。', 6000)
+      }
+    }
     // 阶段 A：intent 只允许 auto → organize 单向升级；跨轮任务状态在会话上保存。
     if (this.pendingVaultTask && isVaultTaskExpired(this.pendingVaultTask, Date.now())) {
       this.pendingVaultTask = null
@@ -3009,7 +3021,7 @@ class ChatView extends ItemView {
             arguments: { path, offset: 0, maxChars: 16_000 },
           })),
         )
-        toolResults.push(...rehydrated.results)
+        appendToolResults(rehydrated.results)
         sources.push(...rehydrated.sources)
         for (const [index, path] of rehydratePaths.entries()) {
           if (rehydrated.results[index]?.ok && path === task.targetPath) {
@@ -3086,7 +3098,7 @@ class ChatView extends ItemView {
         vaultAccess: input.vaultAccess,
         intent,
         round,
-        canRequestTools: round < VAULT_AGENT_MAX_ROUNDS - 1,
+        canRequestTools: round < VAULT_AGENT_MAX_ROUNDS - 1 && !toolBudgetExhausted,
         retryReason: pendingRetryReason,
         toolResults,
         // v0.7.35+：跨轮任务状态只传目标与阶段元数据；正文和片段绝不进请求。
@@ -3243,7 +3255,7 @@ class ChatView extends ItemView {
             name: 'read_note',
             arguments: { path: writeOperation.path, offset: 0, maxChars: 16_000 },
           }])
-          toolResults.push(...verification.results)
+          appendToolResults(verification.results)
           sources.push(...verification.sources)
           if (verification.results[0]?.ok) {
             verifiedWritePaths.add(writeOperation.path)
@@ -3501,7 +3513,7 @@ class ChatView extends ItemView {
         new Notice(`AI霖子已找到 ${searchHits} 个相关文件，正在继续核对…`, 3000)
       }
       pendingRetryReason = undefined
-      toolResults.push(...executed.results)
+      appendToolResults(executed.results)
       sources.push(...executed.sources)
     }
     return { text: lastText, sources, localSkillRunIds }

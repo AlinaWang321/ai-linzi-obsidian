@@ -236,7 +236,42 @@ assert.equal(core.shouldBlockPlanPath('05_System/Skills/a.md', 'move', '05_Syste
 // 隐藏目录 / 回收站 即使是 create_folder 也绝不放行
 assert.equal(core.shouldBlockPlanPath('.obsidian/plugins', 'create_folder', '05_System/Skills'), true)
 assert.equal(core.shouldBlockPlanPath('.trash/x', 'create_folder', '05_System/Skills'), true)
-assert.equal(core.VAULT_AGENT_MAX_ROUNDS, 6)
+// 2026-08-18 Alina 拍板开放：12 轮 + 36 万字符预算（打卡营批量整理实测 6 轮/10 万必撞顶）
+assert.equal(core.VAULT_AGENT_MAX_ROUNDS, 12)
+assert.equal(core.VAULT_AGENT_MAX_TOTAL_RESULT_CHARS, 360_000)
+
+// ── 预算并入：去重 / 截断 / 用尽提示（0.7.45）──
+{
+  const item = (id, output, ok = true) => ({ callId: id, name: 'read_note', ok, output })
+  // 内容完全相同的重复读取只保留一份
+  const deduped = core.appendToolResultsWithinBudget(
+    [item('a', '同一段内容')],
+    [item('b', '同一段内容'), item('c', '新内容')],
+  )
+  assert.equal(deduped.results.length, 2)
+  assert.equal(deduped.exhausted, false)
+  // 超预算：截断 + 追加「预算已用满」提示，不报错
+  const over = core.appendToolResultsWithinBudget(
+    [item('a', 'x'.repeat(90))],
+    [item('b', 'y'.repeat(100))],
+    120,
+  )
+  assert.equal(over.exhausted, true)
+  assert.ok(over.results.some((entry) => entry.output === core.VAULT_AGENT_BUDGET_EXHAUSTED_NOTE))
+  assert.ok(over.results[1].output.includes('内容截断'))
+  // 再次并入不重复追加提示
+  const again = core.appendToolResultsWithinBudget(over.results, [item('d', 'z'.repeat(50))], 120)
+  assert.equal(
+    again.results.filter((entry) => entry.output === core.VAULT_AGENT_BUDGET_EXHAUSTED_NOTE).length,
+    1,
+  )
+  // 失败结果（如报错提示）不参与去重，照常保留
+  const errors = core.appendToolResultsWithinBudget(
+    [item('a', '读取失败', false)],
+    [item('b', '读取失败', false)],
+  )
+  assert.equal(errors.results.length, 2)
+}
 assert.equal(
   core.isVaultAgentToolAllowed('read_skill_file', { vault: false, localSkill: true }),
   true,
