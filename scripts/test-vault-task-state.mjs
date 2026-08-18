@@ -196,6 +196,12 @@ console.log('[test-vault-task-state]')
     core.detectVaultAgentIntent('你现在处理一下我的 RAW 文件夹的文件，把它们放到 wiki 文件夹里去'),
     'organize',
   )
+  // 0.7.52 第四批逃逸句式（重命名类，词表兜底；主判断已交给模型标记）
+  assert.equal(
+    core.detectVaultAgentIntent('把客户档案的名字前面加上咨询日期，比如20260813姓名还有客户职业，方便我快速查看文件'),
+    'organize',
+  )
+  assert.equal(core.detectVaultAgentIntent('给所有文件统一加上日期前缀'), 'organize')
   // 误伤防线：没有文件对象的「处理」、以及请教型疑问句，仍是普通对话
   assert.equal(core.detectVaultAgentIntent('帮我处理一下这个客户的异议'), 'answer')
   assert.equal(core.detectVaultAgentIntent('这种情况怎么处理比较好'), 'answer')
@@ -264,8 +270,13 @@ console.log('[test-vault-task-state]')
   )
   assert.match(
     mainSource,
-    /catch \{[\s\S]{0,200}pendingNativeText = null/,
+    /catch \{[\s\S]{0,120}return null/,
     '原生通道失败必须静默回退散文协议（回滚保险丝）',
+  )
+  assert.match(
+    mainSource,
+    /isVaultNativeTurnRequest\(lastText\)/,
+    '0.7.52 模型自主切换标记分支缺失（词表漏网的最终解）',
   )
   assert.match(
     mainSource,

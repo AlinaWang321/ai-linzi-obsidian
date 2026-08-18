@@ -239,6 +239,19 @@ export function isCloudToolsTurnRequest(text: string): boolean {
   return trimmed.replace(CLOUD_TOOLS_TURN_MARKER, '').trim().length <= 120
 }
 
+/**
+ * 模型自主切换文件操作引擎的标记（0.7.52，与 CLOUD_TOOLS_TURN 同款两段式）。
+ * 背景：意图词表连漏四轮（把/处理/给我/「名字前面加上日期」），而模型本人每次
+ * 都听懂了需求——判断权交还给模型，词表只做兜底快路径。
+ */
+export const VAULT_NATIVE_TURN_MARKER = '<<<VAULT_NATIVE_TURN>>>'
+
+export function isVaultNativeTurnRequest(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed.includes(VAULT_NATIVE_TURN_MARKER)) return false
+  return trimmed.replace(VAULT_NATIVE_TURN_MARKER, '').trim().length <= 120
+}
+
 export function isVaultAgentToolAllowed(
   name: VaultAgentToolName,
   access: { vault: boolean; localSkill: boolean },
@@ -845,7 +858,7 @@ export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   // 第三批逃逸句式：「给我按照分类处理 raw 文件夹」「把它们放到 wiki 文件夹里去」）。
   // 疑问词豁免：「逐字稿怎么处理」这类请教型问题仍是普通问答，不得强制进整理流程。
   const fileHandlingAsk =
-    /(?:处理|整理|归类|分类).{0,16}(?:文件夹|文件|资料|素材|逐字稿|raw|wiki)|(?:放到|放进|移到|移进|挪到|归到|整理到).{0,20}(?:wiki|知识库|文件夹|目录)/.test(
+    /(?:处理|整理|归类|分类).{0,16}(?:文件夹|文件|资料|素材|逐字稿|raw|wiki)|(?:放到|放进|移到|移进|挪到|归到|整理到).{0,20}(?:wiki|知识库|文件夹|目录)|(?:文件名|文件|档案|笔记|名字).{0,12}(?:加上|加个|改成|改为|统一|重命名|命名)|(?:加上|统一|改成).{0,10}(?:日期|前缀|后缀|编号)/.test(
       normalized,
     ) && !/(?:怎么|如何|怎样|为什么|什么时候|该不该|要不要)/.test(normalized)
   return /(?:请|帮我|给我|把|将|需要|想要|能否|可以).*?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|^(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站)|(?:写入|追加到|保存到|新建|创建|更新).{0,40}(?:wiki|知识库|客户档案|学员档案|笔记|文档|文件)|(?:wiki|知识库|客户档案|学员档案|笔记|文档|文件).{0,40}(?:写入|追加|保存|新建|创建|更新)|\b(?:organize|move|rename|reorganize|delete|trash)\b/.test(

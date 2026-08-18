@@ -112,6 +112,7 @@ import {
   extractVaultOrganizePlan,
   extractVaultToolCalls,
   isCloudToolsTurnRequest,
+  isVaultNativeTurnRequest,
   isExplicitCurrentNoteTrashRequest,
   isExplicitVaultTrashIntent,
   isStructuredNoteWriteIntent,
@@ -3142,7 +3143,8 @@ class ChatView extends ItemView {
       !input.noteEdit &&
       !input.noteImageIntent &&
       (mutationAsk || (taskContinuation && this.pendingVaultTask?.intent === 'organize'))
-    if (nativeEligible) {
+    // 抽成闭包函数：词表命中的快路径与「模型自主切换标记」（0.7.52）共用同一引擎。
+    const runNativeChannel = async (): Promise<string | null> => {
       try {
         let previousResponseId = ''
         let nextBody: Record<string, unknown> | null = null
@@ -3187,13 +3189,12 @@ class ChatView extends ItemView {
                 operations: Array.isArray(args.operations) ? args.operations : [],
                 notes: Array.isArray(args.notes) ? args.notes : [],
               }
-              pendingNativeText = [
+              return [
                 '已按核实的结构生成待确认方案，点确认后插件才会执行：',
                 '<<<VAULT_ORGANIZE_PLAN>>>',
                 JSON.stringify(planPayload),
                 '<<<VAULT_ORGANIZE_PLAN_END>>>',
               ].join('\n')
-              break
             }
             const calls: VaultAgentToolCall[] = []
             for (const item of nativeCalls.slice(0, VAULT_AGENT_MAX_CALLS_PER_ROUND)) {
@@ -3288,16 +3289,18 @@ class ChatView extends ItemView {
               }
               continue
             }
-            pendingNativeText = text
-            break
+            return text
           }
           throw new Error('native: empty step')
         }
-        if (pendingNativeText === null) throw new Error('native: no final text')
+        throw new Error('native: no final text')
       } catch {
         // 静默回退散文协议；已获得的工具结果保留在 toolResults 里继续可用。
-        pendingNativeText = null
+        return null
       }
+    }
+    if (nativeEligible) {
+      pendingNativeText = await runNativeChannel()
     }
     for (let round = 0; round < VAULT_AGENT_MAX_ROUNDS; round++) {
       new Notice(
@@ -3395,6 +3398,19 @@ class ChatView extends ItemView {
         return { text: cloudText, sources, localSkillRunIds }
       }
 
+      // 0.7.52：模型自主切换文件操作引擎——词表判不准的最终解。round 0 的 auto
+      // 判断轮（全推理）认定本句要动文件时输出标记，插件立即转入原生引擎；
+      // 引擎失败则回到散文协议并强制工具纠正，绝不接受口头承诺。
+      if (round === 0 && intent === 'auto' && isVaultNativeTurnRequest(lastText)) {
+        new Notice('AI霖子正在切换文件操作引擎…', 2500)
+        const nativeText = await runNativeChannel()
+        if (nativeText !== null) {
+          lastText = nativeText
+        } else {
+          pendingRetryReason = 'missing_tool_use'
+          continue
+        }
+      }
       const toolRequest = extractVaultToolCalls(lastText)
       if (toolRequest.invalid) throw new Error('AI 返回的 Vault 工具请求格式不安全，请重试')
       if (toolRequest.calls.length === 0) {
