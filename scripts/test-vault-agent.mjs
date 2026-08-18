@@ -76,31 +76,6 @@ assert.equal(
   'deferred_answer',
 )
 assert.equal(
-  core.deterministicVaultFactAnswer([
-    {
-      callId: 'seed-consultation-count',
-      name: 'vault_search',
-      ok: true,
-      output: JSON.stringify({
-        fact: { filename: 'Vault 本地统计', excerpt: '2026年8月的明细中共 7 场私教。' },
-        matches: [],
-      }),
-    },
-  ]),
-  '2026年8月的明细中共 7 场私教。',
-)
-assert.equal(
-  core.deterministicVaultFactAnswer([
-    {
-      callId: 'search',
-      name: 'vault_search',
-      ok: true,
-      output: JSON.stringify({ matches: [{ filename: '普通搜索.md' }] }),
-    },
-  ]),
-  undefined,
-)
-assert.equal(
   core.vaultAutoAnswerRetryReason(
     '我这里没法直接改写 Obsidian 里的客户档案文件，你可以手动复制。',
     false,

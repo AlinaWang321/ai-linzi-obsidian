@@ -113,16 +113,6 @@ export function parseNotePatch(text: string): ParsedNotePatch | null {
   }
 }
 
-/** 保存补丁回复为普通 Markdown 笔记时，输出人能读懂的修改清单，不落内部 JSON。 */
-export function formatNotePatchMarkdown(patch: ParsedNotePatch): string {
-  const blocks = patch.operations.map((op, index) => {
-    const reason = op.reason ? `\n\n修改说明：${op.reason}` : ''
-    const scope = op.all ? '\n\n应用范围：全文全部匹配处' : ''
-    return `### 修改 ${index + 1}\n\n原文：\n\n> ${op.old.replace(/\n/g, '\n> ')}\n\n改为：\n\n> ${op.new.replace(/\n/g, '\n> ')}${reason}${scope}`
-  })
-  return `${patch.displayText}\n\n## 修改清单\n\n${blocks.join('\n\n---\n\n')}`.trim()
-}
-
 export function splitFrontmatter(content: string): { frontmatter: string; body: string } {
   const match = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)
   return match ? { frontmatter: match[0], body: content.slice(match[0].length) } : { frontmatter: '', body: content }

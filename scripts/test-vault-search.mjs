@@ -256,7 +256,12 @@ assert.match(main, /const modelDecidesVaultUse =/)
 assert.match(main, /在模型真正发起 tool call 前/)
 assert.match(main, /普通闲聊会在首轮直接回答/)
 assert.doesNotMatch(main, /seed-consultation-count/)
-assert.doesNotMatch(main, /deterministicVaultFactAnswer\(seeded\.results\)/)
+// 0.7.55：deterministicVaultFactAnswer 已随死代码清理删除（判断权 0.7.30 起交给模型
+// 后就没有调用点了）。钉子升级为「函数本身不得复活」，比原来只检查未接线更强。
+assert.doesNotMatch(
+  await readFile(new URL('../src/vault-agent-core.ts', import.meta.url), 'utf8'),
+  /deterministicVaultFactAnswer/,
+)
 assert.match(styles, /button\.ai-linzi-vault-source-link/)
 assert.match(styles, /color: #0057ff/)
 assert.match(styles, /border: 0/)

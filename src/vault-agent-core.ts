@@ -263,21 +263,6 @@ export function isVaultAgentToolAllowed(
   return access.vault
 }
 
-/** 只提取插件本机工具明确返回的确定性 fact；普通搜索片段绝不能走直答。 */
-export function deterministicVaultFactAnswer(
-  results: VaultAgentToolResult[],
-): string | undefined {
-  for (const result of results) {
-    if (!result.ok || result.name !== 'vault_search') continue
-    const parsed = safeJsonObject(result.output)
-    const fact = parsed?.fact
-    if (!fact || typeof fact !== 'object' || Array.isArray(fact)) continue
-    const excerpt = shortText((fact as Record<string, unknown>).excerpt, 4_000)
-    if (excerpt) return excerpt
-  }
-  return undefined
-}
-
 const TOOL_BLOCK_RE =
   /<<<VAULT_TOOL_CALLS>>>\s*([\s\S]*?)\s*<<<VAULT_TOOL_CALLS_END>>>/g
 const PLAN_BLOCK_RE =

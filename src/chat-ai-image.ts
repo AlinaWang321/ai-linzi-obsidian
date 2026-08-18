@@ -16,7 +16,6 @@ export interface ChatAiImageExtraction {
 }
 
 export const CHAT_AI_IMAGE_REQUEST_START = '<<<AI_LINZI_IMAGE_REQUEST>>>'
-export const CHAT_AI_IMAGE_REQUEST_END = '<<<AI_LINZI_IMAGE_REQUEST_END>>>'
 export const CHAT_AI_IMAGE_MAX_REQUESTS = 6
 
 const BLOCK_RE =

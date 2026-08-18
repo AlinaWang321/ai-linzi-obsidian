@@ -19,16 +19,12 @@ function assert(name, condition) {
   }
 }
 
-console.log('第1组 活动流基建')
-assert(
-  'postSkillStatus 支持 thinking 参数(更新时保留思考指示)',
-  /postSkillStatus\(text: string, replaceId\?: string, thinking = false\)/.test(main),
-)
-assert('activityBegin 只登记不渲染(纯问答零打扰)', /private activityBegin\(current: string\) \{\s*this\.activityFeed = \{/.test(main))
-assert('activityStep 与上一行相同的动作只记一次', main.includes('feed.lines[feed.lines.length - 1] !== line'))
-assert('activityEnd 从未渲染过则悄悄丢弃', main.includes('if (!feed?.id) return'))
-assert('收尾定格为完成摘要(步数+耗时)', /✅ AI霖子工作台（\$\{feed\.lines\.length\} 步 · \$\{seconds\} 秒）/.test(main))
-assert('中断时定格失败原因', main.includes('⚠️ AI霖子工作台已停止：'))
+console.log('第1组 活动流基建（逻辑已抽到 activity-feed-core.ts，行为由 test-activity-feed-core.mjs 真跑验证）')
+assert('postSkillStatus 支持 thinking 参数(更新时保留思考指示)', /postSkillStatus\(text: string, replaceId\?: string, thinking = false\)/.test(main))
+assert('UI 层接线到纯逻辑模块', main.includes('new ActivityFeed({'))
+assert('渲染回调回传消息 id 供原地更新', /render: \(text, id, thinking\) => \{/.test(main))
+assert('渲染后滚到底部', main.includes('this.listEl.scrollTop = this.listEl.scrollHeight'))
+assert('四个入口都委托给核心模块', ['this.activityFeed.begin(', 'this.activityFeed.step(', 'this.activityFeed.setCurrent(', 'this.activityFeed.end('].every((call) => main.includes(call)))
 
 console.log('第2组 三条通道全部接入')
 assert('Vault 循环开场登记活动流', main.includes('this.activityBegin(') && /activityBegin\(\s*input\.intent === 'auto'/.test(main))
@@ -44,10 +40,6 @@ assert('方案定稿进活动流', main.includes('📋 已生成整理方案，�
 assert('调用方成功收尾', main.includes("this.activityEnd('ok')"))
 assert('调用方失败收尾后再抛出', /activityEnd\('error', error instanceof Error/.test(main))
 
-assert(
-  '动作行转义 Markdown 特殊字符(02_Wiki 不被吃成斜体)',
-  /const escape = \(value: string\) => value\.replace\(\/\(\[_\*~`\[\\\]\]\)\/g, '\\\\\$1'\)/.test(main),
-)
 
 console.log('第3组 渲染与动效')
 assert('状态条行有独立样式类', main.includes("row.addClass('ai-linzi-status-row')"))

@@ -7,7 +7,6 @@ import {
   normalizeVaultRelativePath,
   shouldBlockPlanPath,
   type VaultAgentToolCall,
-  type VaultAgentToolName,
   type VaultAgentToolResult,
   type VaultOrganizePlan,
   type VaultWriteSnapshot,

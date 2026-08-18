@@ -472,7 +472,7 @@ export class ContentDashboardView extends ItemView {
     title.createSpan({ text: '全平台版', cls: 'ai-linzi-dashboard-version' })
     title.createEl('p', { text: `数据来源：${normalizePath(this.plugin.settings.outputFolder || 'AI霖子输出')} · 全部保存在本地` })
     const actions = header.createDiv({ cls: 'ai-linzi-dashboard-header-actions' })
-    const feedback = actions.createDiv({
+    actions.createDiv({
       text: this.headerFeedback,
       cls: `ai-linzi-dashboard-header-feedback${this.headerFeedback ? ' is-visible' : ''}`,
       attr: { 'aria-live': 'polite' },

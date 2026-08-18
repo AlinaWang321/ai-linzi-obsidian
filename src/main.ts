@@ -60,6 +60,7 @@ import {
   type LocalImageReference,
   imageMediaTypeFromDataUrl,
 } from './actions'
+import { ActivityFeed } from './activity-feed-core'
 import { extractCreateNoteBlocks, type CreateNoteBlock } from './create-note'
 import {
   explicitMemoryContent,
@@ -101,7 +102,6 @@ import {
   type LongDocumentChunk,
 } from './long-document'
 import { LocalVaultSearch } from './vault-search'
-import { type VaultSearchResult } from './vault-search-core'
 import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
   VAULT_AGENT_MAX_CALLS_PER_ROUND,
@@ -439,14 +439,6 @@ interface LongDocumentTaskState {
   nextIndex: number
   stage: 'processing' | 'synthesizing' | 'paused'
   error?: string
-}
-
-function toVaultMessageSource(result: VaultSearchResult): VaultMessageSource {
-  return {
-    sourceId: result.sourceId,
-    filename: result.filename,
-    path: result.path,
-  }
 }
 
 interface ArticleIllustrationEditOffer {
@@ -2309,69 +2301,30 @@ class ChatView extends ItemView {
    * - 第一条真实动作(step/强 current)才落进对话，复用 postSkillStatus 原地更新；
    * - end 时定格为 ✅/⚠️ 摘要留在对话里；从未有动作则悄悄丢弃。
    */
-  private activityFeed: {
-    id?: string
-    lines: string[]
-    current: string | null
-    startedAt: number
-  } | null = null
+  /** 逻辑在 activity-feed-core.ts（纯模块，可真跑单测）；这里只接线渲染与滚动。 */
+  private readonly activityFeed = new ActivityFeed({
+    render: (text, id, thinking) => {
+      const nextId = this.postSkillStatus(text, id, thinking)
+      this.listEl.scrollTop = this.listEl.scrollHeight
+      return nextId
+    },
+    now: () => Date.now(),
+  })
 
   private activityBegin(current: string) {
-    this.activityFeed = { lines: [], current, startedAt: Date.now() }
+    this.activityFeed.begin(current)
   }
 
-  /** 追加一步已完成动作；current 传 null 清空进行中提示，undefined 保持不变。
-   *  与上一行完全相同的动作只记一次(原生 propose 与共用预检会重复报"方案已生成")。 */
   private activityStep(line: string, current?: string | null) {
-    const feed = this.activityFeed
-    if (!feed) return
-    if (feed.lines[feed.lines.length - 1] !== line) feed.lines.push(line)
-    if (current !== undefined) feed.current = current
-    this.activityRender()
+    this.activityFeed.step(line, current)
   }
 
-  /**
-   * 更新进行中提示。只有已经落过卡（有真实动作）时才重绘——否则一次纯问答回合
-   * 会因为"轮次开始"这种非动作提示先落卡，收尾时留下「✅ 0 步」空卡。
-   */
   private activityCurrent(current: string) {
-    const feed = this.activityFeed
-    if (!feed) return
-    feed.current = current
-    if (feed.id) this.activityRender()
+    this.activityFeed.setCurrent(current)
   }
 
-  private activityText(feed: { lines: string[]; current: string | null }, header: string): string {
-    // 动作行里常有含 _ 的真实路径(02_Wiki)，转义防止被 Markdown 吃成斜体。
-    const escape = (value: string) => value.replace(/([_*~`[\]])/g, '\\$1')
-    const shown = feed.lines.slice(-12)
-    const hidden = feed.lines.length - shown.length
-    const parts = [header]
-    if (hidden > 0) parts.push(`- …（前 ${hidden} 步已折叠）`)
-    for (const line of shown) parts.push(`- ${escape(line)}`)
-    if (feed.current) parts.push(`- ⏳ ${escape(feed.current)}`)
-    return parts.join('\n')
-  }
-
-  private activityRender() {
-    const feed = this.activityFeed
-    if (!feed) return
-    feed.id = this.postSkillStatus(this.activityText(feed, '⚙️ AI霖子工作台'), feed.id, true)
-    this.listEl.scrollTop = this.listEl.scrollHeight
-  }
-
-  /** 收尾定格。从未渲染过(纯问答回合)则悄悄丢弃，不在对话里留任何痕迹。 */
   private activityEnd(outcome: 'ok' | 'error', summary?: string) {
-    const feed = this.activityFeed
-    this.activityFeed = null
-    if (!feed?.id) return
-    const seconds = Math.max(1, Math.round((Date.now() - feed.startedAt) / 1000))
-    const header =
-      outcome === 'ok'
-        ? `✅ AI霖子工作台（${feed.lines.length} 步 · ${seconds} 秒）`
-        : `⚠️ AI霖子工作台已停止：${summary ?? '本次没有完成，请重试'}`
-    feed.current = null
-    this.postSkillStatus(this.activityText(feed, header), feed.id)
+    this.activityFeed.end(outcome, summary)
   }
 
   private recentLocalSkillPath(): string | undefined {
@@ -4785,7 +4738,6 @@ class ChatView extends ItemView {
         const folderResult = extractCreateFolderBlocks(createResult.cleanText)
         const cleanText = folderResult.cleanText
         const patch = parseNotePatch(cleanText)
-        const illustrationEdit = isArticleIllustrationEditIntent(previousUserText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
         if ((m.vaultSources?.length ?? 0) > 0) this.renderVaultSources(row, m.vaultSources ?? [])
         if ((m.localSkillRunIds?.length ?? 0) > 0) this.renderLocalSkillRunOffer(row, m)

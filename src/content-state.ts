@@ -441,13 +441,6 @@ export function parseLocalDate(value: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date
 }
 
-export function startOfWeek(date: Date): Date {
-  const out = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-  const weekday = out.getDay() || 7
-  out.setDate(out.getDate() - weekday + 1)
-  return out
-}
-
 export function isDateInRange(value: string, start: Date, endExclusive: Date): boolean {
   const date = parseLocalDate(value)
   return Boolean(date && date >= start && date < endExclusive)

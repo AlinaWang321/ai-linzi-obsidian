@@ -399,7 +399,7 @@ async function artifactDocx(document: ArtifactDocument): Promise<ArrayBuffer> {
     } else if (block.type === 'rule') {
       children.push(new Paragraph({ border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: BRAND.line, space: 8 } } }))
     } else if (block.type === 'list') {
-      block.items.forEach((item, index) => children.push(new Paragraph({
+      block.items.forEach((item) => children.push(new Paragraph({
         children: [new TextRun({ text: item, font: 'Hiragino Sans GB', size: 22 })],
         bullet: block.ordered ? undefined : { level: 0 },
         numbering: block.ordered ? { reference: 'artifact-numbering', level: 0, instance: 1 } : undefined,
