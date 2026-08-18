@@ -590,8 +590,16 @@ export async function runSalesReview(plugin: AiLinziPlugin) {
   )
   if (!source) return
   const transcript = source.text
+  // 全程状态条落在对话区（2026-08-18 Alina 反馈：只有 toast 时“选完文件毫无反应”）。
+  const statusId = plugin.reportSkillStatus(
+    `📋 销售复盘 · 已锁定逐字稿《${source.file.basename}》（${transcript.length.toLocaleString('zh-CN')} 字）。请在弹窗中补充背景（可选）后点「开始诊断」。`,
+  )
   if (transcript.length < LIMITS.SALES_REVIEW_TRANSCRIPT_MIN) {
     new Notice(`逐字稿只有 ${transcript.length} 字——谈单复盘需要 ≥500 字的完整逐字稿`)
+    plugin.reportSkillStatus(
+      `⚠️ 销售复盘已停止：《${source.file.basename}》只有 ${transcript.length} 字，谈单复盘需要 ≥500 字的完整逐字稿。`,
+      statusId,
+    )
     return
   }
   const input = await new PromptModal(
@@ -607,24 +615,37 @@ export async function runSalesReview(plugin: AiLinziPlugin) {
       },
     ],
   ).result
-  if (input === null) return
+  if (input === null) {
+    plugin.reportSkillStatus(`已取消本次销售复盘，《${source.file.basename}》未处理。`, statusId)
+    return
+  }
 
+  plugin.reportSkillStatus(
+    `🤖 正在生成谈单诊断：《${source.file.basename}》…约 1 分钟，完成后会自动打开报告，请勿关闭 Obsidian。`,
+    statusId,
+  )
   const n = runningNotice('谈单复盘')
   try {
     const text = await plugin.apiText('/api/plugin/v1/skills/sales-review', {
       transcript,
       background: input.background.trim() || undefined,
     })
-    await writeOutput(plugin, {
+    const report = await writeOutput(plugin, {
       skill: '谈单复盘',
       platform: '内部',
       title: `谈单复盘_${source.file.basename}`,
       body: text,
       sourceNote: source.file,
     })
+    plugin.reportSkillStatus(
+      `✅ 谈单诊断报告已生成并打开：《${report.basename}》（保存在 ${report.parent?.path ?? ''}）。`,
+      statusId,
+    )
     new Notice('✅ 谈单诊断报告已落盘')
   } catch (e) {
-    new Notice(`❌ 谈单复盘:${e instanceof Error ? e.message : String(e)}`, 8000)
+    const message = e instanceof Error ? e.message : String(e)
+    plugin.reportSkillStatus(`❌ 谈单复盘失败：${message}`, statusId)
+    new Notice(`❌ 谈单复盘:${message}`, 8000)
   } finally {
     n.hide()
   }

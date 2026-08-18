@@ -392,6 +392,8 @@ interface WireMessage {
   articleIllustrationEditOffer?: ArticleIllustrationEditOffer
   /** 本地 Vault 检索来源；只保存在插件本机历史，messagesForApi 会剥离。 */
   vaultSources?: VaultMessageSource[]
+  /** 调用技能的进度状态条（锁定/生成中/完成/失败）；只存本机历史，不发给主对话 API。 */
+  localSkillStatus?: boolean
   /** 只保留用户本轮上传的图片名称；图片数据不写本机或云端历史。 */
   imageAttachmentNames?: string[]
   /** 本地整理方案的执行日志 ID；方案正文仍在 parts 的本机副本中。 */
@@ -1357,6 +1359,18 @@ export default class AiLinziPlugin extends Plugin {
     }
   }
 
+  /**
+   * 技能进度桥：聊天面板打开时把技能状态写进对话区（仅本机历史），
+   * 面板没开时退回 Notice。返回消息 id，供后续原地更新同一条状态。
+   */
+  reportSkillStatus(text: string, replaceId?: string): string | undefined {
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]
+    const view = leaf?.view
+    if (view instanceof ChatView) return view.postSkillStatus(text, replaceId)
+    new Notice(text, 8000)
+    return undefined
+  }
+
   /** 进入访谈写作模式(SKILL_ACTIONS 菜单入口) */
   async startInterview() {
     await this.activateChatView()
@@ -2113,7 +2127,34 @@ class ChatView extends ItemView {
 
   /** 本地候选图片元数据绝不传给主对话；云端只收到标准 UIMessage。 */
   private messagesForApi(): WireMessage[] {
-    return this.messages.map(({ id, role, parts }) => ({ id, role, parts }))
+    // 技能进度状态条是本机 UI，不属于对话上下文；发给 API 前整条剥离。
+    return this.messages
+      .filter((message) => !message.localSkillStatus)
+      .map(({ id, role, parts }) => ({ id, role, parts }))
+  }
+
+  /**
+   * 技能进度状态条：调用技能的每一步（已锁定/生成中/完成/失败原因）都落进
+   * 对话区，错误不再只靠 9 秒 Notice（2026-08-18 Alina 反馈：销售复盘选完
+   * 文件后“毫无反应”——实为本机报错只闪了一条 toast）。传 replaceId 原地更新。
+   */
+  postSkillStatus(text: string, replaceId?: string): string {
+    const existing = replaceId
+      ? this.messages.find((message) => message.id === replaceId && message.localSkillStatus)
+      : undefined
+    if (existing) {
+      existing.parts = [{ type: 'text', text }]
+    } else {
+      this.messages.push({
+        id: uid(),
+        role: 'assistant',
+        parts: [{ type: 'text', text }],
+        localSkillStatus: true,
+      })
+    }
+    void this.persistNow()
+    this.renderMessages()
+    return existing?.id ?? this.messages[this.messages.length - 1].id
   }
 
   private recentLocalSkillPath(): string | undefined {

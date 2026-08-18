@@ -101,6 +101,7 @@ export async function selectTranscriptSource(
     })
   if (files.length === 0) {
     new Notice('Vault 中没有可处理的 MD、TXT、PDF 或 DOCX 文件', 7000)
+    plugin.reportSkillStatus(`⚠️ ${skillName}已停止：Vault 中没有可处理的 MD、TXT、PDF 或 DOCX 文件。`)
     return null
   }
 
@@ -118,11 +119,18 @@ export async function selectTranscriptSource(
       : result.text.trim()
     if (!text) {
       new Notice(`《${file.name}》没有提取到可处理的文字`, 7000)
+      plugin.reportSkillStatus(
+        `⚠️ ${skillName}已停止：《${file.name}》没有提取到可处理的文字` +
+          (file.extension.toLocaleLowerCase() === 'pdf' ? '（扫描版 PDF 暂不支持，请换文字版）。' : '。'),
+      )
       return null
     }
     return { file, text }
   } catch (error) {
-    new Notice(error instanceof Error ? error.message : String(error), 9000)
+    const message = error instanceof Error ? error.message : String(error)
+    new Notice(message, 9000)
+    // 只有 toast 会被错过（2026-08-18 Alina 实测“选完文件毫无反应”），必须落进对话区。
+    plugin.reportSkillStatus(`⚠️ ${skillName}已停止：${message}`)
     return null
   }
 }

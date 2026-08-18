@@ -279,18 +279,37 @@ export async function runCustomerConsultationBrief(plugin: AiLinziPlugin): Promi
   if (!source) return
   const sourceFile = source.file
   const transcript = source.text
+  // 全程状态条落在对话区，与销售复盘同款（2026-08-18 Alina 反馈：只有 toast 会被错过）。
+  const statusId = plugin.reportSkillStatus(
+    `📋 客户咨询简报 · 已锁定逐字稿《${sourceFile.basename}》（${transcript.length.toLocaleString('zh-CN')} 字）。请在弹窗中填写客户/咨询师称呼后开始生成。`,
+  )
   if (transcript.length < CUSTOMER_CONSULTATION_TRANSCRIPT_MIN) {
     new Notice(`当前逐字稿只有 ${transcript.length} 字；客户咨询简报至少需要 800 字`, 7000)
+    plugin.reportSkillStatus(
+      `⚠️ 客户咨询简报已停止：《${sourceFile.basename}》只有 ${transcript.length} 字，至少需要 800 字。`,
+      statusId,
+    )
     return
   }
   if (transcript.length > CUSTOMER_CONSULTATION_TRANSCRIPT_MAX) {
     new Notice(`当前逐字稿有 ${transcript.length.toLocaleString()} 字，超过 100,000 字上限，请拆分后再生成`, 8000)
+    plugin.reportSkillStatus(
+      `⚠️ 客户咨询简报已停止：《${sourceFile.basename}》有 ${transcript.length.toLocaleString('zh-CN')} 字，超过 100,000 字上限，请拆分后再生成。`,
+      statusId,
+    )
     return
   }
 
   const input = await new CustomerConsultationBriefModal(plugin.app, sourceFile).result
-  if (!input) return
-  const running = new Notice('🤖 AI霖子正在生成客户咨询简报并渲染 PNG…（约 1-3 分钟）', 0)
+  if (!input) {
+    plugin.reportSkillStatus(`已取消本次客户咨询简报，《${sourceFile.basename}》未处理。`, statusId)
+    return
+  }
+  plugin.reportSkillStatus(
+    `🤖 正在生成客户咨询简报并渲染 PNG：《${sourceFile.basename}》…约 1-2 分钟，完成后会自动打开长图。`,
+    statusId,
+  )
+  const running = new Notice('🤖 AI霖子正在生成客户咨询简报并渲染 PNG…（约 1-2 分钟）', 0)
   try {
     const response = await plugin.apiText('/api/plugin/v1/skills/consultation-brief', {
       transcript,
@@ -317,9 +336,12 @@ export async function runCustomerConsultationBrief(plugin: AiLinziPlugin): Promi
     )
     const file = await plugin.app.vault.createBinary(path, png)
     await plugin.app.workspace.getLeaf('tab').openFile(file)
+    plugin.reportSkillStatus(`✅ 客户咨询简报 PNG 已生成并打开：${path}`, statusId)
     new Notice(`✅ 客户咨询简报 PNG 已生成：${path}`, 8000)
   } catch (error) {
-    new Notice(`❌ 客户咨询简报：${error instanceof Error ? error.message : String(error)}`, 9000)
+    const message = error instanceof Error ? error.message : String(error)
+    plugin.reportSkillStatus(`❌ 客户咨询简报失败：${message}`, statusId)
+    new Notice(`❌ 客户咨询简报：${message}`, 9000)
   } finally {
     running.hide()
   }
