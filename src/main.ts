@@ -1060,15 +1060,32 @@ export default class AiLinziPlugin extends Plugin {
     // 学员只需要粘贴密钥值。SecretStorage 的条目名是实现细节，统一迁移到
     // 两个固定且不在界面暴露的内部 ID。固定条目已有值时优先保留，避免旧
     // 自定义条目中的过期值覆盖用户刚更新的密钥。
+    // ⚠️ Obsidian 1.13 起 secretStorage 对不合规条目名会抛错（写入必抛，读取
+    // 目前不抛但不担保，旧版插件的自定义条目名可能是中文/大写）；整段迁移
+    // 逐条兜底，绝不能让存储异常炸掉 loadSettings（2026-08-18 AppSecret 事故）。
+    const safeGetSecret = (id: string): string => {
+      try {
+        return this.app.secretStorage.getSecret(id)?.trim() ?? ''
+      } catch {
+        return ''
+      }
+    }
+    const safeSetSecret = (id: string, value: string): void => {
+      try {
+        this.app.secretStorage.setSecret(id, value)
+      } catch (error) {
+        console.error('[ai-linzi] secret migration write failed:', error)
+      }
+    }
     const previousTokenId = this.settings.tokenSecretId.trim()
-    const fixedToken = this.app.secretStorage.getSecret(DEFAULT_TOKEN_SECRET_ID)?.trim() ?? ''
+    const fixedToken = safeGetSecret(DEFAULT_TOKEN_SECRET_ID)
     const previousToken =
       previousTokenId && previousTokenId !== DEFAULT_TOKEN_SECRET_ID
-        ? this.app.secretStorage.getSecret(previousTokenId)?.trim() ?? ''
+        ? safeGetSecret(previousTokenId)
         : ''
     const tokenToKeep = fixedToken || legacyToken?.trim() || previousToken
     if (tokenToKeep && tokenToKeep !== fixedToken) {
-      this.app.secretStorage.setSecret(DEFAULT_TOKEN_SECRET_ID, tokenToKeep)
+      safeSetSecret(DEFAULT_TOKEN_SECRET_ID, tokenToKeep)
     }
     if (legacyToken !== undefined) migrated = true
     if (this.settings.tokenSecretId !== DEFAULT_TOKEN_SECRET_ID) {
@@ -1077,14 +1094,14 @@ export default class AiLinziPlugin extends Plugin {
     }
 
     const previousWechatId = this.settings.wechatAppSecretId.trim()
-    const fixedWechat = this.app.secretStorage.getSecret(DEFAULT_WECHAT_SECRET_ID)?.trim() ?? ''
+    const fixedWechat = safeGetSecret(DEFAULT_WECHAT_SECRET_ID)
     const previousWechat =
       previousWechatId && previousWechatId !== DEFAULT_WECHAT_SECRET_ID
-        ? this.app.secretStorage.getSecret(previousWechatId)?.trim() ?? ''
+        ? safeGetSecret(previousWechatId)
         : ''
     const wechatToKeep = fixedWechat || legacyWechatSecret?.trim() || previousWechat
     if (wechatToKeep && wechatToKeep !== fixedWechat) {
-      this.app.secretStorage.setSecret(DEFAULT_WECHAT_SECRET_ID, wechatToKeep)
+      safeSetSecret(DEFAULT_WECHAT_SECRET_ID, wechatToKeep)
     }
     if (legacyWechatSecret !== undefined) migrated = true
     if (this.settings.wechatAppSecretId !== DEFAULT_WECHAT_SECRET_ID) {
@@ -1112,10 +1129,37 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   async setApiToken(value: string): Promise<void> {
-    this.app.secretStorage.setSecret(DEFAULT_TOKEN_SECRET_ID, value.trim())
+    this.writeSecretOrExplain(DEFAULT_TOKEN_SECRET_ID, value.trim(), '连接密钥')
     this.settings.tokenSecretId = DEFAULT_TOKEN_SECRET_ID
     this.capabilitiesCache = null // 换密钥=换账号,旧权益缓存立即作废
     await this.saveSettings()
+  }
+
+  /**
+   * 密钥写入 + 回读自检（Obsidian 1.13 起 setSecret 会对不合规条目名抛错；
+   * 2026-08-18 公众号 AppSecret「填了也存不上、一直提示」事故：旧版插件的
+   * 自定义条目名在 1.13 上写入抛错且无任何提示。固定条目名本身合法，此处
+   * 兜底任何未来的存储异常，保证失败一定可见、绝不静默。）
+   */
+  private writeSecretOrExplain(id: string, value: string, label: string): void {
+    try {
+      this.app.secretStorage.setSecret(id, value)
+    } catch (error) {
+      new Notice(
+        `${label}保存失败：${error instanceof Error ? error.message : String(error)}。请重启 Obsidian 后重试。`,
+        10000,
+      )
+      return
+    }
+    let readBack = ''
+    try {
+      readBack = this.app.secretStorage.getSecret(id)?.trim() ?? ''
+    } catch {
+      readBack = ''
+    }
+    if (value && readBack !== value) {
+      new Notice(`${label}保存后校验失败（存储未生效）。请重启 Obsidian 后重新填写。`, 10000)
+    }
   }
 
   /** 打开本插件的设置页(空状态引导按钮用;Obsidian 未公开类型,窄接口断言) */
@@ -1132,7 +1176,7 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   async setWechatAppSecret(value: string): Promise<void> {
-    this.app.secretStorage.setSecret(DEFAULT_WECHAT_SECRET_ID, value.trim())
+    this.writeSecretOrExplain(DEFAULT_WECHAT_SECRET_ID, value.trim(), '公众号 AppSecret')
     this.settings.wechatAppSecretId = DEFAULT_WECHAT_SECRET_ID
     await this.saveSettings()
   }
