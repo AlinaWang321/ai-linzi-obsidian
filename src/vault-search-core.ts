@@ -319,7 +319,7 @@ function pathMatchesYearMonth(value: string, year: number, month: number): boole
 
 function consultationSessionKey(doc: VaultSearchDocument): string {
   const basename = doc.filename
-    .replace(/\.(?:md|txt|pdf|docx)$/i, '')
+    .replace(/\.(?:md|txt|pdf|docx|html?|pptx)$/i, '')
     .replace(/[-_\s](?:part\s*)?\d+$/i, '')
     .replace(/[（(]\d+[）)]$/, '')
   const timestamp = basename.match(/(?:19|20)\d{7,12}/)?.[0]
@@ -444,7 +444,7 @@ interface PreparedDocument {
 function prepareDocument(doc: VaultSearchDocument): PreparedDocument {
   return {
     doc,
-    title: normalizeText(doc.filename.replace(/\.(?:md|txt|pdf|docx)$/i, '')),
+    title: normalizeText(doc.filename.replace(/\.(?:md|txt|pdf|docx|html?|pptx)$/i, '')),
     path: normalizeText(doc.path),
     headings: normalizeText(
       doc.text
@@ -519,7 +519,7 @@ function scoreDocument(
 interface QuerySignals {
   todayOrLatest: boolean
   rawFolder: boolean
-  extension?: 'md' | 'txt' | 'pdf' | 'docx'
+  extension?: 'md' | 'txt' | 'pdf' | 'docx' | 'html' | 'htm' | 'pptx'
   nowMs: number
   localDateTokens: string[]
 }
@@ -530,7 +530,7 @@ function buildQuerySignals(query: string, nowMs: number): QuerySignals {
   const year = now.getFullYear()
   const month = String(now.getMonth() + 1).padStart(2, '0')
   const day = String(now.getDate()).padStart(2, '0')
-  const extension = normalized.match(/(?:^|[\s.])(md|txt|pdf|docx)(?:$|[\s文件文档])/i)?.[1]
+  const extension = normalized.match(/(?:^|[\s.])(md|txt|pdf|docx|html?|pptx)(?:$|[\s文件文档])/i)?.[1]
     ?.toLocaleLowerCase() as QuerySignals['extension']
   return {
     todayOrLatest: /今天|今日|刚刚|刚才|最新|新加|新增|刚存|刚放|最近一份/.test(normalized),

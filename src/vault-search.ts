@@ -15,7 +15,9 @@ import {
 import {
   decodePlainText,
   extractDocxText,
+  extractHtmlText,
   extractPdfText,
+  extractPptxText,
   isLocalSearchExtension,
   LOCAL_SEARCH_FILE_LIMITS,
 } from './local-document-text'
@@ -133,11 +135,12 @@ export class LocalVaultSearch {
       const inventoryFact = buildVaultLocalFact(query, metadataDocuments, [], options.nowMs)
       if (inventoryFact) return responseFromLocalFact(inventoryFact, options.maxSources)
     }
-    // 大型 Vault 可能有数千篇笔记。文本文件批量读取，PDF/DOCX 只开两个并发，
+    // 大型 Vault 可能有数千篇笔记。文本文件批量读取，PDF/DOCX/PPTX 只开两个并发，
     // 避免大量二进制解析同时抢占 Obsidian 的 CPU 和内存。
     const documents: (VaultSearchDocument | null)[] = []
-    const textFiles = files.filter((file) => file.extension === 'md' || file.extension === 'txt')
-    const binaryFiles = files.filter((file) => file.extension === 'pdf' || file.extension === 'docx')
+    const textExtensions = new Set(['md', 'txt', 'html', 'htm'])
+    const textFiles = files.filter((file) => textExtensions.has(file.extension.toLocaleLowerCase()))
+    const binaryFiles = files.filter((file) => !textExtensions.has(file.extension.toLocaleLowerCase()))
     for (let offset = 0; offset < textFiles.length; offset += 24) {
       const batch = textFiles.slice(offset, offset + 24)
       documents.push(...(await Promise.all(batch.map((file) => this.readDocument(file)))))
@@ -172,7 +175,7 @@ export class LocalVaultSearch {
   }> {
     const file = this.app.vault.getAbstractFileByPath(path)
     if (!(file instanceof TFile) || !isLocalSearchExtension(file.extension)) {
-      throw new Error(`没有找到可读取的 MD/TXT/PDF/DOCX 文件：${path}`)
+      throw new Error(`没有找到可读取的 MD/TXT/PDF/DOCX/HTML/PPTX 文件：${path}`)
     }
     const document = await this.readDocument(file)
     if (!document) throw new Error(`文件暂时无法读取：${path}`)
@@ -210,6 +213,10 @@ export class LocalVaultSearch {
             text = await extractPdfText(data, MAX_INDEX_CHARS_PER_NOTE)
           } else if (extension === 'docx') {
             text = extractDocxText(data, MAX_INDEX_CHARS_PER_NOTE)
+          } else if (extension === 'html' || extension === 'htm') {
+            text = extractHtmlText(data, MAX_INDEX_CHARS_PER_NOTE)
+          } else if (extension === 'pptx') {
+            text = extractPptxText(data, MAX_INDEX_CHARS_PER_NOTE)
           }
         }
       }

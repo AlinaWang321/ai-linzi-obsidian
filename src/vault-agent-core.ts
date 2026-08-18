@@ -434,8 +434,10 @@ export function collectOrganizePlanProblems(
       }
     }
   }
-  if (trashOps.length > 0 && opCount !== 1) {
-    push('为避免误删，每次确认只能把一篇 Markdown 笔记移入回收站')
+  // v0.7.42 起：回收站方案允许批量、允许任意文件类型和文件夹，但必须
+  // 纯删除成卡（不与移动/新建/写入混排），确认卡文案才能与行为一致。
+  if (trashOps.length > 0 && trashOps.length !== opCount) {
+    push('移入回收站的方案不能混入移动、新建等其他操作，请拆成两次确认')
   }
   if (noteWriteOps.length > 0 && opCount !== 1) {
     push('为避免跨文件误写，每次确认只能写入一篇 Markdown 笔记，不能混入其他操作')
@@ -443,11 +445,19 @@ export function collectOrganizePlanProblems(
   if (artifactOps.length > 0 && opCount !== 1) {
     push('为避免误写，每次确认只能生成一个成品文件，不能混入其他操作')
   }
+  const trashTargets = new Set<string>()
   for (const operation of trashOps) {
-    if (artifactExtension(operation.path) !== 'md') {
-      push('删除功能只允许把 Markdown 笔记移入回收站，不能删除附件或文件夹')
-    } else if (pathKind(operation.path) !== 'file') {
-      push(`没有找到可删除的笔记：${operation.path}`)
+    if (trashTargets.has(operation.path)) push(`重复的删除目标：${operation.path}`)
+    trashTargets.add(operation.path)
+    if (!pathKind(operation.path)) {
+      push(`没有找到要移入回收站的文件或文件夹：${operation.path}`)
+    }
+  }
+  for (const path of trashTargets) {
+    for (const other of trashTargets) {
+      if (path !== other && path.startsWith(`${other}/`)) {
+        push(`「${path}」已在待删除文件夹「${other}」内，请去掉重复项`)
+      }
     }
   }
   for (const operation of noteWriteOps) {

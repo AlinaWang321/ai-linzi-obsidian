@@ -92,6 +92,23 @@ export class LocalVaultAgent {
     return isProtectedVaultPath(path, this.localSkillsRoot())
   }
 
+  /** 整夹移入回收站前确认没有裹挟受保护文件（Skills 根目录、开发辅助文件等）。 */
+  private assertFolderTrashable(folder: TFolder): void {
+    const stack: TFolder[] = [folder]
+    while (stack.length > 0) {
+      const current = stack.pop()
+      if (!current) continue
+      for (const child of current.children) {
+        if (this.protected(child.path)) {
+          throw new Error(
+            `文件夹「${folder.path}」内包含受保护路径「${child.path}」，不能整夹移入回收站`,
+          )
+        }
+        if (child instanceof TFolder) stack.push(child)
+      }
+    }
+  }
+
   async executeReadCalls(calls: VaultAgentToolCall[]): Promise<VaultAgentExecution> {
     return this.executeCalls(calls)
   }
@@ -175,6 +192,12 @@ export class LocalVaultAgent {
       this.localSkillsRoot(),
     )
     if (problems.length > 0) throw new Error(problems.join('；'))
+    // 整夹删除前确认没有裹挟受保护路径（Skills 根目录、开发辅助文件等）。
+    for (const operation of plan.operations) {
+      if (operation.type !== 'trash_note') continue
+      const item = this.app.vault.getAbstractFileByPath(normalizePath(operation.path))
+      if (item instanceof TFolder) this.assertFolderTrashable(item)
+    }
     const artifactOperation = plan.operations.length === 1 && plan.operations[0].type === 'create_artifact'
       ? plan.operations[0]
       : undefined
@@ -312,6 +335,7 @@ export class LocalVaultAgent {
         type: 'folder' | 'file'
         size?: number
         modifiedAt?: number
+        readable?: boolean
       }> = []
       let scanTruncated = false
       const walk = (folder: TFolder, level: number) => {
@@ -330,12 +354,15 @@ export class LocalVaultAgent {
           if (child instanceof TFolder) {
             entries.push({ path: child.path, type: 'folder' })
             walk(child, level + 1)
-          } else if (child instanceof TFile && isLocalSearchExtension(child.extension)) {
+          } else if (child instanceof TFile) {
+            // v0.7.42 起列出全部文件类型（图片/音视频/压缩包也算数）；
+            // readable 告诉模型这个文件能不能用 read_note 读到正文。
             entries.push({
               path: child.path,
               type: 'file',
               size: child.stat.size,
               modifiedAt: child.stat.mtime,
+              readable: isLocalSearchExtension(child.extension),
             })
           }
         }
@@ -458,26 +485,57 @@ export class LocalVaultAgent {
     }
 
     if (trashOps.length > 0) {
-      if (trashOps.length !== 1 || plan.operations.length !== 1) {
-        throw new Error('为避免误删，每次确认只能把一篇 Markdown 笔记移入回收站')
+      // v0.7.42 起支持批量、任意文件类型和文件夹；仍要求纯删除成卡，
+      // 确认卡文案才能与真实行为一致（校验口径与 collectOrganizePlanProblems 同步）。
+      if (trashOps.length !== plan.operations.length) {
+        throw new Error('移入回收站的方案不能混入移动、新建等其他操作，请拆成两次确认')
       }
-      const operation = trashOps[0]
-      const file = this.app.vault.getAbstractFileByPath(operation.path)
-      if (!(file instanceof TFile)) throw new Error(`没有找到可删除的笔记：${operation.path}`)
-      if (file.extension.toLocaleLowerCase() !== 'md') {
-        throw new Error('删除功能只允许把 Markdown 笔记移入回收站，不能删除附件或文件夹')
+      const seen = new Set<string>()
+      const targets: { path: string; isFolder: boolean }[] = []
+      for (const operation of trashOps) {
+        if (seen.has(operation.path)) throw new Error(`重复的删除目标：${operation.path}`)
+        seen.add(operation.path)
+        const item = this.app.vault.getAbstractFileByPath(operation.path)
+        if (!(item instanceof TFile) && !(item instanceof TFolder)) {
+          throw new Error(`没有找到要移入回收站的文件或文件夹：${operation.path}`)
+        }
+        if (item instanceof TFolder) this.assertFolderTrashable(item)
+        targets.push({ path: operation.path, isFolder: item instanceof TFolder })
       }
-      // Obsidian 的 system=true 会优先使用系统废纸篓/回收站；若系统不允许，
-      // Obsidian 会退回自己的 .trash。这里绝不调用 vault.delete() 永久删除。
-      await this.app.vault.trash(file, true)
-      this.search.clear()
+      for (const target of targets) {
+        for (const other of targets) {
+          if (target !== other && target.path.startsWith(`${other.path}/`)) {
+            throw new Error(`「${target.path}」已在待删除文件夹「${other.path}」内，请去掉重复项`)
+          }
+        }
+      }
+      const trashed: string[] = []
+      try {
+        for (const target of targets) {
+          const current = this.app.vault.getAbstractFileByPath(target.path)
+          if (!current) throw new Error(`执行前已被移动或删除：${target.path}`)
+          // Obsidian 的 system=true 会优先使用系统废纸篓/回收站；若系统不允许，
+          // Obsidian 会退回自己的 .trash。这里绝不调用 vault.delete() 永久删除。
+          await this.app.vault.trash(current, true)
+          trashed.push(target.path)
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(
+          trashed.length > 0
+            ? `已移入回收站 ${trashed.length} 项（可从回收站恢复），随后停止：${message}`
+            : message,
+        )
+      } finally {
+        if (trashed.length > 0) this.search.clear()
+      }
       return {
         id: `vault-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         createdAt: Date.now(),
         planTitle: plan.title,
         moves: [],
         createdFolders: [],
-        trashedNotes: [operation.path],
+        trashedNotes: trashed,
         createdNotes: [],
         updatedNotes: [],
         createdArtifacts: [],
@@ -687,7 +745,7 @@ export class LocalVaultAgent {
 
   async undo(record: VaultActionRecord): Promise<void> {
     if ((record.trashedNotes?.length ?? 0) > 0 && record.moves.length === 0) {
-      throw new Error('回收站中的笔记请从系统废纸篓/回收站恢复，插件不会永久删除')
+      throw new Error('回收站中的文件请从系统废纸篓/回收站恢复，插件不会永久删除')
     }
     if (((record.createdNotes?.length ?? 0) > 0 || (record.updatedNotes?.length ?? 0) > 0) && record.moves.length === 0) {
       throw new Error('笔记写入请使用 Obsidian 撤销或“文件恢复”回滚，插件不会自动删除或覆盖恢复')

@@ -1,8 +1,18 @@
 import { FuzzySuggestModal, Notice, TFile } from 'obsidian'
 import type AiLinziPlugin from './main'
 import { stripFrontmatter } from './article-format'
-import { isLocalSearchExtension } from './local-document-text'
 import { readLocalDocumentText } from './long-document'
+
+/**
+ * 逐字稿技能（销售复盘/客户咨询简报）的候选格式固定为这四种，
+ * 与 0.7.42 起放宽的通用 Vault 搜索白名单（含 HTML/PPTX）刻意脱钩：
+ * 幻灯片和网页存档不是逐字稿，混进候选列表只会添乱。
+ */
+const TRANSCRIPT_EXTENSIONS = new Set(['md', 'txt', 'pdf', 'docx'])
+
+function isTranscriptExtension(extension: string): boolean {
+  return TRANSCRIPT_EXTENSIONS.has(extension.toLocaleLowerCase())
+}
 
 export interface SelectedTranscript {
   file: TFile
@@ -76,14 +86,14 @@ export async function selectTranscriptSource(
   maxChars: number,
 ): Promise<SelectedTranscript | null> {
   const active = plugin.app.workspace.getActiveFile()
-  const current = active && isLocalSearchExtension(active.extension)
+  const current = active && isTranscriptExtension(active.extension)
     ? active
     : plugin.rememberCurrentMarkdownFile()
   const currentPath =
-    current && isLocalSearchExtension(current.extension) ? current.path : undefined
+    current && isTranscriptExtension(current.extension) ? current.path : undefined
   const files = plugin.app.vault
     .getFiles()
-    .filter((file) => isLocalSearchExtension(file.extension))
+    .filter((file) => isTranscriptExtension(file.extension))
     .sort((left, right) => {
       if (left.path === currentPath) return -1
       if (right.path === currentPath) return 1

@@ -19,6 +19,7 @@ import {
   PluginSettingTab,
   Setting,
   TFile,
+  TFolder,
   WorkspaceLeaf,
   normalizePath,
   requestUrl,
@@ -799,6 +800,21 @@ class ChatHistoryModal extends Modal {
 
 const MAX_SAVED_CONVOS = 30
 const PLUGIN_SESSION_PREFIX = 'obsidian:'
+
+/** 确认卡里提示整夹删除的体量；只数文件，不含子文件夹本身。 */
+function countFilesInside(folder: TFolder): number {
+  let count = 0
+  const stack: TFolder[] = [folder]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (!current) continue
+    for (const child of current.children) {
+      if (child instanceof TFolder) stack.push(child)
+      else count += 1
+    }
+  }
+  return count
+}
 
 function uid(): string {
   return window.activeWindow.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -3785,9 +3801,13 @@ class ChatView extends ItemView {
     message: WireMessage,
   ): void {
     const card = row.createDiv({ cls: 'ai-linzi-create-note-card ai-linzi-vault-plan-card' })
-    const trashOperation = plan.operations.length === 1 && plan.operations[0].type === 'trash_note'
-      ? plan.operations[0]
-      : null
+    const trashOperations = plan.operations.filter(
+      (operation): operation is Extract<(typeof plan.operations)[number], { type: 'trash_note' }> =>
+        operation.type === 'trash_note',
+    )
+    // 全部操作都是移入回收站才算删除卡（v0.7.42 起支持批量）；混排方案预检就会被拒。
+    const trashOnlyPlan = trashOperations.length > 0 &&
+      trashOperations.length === plan.operations.length
     const onlyOperation = plan.operations.length === 1 ? plan.operations[0] : null
     const noteWriteOperation = onlyOperation &&
       (onlyOperation.type === 'create_note' ||
@@ -3803,7 +3823,7 @@ class ChatView extends ItemView {
       ? resolveArtifactPath(artifactOperation.path, this.plugin.settings.outputFolder)
       : null
     card.createDiv({
-      text: `${trashOperation ? '🗑️' : noteWriteOperation ? '📝' : artifactOperation ? '📦' : '🗂️'} 待确认：${plan.title}`,
+      text: `${trashOnlyPlan ? '🗑️' : noteWriteOperation ? '📝' : artifactOperation ? '📦' : '🗂️'} 待确认：${plan.title}`,
       cls: 'ai-linzi-create-note-title',
     })
     if (plan.summary) {
@@ -3818,6 +3838,14 @@ class ChatView extends ItemView {
           : operationLabel(operation),
       })
       if (operation.reason) item.createEl('small', { text: operation.reason })
+      if (operation.type === 'trash_note') {
+        const target = this.plugin.app.vault.getAbstractFileByPath(operation.path)
+        if (target instanceof TFolder) {
+          item.createEl('small', {
+            text: `文件夹 · 含 ${countFilesInside(target)} 个文件，将整夹移入回收站`,
+          })
+        }
+      }
       if (
         operation.type === 'create_note' ||
         operation.type === 'append_note' ||
@@ -3894,7 +3922,9 @@ class ChatView extends ItemView {
       const createdArtifact = record.createdArtifacts?.[0]
       actions.createSpan({
         text: trashedCount > 0
-          ? `✅ 已移入回收站：${record.trashedNotes?.[0]}`
+          ? trashedCount === 1
+            ? `✅ 已移入回收站：${record.trashedNotes?.[0]}`
+            : `✅ 已移入回收站 ${trashedCount} 项`
           : createdNote
             ? `✅ 已新建笔记：${createdNote}`
             : updatedNote
@@ -3964,8 +3994,10 @@ class ChatView extends ItemView {
     }
 
     const executeBtn = actions.createEl('button', {
-      text: trashOperation
-        ? '移入回收站'
+      text: trashOnlyPlan
+        ? trashOperations.length > 1
+          ? `移入回收站（${trashOperations.length} 项）`
+          : '移入回收站'
         : noteWriteOperation
           ? noteWriteOperation.type === 'create_note' ? '确认新建笔记' : '确认写入笔记'
           : artifactOperation
@@ -3977,13 +4009,19 @@ class ChatView extends ItemView {
       executeBtn.disabled = true
       void (async () => {
         try {
-          const ok = await confirmAction(this.app, trashOperation
+          const ok = await confirmAction(this.app, trashOnlyPlan
             ? {
                 title: '再次确认移入回收站',
                 message:
-                  `即将把「${trashOperation.path}」移入废纸篓/回收站。` +
-                  '插件不会永久删除；需要恢复时请到系统废纸篓/回收站（或 Obsidian .trash）操作。',
-                confirmLabel: '确认移入回收站',
+                  (trashOperations.length === 1
+                    ? `即将把「${trashOperations[0].path}」移入废纸篓/回收站。`
+                    : `即将把以下 ${trashOperations.length} 项移入废纸篓/回收站：\n` +
+                      trashOperations.slice(0, 10).map((operation) => `· ${operation.path}`).join('\n') +
+                      (trashOperations.length > 10 ? `\n…等共 ${trashOperations.length} 项。` : '')) +
+                  '\n插件不会永久删除；需要恢复时请到系统废纸篓/回收站（或 Obsidian .trash）操作。',
+                confirmLabel: trashOperations.length > 1
+                  ? `确认移入回收站（${trashOperations.length} 项）`
+                  : '确认移入回收站',
               }
             : noteWriteOperation
               ? {
@@ -4033,7 +4071,9 @@ class ChatView extends ItemView {
           this.renderMessages()
           new Notice(
             (applied.trashedNotes?.length ?? 0) > 0
-              ? `✅ 已把「${applied.trashedNotes?.[0]}」移入回收站`
+              ? (applied.trashedNotes?.length ?? 0) === 1
+                ? `✅ 已把「${applied.trashedNotes?.[0]}」移入回收站`
+                : `✅ 已把 ${applied.trashedNotes?.length} 项移入回收站`
               : (applied.createdNotes?.length ?? 0) > 0
                 ? `✅ 已新建笔记「${applied.createdNotes?.[0]}」`
               : (applied.updatedNotes?.length ?? 0) > 0

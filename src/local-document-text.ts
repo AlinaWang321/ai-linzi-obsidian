@@ -1,15 +1,22 @@
 import { unzipSync, strFromU8, type UnzipFileInfo } from 'fflate'
 
-export const LOCAL_SEARCH_EXTENSIONS = new Set(['md', 'txt', 'pdf', 'docx'])
+export const LOCAL_SEARCH_EXTENSIONS = new Set([
+  'md', 'txt', 'pdf', 'docx', 'html', 'htm', 'pptx',
+])
 
 export const LOCAL_SEARCH_FILE_LIMITS: Record<string, number> = {
   md: 8 * 1024 * 1024,
   txt: 8 * 1024 * 1024,
   pdf: 50 * 1024 * 1024,
   docx: 25 * 1024 * 1024,
+  html: 8 * 1024 * 1024,
+  htm: 8 * 1024 * 1024,
+  pptx: 50 * 1024 * 1024,
 }
 
 const MAX_DOCX_XML_BYTES = 12 * 1024 * 1024
+/** 原始 HTML 里标签占比很高；先按放大的上限解码，剥完标签再截到目标字数。 */
+const MAX_RAW_HTML_CHARS = 1_500_000
 
 export function isLocalSearchExtension(extension: string): boolean {
   return LOCAL_SEARCH_EXTENSIONS.has(extension.toLocaleLowerCase())
@@ -51,6 +58,45 @@ export function extractDocxText(data: Uint8Array, maxChars: number): string {
     chars += Math.min(text.length, remaining)
   }
   return cleanExtractedText(parts.join('\n\n'), maxChars)
+}
+
+export function extractPptxText(data: Uint8Array, maxChars: number): string {
+  const files = unzipSync(data, {
+    filter(file: UnzipFileInfo) {
+      return isSearchablePptxXml(file.name) && file.originalSize <= MAX_DOCX_XML_BYTES
+    },
+  })
+  const names = Object.keys(files).sort(pptxXmlOrder)
+  const parts: string[] = []
+  let chars = 0
+  for (const name of names) {
+    const xml = strFromU8(files[name])
+    const text = drawingXmlToText(xml)
+    if (!text) continue
+    const slide = name.match(/slide(\d+)\.xml$/i)?.[1]
+    const label = /notesSlide/i.test(name) ? `【第 ${slide} 页备注】` : `【第 ${slide} 页】`
+    const remaining = maxChars - chars
+    if (remaining <= 0) break
+    const block = `${label}\n${text}`.slice(0, remaining)
+    parts.push(block)
+    chars += block.length
+  }
+  return cleanExtractedText(parts.join('\n\n'), maxChars)
+}
+
+export function extractHtmlText(data: Uint8Array, maxChars: number): string {
+  const raw = decodePlainText(data, Math.min(Math.max(maxChars * 8, maxChars), MAX_RAW_HTML_CHARS))
+  const title = raw.match(/<title[^>]*>([^<]{0,300})<\/title>/i)?.[1]?.trim()
+  const body = raw
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(script|style|template|svg|noscript)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<head\b[\s\S]*?<\/head\s*>/gi, ' ')
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/(?:p|div|section|article|li|tr|h[1-6]|blockquote|pre|figure|figcaption|table|ul|ol|dd|dt)\s*>/gi, '\n')
+    .replace(/<\/(?:td|th)\s*>/gi, '\t')
+    .replace(/<[^>]+>/g, '')
+  const text = decodeXmlEntities(body)
+  return cleanExtractedText(title ? `${title}\n${text}` : text, maxChars)
 }
 
 export async function extractPdfText(data: Uint8Array, maxChars: number): Promise<string> {
@@ -108,6 +154,31 @@ export async function extractPdfText(data: Uint8Array, maxChars: number): Promis
   return cleanExtractedText(pages.join('\n\n'), maxChars)
 }
 
+function isSearchablePptxXml(name: string): boolean {
+  return (
+    /^ppt\/slides\/slide\d+\.xml$/i.test(name) ||
+    /^ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(name)
+  )
+}
+
+function pptxXmlOrder(left: string, right: string): number {
+  const kind = (name: string) => (/notesSlide/i.test(name) ? 1 : 0)
+  const index = (name: string) => Number.parseInt(name.match(/(\d+)\.xml$/i)?.[1] ?? '0', 10)
+  return kind(left) - kind(right) || index(left) - index(right)
+}
+
+/** PPTX 的文字都在 DrawingML `<a:t>` 里；段落/换行/表格标签转成对应空白。 */
+function drawingXmlToText(xml: string): string {
+  return decodeXmlEntities(
+    xml
+      .replace(/<a:br\b[^>]*\/>/gi, '\n')
+      .replace(/<\/a:p>/gi, '\n')
+      .replace(/<\/a:tc>/gi, '\t')
+      .replace(/<\/a:t>/gi, ' ')
+      .replace(/<[^>]+>/g, ''),
+  )
+}
+
 function isSearchableDocxXml(name: string): boolean {
   return (
     name === 'word/document.xml' ||
@@ -146,6 +217,7 @@ function decodeXmlEntities(value: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
 }
 

@@ -302,7 +302,7 @@ assert.equal(actionProposal.calls[0].name, 'propose_skill_action')
   assert.ok(problems.some((item) => item.includes('不能改变文件类型')), problems.join(' / '))
   assert.ok(problems.some((item) => item.includes('保护目录')), problems.join(' / '))
 
-  // 组合约束：删除必须单独成方案
+  // 组合约束：删除必须纯删除成卡，不能与其他操作混排（v0.7.42 起允许批量）
   const mixedTrash = {
     title: '',
     summary: '',
@@ -314,8 +314,52 @@ assert.equal(actionProposal.calls[0].name, 'propose_skill_action')
   }
   assert.ok(
     core.collectOrganizePlanProblems(mixedTrash, lookup, '05_System/Skills')
-      .some((item) => item.includes('每次确认只能把一篇 Markdown 笔记移入回收站')),
+      .some((item) => item.includes('移入回收站的方案不能混入')),
   )
+
+  // v0.7.42：批量删除任意文件类型（含非 md 附件和文件夹）→ 预检零问题
+  const batchTrash = {
+    title: '清理演示产物',
+    summary: '',
+    notes: [],
+    operations: [
+      { type: 'trash_note', path: '02_Wiki/占位.md' },
+      { type: 'trash_note', path: '01_Raw/卢欣怡/职业测评.pdf' },
+    ],
+  }
+  assert.deepEqual(core.collectOrganizePlanProblems(batchTrash, lookup, '05_System/Skills'), [])
+
+  // 文件夹可删，但目标嵌套在另一个待删文件夹内必须报重复
+  const nestedTrash = {
+    title: '',
+    summary: '',
+    notes: [],
+    operations: [
+      { type: 'trash_note', path: '01_Raw/卢欣怡' },
+      { type: 'trash_note', path: '01_Raw/卢欣怡/职业测评.pdf' },
+    ],
+  }
+  assert.ok(
+    core.collectOrganizePlanProblems(nestedTrash, lookup, '05_System/Skills')
+      .some((item) => item.includes('已在待删除文件夹')),
+  )
+
+  // 重复目标与不存在的目标分别报错
+  const dupTrash = {
+    title: '',
+    summary: '',
+    notes: [],
+    operations: [
+      { type: 'trash_note', path: '02_Wiki/占位.md' },
+      { type: 'trash_note', path: '02_Wiki/占位.md' },
+      { type: 'trash_note', path: '02_Wiki/不存在.png' },
+    ],
+  }
+  {
+    const problems = core.collectOrganizePlanProblems(dupTrash, lookup, '05_System/Skills')
+    assert.ok(problems.some((item) => item.includes('重复的删除目标：02_Wiki/占位.md')))
+    assert.ok(problems.some((item) => item.includes('没有找到要移入回收站的文件或文件夹：02_Wiki/不存在.png')))
+  }
 
   // 目标父路径被文件占用（执行时 ensureFolder 必炸）→ 预检就要报
   const fileAsFolder = {

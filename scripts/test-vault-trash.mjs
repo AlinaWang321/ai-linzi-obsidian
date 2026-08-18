@@ -101,23 +101,61 @@ assert.equal(files.has(note.path), false)
 assert.equal(search.clearCalls, 1)
 await assert.rejects(agent.undo(record), /系统废纸篓\/回收站恢复/)
 
+// ── v0.7.42：任意文件类型 + 批量 + 文件夹 ──
 const attachment = new module.TFile('000_Inbox/截图.png')
+const slides = new module.TFile('04_Output/演示文稿/打卡营第一课.pptx')
 files.set(attachment.path, attachment)
+files.set(slides.path, slides)
+const batchRecord = await agent.applyPlan({
+  title: '清理演示产物',
+  summary: '',
+  operations: [
+    { type: 'trash_note', path: attachment.path },
+    { type: 'trash_note', path: slides.path },
+  ],
+  notes: [],
+})
+assert.deepEqual(batchRecord.trashedNotes, [attachment.path, slides.path])
+assert.equal(files.has(attachment.path), false)
+assert.equal(files.has(slides.path), false)
+assert.equal(search.clearCalls, 2)
+await assert.rejects(agent.undo(batchRecord), /系统废纸篓\/回收站恢复/)
+
+// 文件夹整夹移入回收站（不含受保护路径时放行）
+const tempFolder = new module.TFolder('04_Output/临时快照')
+const insideFile = new module.TFile('04_Output/临时快照/快照.html')
+tempFolder.children = [insideFile]
+files.set(tempFolder.path, tempFolder)
+files.set(insideFile.path, insideFile)
+const folderRecord = await agent.applyPlan({
+  title: '删除临时快照目录',
+  summary: '',
+  operations: [{ type: 'trash_note', path: tempFolder.path }],
+  notes: [],
+})
+assert.deepEqual(folderRecord.trashedNotes, [tempFolder.path])
+
+// 文件夹内裹挟受保护路径（本地 Skills 根目录）必须整单拒绝
+const sysFolder = new module.TFolder('05_System')
+const skillsRoot = new module.TFolder('05_System/Skills')
+sysFolder.children = [skillsRoot]
+files.set(sysFolder.path, sysFolder)
 await assert.rejects(
   agent.applyPlan({
-    title: '删除附件',
+    title: '删除系统目录',
     summary: '',
-    operations: [{ type: 'trash_note', path: attachment.path }],
+    operations: [{ type: 'trash_note', path: sysFolder.path }],
     notes: [],
   }),
-  /只允许把 Markdown 笔记移入回收站/,
+  /不能整夹移入回收站/,
 )
 
+// 混排（删除 + 其他操作）仍必须拒绝
 const another = new module.TFile('000_Inbox/另一篇.md')
 files.set(another.path, another)
 await assert.rejects(
   agent.applyPlan({
-    title: '批量删除',
+    title: '混排方案',
     summary: '',
     operations: [
       { type: 'trash_note', path: another.path },
@@ -125,9 +163,42 @@ await assert.rejects(
     ],
     notes: [],
   }),
-  /每次确认只能把一篇/,
+  /不能混入/,
 )
-assert.deepEqual(trashCalls, [{ path: note.path, system: true }])
+
+// 嵌套目标（文件夹 + 其内部文件）必须拒绝
+const parentFolder = new module.TFolder('01_Raw/旧资料')
+const childFile = new module.TFile('01_Raw/旧资料/旧稿.md')
+parentFolder.children = [childFile]
+files.set(parentFolder.path, parentFolder)
+files.set(childFile.path, childFile)
+await assert.rejects(
+  agent.applyPlan({
+    title: '嵌套删除',
+    summary: '',
+    operations: [
+      { type: 'trash_note', path: parentFolder.path },
+      { type: 'trash_note', path: childFile.path },
+    ],
+    notes: [],
+  }),
+  /已在待删除文件夹/,
+)
+
+// 重复目标必须拒绝
+await assert.rejects(
+  agent.applyPlan({
+    title: '重复删除',
+    summary: '',
+    operations: [
+      { type: 'trash_note', path: another.path },
+      { type: 'trash_note', path: another.path },
+    ],
+    notes: [],
+  }),
+  /重复的删除目标/,
+)
+assert.equal(files.has(another.path), true, '被拒绝的方案不得移动任何文件')
 
 const mainSource = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 assert.match(
