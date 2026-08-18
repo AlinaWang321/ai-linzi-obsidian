@@ -249,4 +249,35 @@ console.log('[test-vault-task-state]')
   console.log('  ✓ 9. 阿正案回归：整理措辞任务保留可承接，零工具口头收尾被拦')
 }
 
+// ── 10. P3/阶段B（0.7.49）：原生工具通道源码契约 ──
+{
+  const mainSource = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
+  assert.match(
+    mainSource,
+    /nativeEligible[\s\S]{0,400}mutationAsk \|\| \(taskContinuation && this\.pendingVaultTask\?\.intent === 'organize'\)/,
+    '原生通道只接管整理类回合的 gating 被改动',
+  )
+  assert.match(
+    mainSource,
+    /\/api\/plugin\/v1\/vault-native\/step/,
+    '原生通道端点调用缺失',
+  )
+  assert.match(
+    mainSource,
+    /catch \{[\s\S]{0,200}pendingNativeText = null/,
+    '原生通道失败必须静默回退散文协议（回滚保险丝）',
+  )
+  assert.match(
+    mainSource,
+    /name !== 'vault_search' && name !== 'list_folder' && name !== 'read_note'/,
+    '原生工具名白名单校验被移除',
+  )
+  assert.match(
+    mainSource,
+    /propose_organize_plan/,
+    '方案提交工具的客户端处理缺失（Luna 会声称缺少整理能力）',
+  )
+  console.log('  ✓ 10. 原生通道：整理回合 gating + 端点 + 白名单 + 方案工具 + 回退保险丝')
+}
+
 console.log('[test-vault-task-state] 全部通过')

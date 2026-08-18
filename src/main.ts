@@ -103,6 +103,7 @@ import { LocalVaultSearch } from './vault-search'
 import { type VaultSearchResult } from './vault-search-core'
 import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
+  VAULT_AGENT_MAX_CALLS_PER_ROUND,
   VAULT_AGENT_MAX_ROUNDS,
   advanceVaultTask,
   appendToolResultsWithinBudget,
@@ -126,6 +127,7 @@ import {
   vaultWriteFlowRetryReason,
   type PendingVaultTask,
   type VaultAnswerRetryReason,
+  type VaultAgentToolCall,
   type VaultAgentToolResult,
   type VaultAgentIntent,
   type VaultOrganizePlan,
@@ -3084,6 +3086,175 @@ class ChatView extends ItemView {
       }
     }
 
+    // ── P3/阶段B（0.7.49）：整理类回合优先走原生 function calling 通道 ──
+    // Luna 在 Responses API 上推理与原生工具共存（2026-08-18 探针 4/4 实证），
+    // 「调没调工具」从文本猜测变成硬信号，空承诺在结构上不可能。任何一步失败
+    // 都静默退回下方散文协议循环——行为与 0.7.48 完全一致，这就是回滚保险丝。
+    let pendingNativeText: string | null = null
+    const nativeEligible =
+      input.vaultAccess &&
+      !input.localSkill &&
+      !input.localSkillContext &&
+      !input.noteEdit &&
+      !input.noteImageIntent &&
+      (mutationAsk || (taskContinuation && this.pendingVaultTask?.intent === 'organize'))
+    if (nativeEligible) {
+      try {
+        let previousResponseId = ''
+        let nextBody: Record<string, unknown> | null = null
+        let stalledRetried = false
+        for (let step = 0; step < VAULT_AGENT_MAX_ROUNDS; step++) {
+          new Notice(
+            step === 0
+              ? 'AI霖子正在执行整理任务…'
+              : `AI霖子正在继续执行（第 ${step + 1}/${VAULT_AGENT_MAX_ROUNDS} 步）…`,
+            2500,
+          )
+          const data = await this.plugin.api('/api/plugin/v1/vault-native/step', {
+            method: 'POST',
+            body: nextBody ?? {
+              question: input.question,
+              round: 0,
+              sessionId: this.sessionId,
+              pendingTaskGoal: taskContinuation ? this.pendingVaultTask?.goal : undefined,
+            },
+          })
+          const responseId = typeof data.responseId === 'string' ? data.responseId : ''
+          const nativeCalls = Array.isArray(data.toolCalls) ? data.toolCalls : []
+          const text = typeof data.text === 'string' ? data.text.trim() : ''
+          if (!responseId) throw new Error('native: missing responseId')
+          previousResponseId = responseId
+          if (nativeCalls.length > 0) {
+            // 方案作为原生工具提交（0.7.49 E2E 第二轮发现：只给只读工具时 Luna 会
+            // 诚实地声称「缺少整理能力」——把方案提交纳入它的行动空间才符合原生
+            // 工具心理学）。收到即合成方案块，走与散文协议同一套预检/确认卡。
+            const propose = nativeCalls.find(
+              (item) => (item as Record<string, unknown>).name === 'propose_organize_plan',
+            )
+            if (propose) {
+              const record = propose as Record<string, unknown>
+              const args =
+                record.arguments && typeof record.arguments === 'object' && !Array.isArray(record.arguments)
+                  ? (record.arguments as Record<string, unknown>)
+                  : {}
+              const planPayload = {
+                title: typeof args.title === 'string' ? args.title : '整理方案',
+                summary: typeof args.summary === 'string' ? args.summary : '',
+                operations: Array.isArray(args.operations) ? args.operations : [],
+                notes: Array.isArray(args.notes) ? args.notes : [],
+              }
+              pendingNativeText = [
+                '已按核实的结构生成待确认方案，点确认后插件才会执行：',
+                '<<<VAULT_ORGANIZE_PLAN>>>',
+                JSON.stringify(planPayload),
+                '<<<VAULT_ORGANIZE_PLAN_END>>>',
+              ].join('\n')
+              break
+            }
+            const calls: VaultAgentToolCall[] = []
+            for (const item of nativeCalls.slice(0, VAULT_AGENT_MAX_CALLS_PER_ROUND)) {
+              const record = item as Record<string, unknown>
+              const name = record.name
+              if (name !== 'vault_search' && name !== 'list_folder' && name !== 'read_note') {
+                throw new Error(`native: unsupported tool ${String(name)}`)
+              }
+              const callId = typeof record.callId === 'string' ? record.callId : ''
+              const args =
+                record.arguments && typeof record.arguments === 'object' && !Array.isArray(record.arguments)
+                  ? (record.arguments as Record<string, unknown>)
+                  : {}
+              if (!callId) throw new Error('native: missing callId')
+              calls.push({ id: callId, name, arguments: args })
+            }
+            const executed = await this.plugin.vaultAgent.executeCalls(calls, undefined)
+            const readFilenames: string[] = []
+            let searchHits = 0
+            for (const call of calls) {
+              const result = executed.results.find((item) => item.callId === call.id)
+              if (!result?.ok) continue
+              if (call.name === 'read_note' && typeof call.arguments.path === 'string') {
+                const path = call.arguments.path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+                verifiedWritePaths.add(path)
+                const stat = this.plugin.vaultFileStat(path)
+                if (stat) {
+                  updateTask({
+                    type: 'read',
+                    snapshot: stat,
+                    isTarget: path === this.pendingVaultTask?.targetPath,
+                  })
+                }
+                readFilenames.push(path.split('/').at(-1) ?? path)
+              }
+              if (call.name === 'vault_search') {
+                const hitPaths = executed.sources
+                  .filter((source) => source.sourceId === call.id)
+                  .map((source) => source.path)
+                searchHits += hitPaths.length
+                if (hitPaths.length > 0) updateTask({ type: 'search', candidatePaths: hitPaths })
+              }
+              // list_folder 也算真实探查：必须建立/推进任务，否则「收尾必须出方案」
+              // 的结构化纠正因任务不存在而失效（0.7.49 真机 E2E 抓到的缺口：模型
+              // 只用 list_folder 摸清结构后，把方案写成文字树而不出确认卡）。
+              if (call.name === 'list_folder') {
+                updateTask({ type: 'search', candidatePaths: [] })
+              }
+            }
+            if (readFilenames.length > 0) {
+              new Notice(`AI霖子已读取：${readFilenames.slice(0, 2).join('、')}`, 3000)
+            } else if (searchHits > 0) {
+              new Notice(`AI霖子已找到 ${searchHits} 个相关文件，正在继续核对…`, 3000)
+            }
+            sources.push(...executed.sources)
+            const merged = appendToolResultsWithinBudget(toolResults, executed.results)
+            toolBudgetExhausted ||= merged.exhausted
+            toolResults.length = 0
+            toolResults.push(...merged.results)
+            nextBody = {
+              question: input.question,
+              round: Math.min(step + 1, VAULT_AGENT_MAX_ROUNDS - 1),
+              sessionId: this.sessionId,
+              previousResponseId,
+              toolOutputs: executed.results.map((result) => ({
+                callId: result.callId,
+                output: result.output.slice(0, 18_000),
+              })),
+              ...(toolBudgetExhausted ? { disableTools: true, retryHint: 'budget' } : {}),
+            }
+            continue
+          }
+          if (text) {
+            // 整理任务收尾必须有方案或明确缺口：给一次结构化纠正机会，仍不产出则
+            // 把文本交给下方共用收尾管线（方案预检/确认卡/任务状态与散文协议同款）。
+            const planProbe = extractVaultOrganizePlan(text)
+            const needsPlan =
+              !planProbe.plan &&
+              !stalledRetried &&
+              this.pendingVaultTask !== null &&
+              this.pendingVaultTask.stage !== 'previewed' &&
+              vaultWriteFlowRetryReason(this.pendingVaultTask, 'organize', false, false) !== undefined
+            if (needsPlan && step + 1 < VAULT_AGENT_MAX_ROUNDS) {
+              stalledRetried = true
+              nextBody = {
+                question: input.question,
+                round: step + 1,
+                sessionId: this.sessionId,
+                previousResponseId,
+                toolOutputs: [],
+                retryHint: 'stalled',
+              }
+              continue
+            }
+            pendingNativeText = text
+            break
+          }
+          throw new Error('native: empty step')
+        }
+        if (pendingNativeText === null) throw new Error('native: no final text')
+      } catch {
+        // 静默回退散文协议；已获得的工具结果保留在 toolResults 里继续可用。
+        pendingNativeText = null
+      }
+    }
     for (let round = 0; round < VAULT_AGENT_MAX_ROUNDS; round++) {
       new Notice(
         round === 0 && input.intent === 'auto'
@@ -3113,7 +3284,11 @@ class ChatView extends ItemView {
             }
           : undefined,
       }
-      if (round === 0 && intent === 'auto') {
+      if (pendingNativeText !== null) {
+        // 原生通道已拿到最终文本：跳过本轮模型调用，直接进入共用收尾管线。
+        lastText = pendingNativeText
+        pendingNativeText = null
+      } else if (round === 0 && intent === 'auto') {
         const streamed = await this.sendStreaming(
           input.noteContext,
           input.authorizedContent,
