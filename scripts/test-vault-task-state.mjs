@@ -1,6 +1,7 @@
 // 阶段 A（2026-08-17）跨轮任务状态机回归：对应交接手册 §10 的可脚本化场景。
 // 状态推进只认本机真实工具事件，不认模型措辞——这是修复「回答了但没干活」的核心。
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 
 const bundled = await build({
@@ -169,6 +170,67 @@ console.log('[test-vault-task-state]')
     false,
   )
   console.log('  ✓ 8. 收尾句宣告「我继续读取/整理」不能作为终态')
+}
+
+// ── 9. 阿正 No.153 案回归（工单第七节 08-18 追记）：续跑轮失忆 + 零工具口头收尾 ──
+{
+  // 首问与精确指令都必须被判定为整理类措辞（mutationAsk）
+  assert.equal(
+    core.detectVaultAgentIntent('你能基于我RAW里的资料，帮我整理成MD文档，放到wiki文件夹吗'),
+    'organize',
+  )
+  assert.equal(
+    core.detectVaultAgentIntent(
+      '那你现在就把 01_Raw/销售逐字稿 里的小A那份逐字稿读完，整理成一份客户档案 MD，新建到 02_Wiki/客户档案 文件夹',
+    ),
+    'organize',
+  )
+  // 「全部整理/继续」单看措辞不算 organize——必须靠承接机制补齐（这正是任务不能被清空的原因）
+  assert.equal(core.detectVaultAgentIntent('全部整理'), 'answer')
+  assert.equal(core.isVaultTaskContinuation('全部整理'), true)
+  assert.equal(core.isVaultTaskContinuation('继续'), true)
+  // 承接保留下来的 organize 任务 → intent 升级，服务端强制措辞可达
+  assert.equal(
+    core.upgradeVaultIntent('auto', {
+      question: '全部整理',
+      sawPlan: false,
+      pendingTask: newTask({ stage: 'searched', candidatePaths: ['01_Raw/小A逐字稿.md'] }),
+    }),
+    'organize',
+  )
+  // 升级后，续跑轮的空承诺（含残破协议块乱码尾巴）按阶段判定拦截，与措辞无关
+  assert.equal(
+    core.vaultWriteFlowRetryReason(
+      newTask({ stage: 'searched', candidatePaths: ['01_Raw/小A逐字稿.md'] }),
+      'organize',
+      false,
+      false,
+    ),
+    'stalled_write_flow',
+  )
+  // 源码契约：main.ts 的三处修复不得回退
+  const mainSource = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
+  assert.match(
+    mainSource,
+    /const mutationAsk = detectVaultAgentIntent\(input\.question\) === 'organize'/,
+    '整理类措辞判定（mutationAsk）被移除',
+  )
+  assert.match(
+    mainSource,
+    /intent === 'organize' \|\| mutationAsk \? 'organize' : 'answer'/,
+    '任务创建必须把整理类措辞记为 organize，否则续跑承接永远不触发',
+  )
+  assert.match(
+    mainSource,
+    /Boolean\(plan\.plan\) \|\| mutationAsk/,
+    '整理类措辞的零工具零方案口头收尾豁免被恢复（阿正案第 4 轮逃逸点）',
+  )
+  assert.match(
+    mainSource,
+    /this\.pendingVaultTask\.intent === 'organize' &&[\s\S]{0,40}this\.pendingVaultTask\.stage !== 'previewed'/,
+    '整理任务在合法反问收尾后必须保留（清空=续跑轮失忆）',
+  )
+  console.log('  ✓ 9. 阿正案回归：整理措辞任务保留可承接，零工具口头收尾被拦')
 }
 
 console.log('[test-vault-task-state] 全部通过')

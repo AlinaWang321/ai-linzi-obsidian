@@ -106,6 +106,7 @@ import {
   VAULT_AGENT_MAX_ROUNDS,
   advanceVaultTask,
   buildVaultExecuteFailureToolResult,
+  detectVaultAgentIntent,
   extractVaultOrganizePlan,
   extractVaultToolCalls,
   isCloudToolsTurnRequest,
@@ -2981,6 +2982,11 @@ class ChatView extends ItemView {
     // intent 不继承，避免旧写入任务把无关新话题拖进 organize 强制流程。
     const taskContinuation =
       Boolean(this.pendingVaultTask) && isVaultTaskContinuation(input.question)
+    // 用户措辞本身就是整理/移动/删除/写入类请求（含否定与只读豁免判定）。
+    // round 0 仍走 auto 保留自主反问空间，但这类请求：①任务标记为 organize，
+    // 合法反问收尾后任务保留，「全部整理/继续」能承接升级；②绝不允许零工具、
+    // 零方案的口头收尾（阿正 No.153 案，工单第七节 08-18 追记）。
+    const mutationAsk = detectVaultAgentIntent(input.question) === 'organize'
     let intent: VaultAgentIntent = upgradeVaultIntent(input.intent, {
       question: input.question,
       sawPlan: false,
@@ -3026,7 +3032,7 @@ class ChatView extends ItemView {
         this.pendingVaultTask = {
           id: `vault-task-${now}-${Math.random().toString(36).slice(2, 8)}`,
           goal: input.question.slice(0, 300),
-          intent: intent === 'organize' ? 'organize' : 'answer',
+          intent: intent === 'organize' || mutationAsk ? 'organize' : 'answer',
           stage: 'searching',
           candidatePaths: [],
           sourcePaths: [],
@@ -3035,7 +3041,7 @@ class ChatView extends ItemView {
         }
       }
       this.pendingVaultTask = advanceVaultTask(this.pendingVaultTask, event, now)
-      if (intent === 'organize') this.pendingVaultTask.intent = 'organize'
+      if (intent === 'organize' || mutationAsk) this.pendingVaultTask.intent = 'organize'
     }
 
     // 删除当前笔记不需要模型搜索：noteContext 已在发送瞬间锁定了准确路径。
@@ -3212,7 +3218,7 @@ class ChatView extends ItemView {
           input.vaultAccess &&
           toolResults.length === 0 &&
           !directArtifactPlan &&
-          (input.intent !== 'auto' || Boolean(plan.plan))
+          (input.intent !== 'auto' || Boolean(plan.plan) || mutationAsk)
         ) {
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
             throw new Error('AI 没有实际调用 Vault 工具，已停止这次任务；请重试')
@@ -3322,16 +3328,27 @@ class ChatView extends ItemView {
         } else {
           if (
             this.pendingVaultTask &&
-            !taskContinuation &&
-            this.pendingVaultTask.stage === 'previewed'
+            this.pendingVaultTask.intent === 'organize' &&
+            this.pendingVaultTask.stage !== 'previewed'
           ) {
-            // 用户转向新话题：轻提示旧任务已放下，确认卡仍在对话里可点。
-            new Notice(
-              `上一项「${this.pendingVaultTask.goal.slice(0, 18)}…」还没确认写入；确认卡仍在对话中，需要继续时再说一声。`,
-              6000,
-            )
+            // 整理类任务以「缺信息反问」等只读方式合法收尾：保留任务与已探明的
+            // 候选/来源（30 分钟过期兜底），用户下一句「全部整理/继续」由承接机制
+            // 补齐 intent 与上下文。此前这里无条件清空，导致续跑轮失忆、空承诺
+            // 循环（阿正 No.153 案，工单第七节 08-18 追记）。
+          } else {
+            if (
+              this.pendingVaultTask &&
+              !taskContinuation &&
+              this.pendingVaultTask.stage === 'previewed'
+            ) {
+              // 用户转向新话题：轻提示旧任务已放下，确认卡仍在对话里可点。
+              new Notice(
+                `上一项「${this.pendingVaultTask.goal.slice(0, 18)}…」还没确认写入；确认卡仍在对话中，需要继续时再说一声。`,
+                6000,
+              )
+            }
+            this.pendingVaultTask = null
           }
-          this.pendingVaultTask = null
         }
         return { text: lastText, sources, localSkillRunIds }
       }
