@@ -292,3 +292,69 @@ console.log('[test-vault-task-state]')
 }
 
 console.log('[test-vault-task-state] 全部通过')
+
+// ── 0.7.54 第11组：意图判定漏洞回归（全部为审计实跑复现的真实反例）──
+console.log('第11组 否定句 / 只读误判 / 短消息劫持 / 空承诺（0.7.54）')
+{
+  // ① 否定句：动词与「不要/别」之间插入宾语，旧实现全部漏判成 organize
+  const denied = [
+    '不要帮我整理这些文件',
+    '别把这些文件整理了',
+    '不要把这些文件移动到 wiki',
+    '别将这些笔记归档',
+    '不要给我整理 raw 文件夹',
+    '请不要把它们放到 wiki 文件夹里去',
+    '别把它移入回收站',
+    '不用帮我重命名这些档案',
+  ]
+  for (const text of denied) {
+    assert.equal(core.detectVaultAgentIntent(text), 'answer', `否定句必须只读：${text}`)
+    assert.equal(core.isVaultMutationExplicitlyDenied(text), true, `两套词表必须一致：${text}`)
+  }
+  // ② 正常整理请求不得被否定表误伤
+  for (const text of ['把 raw 里的逐字稿整理到 wiki', '帮我给客户档案统一加上日期前缀']) {
+    assert.equal(core.detectVaultAgentIntent(text), 'organize', `正常整理不得误伤：${text}`)
+    assert.equal(core.isVaultMutationExplicitlyDenied(text), false, `正常整理不得判成只读：${text}`)
+  }
+  // ③「仅生成清单」是产出形态限定，不是拒绝写入（旧实现误判→撞满 12 轮烧积分）
+  for (const text of [
+    '把raw整理好，只要生成方案',
+    '帮我整理逐字稿，只需要输出结果',
+    '整理这批文件，仅生成一份清单',
+  ]) {
+    assert.equal(core.isVaultMutationExplicitlyDenied(text), false, `不得误判只读：${text}`)
+  }
+  // ④ 真正的只读请求仍要判出
+  for (const text of ['只需要分析一下这些逐字稿', '仅搜索包含定位的笔记']) {
+    assert.equal(core.isVaultMutationExplicitlyDenied(text), true, `真只读要判出：${text}`)
+  }
+  // ⑤ 短消息不得无条件劫持旧任务
+  assert.equal(core.isVaultTaskContinuation('对'), true)
+  assert.equal(core.isVaultTaskContinuation('继续'), true)
+  assert.equal(core.isVaultTaskContinuation('可以了'), true)
+  assert.equal(core.isVaultTaskContinuation('写一篇文章'), false)
+  assert.equal(core.isVaultTaskContinuation('删掉这个文件'), false)
+  assert.equal(core.isVaultTaskContinuation('今天天气怎样'), false)
+  // ⑥ 空承诺豁免必须锚定，不能全句扫「需要/吗」
+  assert.equal(core.isTrailingActionAnnouncement('我接下来会继续读取剩下的档案。'), true)
+  assert.equal(core.isTrailingActionAnnouncement('我现在需要继续读取剩下的档案。'), true)
+  assert.equal(core.isTrailingActionAnnouncement('我接下来继续读取剩下的档案吗。'), true)
+  assert.equal(core.isTrailingActionAnnouncement('需要我继续读取剩下的档案吗？'), false)
+  assert.equal(core.isTrailingActionAnnouncement('如果需要我可以继续核对其他档案。'), false)
+  assert.equal(core.isTrailingActionAnnouncement('建议你继续读一下这两份逐字稿。'), false)
+}
+
+// ── 0.7.54 第12组：0.7.52 标记入口的行为测试（此前只有源码 grep）──
+console.log('第12组 VAULT_NATIVE_TURN 标记行为（0.7.54 补齐）')
+{
+  assert.equal(core.VAULT_NATIVE_TURN_MARKER, '<<<VAULT_NATIVE_TURN>>>')
+  assert.equal(core.isVaultNativeTurnRequest('<<<VAULT_NATIVE_TURN>>>'), true)
+  assert.equal(core.isVaultNativeTurnRequest('  <<<VAULT_NATIVE_TURN>>>\n'), true)
+  assert.equal(core.isVaultNativeTurnRequest('好的，我来处理。\n<<<VAULT_NATIVE_TURN>>>'), true)
+  // 混在长答复里视为普通文本，防模型两头下注（既答又标记）
+  assert.equal(
+    core.isVaultNativeTurnRequest(`${'详细解释'.repeat(40)}\n<<<VAULT_NATIVE_TURN>>>`),
+    false,
+  )
+  assert.equal(core.isVaultNativeTurnRequest('我已经帮你整理好了'), false)
+}

@@ -65,7 +65,8 @@ assert('引擎切换不再只闪 Notice', !main.includes('AI霖子正在切换�
 console.log('第5组 旧默认技能目录孤儿提醒')
 assert('warnOrphanLocalSkills 已定义', main.includes('private warnOrphanLocalSkills()'))
 assert('启动时调用', /onLayoutReady\(\(\) => \{\s*this\.rememberCurrentMarkdownFile\(\)\s*this\.warnOrphanLocalSkills\(\)/.test(main))
-assert('与当前设置相同则不提醒', main.includes('if (configured === LOCAL_SKILL_ROOT) return'))
+// 0.7.54 起孤儿检测比对的是旧默认常量（LOCAL_SKILL_ROOT 已改为当前默认值）。
+assert('配置仍是旧默认则不提醒', main.includes('if (configured === LEGACY_LOCAL_SKILL_ROOT) return'))
 assert('只提醒不代动文件', main.includes('旧技能不会被读取。把技能文件夹整体移动过去即可继续使用'))
 
 if (failures > 0) {

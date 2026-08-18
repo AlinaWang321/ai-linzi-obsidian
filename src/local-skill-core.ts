@@ -12,7 +12,14 @@
  * Skill 正文只在命中后由 local-skills.ts 读取，并且只进入当前一轮请求。
  */
 
-export const LOCAL_SKILL_ROOT = 'system/skills'
+/**
+ * 「我的 Skills」当前默认目录。空值/非法值一律回退到这里（0.7.54 修复：旧实现回退到
+ * 已废弃的 LEGACY_LOCAL_SKILL_ROOT，用户清空输入框想恢复默认，反而把技能写进死目录，
+ * 且 0.7.53 的孤儿提醒因为"配置==旧默认"而主动闭嘴——等于几秒内重造技能孤儿事故）。
+ */
+export const LOCAL_SKILL_ROOT = '05_System/Skills'
+/** 0.7.52 及更早版本的默认目录；只用于孤儿检测与保护规则兼容，绝不作为回退值。 */
+export const LEGACY_LOCAL_SKILL_ROOT = 'system/skills'
 /**
  * The entry chunk sent with the first model turn. Larger Skills stay usable:
  * the agent must continue with read_skill_file until it reaches end-of-file.

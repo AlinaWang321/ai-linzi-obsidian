@@ -81,7 +81,11 @@ export function isVaultSearchPathExcluded(path: string): boolean {
   if (!normalized) return true
   const lower = normalized.toLocaleLowerCase()
   // 本地 Skill 有独立的显式调用通道，不能再被普通 Vault 搜索截成资料片段误送。
-  if (lower === 'system/skills' || lower.startsWith('system/skills/')) return true
+  // 新旧两个默认目录都排除（0.7.54：默认目录已改为 05_System/Skills，
+  // 只写死旧值等于对新用户完全失效；调用方另有 excludedFolders 传真实设置值）。
+  for (const root of ['system/skills', '05_system/skills']) {
+    if (lower === root || lower.startsWith(`${root}/`)) return true
+  }
   const segments = normalized.split('/')
   if (segments.some((segment) => segment.startsWith('.'))) return true
   if (segments.some((segment) => /^trash$/i.test(segment))) return true

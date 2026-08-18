@@ -1,6 +1,13 @@
 export const ARTIFACT_FORMATS = ['html', 'docx', 'pdf', 'pptx'] as const
 export type ArtifactFormat = (typeof ARTIFACT_FORMATS)[number]
 export type ArtifactTheme = 'brand' | 'clean'
+/**
+ * HTML 版式（0.7.54）：document=文档式长文（文章/报告/简报）；
+ * dashboard=交互看板（标签分页、任务卡片、可勾选进度、本地保存状态）。
+ * 只影响 HTML；docx/pdf/pptx 永远走文档排版。
+ */
+export const ARTIFACT_LAYOUTS = ['document', 'dashboard'] as const
+export type ArtifactLayout = (typeof ARTIFACT_LAYOUTS)[number]
 
 export const ARTIFACT_MAX_CONTENT_CHARS = 60_000
 export const ARTIFACT_MAX_TITLE_CHARS = 160
@@ -14,7 +21,24 @@ export interface CreateArtifactOperation {
   /** 所有格式共用的 Markdown 内容真相源。 */
   content: string
   theme?: ArtifactTheme
+  layout?: ArtifactLayout
   reason?: string
+}
+
+/** 模型给了 layout 就照用；没给则按标题/正文特征判断，避免长文被误渲染成看板。 */
+export function resolveArtifactLayout(
+  operation: Pick<CreateArtifactOperation, 'title' | 'content' | 'layout'>,
+): ArtifactLayout {
+  if (operation.layout === 'dashboard' || operation.layout === 'document') return operation.layout
+  const title = operation.title ?? ''
+  const content = operation.content ?? ''
+  const titleSignal = /看板|仪表盘|驾驶舱|日报|周报|dashboard|kanban/i.test(title)
+  const checkboxCount = (content.match(/^\s*[-*]\s*\[[ xX]\]/gm) ?? []).length
+  const sectionCount = (content.match(/^#{2,4}\s+\S/gm) ?? []).length
+  // 看板的判据是「可勾选任务 + 多分区」，两者都够才切换；只是标题带"日报"的长文仍走文档式。
+  if (titleSignal && (checkboxCount >= 3 || sectionCount >= 4)) return 'dashboard'
+  if (checkboxCount >= 5 && sectionCount >= 3) return 'dashboard'
+  return 'document'
 }
 
 export type ArtifactBlock =

@@ -74,7 +74,7 @@ export class LocalSkillRegistry {
 
   constructor(
     private readonly app: App,
-    private readonly configuredRoot: () => string = () => 'system/skills',
+    private readonly configuredRoot: () => string = () => '05_System/Skills',
   ) {}
 
   root(): string {

@@ -141,7 +141,7 @@ import {
   resolveArtifactPath,
 } from './artifact-renderer-core'
 import {
-  LOCAL_SKILL_ROOT,
+  LEGACY_LOCAL_SKILL_ROOT,
   formatLocalSkillList,
   isLocalSkillListIntent,
   localSkillMenuTitle,
@@ -209,8 +209,6 @@ interface AiLinziSettings {
   serverUrl: string
   /** SecretStorage 的内部条目名，仅用于兼容旧设置；不得在学员界面中暴露 */
   tokenSecretId: string
-  /** @deprecated v0.7.17 起由明确的 Vault 对话意图按需触发，仅兼容旧 data.json。 */
-  vaultSearchDefault: boolean
   /** 技能产出落盘的文件夹(相对 vault 根) */
   outputFolder: string
   /** 公众号一键配图使用的专属人偶参考图，只保存用户 Vault 内的路径 */
@@ -249,7 +247,6 @@ interface AiLinziSettings {
 const DEFAULT_SETTINGS: AiLinziSettings = {
   serverUrl: 'https://chat.alinalinzi.com',
   tokenSecretId: '',
-  vaultSearchDefault: false,
   outputFolder: 'AI霖子输出',
   illustrationCharacterReferencePath: '',
   defaultNiche: '',
@@ -283,6 +280,10 @@ interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
   /** v0.7.17 及以前的主对话长期勾选状态；v0.7.18 起按本轮明确意图自动读取。 */
   attachNoteDefault?: boolean
   cleanChatDefaultsV1?: boolean
+  /** v0.6.19 短暂存在过的工作流目录（当日回滚）；不列进来会永久滞留在老用户 data.json。 */
+  workflowFolder?: string
+  /** v0.7.x 早期的搜索默认开关；已无任何读取点，停止写盘。 */
+  vaultSearchDefault?: boolean
 }
 
 const DEFAULT_TOKEN_SECRET_ID = 'ai-linzi-api-token'
@@ -914,8 +915,8 @@ export default class AiLinziPlugin extends Plugin {
     // 启动性提示绝不允许影响插件加载：任何异常静默吞掉。
     try {
       const configured = normalizeLocalSkillRoot(this.settings.localSkillsFolder)
-      if (configured === LOCAL_SKILL_ROOT) return
-      const legacy = this.app.vault.getAbstractFileByPath(LOCAL_SKILL_ROOT)
+      if (configured === LEGACY_LOCAL_SKILL_ROOT) return
+      const legacy = this.app.vault.getAbstractFileByPath(LEGACY_LOCAL_SKILL_ROOT)
       if (!(legacy instanceof TFolder)) return
       let count = 0
       const stack: TFolder[] = [legacy]
@@ -928,7 +929,7 @@ export default class AiLinziPlugin extends Plugin {
       }
       if (count === 0) return
       new Notice(
-        `发现旧目录 ${LOCAL_SKILL_ROOT}/ 里还有 ${count} 个技能，当前“我的 Skills”目录是 ${configured}/，` +
+        `发现旧目录 ${LEGACY_LOCAL_SKILL_ROOT}/ 里还有 ${count} 个技能，当前“我的 Skills”目录是 ${configured}/，` +
           '旧技能不会被读取。把技能文件夹整体移动过去即可继续使用（可直接拖拽，或让 AI霖子帮你移动）。',
         12_000,
       )
@@ -1126,9 +1127,17 @@ export default class AiLinziPlugin extends Plugin {
       safeSetSecret(DEFAULT_TOKEN_SECRET_ID, tokenToKeep)
     }
     if (legacyToken !== undefined) migrated = true
+    // 0.7.54：一个值都没取到时绝不覆盖旧条目名指针——0.6.0~0.6.17 的用户条目名是自己填的
+    // （可能含中文/大写，Obsidian 1.13 读取不担保）；抹掉指针后原值永远找不回、也无法诊断。
     if (this.settings.tokenSecretId !== DEFAULT_TOKEN_SECRET_ID) {
-      this.settings.tokenSecretId = DEFAULT_TOKEN_SECRET_ID
-      migrated = true
+      if (tokenToKeep) {
+        this.settings.tokenSecretId = DEFAULT_TOKEN_SECRET_ID
+        migrated = true
+      } else {
+        console.warn(
+          `[ai-linzi] 旧密钥条目「${previousTokenId}」当前读不到值，保留指针不覆盖，等下次启动重试`,
+        )
+      }
     }
 
     const previousWechatId = this.settings.wechatAppSecretId.trim()
@@ -1143,27 +1152,50 @@ export default class AiLinziPlugin extends Plugin {
     }
     if (legacyWechatSecret !== undefined) migrated = true
     if (this.settings.wechatAppSecretId !== DEFAULT_WECHAT_SECRET_ID) {
-      this.settings.wechatAppSecretId = DEFAULT_WECHAT_SECRET_ID
-      migrated = true
+      if (wechatToKeep) {
+        this.settings.wechatAppSecretId = DEFAULT_WECHAT_SECRET_ID
+        migrated = true
+      } else {
+        console.warn(
+          `[ai-linzi] 旧 AppSecret 条目「${previousWechatId}」当前读不到值，保留指针不覆盖，等下次启动重试`,
+        )
+      }
     }
-    // 0.6.35→0.6.36:驾驶舱目录默认名从中文改为 inbox/raw/wiki/output(打卡营模板口径);
-    // 只迁移仍是旧默认值的设置,用户自定义过的不动
-    const cockpitFolderMigrations: [key: 'cockpitInboxFolder' | 'cockpitSourcesFolder' | 'cockpitKnowledgeFolder', old: string, next: string][] = [
-      ['cockpitInboxFolder', '收件箱', 'inbox'],
-      ['cockpitSourcesFolder', '原始素材', 'raw'],
-      ['cockpitKnowledgeFolder', '知识库', 'wiki'],
-    ]
-    for (const [key, oldValue, nextValue] of cockpitFolderMigrations) {
-      if (this.settings[key] === oldValue) {
-        this.settings[key] = nextValue
+    // 驾驶舱目录默认名历史上改过两跳：0.6.36 中文名→inbox/raw/wiki/output（打卡营模板），
+    // 0.7.14 再→000_Inbox/01_Raw/02_Wiki/04_Output。0.7.54 修复：旧实现只迁第一跳、且漏了
+    // output，导致 0.6.36~0.7.13 的老用户四张「第二大脑」卡永久显示 0 且没有任何提示
+    // （空状态要四项全空才提示，有默认值就永不触发）。现在把每个历史默认值都直接迁到当前默认，
+    // 用户自定义过的一律不动。
+    const cockpitFolderKeys = [
+      'cockpitInboxFolder',
+      'cockpitSourcesFolder',
+      'cockpitKnowledgeFolder',
+      'cockpitOutputFolder',
+    ] as const
+    const cockpitLegacyDefaults: Record<(typeof cockpitFolderKeys)[number], string[]> = {
+      cockpitInboxFolder: ['收件箱', 'inbox'],
+      cockpitSourcesFolder: ['原始素材', 'raw'],
+      cockpitKnowledgeFolder: ['知识库', 'wiki'],
+      cockpitOutputFolder: ['对外输出', 'output'],
+    }
+    for (const key of cockpitFolderKeys) {
+      const current = this.settings[key]
+      if (cockpitLegacyDefaults[key].includes(current) && current !== DEFAULT_SETTINGS[key]) {
+        this.settings[key] = DEFAULT_SETTINGS[key]
         migrated = true
       }
     }
     if (migrated) await this.saveSettings()
   }
 
+  /** 0.7.54：与 loadSettings 同款兜底。存储异常在 9 个调用点会抛英文原始异常给用户，
+   *  这里统一吞成空值，由上层显示「还没连接 AI霖子」的中文引导。 */
   getApiToken(): string {
-    return this.app.secretStorage.getSecret(DEFAULT_TOKEN_SECRET_ID)?.trim() ?? ''
+    try {
+      return this.app.secretStorage.getSecret(DEFAULT_TOKEN_SECRET_ID)?.trim() ?? ''
+    } catch {
+      return ''
+    }
   }
 
   async setApiToken(value: string): Promise<void> {
@@ -1210,7 +1242,11 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   getWechatAppSecret(): string {
-    return this.app.secretStorage.getSecret(DEFAULT_WECHAT_SECRET_ID)?.trim() ?? ''
+    try {
+      return this.app.secretStorage.getSecret(DEFAULT_WECHAT_SECRET_ID)?.trim() ?? ''
+    } catch {
+      return ''
+    }
   }
 
   async setWechatAppSecret(value: string): Promise<void> {
@@ -1258,9 +1294,10 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   getVaultActionRecord(id?: string): VaultActionRecord | undefined {
-    return id
-      ? this.vaultActionHistory.find((record) => record.id === id)
-      : this.vaultActionHistory.find((record) => !record.undoneAt && record.moves.length > 0)
+    if (id) return this.vaultActionHistory.find((record) => record.id === id)
+    // 0.7.54：「撤销上一次」必须真的指向最近一次整理。旧实现跳过所有无移动记录的
+    // 操作去捞更早的一条，用户刚删完文件夹按撤销，撤掉的却是几天前的改名。
+    return this.vaultActionHistory.find((record) => !record.undoneAt)
   }
 
   captureVaultWriteSnapshots(plan: VaultOrganizePlan): VaultWriteSnapshot[] {
@@ -1289,7 +1326,27 @@ export default class AiLinziPlugin extends Plugin {
     const record = this.getVaultActionRecord(id)
     if (!record) throw new Error('没有找到可撤销的 AI Vault 整理记录')
     if (record.moves.length === 0) {
-      throw new Error('这次操作只有回收站笔记，请从系统废纸篓/回收站恢复')
+      // 0.7.54：按记录真实内容说明去哪儿找，旧文案一律说"只有回收站笔记"会把
+      // 新建/覆盖/生成成品的用户骗去翻废纸篓（那里什么都没有）。
+      if ((record.trashedNotes ?? []).length > 0) {
+        throw new Error('这次操作是移入回收站，请到系统废纸篓 / Obsidian 回收站恢复')
+      }
+      const created = [...(record.createdNotes ?? []), ...(record.createdArtifacts ?? [])]
+      if (created.length > 0) {
+        throw new Error(
+          `这次操作是新建文件，插件不会自动删除；如需撤销请手动把这些文件移入回收站：${created.slice(0, 3).join('、')}${created.length > 3 ? ` 等 ${created.length} 项` : ''}`,
+        )
+      }
+      const updated = record.updatedNotes ?? []
+      if (updated.length > 0) {
+        throw new Error(
+          `这次操作直接改写了笔记正文，插件没有保存改写前的版本，无法自动还原：${updated.join('、')}。请用 Obsidian 的「文件恢复」查看历史版本`,
+        )
+      }
+      if ((record.createdFolders ?? []).length > 0) {
+        throw new Error('这次操作只新建了文件夹（不含任何文件改动），如需清理请在文件树中手动删除')
+      }
+      throw new Error('这次操作没有可自动还原的移动/重命名记录')
     }
     await this.vaultAgent.undo(record)
     record.undoneAt = Date.now()
@@ -2272,12 +2329,15 @@ class ChatView extends ItemView {
     this.activityRender()
   }
 
-  /** 强更新进行中提示并渲染(引擎切换/新一轮开始等关键节点)。 */
+  /**
+   * 更新进行中提示。只有已经落过卡（有真实动作）时才重绘——否则一次纯问答回合
+   * 会因为"轮次开始"这种非动作提示先落卡，收尾时留下「✅ 0 步」空卡。
+   */
   private activityCurrent(current: string) {
     const feed = this.activityFeed
     if (!feed) return
     feed.current = current
-    this.activityRender()
+    if (feed.id) this.activityRender()
   }
 
   private activityText(feed: { lines: string[]; current: string | null }, header: string): string {
@@ -3262,6 +3322,9 @@ class ChatView extends ItemView {
         : '正在查看 Vault，需要时会继续翻阅相关文件…',
     )
     let pendingNativeText: string | null = null
+    // 0.7.54：引擎失败通常是网络/服务端原因，短时间内重试大概率同样失败。
+    // 记住失败，标记路径不再把同一个引擎整轮重跑一遍（白等一次超时+白扣积分）。
+    let nativeChannelFailed = false
     const nativeEligible =
       input.vaultAccess &&
       !input.localSkill &&
@@ -3423,6 +3486,7 @@ class ChatView extends ItemView {
         throw new Error('native: no final text')
       } catch {
         // 静默回退散文协议；已获得的工具结果保留在 toolResults 里继续可用。
+        nativeChannelFailed = true
         return null
       }
     }
@@ -3546,7 +3610,7 @@ class ChatView extends ItemView {
       // 0.7.52：模型自主切换文件操作引擎——词表判不准的最终解。round 0 的 auto
       // 判断轮（全推理）认定本句要动文件时输出标记，插件立即转入原生引擎；
       // 引擎失败则回到散文协议并强制工具纠正，绝不接受口头承诺。
-      if (round === 0 && intent === 'auto' && isVaultNativeTurnRequest(lastText)) {
+      if (round === 0 && intent === 'auto' && !nativeChannelFailed && isVaultNativeTurnRequest(lastText)) {
         this.activityStep('🔁 AI 判定要动文件，切换文件操作引擎', '文件操作引擎启动…')
         const nativeText = await runNativeChannel()
         if (nativeText !== null) {
@@ -3889,6 +3953,11 @@ class ChatView extends ItemView {
           this.activityStep(`🔍 搜索「${query.slice(0, 24)}」→ ${hitPaths.length} 个相关文件`)
         }
         if (call.name === 'list_folder') {
+          // 0.7.54：与原生引擎对齐——list_folder 也算真实探查，必须推进任务，
+          // 否则「收尾必须出方案」的结构化纠正因任务不存在而失效。此前这条
+          // 0.7.49 的修复只打在原生引擎上，散文回退引擎（网络异常时启用）仍会
+          // 让模型把方案写成文字目录树而不出确认卡。
+          updateTask({ type: 'search', candidatePaths: [] })
           const folder =
             typeof call.arguments.path === 'string' && call.arguments.path.trim()
               ? call.arguments.path.trim()

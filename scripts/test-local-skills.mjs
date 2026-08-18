@@ -11,25 +11,28 @@ const bundled = await build({
 const source = bundled.outputFiles[0].text
 const core = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 
-assert.equal(core.isLocalSkillPath('system/skills/咨询简报.md'), true)
-assert.equal(core.isLocalSkillPath('system/skills/咨询简报/SKILL.md'), true)
-assert.equal(core.isLocalSkillPath('System/Skills/咨询简报/skill.md'), true)
-assert.equal(core.isLocalSkillPath('system/skills/两层/目录/SKILL.md'), false)
-assert.equal(core.isLocalSkillPath('05_System/Skills/咨询简报/SKILL.md'), false)
+// 0.7.54：默认根已改为 05_System/Skills（旧默认 system/skills 只在显式传参时匹配）。
+assert.equal(core.isLocalSkillPath('05_System/Skills/咨询简报.md'), true)
+assert.equal(core.isLocalSkillPath('05_System/Skills/咨询简报/SKILL.md'), true)
+assert.equal(core.isLocalSkillPath('05_system/skills/咨询简报/skill.md'), true)
+assert.equal(core.isLocalSkillPath('05_System/Skills/两层/目录/SKILL.md'), false)
+assert.equal(core.isLocalSkillPath('system/skills/咨询简报/SKILL.md'), false)
+assert.equal(core.isLocalSkillPath('system/skills/咨询简报/SKILL.md', 'system/skills'), true)
+assert.equal(core.isLocalSkillPath('我的技能/x/SKILL.md', '我的技能'), true)
 assert.equal(
   core.isLocalSkillPath('05_System/AI工作流/consultation-brief/SKILL.md', '05_System/AI工作流'),
   true,
 )
 assert.equal(core.normalizeLocalSkillRoot('05_System/AI工作流/'), '05_System/AI工作流')
-assert.equal(core.normalizeLocalSkillRoot('../.obsidian'), 'system/skills')
+assert.equal(core.normalizeLocalSkillRoot('../.obsidian'), '05_System/Skills')
 
-const consultation = core.buildLocalSkillDescriptor('system/skills/咨询简报/SKILL.md', {
+const consultation = core.buildLocalSkillDescriptor('05_System/Skills/咨询简报/SKILL.md', {
   name: '咨询简报',
   description: '把咨询逐字稿整理成客户可读简报',
   triggers: ['整理咨询', '生成咨询简报'],
   output: '新建笔记',
 })
-const weekly = core.buildLocalSkillDescriptor('system/skills/每周复盘.md', {
+const weekly = core.buildLocalSkillDescriptor('05_System/Skills/每周复盘.md', {
   技能名: '每周经营复盘',
   一句话描述: '根据本周记录完成经营复盘',
   触发词: '周复盘，经营复盘',
@@ -42,7 +45,7 @@ assert.equal(weekly.output, 'update-current-note')
 assert.deepEqual(weekly.triggers, ['每周经营复盘', '周复盘', '经营复盘'])
 
 const portable = core.buildLocalSkillDescriptor(
-  'system/skills/weekly-review/SKILL.md',
+  '05_System/Skills/weekly-review/SKILL.md',
   {
     name: 'weekly-review',
     description: '根据一周记录完成经营复盘',
@@ -60,7 +63,7 @@ assert.equal(
 )
 
 const customerProfile = core.buildLocalSkillDescriptor(
-  'system/skills/customer-profile/SKILL.md',
+  '05_System/Skills/customer-profile/SKILL.md',
   { name: 'customer-profile', description: '按统一模板创建或更新客户档案' },
   `# 客户档案管理
 
@@ -161,7 +164,7 @@ assert.deepEqual(
   ['05_System/AI团队/工作流程/SOP/demo.md'],
 )
 
-const duplicate = { ...consultation, path: 'system/skills/另一个.md' }
+const duplicate = { ...consultation, path: '05_System/Skills/另一个.md' }
 assert.equal(
   core.matchLocalSkillInvocation('调用咨询简报技能', [consultation, duplicate]).kind,
   'ambiguous',

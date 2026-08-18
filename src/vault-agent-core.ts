@@ -10,6 +10,7 @@ import {
   ARTIFACT_MAX_CONTENT_CHARS,
   ARTIFACT_MAX_TITLE_CHARS,
   type ArtifactFormat,
+  type ArtifactLayout,
   type ArtifactTheme,
   type CreateArtifactOperation,
 } from './artifact-renderer-core'
@@ -224,9 +225,11 @@ export function isVaultTaskContinuation(text: string): boolean {
     .replace(/[\s。，！!？?～~、.]/g, '')
     .toLocaleLowerCase()
   if (!normalized) return false
-  if (normalized.length <= 6) return true
+  // 0.7.54：短消息也必须过确认词表。旧实现对任意 ≤6 字消息无条件返回 true，
+  // 用户在有未完成整理任务时问「今天天气怎样」也会被当成「继续上一轮」，
+  // 插件回去翻旧文件（与本函数注释承诺的「绝不把旧目标硬塞进无关请求」相悖）。
   return normalized.length <= 12 &&
-    /^(?:对|嗯|好|行|可以|继续|接着|就这样|没问题|开始|去做|执行|确认|ok|okay|yes|go)/.test(normalized)
+    /^(?:对|嗯|好|行|可以|继续|接着|就这样|没问题|开始|去做|执行|确认|全部|都|一起|剩下|其余|ok|okay|yes|go)/.test(normalized)
 }
 
 /** 云端工具轮标记：v0.7.35 起第 0 轮不挂云端写工具，模型判断需要时单独输出。 */
@@ -353,7 +356,7 @@ export type ProtectedVaultPathReason = 'hidden' | 'trash' | 'agent-file' | 'skil
 
 export function protectedVaultPathReason(
   path: string,
-  localSkillsRoot = 'system/skills',
+  localSkillsRoot = '05_System/Skills',
 ): ProtectedVaultPathReason | null {
   const normalized = path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
   const lower = normalized.toLocaleLowerCase()
@@ -365,11 +368,15 @@ export function protectedVaultPathReason(
   if (basename === 'agents.md' || basename === 'claude.md' || basename === '_sub-agent-summaries.md') {
     return 'agent-file'
   }
-  if (root && (lower === root || lower.startsWith(`${root}/`))) return 'skills-root'
+  // 0.7.54：当前配置根之外，旧默认目录 system/skills 也一并保护——老用户的技能可能
+  // 还留在那里（技能有独立调用通道，正文绝不能被当普通资料读写）。
+  for (const skillsRoot of [root, 'system/skills']) {
+    if (skillsRoot && (lower === skillsRoot || lower.startsWith(`${skillsRoot}/`))) return 'skills-root'
+  }
   return null
 }
 
-export function isProtectedVaultPath(path: string, localSkillsRoot = 'system/skills'): boolean {
+export function isProtectedVaultPath(path: string, localSkillsRoot = '05_System/Skills'): boolean {
   return protectedVaultPathReason(path, localSkillsRoot) !== null
 }
 
@@ -387,7 +394,7 @@ export function isProtectedVaultPath(path: string, localSkillsRoot = 'system/ski
 export function shouldBlockPlanPath(
   path: string,
   operationType: string,
-  localSkillsRoot = 'system/skills',
+  localSkillsRoot = '05_System/Skills',
 ): boolean {
   const reason = protectedVaultPathReason(path, localSkillsRoot)
   if (!reason) return false
@@ -411,7 +418,7 @@ export type VaultPathKind = 'file' | 'folder' | null
 export function collectOrganizePlanProblems(
   plan: VaultOrganizePlan,
   pathKind: (path: string) => VaultPathKind,
-  localSkillsRoot = 'system/skills',
+  localSkillsRoot = '05_System/Skills',
 ): string[] {
   const problems: string[] = []
   const push = (text: string) => {
@@ -684,6 +691,12 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
     const theme = (themeValue === 'brand' || themeValue === 'clean')
       ? themeValue as ArtifactTheme
       : undefined
+    // 0.7.54：HTML 版式（document 长文 / dashboard 交互看板）；不合法值一律忽略，
+    // 交由 resolveArtifactLayout 按内容特征自动判断。
+    const layoutValue = shortText(record.layout, 12).toLocaleLowerCase()
+    const layout = (layoutValue === 'document' || layoutValue === 'dashboard')
+      ? layoutValue as ArtifactLayout
+      : undefined
     if (
       !path ||
       !ARTIFACT_FORMATS.includes(format) ||
@@ -693,7 +706,7 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
     ) {
       return null
     }
-    return { type, path, format, title, content, theme, reason }
+    return { type, path, format, title, content, theme, layout, reason }
   }
   if (type === 'update_note') {
     const path = normalizeVaultRelativePath(record.path)
@@ -810,6 +823,25 @@ function isDraftOnlyWriteIntent(normalized: string): boolean {
   )
 }
 
+/**
+ * 「用户明确拒绝动文件」的唯一真相源（0.7.54）。
+ *
+ * 此前同一语义在两处各写一份词表且内容不同：意图判定那份含「整理/归档/分类/移入回收站」，
+ * 越权拦截那份没有 → 「别把这些文件整理了」两道闸门同时漏，插件照样启动整理引擎、
+ * 最后弹一张用户刚拒绝的方案卡（白烧 12 轮积分且违背指令）。
+ * 同时放宽否定词与动词之间的距离：旧正则要求动词紧跟在「不要/别」后面，中间一插宾语
+ * （「别把这些文件整理了」）就漏。
+ */
+const NEGATED_MUTATION_VERBS =
+  '整理|归类|归档|分类|移动|移入回收站|移到|移进|挪到|放到|放进|放入|归到|收进|重命名|改名|删除|删掉|写入|写进|追加|保存|新建|创建|更新'
+const NEGATED_MUTATION_RE = new RegExp(
+  `(?:不要|不用|无需|别|勿)[^。，,！!？?；;]{0,16}?(?:${NEGATED_MUTATION_VERBS})`,
+)
+
+export function isNegatedVaultMutation(text: string): boolean {
+  return NEGATED_MUTATION_RE.test(text.normalize('NFKC').toLocaleLowerCase())
+}
+
 /** 只用于拒绝越权方案，不参与“是否给 Luna 工具”的能力路由。 */
 export function isVaultMutationExplicitlyDenied(text: string): boolean {
   const normalized = text.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '')
@@ -820,14 +852,16 @@ export function isVaultMutationExplicitlyDenied(text: string): boolean {
   ) {
     return false
   }
+  // 「整理这批文件，仅生成一份清单」这类句子里的「仅生成」是对产出形态的限定，
+  // 不是拒绝写入。旧正则尾组整体可选 + 前面无排他，导致这类正常整理请求被判成
+  // 只读，方案一出就被拦、反复重试直到撞满轮次（0.7.54 修复）。
+  const readOnlyOnly =
+    /(?:^|[，,。；;])(?:只|仅)(?:需要|要|想|想要|帮我|给我|做)?(?:读取|查找|搜索|分析|总结)/.test(normalized) &&
+    !/(?:整理|归类|分类|归档|移动|移到|挪到|重命名|改名|删除|删掉|写入|写进|追加|保存|新建|创建|更新)/.test(normalized)
   return (
     isDraftOnlyWriteIntent(normalized) ||
-    /(?:先|暂时|现在)?(?:不要|别)(?:再)?(?:帮我)?(?:直接|真的|立刻|立即)?(?:写入|写进|追加|保存|新建|创建|更新|移动|改名|重命名|删除|删掉)/.test(
-      normalized,
-    ) ||
-    /(?:只|仅)(?:需要|要|做)?(?:读取|查找|搜索|分析|总结|生成|输出).{0,24}(?:草稿|建议|方案|内容|结果)?/.test(
-      normalized,
-    )
+    isNegatedVaultMutation(normalized) ||
+    readOnlyOnly
   )
 }
 
@@ -852,7 +886,7 @@ export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   ) {
     return 'organize'
   }
-  if (/(?:不要|别)(?:再)?(?:帮我)?(?:先|直接|现在|立刻|立即)?(?:整理|移动|重命名|改名|归档|分类|删除|删掉|移入回收站|写入|写进|追加|保存|新建|创建|更新)/.test(normalized)) return 'answer'
+  if (isNegatedVaultMutation(normalized)) return 'answer'
   if (isDraftOnlyWriteIntent(normalized)) return 'answer'
   // 0.7.48 追加：「处理/放到 + 文件对象」也是整理请求（Alina 08-18 截图实测的
   // 第三批逃逸句式：「给我按照分类处理 raw 文件夹」「把它们放到 wiki 文件夹里去」）。
@@ -921,7 +955,11 @@ export function isTrailingActionAnnouncement(answer: string): boolean {
   // 「建议你继续读」＝用户是执行者，豁免；「给你一份预览」的你只是接收者，不豁免。
   if (/[你您](?:们)?[^，,；;]{0,4}(?:继续|再|先|去|可以|试|读|查|看|翻)/.test(last)) return false
   // 「需要的话我可以继续…」是条件式主动提议，不是把承诺当结论。
-  if (/(?:需要|如果|若|要不要|想不想|吗)/.test(last)) return false
+  // 0.7.54：豁免必须锚定在句首条件从句或句尾疑问收尾——旧实现全句扫「需要/吗」，
+  // 于是「我现在需要继续读取剩下的档案」这种典型空承诺被豁免掉（正是连报四次的
+  // 「一直回复不执行」在收尾护栏上的漏洞）。
+  if (/^(?:如果|若|要是|需要的话|需要我|要不要|想不想)/.test(last)) return false
+  if (/(?:吗|呢)[？?]?$/.test(last) && !/我(?:现在|马上|立刻|这就|接下来)/.test(last)) return false
   return (
     /我/.test(last) &&
     /(?:继续|接下来|然后|稍后|随后|下一步|现在|马上|立刻|这就|先)/.test(last) &&
