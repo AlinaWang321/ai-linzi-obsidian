@@ -6,6 +6,8 @@ export interface LocalCustomerProfile {
   fields: Record<string, string>
   identifiers: { customerCode?: string; name: string; wechatId?: string }
   recommendsCode: boolean
+  /** 档案里出现但不在 CRM 合法枚举内的阶段词；本次保留 CRM 原值并在弹窗说明。 */
+  droppedStage?: string
 }
 
 interface CrmCustomer {
@@ -76,15 +78,31 @@ const FIELD_LABELS: Record<string, string> = {
 const STAGE_ALIASES: Record<string, string> = {
   新增: 'new',
   初次整理: 'new',
+  新客户: 'new',
+  // AI 生成档案常用口语（2026-08-18 小A 档案「潜在客户」同步 402 实锤）；
+  // 「沟通中」归 new 与 WebApp CSV 导入同口径。
+  潜在客户: 'new',
+  潜在: 'new',
+  沟通中: 'new',
   已约咨询: 'booked',
+  已约: 'booked',
   已咨询: 'consulted',
+  咨询过: 'consulted',
   已成交: 'won',
+  成交: 'won',
   付费: 'won',
+  已付款: 'won',
   交付中: 'delivering',
+  服务中: 'delivering',
   已完结: 'done',
   已完成: 'done',
+  已交付: 'done',
   流失: 'lost',
+  放弃: 'lost',
 }
+
+/** 与 WebApp lib/customers/constants.ts CUSTOMER_STAGES 保持同步；不合法阶段绝不发给服务端。 */
+const LEGAL_STAGE_KEYS = new Set(['new', 'booked', 'consulted', 'won', 'delivering', 'done', 'lost'])
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -94,7 +112,7 @@ function cleanScalar(value: string): string {
   return value
     .trim()
     .replace(/^['"]|['"]$/g, '')
-    .replace(/^(?:未确认|待确认|暂无|无|空|—|-|null)$/iu, '')
+    .replace(/^(?:未确认|待确认|待补充|待填写|待填|未填|未知|不适用|不详|未报名|暂无|无|空|—|–|-|null|n\/a|tbd)$/iu, '')
     .trim()
 }
 
@@ -126,7 +144,12 @@ export function parseLocalCustomerProfile(path: string, content: string): LocalC
   for (const key of ['customerCode', 'wechatId', 'channel', 'intent', 'occupation', 'painPoints', 'notes', 'referrer']) {
     if (raw[key]) fields[key] = raw[key]
   }
-  if (raw.stage) fields.stage = STAGE_ALIASES[raw.stage] ?? raw.stage
+  let droppedStage: string | undefined
+  if (raw.stage) {
+    const mapped = STAGE_ALIASES[raw.stage] ?? raw.stage
+    if (LEGAL_STAGE_KEYS.has(mapped)) fields.stage = mapped
+    else droppedStage = raw.stage
+  }
   if (raw.quality) {
     const quality = raw.quality.toUpperCase().match(/[A-E]/)?.[0]
     if (quality) fields.quality = quality
@@ -145,6 +168,7 @@ export function parseLocalCustomerProfile(path: string, content: string): LocalC
       wechatId: fields.wechatId,
     },
     recommendsCode: !fields.customerCode && ['won', 'delivering'].includes(fields.stage),
+    droppedStage,
   }
 }
 
@@ -230,6 +254,25 @@ class CustomerCrmSyncModal extends Modal {
     if (match.status === 'matched') {
       const label = match.matchedBy === 'customerCode' ? '客户编号' : match.matchedBy === 'wechatId' ? '微信号' : '称呼'
       contentEl.createEl('p', { text: `准确匹配依据：${label}`, cls: 'setting-item-description' })
+      // 2026-08-18 小A→小B 错配实锤：编号/微信号匹配到的客户与档案称呼不一致时，
+      // 必须显眼警告——占位编号或复用编号会把两个人合并成一个。
+      if (
+        match.matchedBy !== 'name' &&
+        existing?.name &&
+        this.profile.fields.name &&
+        existing.name !== this.profile.fields.name
+      ) {
+        contentEl.createEl('p', {
+          text: `⚠️ 按${label}匹配到的客户称呼是「${existing.name}」，与本地档案的「${this.profile.fields.name}」不一致。请先确认是同一个人；如果不是，请取消并检查本地档案的客户编号/微信号是否填错或占位。`,
+          cls: 'ai-linzi-crm-sync-warning',
+        })
+      }
+    }
+    if (this.profile.droppedStage) {
+      contentEl.createEl('p', {
+        text: `说明：档案里的客户阶段「${this.profile.droppedStage}」不是 CRM 合法阶段（新增/已约咨询/已咨询/已成交/交付中/已完结/流失），本次保留 CRM 原值。`,
+        cls: 'setting-item-description',
+      })
     }
     if (this.profile.recommendsCode) {
       contentEl.createEl('p', {

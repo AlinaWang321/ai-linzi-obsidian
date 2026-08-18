@@ -60,4 +60,37 @@ assert.equal(
   '逐字稿正文不能误触发 CRM 同步',
 )
 
+// ── 0.7.50 回归（2026-08-18 小A 档案实锤）：占位词不参与匹配 + 非法阶段不发服务端 ──
+const aiGenerated = sync.parseLocalCustomerProfile(
+  '02_Wiki/03_客户档案/小A.md',
+  [
+    '类型: 客户档案',
+    '客户阶段: 潜在客户',
+    '客户编号: 待补充',
+    '客户称呼: 小A',
+    '微信ID: 待补充',
+    '咨询日期: 2026-08-05',
+  ].join('\n'),
+)
+assert.ok(aiGenerated)
+assert.equal(aiGenerated.identifiers.customerCode, undefined, '「待补充」占位编号绝不能参与匹配（小A→小B 错配案）')
+assert.equal(aiGenerated.identifiers.wechatId, undefined, '「待补充」占位微信号绝不能参与匹配')
+assert.equal(aiGenerated.fields.stage, 'new', '「潜在客户」应映射为合法阶段 new')
+assert.equal(aiGenerated.droppedStage, undefined)
+assert.equal(aiGenerated.fields.consultedDate, '2026-08-05')
+
+const unknownStage = sync.parseLocalCustomerProfile(
+  '02_Wiki/客户档案/小D.md',
+  '类型: 客户档案\n客户称呼: 小D\n客户阶段: 重点跟进对象',
+)
+assert.ok(unknownStage)
+assert.equal(unknownStage.fields.stage, undefined, '映射不了的阶段词绝不能发给服务端（阶段不合法 402 案）')
+assert.equal(unknownStage.droppedStage, '重点跟进对象', '被丢弃的阶段词要留给弹窗说明')
+
+const wonAlias = sync.parseLocalCustomerProfile(
+  '02_Wiki/客户档案/小E.md',
+  '类型: 客户档案\n客户称呼: 小E\n客户阶段: 成交',
+)
+assert.equal(wonAlias?.fields.stage, 'won')
+
 console.log('customer profile CRM sync tests passed')
