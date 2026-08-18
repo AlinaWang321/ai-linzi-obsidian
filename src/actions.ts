@@ -872,6 +872,23 @@ export interface LocalImageReference {
   dataUrl: string
 }
 
+/**
+ * 从 dataUrl 自身读出图片类型（0.7.55 修复）。
+ *
+ * 此前三处上传点都把 mediaType 硬编码成 'image/jpeg'，而服务端会从 dataUrl 前缀
+ * 推断真实类型并要求两者一致——于是**任何 PNG 图片都会被拒收**，错误文案还是
+ * 自相矛盾的「图片必须是 PNG、JPG 或 WebP」。微信与系统截图默认就是 PNG，
+ * 也就是打卡营 D3「上传聊天截图做销售诊断」这个核心演示必然失败。
+ * dataUrl 前缀是唯一真相源，不要再由调用方各自声明。
+ */
+export function imageMediaTypeFromDataUrl(dataUrl: string): 'image/png' | 'image/jpeg' | 'image/webp' {
+  const match = /^data:([^;,]+);base64,/i.exec(dataUrl.trim())
+  const mime = match?.[1]?.toLowerCase() ?? ''
+  if (mime === 'image/png') return 'image/png'
+  if (mime === 'image/webp') return 'image/webp'
+  return 'image/jpeg'
+}
+
 interface SavedIllustrationJob {
   notePath: string
   articleFingerprint: string

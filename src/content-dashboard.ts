@@ -1,6 +1,6 @@
 import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian'
 import type AiLinziPlugin from './main'
-import { chooseComputerAiImageReferences, runDistribute, runTopicRadar, runWechatWriter } from './actions'
+import { chooseComputerAiImageReferences, imageMediaTypeFromDataUrl, runDistribute, runTopicRadar, runWechatWriter } from './actions'
 import {
   aggregateContentRecords,
   consecutivePublishDays,
@@ -851,7 +851,11 @@ export class ContentDashboardView extends ItemView {
             messages: [{ id: `content-metrics-${Date.now()}`, role: 'user', parts: [{ type: 'text', text: prompt }] }],
             sessionId,
             stream: false,
-            imageAttachments: [{ filename: image.name, dataUrl: image.dataUrl, mediaType: 'image/jpeg' }],
+            imageAttachments: [{
+              filename: image.name,
+              dataUrl: image.dataUrl,
+              mediaType: imageMediaTypeFromDataUrl(image.dataUrl),
+            }],
             noteEdit: false,
             noteImageIntent: false,
           },

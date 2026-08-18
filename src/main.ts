@@ -58,6 +58,7 @@ import {
   type AiImageRatio,
   type ChatIllustrationCandidate,
   type LocalImageReference,
+  imageMediaTypeFromDataUrl,
 } from './actions'
 import { extractCreateNoteBlocks, type CreateNoteBlock } from './create-note'
 import {
@@ -2715,7 +2716,7 @@ class ChatView extends ItemView {
               imageAttachments: imageAttachments.map((image) => ({
                 filename: image.name,
                 dataUrl: image.dataUrl,
-                mediaType: 'image/jpeg',
+                mediaType: imageMediaTypeFromDataUrl(image.dataUrl),
               })),
               vaultSearch: vaultSearch.context,
               noteEdit,
@@ -4042,7 +4043,7 @@ class ChatView extends ItemView {
         imageAttachments: imageAttachments.map((image) => ({
           filename: image.name,
           dataUrl: image.dataUrl,
-          mediaType: 'image/jpeg',
+          mediaType: imageMediaTypeFromDataUrl(image.dataUrl),
         })),
         vaultSearch,
         noteEdit,
