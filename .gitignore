@@ -2,3 +2,6 @@ node_modules/
 main.js
 dist/
 .DS_Store
+
+# 本地样片渲染产物，不进公开仓库
+sample-cards/
