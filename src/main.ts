@@ -141,6 +141,7 @@ import {
   resolveArtifactPath,
 } from './artifact-renderer-core'
 import {
+  LOCAL_SKILL_ROOT,
   formatLocalSkillList,
   isLocalSkillListIntent,
   localSkillMenuTitle,
@@ -903,13 +904,49 @@ export default class AiLinziPlugin extends Plugin {
    * 不能把已经关闭的标签页或 Obsidian“最近打开记录”重新解释为读取授权。
    */
   lastActiveFile: TFile | null = null
+  /**
+   * 旧默认目录孤儿检查(0.7.53)：早期版本"我的 Skills"默认目录是 system/skills，
+   * 默认值改为 05_System/Skills 后，旧目录里创建的技能被静默遗弃、列表里看不到
+   * (Alina 主库 d5-local-skill-test 实锤)。启动时旧目录仍有技能且不等于当前
+   * 设置 → 提醒用户迁移；只提醒不代动文件。
+   */
+  private warnOrphanLocalSkills() {
+    // 启动性提示绝不允许影响插件加载：任何异常静默吞掉。
+    try {
+      const configured = normalizeLocalSkillRoot(this.settings.localSkillsFolder)
+      if (configured === LOCAL_SKILL_ROOT) return
+      const legacy = this.app.vault.getAbstractFileByPath(LOCAL_SKILL_ROOT)
+      if (!(legacy instanceof TFolder)) return
+      let count = 0
+      const stack: TFolder[] = [legacy]
+      while (stack.length > 0) {
+        const folder = stack.pop() as TFolder
+        for (const child of folder.children) {
+          if (child instanceof TFolder) stack.push(child)
+          else if (child.name.toLowerCase() === 'skill.md') count += 1
+        }
+      }
+      if (count === 0) return
+      new Notice(
+        `发现旧目录 ${LOCAL_SKILL_ROOT}/ 里还有 ${count} 个技能，当前“我的 Skills”目录是 ${configured}/，` +
+          '旧技能不会被读取。把技能文件夹整体移动过去即可继续使用（可直接拖拽，或让 AI霖子帮你移动）。',
+        12_000,
+      )
+    } catch {
+      // 静默：孤儿提醒是锦上添花，不能变成启动风险。
+    }
+  }
+
   async onload() {
     await this.loadSettings()
 
     // 插件重载时 active leaf 可能正好是右侧对话面板；先从仍打开的 Markdown
     // 标签页恢复“用户刚才在看的笔记”，避免勾选成功却拿不到正文。
     this.rememberCurrentMarkdownFile()
-    this.app.workspace.onLayoutReady(() => this.rememberCurrentMarkdownFile())
+    this.app.workspace.onLayoutReady(() => {
+      this.rememberCurrentMarkdownFile()
+      this.warnOrphanLocalSkills()
+    })
 
     this.registerEvent(
       this.app.workspace.on('active-leaf-change', () => {
@@ -2187,7 +2224,7 @@ class ChatView extends ItemView {
    * 对话区，错误不再只靠 9 秒 Notice（2026-08-18 Alina 反馈：销售复盘选完
    * 文件后“毫无反应”——实为本机报错只闪了一条 toast）。传 replaceId 原地更新。
    */
-  postSkillStatus(text: string, replaceId?: string): string {
+  postSkillStatus(text: string, replaceId?: string, thinking = false): string {
     const existing = replaceId
       ? this.messages.find((message) => message.id === replaceId && message.localSkillStatus)
       : undefined
@@ -2202,8 +2239,78 @@ class ChatView extends ItemView {
       })
     }
     void this.persistNow()
-    this.renderMessages()
+    this.renderMessages(thinking)
     return existing?.id ?? this.messages[this.messages.length - 1].id
+  }
+
+  /**
+   * 对话内活动流(0.7.53)：Vault 工具循环的轮数与每步动作实时滚动显示在对话区，
+   * 替代只闪 2.5 秒的右上角 Notice(2026-08-18 Alina 反馈：过程要像工作记录一样
+   * 留在对话里，工作中要有持续的动态效果)。
+   * - begin 只登记不渲染：纯问答回合永远不出现状态条，零打扰；
+   * - 第一条真实动作(step/强 current)才落进对话，复用 postSkillStatus 原地更新；
+   * - end 时定格为 ✅/⚠️ 摘要留在对话里；从未有动作则悄悄丢弃。
+   */
+  private activityFeed: {
+    id?: string
+    lines: string[]
+    current: string | null
+    startedAt: number
+  } | null = null
+
+  private activityBegin(current: string) {
+    this.activityFeed = { lines: [], current, startedAt: Date.now() }
+  }
+
+  /** 追加一步已完成动作；current 传 null 清空进行中提示，undefined 保持不变。
+   *  与上一行完全相同的动作只记一次(原生 propose 与共用预检会重复报"方案已生成")。 */
+  private activityStep(line: string, current?: string | null) {
+    const feed = this.activityFeed
+    if (!feed) return
+    if (feed.lines[feed.lines.length - 1] !== line) feed.lines.push(line)
+    if (current !== undefined) feed.current = current
+    this.activityRender()
+  }
+
+  /** 强更新进行中提示并渲染(引擎切换/新一轮开始等关键节点)。 */
+  private activityCurrent(current: string) {
+    const feed = this.activityFeed
+    if (!feed) return
+    feed.current = current
+    this.activityRender()
+  }
+
+  private activityText(feed: { lines: string[]; current: string | null }, header: string): string {
+    // 动作行里常有含 _ 的真实路径(02_Wiki)，转义防止被 Markdown 吃成斜体。
+    const escape = (value: string) => value.replace(/([_*~`[\]])/g, '\\$1')
+    const shown = feed.lines.slice(-12)
+    const hidden = feed.lines.length - shown.length
+    const parts = [header]
+    if (hidden > 0) parts.push(`- …（前 ${hidden} 步已折叠）`)
+    for (const line of shown) parts.push(`- ${escape(line)}`)
+    if (feed.current) parts.push(`- ⏳ ${escape(feed.current)}`)
+    return parts.join('\n')
+  }
+
+  private activityRender() {
+    const feed = this.activityFeed
+    if (!feed) return
+    feed.id = this.postSkillStatus(this.activityText(feed, '⚙️ AI霖子工作台'), feed.id, true)
+    this.listEl.scrollTop = this.listEl.scrollHeight
+  }
+
+  /** 收尾定格。从未渲染过(纯问答回合)则悄悄丢弃，不在对话里留任何痕迹。 */
+  private activityEnd(outcome: 'ok' | 'error', summary?: string) {
+    const feed = this.activityFeed
+    this.activityFeed = null
+    if (!feed?.id) return
+    const seconds = Math.max(1, Math.round((Date.now() - feed.startedAt) / 1000))
+    const header =
+      outcome === 'ok'
+        ? `✅ AI霖子工作台（${feed.lines.length} 步 · ${seconds} 秒）`
+        : `⚠️ AI霖子工作台已停止：${summary ?? '本次没有完成，请重试'}`
+    feed.current = null
+    this.postSkillStatus(this.activityText(feed, header), feed.id)
   }
 
   private recentLocalSkillPath(): string | undefined {
@@ -2483,20 +2590,32 @@ class ChatView extends ItemView {
       ]
 
       if (useVaultAgent) {
-        const agentResult = await this.runVaultAgentLoop({
-          question: text,
-          noteContext,
-          authorizedContent,
-          localSkill: localSkillRequest,
-          localSkillContext: localSkill ? this.localSkills.context(localSkill) : undefined,
-          // 已由用户精确勾选的整篇资料可以直接用于回答或生成成品，但这一轮不再
-          // 额外开放整个 Vault 工具，避免“精确授权”被扩大成未选择文件的读取。
-          vaultAccess: this.authorizedContentPaths.length === 0,
-          vaultSearch: vaultSearch.context,
-          noteEdit,
-          noteImageIntent: singleIllustration,
-          intent: 'auto',
-        })
+        let agentResult: {
+          text: string
+          sources: VaultMessageSource[]
+          localSkillRunIds?: string[]
+        }
+        try {
+          agentResult = await this.runVaultAgentLoop({
+            question: text,
+            noteContext,
+            authorizedContent,
+            localSkill: localSkillRequest,
+            localSkillContext: localSkill ? this.localSkills.context(localSkill) : undefined,
+            // 已由用户精确勾选的整篇资料可以直接用于回答或生成成品，但这一轮不再
+            // 额外开放整个 Vault 工具，避免“精确授权”被扩大成未选择文件的读取。
+            vaultAccess: this.authorizedContentPaths.length === 0,
+            vaultSearch: vaultSearch.context,
+            noteEdit,
+            noteImageIntent: singleIllustration,
+            intent: 'auto',
+          })
+        } catch (error) {
+          // 活动流定格为中断原因后再抛出，交由统一错误气泡处理。
+          this.activityEnd('error', error instanceof Error ? error.message : String(error))
+          throw error
+        }
+        this.activityEnd('ok')
         answer = agentResult.text
         var localSkillRunIds = agentResult.localSkillRunIds
         answerSources = [
@@ -3030,6 +3149,7 @@ class ChatView extends ItemView {
       toolResults = merged.results
       if (merged.exhausted && !toolBudgetExhausted) {
         toolBudgetExhausted = true
+        this.activityStep('📦 本次读取量较大，将基于已读内容收尾')
         new Notice('本次任务读取量较大，AI霖子将基于已读内容收尾；更多材料建议分批处理。', 6000)
       }
     }
@@ -3135,6 +3255,12 @@ class ChatView extends ItemView {
     // Luna 在 Responses API 上推理与原生工具共存（2026-08-18 探针 4/4 实证），
     // 「调没调工具」从文本猜测变成硬信号，空承诺在结构上不可能。任何一步失败
     // 都静默退回下方散文协议循环——行为与 0.7.48 完全一致，这就是回滚保险丝。
+    // 0.7.53：登记活动流(只登记不渲染；第一条真实动作才落进对话区)。
+    this.activityBegin(
+      input.intent === 'auto'
+        ? '理解你的要求，需要时会自行查找知识库…'
+        : '正在查看 Vault，需要时会继续翻阅相关文件…',
+    )
     let pendingNativeText: string | null = null
     const nativeEligible =
       input.vaultAccess &&
@@ -3150,11 +3276,10 @@ class ChatView extends ItemView {
         let nextBody: Record<string, unknown> | null = null
         let stalledRetried = false
         for (let step = 0; step < VAULT_AGENT_MAX_ROUNDS; step++) {
-          new Notice(
+          this.activityCurrent(
             step === 0
-              ? 'AI霖子正在执行整理任务…'
-              : `AI霖子正在继续执行（第 ${step + 1}/${VAULT_AGENT_MAX_ROUNDS} 步）…`,
-            2500,
+              ? '文件操作引擎启动，正在核对相关文件…'
+              : `文件引擎 第 ${step + 1}/${VAULT_AGENT_MAX_ROUNDS} 步 · 继续执行…`,
           )
           const data = await this.plugin.api('/api/plugin/v1/vault-native/step', {
             method: 'POST',
@@ -3178,6 +3303,7 @@ class ChatView extends ItemView {
               (item) => (item as Record<string, unknown>).name === 'propose_organize_plan',
             )
             if (propose) {
+              this.activityStep('📋 已生成整理方案，等待你确认', null)
               const record = propose as Record<string, unknown>
               const args =
                 record.arguments && typeof record.arguments === 'object' && !Array.isArray(record.arguments)
@@ -3212,8 +3338,6 @@ class ChatView extends ItemView {
               calls.push({ id: callId, name, arguments: args })
             }
             const executed = await this.plugin.vaultAgent.executeCalls(calls, undefined)
-            const readFilenames: string[] = []
-            let searchHits = 0
             for (const call of calls) {
               const result = executed.results.find((item) => item.callId === call.id)
               if (!result?.ok) continue
@@ -3228,26 +3352,29 @@ class ChatView extends ItemView {
                     isTarget: path === this.pendingVaultTask?.targetPath,
                   })
                 }
-                readFilenames.push(path.split('/').at(-1) ?? path)
+                this.activityStep(`📄 读取 ${path.split('/').at(-1) ?? path}`)
               }
               if (call.name === 'vault_search') {
                 const hitPaths = executed.sources
                   .filter((source) => source.sourceId === call.id)
                   .map((source) => source.path)
-                searchHits += hitPaths.length
                 if (hitPaths.length > 0) updateTask({ type: 'search', candidatePaths: hitPaths })
+                const query = typeof call.arguments.query === 'string' ? call.arguments.query : ''
+                this.activityStep(
+                  `🔍 搜索「${query.slice(0, 24)}」→ ${hitPaths.length} 个相关文件`,
+                )
               }
               // list_folder 也算真实探查：必须建立/推进任务，否则「收尾必须出方案」
               // 的结构化纠正因任务不存在而失效（0.7.49 真机 E2E 抓到的缺口：模型
               // 只用 list_folder 摸清结构后，把方案写成文字树而不出确认卡）。
               if (call.name === 'list_folder') {
                 updateTask({ type: 'search', candidatePaths: [] })
+                const folder =
+                  typeof call.arguments.path === 'string' && call.arguments.path.trim()
+                    ? call.arguments.path.trim()
+                    : 'Vault 根目录'
+                this.activityStep(`📁 查看 ${folder}`)
               }
-            }
-            if (readFilenames.length > 0) {
-              new Notice(`AI霖子已读取：${readFilenames.slice(0, 2).join('、')}`, 3000)
-            } else if (searchHits > 0) {
-              new Notice(`AI霖子已找到 ${searchHits} 个相关文件，正在继续核对…`, 3000)
             }
             sources.push(...executed.sources)
             const merged = appendToolResultsWithinBudget(toolResults, executed.results)
@@ -3303,14 +3430,31 @@ class ChatView extends ItemView {
       pendingNativeText = await runNativeChannel()
     }
     for (let round = 0; round < VAULT_AGENT_MAX_ROUNDS; round++) {
-      new Notice(
-        round === 0 && input.intent === 'auto'
-          ? 'AI霖子正在理解你的要求，需要时会自行查找知识库…'
-          : round === 0
-            ? 'AI霖子正在查看 Vault，需要时会继续翻阅相关文件…'
-          : `AI霖子正在继续翻阅 Vault（第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮）…`,
-        2500,
-      )
+      if (round > 0) {
+        // 纠正原因对用户可见：让"为什么又跑了一轮"不再是黑盒(0.7.53)。
+        if (pendingRetryReason) {
+          this.activityStep(
+            `🧭 ${
+              pendingRetryReason === 'empty_response'
+                ? '上一轮没有内容，要求重新回答'
+                : pendingRetryReason === 'missing_tool_use'
+                  ? '要求 AI 实际调用本机工具，不接受口头承诺'
+                  : pendingRetryReason === 'invalid_plan'
+                    ? '方案未过本机检查，要求重新核对生成'
+                    : pendingRetryReason === 'unexpected_plan'
+                      ? '本轮只读，已退回越界的写入方案'
+                      : pendingRetryReason === 'deferred_answer'
+                        ? '拒绝「稍后处理」，要求当场完成'
+                        : pendingRetryReason === 'stalled_write_flow'
+                          ? '改档案必须先读原文，已退回重做'
+                          : '要求补齐缺失信息后再收尾'
+            }`,
+            `第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮 · 继续翻阅 Vault…`,
+          )
+        } else {
+          this.activityCurrent(`第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮 · 继续翻阅 Vault…`)
+        }
+      }
       const vaultAgentRequest = {
         enabled: true as const,
         vaultAccess: input.vaultAccess,
@@ -3378,7 +3522,7 @@ class ChatView extends ItemView {
       // 任务/CRM 云端写入时单独输出标记，插件补一轮挂上工具执行——判断轮全
       // 推理、执行轮零推理，两边都拿到各自需要的能力。
       if (round === 0 && intent === 'auto' && isCloudToolsTurnRequest(lastText)) {
-        new Notice('AI霖子正在执行云端任务/客户记录…', 3000)
+        this.activityStep('☁️ 判定为云端写入（任务清单 / 客户管理）', '正在执行云端写入…')
         const data = await this.plugin.api('/api/plugin/v1/chat', {
           method: 'POST',
           body: {
@@ -3395,6 +3539,7 @@ class ChatView extends ItemView {
         })
         const cloudText = typeof data.text === 'string' ? data.text.trim() : ''
         if (!cloudText) throw new Error('云端工具轮没有返回内容，请重试')
+        this.activityStep('✅ 云端写入轮完成', null)
         return { text: cloudText, sources, localSkillRunIds }
       }
 
@@ -3402,11 +3547,12 @@ class ChatView extends ItemView {
       // 判断轮（全推理）认定本句要动文件时输出标记，插件立即转入原生引擎；
       // 引擎失败则回到散文协议并强制工具纠正，绝不接受口头承诺。
       if (round === 0 && intent === 'auto' && isVaultNativeTurnRequest(lastText)) {
-        new Notice('AI霖子正在切换文件操作引擎…', 2500)
+        this.activityStep('🔁 AI 判定要动文件，切换文件操作引擎', '文件操作引擎启动…')
         const nativeText = await runNativeChannel()
         if (nativeText !== null) {
           lastText = nativeText
         } else {
+          this.activityStep('↩️ 文件引擎未完成，回到常规通道继续', null)
           pendingRetryReason = 'missing_tool_use'
           continue
         }
@@ -3496,7 +3642,7 @@ class ChatView extends ItemView {
             verifiedWritePaths.add(writeOperation.path)
             const stat = this.plugin.vaultFileStat(writeOperation.path)
             if (stat) updateTask({ type: 'read', snapshot: stat, isTarget: true })
-            new Notice(`已核对目标档案原文：${writeOperation.path.split('/').at(-1)}`, 3000)
+            this.activityStep(`🔎 核对目标档案原文：${writeOperation.path.split('/').at(-1)}`)
           }
           pendingRetryReason = undefined
           continue
@@ -3504,6 +3650,7 @@ class ChatView extends ItemView {
         if (plan.plan) {
           try {
             await this.plugin.vaultAgent.preflightPlan(plan.plan, input.localSkillContext)
+            this.activityStep('📋 已生成整理方案，等待你确认', null)
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
@@ -3663,6 +3810,7 @@ class ChatView extends ItemView {
           pendingRetryReason = undefined
           continue
         }
+        this.activityStep(`🧩 本地动作：${action.label}`, `正在本机执行：${action.label}…`)
         const notice = new Notice(`正在本机执行：${action.label}…`, 0)
         try {
           try {
@@ -3715,8 +3863,7 @@ class ChatView extends ItemView {
         readCalls,
         input.localSkillContext,
       )
-      const readFilenames: string[] = []
-      let searchHits = 0
+      // 用户可见的真实进度：每个动作实时滚动进对话区活动流(0.7.53)。
       for (const call of readCalls) {
         const result = executed.results.find((item) => item.callId === call.id)
         if (!result?.ok) continue
@@ -3731,21 +3878,26 @@ class ChatView extends ItemView {
               isTarget: path === this.pendingVaultTask?.targetPath,
             })
           }
-          readFilenames.push(path.split('/').at(-1) ?? path)
+          this.activityStep(`📄 读取 ${path.split('/').at(-1) ?? path}`)
         }
         if (call.name === 'vault_search') {
           const hitPaths = executed.sources
             .filter((source) => source.sourceId === call.id)
             .map((source) => source.path)
-          searchHits += hitPaths.length
           if (hitPaths.length > 0) updateTask({ type: 'search', candidatePaths: hitPaths })
+          const query = typeof call.arguments.query === 'string' ? call.arguments.query : ''
+          this.activityStep(`🔍 搜索「${query.slice(0, 24)}」→ ${hitPaths.length} 个相关文件`)
         }
-      }
-      // 用户可见的真实进度，替代只报轮数的无信息提示。
-      if (readFilenames.length > 0) {
-        new Notice(`AI霖子已读取：${readFilenames.slice(0, 2).join('、')}`, 3000)
-      } else if (searchHits > 0) {
-        new Notice(`AI霖子已找到 ${searchHits} 个相关文件，正在继续核对…`, 3000)
+        if (call.name === 'list_folder') {
+          const folder =
+            typeof call.arguments.path === 'string' && call.arguments.path.trim()
+              ? call.arguments.path.trim()
+              : 'Vault 根目录'
+          this.activityStep(`📁 查看 ${folder}`)
+        }
+        if (call.name === 'read_skill_file' && typeof call.arguments.path === 'string') {
+          this.activityStep(`🧩 读取技能文件 ${call.arguments.path.split('/').at(-1)}`)
+        }
       }
       pendingRetryReason = undefined
       appendToolResults(executed.results)
@@ -4540,6 +4692,11 @@ class ChatView extends ItemView {
       const body = row.createDiv({ cls: 'ai-linzi-msg-body' })
       this.enableMessageTextSelection(body)
       const text = m.parts.map((p) => p.text).join('')
+      if (m.localSkillStatus) {
+        // 活动流/技能状态条：区别于正文气泡的紧凑样式；进行中(⚙️开头)带持续动效。
+        row.addClass('ai-linzi-status-row')
+        if (text.startsWith('⚙️')) row.addClass('ai-linzi-status-working')
+      }
       if (m.role === 'assistant') {
         let previousUserText = ''
         for (let j = mi - 1; j >= 0; j--) {

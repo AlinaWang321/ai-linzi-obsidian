@@ -3440,3 +3440,41 @@ button.ai-linzi-vault-source-link:focus-visible {
 
 /* CRM 同步弹窗：错配警告（0.7.50） */
 .ai-linzi-crm-sync-warning { color: var(--text-error); font-weight: 600; }
+
+/* 对话内活动流（0.7.53）：轮数与每步动作滚动显示；工作中持续动效表明系统没有卡住 */
+.ai-linzi-status-row .ai-linzi-msg-body {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: 6px;
+  padding: 6px 12px;
+  max-width: 100%;
+}
+.ai-linzi-status-row .ai-linzi-msg-body p { margin: 2px 0; }
+.ai-linzi-status-row .ai-linzi-msg-body ul { margin: 2px 0; padding-left: 18px; }
+.ai-linzi-status-row .ai-linzi-msg-body li { margin: 1px 0; line-height: 1.5; }
+.ai-linzi-status-working .ai-linzi-msg-body {
+  position: relative;
+  padding-right: 30px;
+  animation: ai-linzi-status-breathe 1.8s ease-in-out infinite;
+}
+.ai-linzi-status-working .ai-linzi-msg-body::after {
+  content: '';
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--interactive-accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: ai-linzi-status-spin 0.9s linear infinite;
+}
+@keyframes ai-linzi-status-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes ai-linzi-status-breathe {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 1; }
+}
