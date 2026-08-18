@@ -65,6 +65,19 @@ class TranscriptFileModal extends FuzzySuggestModal<TFile> {
     element.createEl('small', { text: file.path, cls: 'ai-linzi-transcript-source-path' })
   }
 
+  /**
+   * Obsidian 1.13 起弹窗关闭时序变化：Enter/点击选中后 onClose 可能先于
+   * onChooseItem 触发，旧实现在 onClose 里抢先把 Promise 结算成 null，真正的
+   * 选中项晚一步到、被静默丢弃——表现就是「选完文件毫无反应」（2026-08-18
+   * Alina 实测 + CDP 行为探针实锤，销售复盘/客户咨询简报同时中招）。
+   * 在 selectSuggestion 同步捕获选中项，对任何关闭时序都成立。
+   */
+  selectSuggestion(match: { item: TFile }, evt: MouseEvent | KeyboardEvent): void {
+    this.submitted = true
+    this.resolve(match.item)
+    super.selectSuggestion(match as never, evt)
+  }
+
   onChooseItem(file: TFile): void {
     this.submitted = true
     this.resolve(file)
@@ -72,7 +85,10 @@ class TranscriptFileModal extends FuzzySuggestModal<TFile> {
 
   onClose(): void {
     super.onClose()
-    if (!this.submitted) this.resolve(null)
+    // 迟一拍再判定「取消」，给尚未派发的选中回调让路（双保险，与 selectSuggestion 配合）。
+    window.setTimeout(() => {
+      if (!this.submitted) this.resolve(null)
+    }, 0)
   }
 }
 
