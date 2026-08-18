@@ -249,20 +249,26 @@ class PromptModal extends Modal {
   onOpen() {
     this.titleEl.setText(this.title)
     for (const f of this.fields) {
+      if (f.multiline) {
+        // 多行字段：说明整段在上、全宽输入框在下（2026-08-18 Alina 拍板：
+        // Setting 默认把输入框挤在右侧窄条里，不美观也不好填）。
+        const block = this.contentEl.createDiv({ cls: 'ai-linzi-prompt-block' })
+        block.createDiv({ text: f.label, cls: 'setting-item-name' })
+        if (f.desc) block.createDiv({ text: f.desc, cls: 'setting-item-description' })
+        const textarea = block.createEl('textarea', { cls: 'ai-linzi-prompt-textarea' })
+        textarea.rows = 5
+        textarea.value = this.values[f.key]
+        textarea.addEventListener('input', () => {
+          this.values[f.key] = textarea.value
+        })
+        continue
+      }
       const s = new Setting(this.contentEl).setName(f.label)
       if (f.desc) s.setDesc(f.desc)
-      if (f.multiline) {
-        s.addTextArea((t) => {
-          t.setValue(this.values[f.key]).onChange((v) => (this.values[f.key] = v))
-          t.inputEl.rows = 4
-          t.inputEl.addClass('ai-linzi-full-width')
-        })
-      } else {
-        s.addText((t) => {
-          t.setValue(this.values[f.key]).onChange((v) => (this.values[f.key] = v))
-          t.inputEl.addClass('ai-linzi-full-width')
-        })
-      }
+      s.addText((t) => {
+        t.setValue(this.values[f.key]).onChange((v) => (this.values[f.key] = v))
+        t.inputEl.addClass('ai-linzi-full-width')
+      })
     }
     new Setting(this.contentEl).addButton((b) =>
       b
@@ -610,7 +616,7 @@ export async function runSalesReview(plugin: AiLinziPlugin) {
       {
         key: 'background',
         label: '客户背景/产品说明(可选)',
-        desc: `本次只读取：${source.file.path}。支持 MD、TXT、可复制文字的 PDF 和 DOCX；原文件不上传，提取后的逐字稿不进 AI霖子数据库。建议先把客户实名换成化名。`,
+        desc: `本次只读取：${source.file.path}。支持 MD、TXT、可复制文字的 PDF 和 DOCX；原文件不上传，提取后的逐字稿不进 AI霖子数据库。`,
         multiline: true,
       },
     ],

@@ -3432,3 +3432,8 @@ button.ai-linzi-vault-source-link:focus-visible {
   margin: 2px 0 8px 66px;
   word-break: break-all;
 }
+
+/* 技能弹窗多行字段：说明在上、输入框全宽在下（0.7.47，Alina 2026-08-18 拍板） */
+.ai-linzi-prompt-block { margin-bottom: 14px; }
+.ai-linzi-prompt-block .setting-item-description { margin: 4px 0 8px; }
+.ai-linzi-prompt-textarea { width: 100%; resize: vertical; box-sizing: border-box; }
