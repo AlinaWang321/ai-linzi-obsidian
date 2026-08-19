@@ -11,6 +11,8 @@ import {
   type VaultOrganizePlan,
   type VaultWriteSnapshot,
   normalizeFolderKey,
+  applyRecentListFilter,
+  isRecentListRequest,
 } from './vault-agent-core'
 import type { ActiveLocalSkillContext } from './local-skills'
 import { extendContiguousRead, localSkillLinkedPathCandidates } from './local-skill-core'
@@ -338,7 +340,17 @@ export class LocalVaultAgent {
       const path = rawPath ? normalizeVaultRelativePath(rawPath) : ''
       if (rawPath && !path) throw new Error('文件夹路径不合法')
       if (path && this.protected(path)) throw new Error('该目录属于插件保护范围，不能读取')
-      const depth = clampInt(call.arguments.depth, 1, 1, LIST_FOLDER_MAX_DEPTH)
+      // 0.7.60 时间查询：sortBy="modified" / sinceDays=N。时间模式默认扫全库（12 层），
+      // 否则「最近改了什么」还得模型自己逐层翻。
+      const sortBy = toolText(call.arguments.sortBy, 16)
+      const sinceDays = clampInt(call.arguments.sinceDays, 0, 0, 365)
+      const recentRequested = isRecentListRequest({ sortBy, sinceDays })
+      const depth = clampInt(
+        call.arguments.depth,
+        recentRequested ? LIST_FOLDER_MAX_DEPTH : 1,
+        1,
+        LIST_FOLDER_MAX_DEPTH,
+      )
       const offset = clampInt(
         call.arguments.offset,
         0,
@@ -412,13 +424,16 @@ export class LocalVaultAgent {
         }
       }
       walk(root, 1)
-      const page = entries.slice(offset, offset + maxEntries)
-      const nextOffset = offset + page.length < entries.length ? offset + page.length : null
-      const totalFiles = entries.filter((entry) => entry.type === 'file').length
-      const totalFolders = entries.length - totalFiles
+      const recent = applyRecentListFilter(entries, { sortBy, sinceDays, now: Date.now() })
+      const finalEntries = recent.recentMode ? recent.entries : entries
+      const page = finalEntries.slice(offset, offset + maxEntries)
+      const nextOffset = offset + page.length < finalEntries.length ? offset + page.length : null
+      const totalFiles = finalEntries.filter((entry) => entry.type === 'file').length
+      const totalFolders = finalEntries.length - totalFiles
       return {
         path: path || '/',
         depth,
+        ...(recent.recentMode ? { mode: 'recent', sortBy: 'modified', sinceDays: sinceDays || undefined } : {}),
         totalEntries: entries.length,
         totalFiles,
         totalFolders,

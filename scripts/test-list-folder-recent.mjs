@@ -1,0 +1,70 @@
+// 「最近改了什么」时间查询（0.7.60）：真跑纯函数 + 接线契约。
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { build } from 'esbuild'
+
+const bundled = await build({
+  entryPoints: ['src/vault-agent-core.ts'],
+  bundle: true, platform: 'node', format: 'esm', write: false,
+})
+const { applyRecentListFilter, isRecentListRequest, formatRecentTime } =
+  await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`)
+
+const now = Date.parse('2026-08-19T12:00:00+08:00')
+const day = 86_400_000
+const entries = [
+  { path: 'A/老文件.md', type: 'file', modifiedAt: now - 30 * day },
+  { path: 'B/昨天.md', type: 'file', modifiedAt: now - 1 * day },
+  { path: 'B', type: 'folder' },
+  { path: 'C/今天.md', type: 'file', modifiedAt: now - 2 * 3600_000 },
+  { path: 'C/上周.md', type: 'file', modifiedAt: now - 6 * day },
+]
+
+console.log('第1组 模式判定')
+assert.equal(isRecentListRequest({ sortBy: 'modified' }), true)
+assert.equal(isRecentListRequest({ sinceDays: 7 }), true)
+assert.equal(isRecentListRequest({ sortBy: '', sinceDays: 0 }), false)
+assert.equal(isRecentListRequest({}), false)
+
+console.log('第2组 排序与过滤')
+{
+  const r = applyRecentListFilter(entries, { sortBy: 'modified', now })
+  assert.equal(r.recentMode, true)
+  assert.deepEqual(r.entries.map((e) => e.path), ['C/今天.md', 'B/昨天.md', 'C/上周.md', 'A/老文件.md'], '按修改时间降序')
+  assert.ok(r.entries.every((e) => e.type === 'file'), '时间模式只看文件，文件夹剔除')
+  assert.ok(r.entries.every((e) => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(e.modified)), '每条带可读时间')
+
+  const week = applyRecentListFilter(entries, { sinceDays: 7, now })
+  assert.deepEqual(week.entries.map((e) => e.path), ['C/今天.md', 'B/昨天.md', 'C/上周.md'], 'sinceDays=7 过滤 30 天前的')
+  const day1 = applyRecentListFilter(entries, { sinceDays: 1, now })
+  assert.deepEqual(day1.entries.map((e) => e.path), ['C/今天.md', 'B/昨天.md'], '正好 1 天前的算在内(>=边界)')
+}
+
+console.log('第3组 非时间模式原样返回')
+{
+  const r = applyRecentListFilter(entries, { now })
+  assert.equal(r.recentMode, false)
+  assert.equal(r.entries, entries, '引用原样返回，不做任何变换')
+}
+
+console.log('第4组 边界')
+assert.equal(formatRecentTime(0), '', '无效时间不产出乱码')
+assert.equal(applyRecentListFilter([], { sortBy: 'modified', now }).entries.length, 0)
+{
+  const noMtime = applyRecentListFilter([{ path: 'x.md', type: 'file' }], { sortBy: 'modified', now })
+  assert.equal(noMtime.entries.length, 1, '缺 mtime 的文件在纯排序模式下保留(排最后)')
+  const noMtimeSince = applyRecentListFilter([{ path: 'x.md', type: 'file' }], { sinceDays: 7, now })
+  assert.equal(noMtimeSince.entries.length, 0, '缺 mtime 的文件在 sinceDays 过滤下剔除')
+}
+
+console.log('第5组 接线契约')
+{
+  const agent = readFileSync(new URL('../src/vault-agent.ts', import.meta.url), 'utf8')
+  assert.match(agent, /const sortBy = toolText\(call\.arguments\.sortBy, 16\)/, 'list_folder 必须解析 sortBy')
+  assert.match(agent, /const sinceDays = clampInt\(call\.arguments\.sinceDays, 0, 0, 365\)/, '必须解析 sinceDays')
+  assert.match(agent, /recentRequested \? LIST_FOLDER_MAX_DEPTH : 1/, '时间模式默认扫全库')
+  assert.match(agent, /applyRecentListFilter\(entries, \{ sortBy, sinceDays, now: Date\.now\(\) \}\)/, '必须应用过滤')
+  assert.match(agent, /mode: 'recent'/, '返回体必须回显时间模式')
+}
+
+console.log('list_folder recent query tests: ok')

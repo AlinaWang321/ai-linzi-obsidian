@@ -1040,3 +1040,56 @@ export function normalizeFolderKey(name: string): string {
     .replace(/^[\s_\-.]*[0-9①-⑳]{1,3}[\s_\-.）)、.]*/u, '')
     .replace(/[\s_\-.]/g, '')
 }
+
+/** list_folder 的时间查询模式（0.7.60）。 */
+export interface RecentListOptions {
+  sortBy?: string
+  sinceDays?: number
+  now: number
+}
+
+export interface RecentListEntry {
+  path: string
+  type: 'folder' | 'file'
+  size?: number
+  modifiedAt?: number
+  readable?: boolean
+  /** 时间查询模式下补充的人类可读时间（本地时区），模型直接引用。 */
+  modified?: string
+}
+
+export function isRecentListRequest(options: Pick<RecentListOptions, 'sortBy' | 'sinceDays'>): boolean {
+  return options.sortBy === 'modified' || (options.sinceDays ?? 0) > 0
+}
+
+/**
+ * 「最近改了什么」查询（0.7.60，Alina 拍板本周三件之一）。
+ *
+ * 背景：AI 没有按时间找文件的能力，只能逐层 list_folder 翻——「知识库日报」这类
+ * 技能在几千文件的库上直接跑不完（真机实测 20 步 131 秒还在翻目录）。
+ * 现在 sortBy="modified" / sinceDays=N 一次调用拿到全库最近改动清单。
+ *
+ * 规则：时间模式只看文件（文件夹没有修改时间语义）；按修改时间降序；
+ * sinceDays 过滤下限 now - N 天；每条补 modified 可读时间。纯函数，真跑单测。
+ */
+export function applyRecentListFilter(
+  entries: RecentListEntry[],
+  options: RecentListOptions,
+): { entries: RecentListEntry[]; recentMode: boolean } {
+  if (!isRecentListRequest(options)) return { entries, recentMode: false }
+  const cutoff = (options.sinceDays ?? 0) > 0
+    ? options.now - (options.sinceDays as number) * 86_400_000
+    : Number.NEGATIVE_INFINITY
+  const filtered = entries
+    .filter((entry) => entry.type === 'file' && (entry.modifiedAt ?? 0) >= cutoff)
+    .sort((a, b) => (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0))
+    .map((entry) => ({ ...entry, modified: formatRecentTime(entry.modifiedAt ?? 0) }))
+  return { entries: filtered, recentMode: true }
+}
+
+export function formatRecentTime(epochMs: number): string {
+  if (!Number.isFinite(epochMs) || epochMs <= 0) return ''
+  const d = new Date(epochMs)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
