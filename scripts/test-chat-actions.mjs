@@ -38,4 +38,10 @@ assert.match(main, /pendingRetryReason = 'missing_tool_use'/)
 assert.match(main, /vaultWriteSnapshots: this\.plugin\.captureVaultWriteSnapshots\(plan\)/)
 assert.match(main, /applyVaultPlan\(plan, message\.vaultWriteSnapshots\)/)
 
+// 0.7.63 课件PPT 内置技能:排在销售复盘之后、存入知识库之前
+assert.match(main, /id: 'deck-builder'/)
+assert.match(main, /name: '课件PPT:选择文档 → 网页课件\(放映·⌘P存PDF\)'/)
+assert.ok(main.indexOf("id: 'deck-builder'") > main.indexOf("id: 'sales-review'"))
+assert.ok(main.indexOf("id: 'deck-builder'") < main.indexOf("id: 'feed-knowledge'"))
+
 console.log('chat action order and cockpit shortcut tests passed')

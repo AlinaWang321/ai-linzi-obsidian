@@ -186,4 +186,12 @@ console.log('第7组 Mac / Windows 双平台')
   )
 }
 
+// 0.7.63 修复:Finder 拖入库内文件必须回查 vault 路径(webUtils + NFC 归一化)
+import { readFileSync as __readMain } from 'node:fs'
+const __main = __readMain(new URL('../src/main.ts', import.meta.url), 'utf8')
+if (!__main.includes('resolveDiskDropsAgainstVault')) throw new Error('缺少 Finder 拖入回查逻辑')
+if (!__main.includes('getPathForFile')) throw new Error('缺少 webUtils.getPathForFile 兜底')
+if (!__main.includes(".normalize('NFC')")) throw new Error('缺少中文文件名 NFC 归一化')
+if (!__main.includes('FileSystemAdapter')) throw new Error('缺少 FileSystemAdapter 基路径判断')
+
 console.log('chat drop & paste tests: ok')

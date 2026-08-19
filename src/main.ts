@@ -9,6 +9,7 @@
  */
 import {
   App,
+  FileSystemAdapter,
   ItemView,
   MarkdownRenderer,
   MarkdownView,
@@ -204,6 +205,14 @@ export const SKILL_ACTIONS: {
     },
   },
   { id: 'sales-review', name: '销售复盘:选择逐字稿 → 销售诊断', fn: runSalesReview },
+  {
+    id: 'deck-builder',
+    name: '课件PPT:选择文档 → 网页课件(放映·⌘P存PDF)',
+    fn: async (p) => {
+      const { runDeckBuilder } = await import('./deck-builder')
+      return runDeckBuilder(p)
+    },
+  },
   { id: 'feed-knowledge', name: '存入 AI霖子知识库:当前笔记', fn: feedKnowledge },
 ]
 
@@ -246,6 +255,10 @@ interface AiLinziSettings {
   cockpitJudgmentText: string
   /** 合伙人学习进度里手动标记完成的步骤 key(clients10 由 CRM 自动判定不入此列表) */
   cockpitPartnerSteps: string[]
+  /** 课件PPT:讲者名/品牌名/主题色(跑一次后自动记住) */
+  deckPresenter: string
+  deckBrand: string
+  deckTheme: string
 }
 
 const DEFAULT_SETTINGS: AiLinziSettings = {
@@ -271,6 +284,9 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   cockpitJudgmentDate: '',
   cockpitJudgmentText: '',
   cockpitPartnerSteps: [],
+  deckPresenter: '',
+  deckBrand: '',
+  deckTheme: '深蓝',
 }
 
 interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
@@ -2248,8 +2264,14 @@ class ChatView extends ItemView {
       event.preventDefault()
       dragDepth = 0
       setActive(false)
-      const files = Array.from(event.dataTransfer?.files ?? [])
+      const dropped = Array.from(event.dataTransfer?.files ?? [])
       const vaultFiles = this.vaultFilesFromDrag(event)
+      // 0.7.63 修复:从 Finder/资源管理器拖入「已经在库里」的文件时,此前只拿到
+      // File 对象、从不回查 vault 路径,PDF/DOCX 一律被误判「不在知识库里」。
+      const { external: files, vaultResolved } = this.resolveDiskDropsAgainstVault(dropped)
+      for (const resolved of vaultResolved) {
+        if (!vaultFiles.some((existing) => existing.path === resolved.path)) vaultFiles.push(resolved)
+      }
       if (files.length === 0 && vaultFiles.length === 0) {
         // 从网页里直接拖图片（Mac / Windows 都常见）只带 URL 不带文件，
         // 静默失败会让用户以为插件坏了。
@@ -2270,6 +2292,46 @@ class ChatView extends ItemView {
     if ([...transfer.types].includes('Files')) return true
     // Obsidian 文件树拖拽走的是文本负载（路径或 wikilink），没有 Files 类型。
     return [...transfer.types].some((type) => type === 'text/plain' || type === 'text/uri-list')
+  }
+
+  /**
+   * 从 Finder/资源管理器拖进来的文件若实际位于当前 Vault 内，映射回 TFile 按库内
+   * 文件处理（0.7.63）。绝对路径经 Electron webUtils 获取（新版 Electron 已移除
+   * File.path），中文文件名必须做 NFC 归一化——macOS Finder 给出的是 NFD。
+   */
+  private resolveDiskDropsAgainstVault(files: File[]): { external: File[]; vaultResolved: TFile[] } {
+    const external: File[] = []
+    const vaultResolved: TFile[] = []
+    const adapter = this.app.vault.adapter
+    const basePath = adapter instanceof FileSystemAdapter
+      ? adapter.getBasePath().replace(/\\/g, '/').normalize('NFC')
+      : ''
+    for (const file of files) {
+      const absolute = this.absolutePathOfDroppedFile(file).replace(/\\/g, '/').normalize('NFC')
+      if (!basePath || !absolute || !absolute.startsWith(`${basePath}/`)) {
+        external.push(file)
+        continue
+      }
+      const relative = normalizePath(absolute.slice(basePath.length + 1))
+      const target = this.app.vault.getAbstractFileByPath(relative)
+      if (target instanceof TFile) vaultResolved.push(target)
+      else external.push(file)
+    }
+    return { external, vaultResolved }
+  }
+
+  private absolutePathOfDroppedFile(file: File): string {
+    try {
+      const electron = (window as { require?: (id: string) => unknown }).require?.('electron') as
+        | { webUtils?: { getPathForFile?: (file: File) => string } }
+        | undefined
+      const viaWebUtils = electron?.webUtils?.getPathForFile?.(file)
+      if (typeof viaWebUtils === 'string' && viaWebUtils) return viaWebUtils
+    } catch {
+      // 旧版 Electron 没有 webUtils，落到 File.path 兜底。
+    }
+    const legacy = (file as File & { path?: string }).path
+    return typeof legacy === 'string' ? legacy : ''
   }
 
   /** 从 Obsidian 文件树拖进来的项：负载是 Vault 相对路径或 [[wikilink]]。 */

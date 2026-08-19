@@ -60,7 +60,8 @@ assert(!sources.includes('window.confirm('), '确认操作必须使用 Obsidian 
  *   （html-to-image 出 PNG、canvas 画卡片/PDF 页）没有 helper 可用，按用途豁免，
  *   并把豁免明细打印出来——豁免必须看得见，不能静默放过。
  */
-const artifactOutputModules = new Set(['artifact-renderer.ts'])
+// deck-builder-core 只拼接课件 HTML 字符串（含成品内的 <script>），不碰插件自身 DOM。
+const artifactOutputModules = new Set(['artifact-renderer.ts', 'deck-builder-core.ts'])
 const styleOffenders = sourceEntries
   .filter((entry) => !artifactOutputModules.has(entry.name))
   .filter((entry) => /\.style\.[A-Za-z]+\s*=\s*(['"])[^'"]*\1/.test(entry.text))

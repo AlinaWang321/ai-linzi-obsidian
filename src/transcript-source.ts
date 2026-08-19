@@ -100,6 +100,7 @@ export async function selectTranscriptSource(
   plugin: AiLinziPlugin,
   skillName: string,
   maxChars: number,
+  sourceNoun = '逐字稿',
 ): Promise<SelectedTranscript | null> {
   const active = plugin.app.workspace.getActiveFile()
   const current = active && isTranscriptExtension(active.extension)
@@ -124,7 +125,7 @@ export async function selectTranscriptSource(
   const file = await new TranscriptFileModal(
     plugin.app,
     files,
-    `${skillName} · 选择一份逐字稿`,
+    `${skillName} · 选择一份${sourceNoun}`,
   ).result
   if (!file) return null
 
