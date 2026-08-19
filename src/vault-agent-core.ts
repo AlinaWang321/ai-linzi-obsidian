@@ -1022,3 +1022,21 @@ export function vaultAutoAnswerRetryReason(
     ? 'missing_tool_use'
     : undefined
 }
+
+/**
+ * 文件夹名的宽松匹配（0.7.59）。
+ *
+ * 用户口语里的目录名和磁盘上的真实目录名经常对不上：说「output」真实叫「03 output」，
+ * 说「客户档案」真实是「02_Wiki/01_客户档案」。旧实现要求逐字相同，对不上就报
+ * 「没有找到文件夹」，AI 只好一个个列目录去猜，表现成「反复说继续却不干活」。
+ *
+ * 归一化规则：去掉序号前缀（01_/02 /③）、忽略大小写、忽略下划线连字符空格的差异。
+ * 只做名字匹配，不碰权限与保护规则——调用方仍会对结果再做保护目录校验。
+ */
+export function normalizeFolderKey(name: string): string {
+  return name
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/^[\s_\-.]*[0-9①-⑳]{1,3}[\s_\-.）)、.]*/u, '')
+    .replace(/[\s_\-.]/g, '')
+}

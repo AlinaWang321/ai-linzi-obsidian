@@ -10,6 +10,7 @@ import {
   type VaultAgentToolResult,
   type VaultOrganizePlan,
   type VaultWriteSnapshot,
+  normalizeFolderKey,
 } from './vault-agent-core'
 import type { ActiveLocalSkillContext } from './local-skills'
 import { extendContiguousRead, localSkillLinkedPathCandidates } from './local-skill-core'
@@ -77,6 +78,29 @@ function fileExtension(path: string): string {
   const basename = path.split('/').at(-1) ?? ''
   const dot = basename.lastIndexOf('.')
   return dot > 0 ? basename.slice(dot + 1).toLocaleLowerCase() : ''
+}
+
+
+/**
+ * 按名字宽松匹配文件夹（0.7.59）。精确路径优先，其次逐层比对归一化后的名字。
+ * loose=true 时额外接受「包含」关系，用于找不到时给出相近候选。
+ */
+function matchFoldersByName(root: TFolder, query: string, loose = false): TFolder[] {
+  const wanted = normalizeFolderKey(query.split('/').at(-1) ?? query)
+  if (!wanted) return []
+  const hits: TFolder[] = []
+  const walk = (folder: TFolder) => {
+    for (const child of folder.children) {
+      if (!(child instanceof TFolder)) continue
+      const key = normalizeFolderKey(child.name)
+      if (key === wanted || (loose && key.length > 0 && (key.includes(wanted) || wanted.includes(key)))) {
+        hits.push(child)
+      }
+      walk(child)
+    }
+  }
+  walk(root)
+  return hits
 }
 
 export class LocalVaultAgent {
@@ -327,8 +351,29 @@ export class LocalVaultAgent {
         1,
         LIST_FOLDER_MAX_ENTRIES,
       )
-      const root = path ? this.app.vault.getAbstractFileByPath(path) : this.app.vault.getRoot()
-      if (!(root instanceof TFolder)) throw new Error(`没有找到文件夹：${path || '/'}`)
+      let root = path ? this.app.vault.getAbstractFileByPath(path) : this.app.vault.getRoot()
+      // 2026-08-19：用户说「放到 output 文件夹」，真实目录叫「03 output」——旧实现要求
+      // 路径逐字相同，对不上就直接报「没有找到文件夹」，AI 只能改去一个个 list_folder 猜，
+      // 于是出现「反复说继续却不干活」。现在按名字模糊解析一次；仍找不到就把最接近的
+      // 候选列给 AI，让它换准确路径重试，而不是空手而归。
+      if (!(root instanceof TFolder) && path) {
+        const matches = matchFoldersByName(this.app.vault.getRoot(), path)
+        if (matches.length === 1) {
+          root = matches[0]
+        } else if (matches.length > 1) {
+          throw new Error(
+            `「${path}」匹配到多个文件夹，请用准确路径重试：${matches.map((f) => f.path).slice(0, 8).join('、')}`,
+          )
+        }
+      }
+      if (!(root instanceof TFolder)) {
+        const near = path ? matchFoldersByName(this.app.vault.getRoot(), path, true) : []
+        throw new Error(
+          near.length > 0
+            ? `没有找到文件夹「${path}」。相近的有：${near.map((f) => f.path).slice(0, 8).join('、')}`
+            : `没有找到文件夹：${path || '/'}`,
+        )
+      }
       const entries: Array<{
         path: string
         type: 'folder' | 'file'

@@ -3693,7 +3693,23 @@ class ChatView extends ItemView {
         })
         const cloudText = typeof data.text === 'string' ? data.text.trim() : ''
         if (!cloudText) throw new Error('云端工具轮没有返回内容，请重试')
-        this.activityStep('✅ 云端写入轮完成', null)
+        // 0.7.59：只有服务端确认真的执行过写入工具，才算成功。此前仅凭「有文字返回」
+        // 就显示「✅ 云端写入轮完成」，模型嘴上说「已登记在 CRM 里」却一个工具都没调时，
+        // 用户以为客户录进去了、实际数据库里没有（Alina 2026-08-19 报障）。
+        const executedTools = Array.isArray(data.executedTools)
+          ? (data.executedTools as unknown[]).filter((name): name is string => typeof name === 'string')
+          : []
+        if (executedTools.length === 0) {
+          this.activityStep('⚠️ 本轮没有真正写入，已拦下', null)
+          return {
+            text:
+              `${cloudText}\n\n> ⚠️ **这一步没有真正保存。** 插件检查到本轮没有实际写入任务清单或客户管理。` +
+              `请把要记的信息再说一次（客户称呼、渠道来源、加微信日期、精准度、意向产品），或到 AI霖子网页版手动录入确认。`,
+            sources,
+            localSkillRunIds,
+          }
+        }
+        this.activityStep(`✅ 云端写入完成（${executedTools.length} 项）`, null)
         return { text: cloudText, sources, localSkillRunIds }
       }
 

@@ -606,11 +606,25 @@ function buildExcerpt(text: string, terms: string[], maxChars: number): string {
   return `${start > 0 ? '…' : ''}${clipped}${start + maxChars < joined.length ? '…' : ''}`
 }
 
+/** 单独出现时没有检索价值的单字；作为混合词的一部分（如「小B」）仍然保留。 */
+const GENERIC_SINGLE_HAN = new Set([
+  '的', '了', '和', '与', '或', '在', '是', '有', '个', '把', '给', '到', '从', '被',
+  '我', '你', '他', '她', '它', '们', '这', '那', '里', '中', '上', '下', '内', '外',
+])
+
 function buildSearchTerms(query: string): string[] {
   const normalized = normalizeText(query)
   const terms = new Set<string>()
-  for (const token of normalized.match(/[a-z0-9][a-z0-9._-]{1,}|[\p{Script=Han}]{2,}/gu) ?? []) {
+  // 2026-08-19 修复：旧正则要求英文 ≥2 字符、中文 ≥2 连续汉字，于是「小B」「小A」这类
+  // 中英混合短代号被整条丢弃 → terms 为空 → 搜索必然返回 0 个结果（Alina 实测：搜「小B」
+  // 0 条，但搜「小B 顾晓菲 沈立冬」有 8 条，正是因为后者靠另外两个名字才凑出了 term）。
+  // 客户代号、单字人名、缩写在真实使用里非常普遍，必须能搜到。
+  // 现在：中英混合整体成词（小b）、单个汉字也保留、单字母/数字仅在与其他字符相连时保留。
+  const tokenPattern = /[\p{Script=Han}]+[a-z0-9._-]+|[a-z0-9._-]+[\p{Script=Han}]+|[a-z0-9][a-z0-9._-]*|[\p{Script=Han}]+/gu
+  for (const token of normalized.match(tokenPattern) ?? []) {
     if (GENERIC_QUERY_WORDS.has(token)) continue
+    // 单个泛用汉字（的/了/和…）单独出现时没有检索价值，只在混合词里才保留
+    if (/^[\p{Script=Han}]$/u.test(token) && GENERIC_SINGLE_HAN.has(token)) continue
     if (/^[\p{Script=Han}]+$/u.test(token)) {
       if (token.length <= 12) terms.add(token)
       for (let index = 0; index < token.length - 1; index++) {
