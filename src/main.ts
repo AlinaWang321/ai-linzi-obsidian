@@ -59,8 +59,10 @@ import {
   type ChatIllustrationCandidate,
   type LocalImageReference,
   imageMediaTypeFromDataUrl,
+  fileToReferenceDataUrl,
 } from './actions'
 import { ActivityFeed } from './activity-feed-core'
+import { dropSummary, planDroppedFiles, type DropCandidate } from './chat-drop-core'
 import { extractCreateNoteBlocks, type CreateNoteBlock } from './create-note'
 import {
   explicitMemoryContent,
@@ -1790,6 +1792,7 @@ class ChatView extends ItemView {
         void this.send()
       }
     })
+    this.registerAttachmentDropAndPaste(footer)
 
     const sendRow = footer.createDiv({ cls: 'ai-linzi-send-row' })
     const sendMeta = sendRow.createDiv({ cls: 'ai-linzi-send-meta' })
@@ -2156,6 +2159,139 @@ class ChatView extends ItemView {
     if (this.chatImageAttachments.length === 0) return
     this.chatImageAttachments = []
     this.refreshAuthorizedContentUi()
+  }
+
+  /**
+   * 拖拽与粘贴附件（0.7.57）：截图后直接粘贴、文件直接拖进对话框，
+   * 不必再走「📎 → 选来源 → 弹窗挑文件」。
+   *
+   * **Mac 与 Windows 都覆盖**，因为走的都是浏览器原生事件而非平台快捷键：
+   * - 粘贴：监听 `paste` 事件，Cmd+V（Mac）与 Ctrl+V（Windows）由系统派发同一个事件；
+   *   Mac 的 Ctrl+Shift+Cmd+4、Windows 的 Win+Shift+S 截图都进剪贴板，同样接得住。
+   * - 拖文件：`dataTransfer.files`，Finder 与资源管理器行为一致；Mac 的 Shift+Cmd+4、
+   *   Windows 的 Win+PrtScn 截到文件后拖进来也走这条。
+   * - Obsidian 文件树拖拽：负载是内部相对路径（两平台都用 `/`，不受 Windows `\` 影响）。
+   *
+   * 图片进图片附件（视觉输入），MD/TXT/PDF/DOCX/HTML/PPTX 进精确授权资料（文本输入，
+   * 仍只读 Vault 内文件）。分类与校验逻辑在 chat-drop-core.ts，可单测。
+   */
+  private registerAttachmentDropAndPaste(zone: HTMLElement): void {
+    this.registerDomEvent(this.inputEl, 'paste', (event: ClipboardEvent) => {
+      const items = Array.from(event.clipboardData?.items ?? []).filter((item) => item.kind === 'file')
+      if (items.length === 0) return
+      const files = items.map((item) => item.getAsFile()).filter((file): file is File => file !== null)
+      if (files.length === 0) return
+      // 只有确实拿到文件才拦截默认粘贴，纯文本粘贴一律不受影响。
+      event.preventDefault()
+      void this.acceptDroppedFiles(files, [])
+    })
+
+    let dragDepth = 0
+    const setActive = (active: boolean) => zone.toggleClass('ai-linzi-drop-active', active)
+    this.registerDomEvent(zone, 'dragenter', (event: DragEvent) => {
+      if (!this.dragCarriesAttachment(event)) return
+      event.preventDefault()
+      dragDepth += 1
+      setActive(true)
+    })
+    this.registerDomEvent(zone, 'dragover', (event: DragEvent) => {
+      if (!this.dragCarriesAttachment(event)) return
+      // 不 preventDefault 浏览器就不会触发 drop。
+      event.preventDefault()
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+    })
+    this.registerDomEvent(zone, 'dragleave', () => {
+      dragDepth = Math.max(0, dragDepth - 1)
+      if (dragDepth === 0) setActive(false)
+    })
+    this.registerDomEvent(zone, 'drop', (event: DragEvent) => {
+      if (!this.dragCarriesAttachment(event)) return
+      event.preventDefault()
+      dragDepth = 0
+      setActive(false)
+      const files = Array.from(event.dataTransfer?.files ?? [])
+      const vaultFiles = this.vaultFilesFromDrag(event)
+      if (files.length === 0 && vaultFiles.length === 0) {
+        // 从网页里直接拖图片（Mac / Windows 都常见）只带 URL 不带文件，
+        // 静默失败会让用户以为插件坏了。
+        const raw = event.dataTransfer?.getData('text/uri-list')?.trim() ??
+          event.dataTransfer?.getData('text/plain')?.trim() ?? ''
+        if (/^https?:/i.test(raw)) {
+          new Notice('网页上的图片请先保存到电脑或知识库，再拖进来', 6000)
+        }
+        return
+      }
+      void this.acceptDroppedFiles(files, vaultFiles)
+    })
+  }
+
+  private dragCarriesAttachment(event: DragEvent): boolean {
+    const transfer = event.dataTransfer
+    if (!transfer) return false
+    if ([...transfer.types].includes('Files')) return true
+    // Obsidian 文件树拖拽走的是文本负载（路径或 wikilink），没有 Files 类型。
+    return [...transfer.types].some((type) => type === 'text/plain' || type === 'text/uri-list')
+  }
+
+  /** 从 Obsidian 文件树拖进来的项：负载是 Vault 相对路径或 [[wikilink]]。 */
+  private vaultFilesFromDrag(event: DragEvent): TFile[] {
+    const raw = event.dataTransfer?.getData('text/plain')?.trim()
+    if (!raw) return []
+    const files: TFile[] = []
+    for (const line of raw.split(/\r?\n/)) {
+      const cleaned = line.trim().replace(/^!?\[\[|\]\]$/g, '').split('|')[0].trim()
+      if (!cleaned) continue
+      const direct = this.app.vault.getAbstractFileByPath(cleaned)
+      const file = direct instanceof TFile
+        ? direct
+        : this.app.metadataCache.getFirstLinkpathDest(cleaned, '')
+      if (file instanceof TFile) files.push(file)
+    }
+    return files
+  }
+
+  /** 统一入口：外部文件（File）与 Vault 文件（TFile）走同一套分类、校验与落地。 */
+  private async acceptDroppedFiles(files: File[], vaultFiles: TFile[]): Promise<void> {
+    if (files.length === 0 && vaultFiles.length === 0) return
+    if (this.longDocumentPath) {
+      new Notice('长文任务不能同时带附件，请先清除长文任务')
+      return
+    }
+    const candidates: DropCandidate[] = [
+      ...files.map((file) => ({ name: file.name || '剪贴板图片.png', mimeType: file.type, size: file.size })),
+      ...vaultFiles.map((file) => ({ name: file.name, size: file.stat.size, vaultPath: file.path })),
+    ]
+    const plan = planDroppedFiles(candidates, this.chatImageAttachments.length)
+    if (plan.images.length > 0 && !(await this.plugin.requireProAccess('主对话图片附件'))) return
+
+    let added = 0
+    for (const candidate of plan.images) {
+      try {
+        const dataUrl = candidate.vaultPath
+          ? await vaultImageToReferenceDataUrl(this.plugin, candidate.vaultPath)
+          : await fileToReferenceDataUrl(
+              files.find((file) => (file.name || '剪贴板图片.png') === candidate.name) as File,
+            )
+        this.chatImageAttachments.push({ name: candidate.name, dataUrl })
+        added += 1
+      } catch (error) {
+        plan.rejections.push(`${candidate.name} 读取失败：${(error as Error).message}`)
+      }
+    }
+    const documentPaths = plan.documents
+      .map((candidate) => candidate.vaultPath as string)
+      .filter((path) => !this.authorizedContentPaths.includes(path))
+    if (documentPaths.length > 0) {
+      this.authorizedContentPaths = [...this.authorizedContentPaths, ...documentPaths]
+      added += documentPaths.length
+    }
+    if (added > 0) {
+      this.refreshAuthorizedContentUi()
+      this.inputEl.focus()
+      const summary = dropSummary({ ...plan, documents: plan.documents.slice(0, documentPaths.length) })
+      if (summary) new Notice(summary, 3000)
+    }
+    for (const reason of plan.rejections.slice(0, 3)) new Notice(reason, 6000)
   }
 
   private refreshAuthorizedContentUi(): void {

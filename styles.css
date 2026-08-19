@@ -3478,3 +3478,28 @@ button.ai-linzi-vault-source-link:focus-visible {
   0%, 100% { opacity: 0.72; }
   50% { opacity: 1; }
 }
+
+/* 拖拽附件进对话框时的高亮（0.7.57） */
+.ai-linzi-drop-active {
+  position: relative;
+  outline: 2px dashed var(--interactive-accent);
+  outline-offset: -4px;
+  border-radius: 10px;
+  /* 先给所有版本一个可见底色，再让支持 color-mix 的版本换成带主题色的淡底 */
+  background: var(--background-modifier-hover);
+  background: color-mix(in srgb, var(--interactive-accent) 7%, transparent);
+  transition: background .15s ease, outline-color .15s ease;
+}
+.ai-linzi-drop-active::after {
+  content: '松手即可添加图片或资料';
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  color: var(--interactive-accent);
+  background: var(--background-primary);
+  padding: 2px 10px;
+  border-radius: 99px;
+  pointer-events: none;
+}

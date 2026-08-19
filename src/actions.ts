@@ -1866,6 +1866,11 @@ async function browserImageToReferenceDataUrl(file: File): Promise<string> {
   return imageBlobToReferenceDataUrl(file, `无法读取「${file.name}」`)
 }
 
+/** 拖拽/粘贴进对话框的外部图片（0.7.57）；与「从电脑上传图片」同一套转换。 */
+export async function fileToReferenceDataUrl(file: File): Promise<string> {
+  return browserImageToReferenceDataUrl(file)
+}
+
 function timestampForFilename(): string {
   const d = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
