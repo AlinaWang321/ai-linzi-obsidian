@@ -8,6 +8,7 @@ import {
   normalizePath,
 } from 'obsidian'
 import { toPng } from 'html-to-image'
+import { friendlyErrorMessage } from './friendly-error'
 import type AiLinziPlugin from './main'
 import {
   CUSTOMER_CONSULTATION_OUTPUT_FOLDER,
@@ -339,7 +340,7 @@ export async function runCustomerConsultationBrief(plugin: AiLinziPlugin): Promi
     plugin.reportSkillStatus(`✅ 客户咨询简报 PNG 已生成并打开：${path}`, statusId)
     new Notice(`✅ 客户咨询简报 PNG 已生成：${path}`, 8000)
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = friendlyErrorMessage(error instanceof Error ? error.message : String(error))
     plugin.reportSkillStatus(`❌ 客户咨询简报失败：${message}`, statusId)
     new Notice(`❌ 客户咨询简报：${message}`, 9000)
   } finally {

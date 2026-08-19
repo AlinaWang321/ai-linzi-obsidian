@@ -15,6 +15,7 @@ import {
   requestUrl,
 } from 'obsidian'
 import type AiLinziPlugin from './main'
+import { friendlyErrorMessage } from './friendly-error'
 import {
   insertCoverEmbed,
   insertEmbeds,
@@ -649,7 +650,7 @@ export async function runSalesReview(plugin: AiLinziPlugin) {
     )
     new Notice('✅ 谈单诊断报告已落盘')
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
+    const message = friendlyErrorMessage(e instanceof Error ? e.message : String(e))
     plugin.reportSkillStatus(`❌ 谈单复盘失败：${message}`, statusId)
     new Notice(`❌ 谈单复盘:${message}`, 8000)
   } finally {
@@ -748,7 +749,7 @@ export async function feedKnowledgeWithResult(
     }
   } catch (e) {
     n.hide()
-    const message = e instanceof Error ? e.message : String(e)
+    const message = friendlyErrorMessage(e instanceof Error ? e.message : String(e))
     new Notice(`❌ 存入 AI霖子知识库：${message}`, 8000)
     return { status: 'failed', filePath: note.file.path, message }
   }
@@ -777,7 +778,7 @@ export async function feedKnowledgeWithResult(
     return { status: 'saved', filePath: note.file.path, sectionTitle: title }
   } catch (e) {
     // starter_wall(403)/kb_section_full/kb_total_full(422) 的 error 文案服务端已写得很友好,直接透传
-    const message = e instanceof Error ? e.message : String(e)
+    const message = friendlyErrorMessage(e instanceof Error ? e.message : String(e))
     new Notice(`存入 AI霖子知识库：${message}`, 10000)
     return { status: 'failed', filePath: note.file.path, message }
   }
