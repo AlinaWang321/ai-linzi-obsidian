@@ -23,6 +23,8 @@ assert.equal(classifyDropped('图.webp'), 'image')
 assert.equal(classifyDropped('逐字稿.md'), 'document')
 assert.equal(classifyDropped('合同.pdf'), 'document')
 assert.equal(classifyDropped('课件.pptx'), 'document')
+assert.equal(classifyDropped('客户数据.xlsx'), 'document')
+assert.equal(classifyDropped('客户数据.xls'), 'unsupported')
 assert.equal(classifyDropped('存档.zip'), 'unsupported')
 assert.equal(classifyDropped('视频.mp4'), 'unsupported')
 // 剪贴板截图常常没有文件名，只能靠 MIME 判定
@@ -78,6 +80,21 @@ console.log('第4组 资料文件必须在知识库内')
   assert.match(plan.rejections[0], /不在知识库里.*放进 Obsidian 库/)
 }
 
+console.log('第4b组 电脑 Excel 例外 + 同名文件身份稳定')
+{
+  const plan = planDroppedFiles(
+    [
+      { name: '客户数据.xlsx', sourceIndex: 0 },
+      { name: '客户数据.xlsx', sourceIndex: 1 },
+      { name: '旧表.xls', sourceIndex: 2 },
+    ],
+    0,
+  )
+  assert.equal(plan.documents.length, 2, '电脑 .xlsx 应直接进入本地解析')
+  assert.deepEqual(plan.documents.map((item) => item.sourceIndex), [0, 1], '同名文件必须保留各自来源索引')
+  assert.match(plan.rejections[0], /旧版 Excel.*另存为.*\.xlsx/)
+}
+
 console.log('第5组 混合拖入 + 拒绝理由必须说人话')
 {
   const plan = planDroppedFiles(
@@ -116,6 +133,10 @@ console.log('第6组 UI 接线契约')
   assert.ok(main.includes('event.preventDefault()'), 'drop 前必须阻止默认行为，否则浏览器直接打开文件')
   assert.ok(main.includes("zone.toggleClass('ai-linzi-drop-active', active)"), '拖拽必须有视觉反馈')
   assert.ok(main.includes('vaultFilesFromDrag'), '必须支持从 Obsidian 文件树拖拽')
+  assert.match(main, /files\.map\(\(file, sourceIndex\)/, '候选附件必须记录稳定来源索引')
+  assert.match(main, /files\[candidate\.sourceIndex\]/, '读取时必须按来源索引取原文件，不能按同名查第一份')
+  assert.ok(main.includes('uploadedSpreadsheetAttachments'), '电脑 Excel 必须只在当前进程保留解析文字')
+  assert.ok(main.includes('从电脑上传 Excel（.xlsx）'), '附件菜单必须有可发现的 Excel 入口')
   assert.ok(main.includes("requireProAccess('主对话图片附件')"), '图片附件仍走 Pro 权限闸')
   assert.ok(
     main.includes("new Notice('长文任务不能同时带附件，请先清除长文任务')"),

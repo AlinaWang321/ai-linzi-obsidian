@@ -7,7 +7,8 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 ## Features
 
 - Chat with AI Linzi in a sidebar. A current-note request reads only a Markdown tab that is still open; closing the tab revokes that access.
-- Search Markdown, TXT, text-based PDF, and DOCX files locally.
+- Search Markdown, TXT, text-based PDF, DOCX, HTML, PPTX, and XLSX files locally.
+- Add `.xlsx` workbooks to the main chat from the Vault or directly from the computer. Computer workbooks are converted to bounded worksheet text on-device; the original file is never uploaded or saved in chat history. Legacy `.xls` files must first be saved as `.xlsx`.
 - Run sales reviews and customer consultation briefs from one explicitly selected Markdown, TXT, text-based PDF, or DOCX transcript; the original file stays local.
 - Send only a bounded set of relevant excerpts to the service.
 - Explicitly select complete documents for authorized long-document tasks.

@@ -5,6 +5,7 @@ import {
   extractHtmlText,
   extractPdfText,
   extractPptxText,
+  extractXlsxText,
   isLocalSearchExtension,
   LOCAL_SEARCH_FILE_LIMITS,
 } from './local-document-text'
@@ -35,7 +36,7 @@ export async function readLocalDocumentText(
 ): Promise<LongDocumentText> {
   const extension = file.extension.toLocaleLowerCase()
   if (!isLocalSearchExtension(extension)) {
-    throw new Error('长文任务目前支持 MD、TXT、HTML、PPTX、可复制文字的 PDF 和 DOCX')
+    throw new Error('长文任务目前支持 MD、TXT、HTML、PPTX、XLSX、可复制文字的 PDF 和 DOCX')
   }
   const maxFileBytes = LOCAL_SEARCH_FILE_LIMITS[extension] ?? 0
   if (maxFileBytes > 0 && file.stat.size > maxFileBytes) {
@@ -55,6 +56,7 @@ export async function readLocalDocumentText(
     else if (extension === 'docx') text = extractDocxText(data, readLimit)
     else if (extension === 'html' || extension === 'htm') text = extractHtmlText(data, readLimit)
     else if (extension === 'pptx') text = extractPptxText(data, readLimit)
+    else if (extension === 'xlsx') text = extractXlsxText(data, readLimit)
   }
   if (!text.trim()) {
     const hint = extension === 'pdf' ? '；扫描版 PDF 需要先做 OCR' : ''

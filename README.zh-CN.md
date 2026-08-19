@@ -5,7 +5,7 @@ AI Linzi connects Alina's business coaching services to your local knowledge Vau
 ## Features
 
 - Chat with AI Linzi in a sidebar. When the request explicitly refers to the current note, the plugin reads that one note for the task.
-- Search Markdown, TXT, text-based PDF, and DOCX files locally before sending only a few relevant excerpts to the service.
+- Search Markdown, TXT, text-based PDF, DOCX, HTML, PPTX, and XLSX files locally before sending only a few relevant excerpts to the service.
 - Create and edit content, process long documents, and save results back to the Vault.
 - Generate or revise article illustrations and save successful images locally.
 - Format WeChat articles and send them to a configured WeChat draft box.
@@ -22,11 +22,12 @@ This public plugin is a thin client. Private prompts, model routing, billing, ac
 
 ## 功能路线
 
+- **v0.7.62**：插件主对话支持 Excel `.xlsx`。可以从电脑选择/拖入工作簿，也可以授权 Vault 内的 `.xlsx`；电脑文件只在本机按工作表解析成文字，原始 Excel 不上传、不写入 Vault 或聊天历史。旧版 `.xls` 请先另存为 `.xlsx`。本版同时修复短客户代号搜索、最近文件计数、同名附件错配、Office 解压上限、文档 Pro 门禁，以及“工具调用了但数据库没写入却显示成功”的云端写入假回执。
 - **v0.7.61**：多步技能不再卡在中途。「先建档案 → 再写 CRM → 再建任务」这类分步流程，此前在第二步会被卡死（AI 在本地文件里找 CRM 找不到，反复重试直到报错）；现在每一步都能正确切换到对应的通道。配合新技能可实现：一份逐字稿一条龙处理成客户档案 + CRM 录入 + 跟进任务。
 - **v0.7.60**：问「最近改了什么」一步到位。AI 现在可以直接按时间查文件（最近 N 天改动、按修改时间排序，一次调用扫全库），不再一个个文件夹翻——「知识库日报」这类技能在几千文件的大库上也能跑了。另：客户录入 CRM 成功后，AI 必须把客户编号原样告诉你（如「已录入：小D · 第 18 号」），编号就是"真的记进去了"的凭证。
 - **v0.7.59**：三个真实故障的修复。① **搜得到短代号**：搜「小A」「小B」这类客户代号此前必定返回 0 条（分词规则把中英混合的两字词整个丢掉了），现在正常；客户编号、单字人名、中英混名同样修复。② **文件夹名可以说个大概**：说「放到 output 文件夹」而真实目录叫「03 output」时不再报找不到，会自动对上；名字对不上时会列出相近的目录让 AI 选，不再空手而归。③ **不再谎报保存成功**：AI 说「已加入 CRM」但实际没写入的情况，插件现在能识别并明确提示这一步没有真正保存、该怎么补救。
 - **v0.7.58**：报错说人话。销售复盘、客户咨询简报遇到网络问题时，不再显示 `net::ERR_CONNECTION_CLOSED` 这类技术错误码，改为「网络中断了，内容没能传完。换个网络环境或稍后再试；逐字稿很长时，可以先拆成两段分别处理」等可直接照做的提示。
-- **v0.7.57**：图片和文件可以直接拖进对话框、截图可以直接粘贴。① **粘贴**：截图后在对话框按 Cmd+V（Mac）或 Ctrl+V（Windows）直接贴进去，不用先存成文件；② **拖拽**：从访达/资源管理器或 Obsidian 文件树，把图片和资料直接拖进对话框，拖到时输入区会高亮提示；③ 图片自动进图片附件（最多 3 张，Pro），MD/TXT/PDF/DOCX/HTML/PPTX 自动进"已授权资料"；④ 不支持的类型、超过 3 张、超过 8MB、以及从网页直接拖图片（只有链接没有文件）都会明确告诉你原因，不再静默失败。Mac 与 Windows 行为一致。
+- **v0.7.57**：图片和文件可以直接拖进对话框、截图可以直接粘贴。① **粘贴**：截图后在对话框按 Cmd+V（Mac）或 Ctrl+V（Windows）直接贴进去，不用先存成文件；② **拖拽**：从访达/资源管理器或 Obsidian 文件树，把图片和资料直接拖进对话框，拖到时输入区会高亮提示；③ 图片自动进图片附件（最多 3 张，Pro），MD/TXT/PDF/DOCX/HTML/PPTX 自动进"已授权资料"；④ 不支持的类型、超过 3 张、超过 8MB、以及从网页直接拖图片（只有链接没有文件）都会明确告诉你原因，不再静默失败。Mac 与 Windows 行为一致。v0.7.62 起另支持从电脑直接拖入 XLSX。
 - **v0.7.56**：内部质量整备（不改变任何使用方式）。① 上架前的自动体检从只看 8 个源文件扩到全部 44 个，并能区分真违规与导出图片的正常做法，豁免明细公开可见；② 清掉约 340 行没人使用的旧代码，并打开编译器的未使用检查，以后不会再堆积；③ 活动流的逻辑抽成独立模块并补齐真跑一遍的行为测试（此前只检查源码里有没有某段文字，改坏了也发现不了）。
 - **v0.7.55**：修复上传图片被拒收。此前主对话上传 PNG 图片（微信、系统截图默认就是 PNG）会被拒绝，并显示自相矛盾的「图片必须是 PNG、JPG 或 WebP」——原因是插件把图片类型写死成 JPEG，与图片真实类型不符。现在类型从图片本身读取，PNG / JPG / WebP 全部正常。三个上传入口（主对话流式、非流式、内容看板）同时修复。
 - **v0.7.54**：交互看板 + 历史遗留修复。① 看板/日报类 HTML 成品改为**交互看板版式**：顶部标签页切换、任务卡片、可勾选打钩（进度自动统计、勾选状态存本机浏览器）、搜索过滤、卡片折叠、深色模式；长文继续用文档版式。② 修复驾驶舱四个目录的历史默认值迁移——v0.6.36～v0.7.13 的老用户「第二大脑」四张卡此前会永久显示 0 且没有任何提示。③「我的 Skills 文件夹」清空输入框现在回退到当前默认目录，不再写回已废弃的旧目录。④「撤销上一次 AI Vault 整理」不再跳过最近的操作；撤销不了时按操作类型说清去哪里恢复，不再一律说「只有回收站笔记」。⑤ 明确拒绝的说法（「别把这些文件整理了」「不要放到 wiki 文件夹」）一律不再进入整理流程；「整理这批文件，仅生成一份清单」不再被误判成只读。⑥ 短消息不再被无条件当成「继续上一轮任务」。⑦ 网络异常回退到常规通道时也会正确推进任务，此前会给出文字目录树而不出确认卡。

@@ -431,10 +431,11 @@ export class LocalVaultAgent {
       const totalFiles = finalEntries.filter((entry) => entry.type === 'file').length
       const totalFolders = finalEntries.length - totalFiles
       return {
-        path: path || '/',
+        path: root.path || '/',
         depth,
         ...(recent.recentMode ? { mode: 'recent', sortBy: 'modified', sinceDays: sinceDays || undefined } : {}),
-        totalEntries: entries.length,
+        totalEntries: finalEntries.length,
+        scannedEntries: entries.length,
         totalFiles,
         totalFolders,
         returnedEntries: page.length,

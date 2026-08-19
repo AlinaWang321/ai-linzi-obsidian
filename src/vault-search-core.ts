@@ -15,6 +15,8 @@ export interface VaultSearchOptions {
   excludedFolders?: string[]
   /** 仅用于可重复测试；生产环境默认使用当前设备时间。 */
   nowMs?: number
+  /** 只供 Agent 明确调用 vault_search 使用；允许“小B”这类短代号，自动预扫仍保持四字门槛。 */
+  explicit?: boolean
 }
 
 export interface VaultSearchResult {
@@ -323,7 +325,7 @@ function pathMatchesYearMonth(value: string, year: number, month: number): boole
 
 function consultationSessionKey(doc: VaultSearchDocument): string {
   const basename = doc.filename
-    .replace(/\.(?:md|txt|pdf|docx|html?|pptx)$/i, '')
+    .replace(/\.(?:md|txt|pdf|docx|html?|pptx|xlsx)$/i, '')
     .replace(/[-_\s](?:part\s*)?\d+$/i, '')
     .replace(/[（(]\d+[）)]$/, '')
   const timestamp = basename.match(/(?:19|20)\d{7,12}/)?.[0]
@@ -344,7 +346,13 @@ export function searchVaultDocuments(
   documents: VaultSearchDocument[],
   options: VaultSearchOptions = {},
 ): VaultSearchResult[] {
-  if (!shouldSearchVault(query)) return []
+  const normalized = normalizeText(query)
+  const terms = buildSearchTerms(query)
+  if (options.explicit) {
+    if (!normalized || NO_SEARCH_MESSAGES.has(normalized) || terms.length === 0) return []
+  } else if (!shouldSearchVault(query)) {
+    return []
+  }
   const maxSources = clampInt(options.maxSources, 1, 10, VAULT_SEARCH_DEFAULTS.maxSources)
   // 天花板 2026-07-30 从 2000/12000 放宽到 4000/20000(Alina 拍板大幅放宽;
   // 实际生效值由服务端 capabilities 下发,这里只是本地引擎的硬保护)
@@ -362,7 +370,6 @@ export function searchVaultDocuments(
   )
   const excludedPathSet = new Set((options.excludedPaths ?? []).map(normalizePath))
   const excludedFolders = (options.excludedFolders ?? []).map(normalizePath).filter(Boolean)
-  const terms = buildSearchTerms(query)
   const queryPhrase = normalizeText(query).replace(/\s+/g, ' ')
   const querySignals = buildQuerySignals(query, options.nowMs ?? Date.now())
   const eligible = documents.filter(

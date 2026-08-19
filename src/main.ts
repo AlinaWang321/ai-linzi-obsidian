@@ -103,6 +103,7 @@ import {
   splitLongDocument,
   type LongDocumentChunk,
 } from './long-document'
+import { extractXlsxText, LOCAL_SEARCH_FILE_LIMITS } from './local-document-text'
 import { LocalVaultSearch } from './vault-search'
 import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
@@ -1664,6 +1665,12 @@ class ChatView extends ItemView {
   private activeImageMessageId = ''
   /** 只保存用户明确勾选的本地路径；正文不会写入会话历史或插件设置。 */
   private authorizedContentPaths: string[] = []
+  /** 从电脑选择的 .xlsx：原文件本机解析后只保留文字在内存，不写 Vault/历史/设置。 */
+  private uploadedSpreadsheetAttachments: Array<{
+    id: string
+    filename: string
+    text: string
+  }> = []
   private authorizedContentChars = 0
   /** 长文原文与分段只驻留在当前 Obsidian 进程内，不写 data.json 或会话历史。 */
   private longDocumentPath = ''
@@ -2071,6 +2078,7 @@ class ChatView extends ItemView {
         new Notice('长文任务不能同时带图片，已移除待发送图片')
       }
       this.authorizedContentPaths = []
+      this.uploadedSpreadsheetAttachments = []
       this.authorizedContentChars = 0
       this.longDocumentPath = selection.path
       this.longDocumentChars = selection.totalChars
@@ -2079,13 +2087,16 @@ class ChatView extends ItemView {
       this.longDocumentPath = ''
       this.longDocumentChars = 0
       this.authorizedContentPaths = selection.paths
-      this.authorizedContentChars = selection.totalChars
+      this.authorizedContentChars =
+        selection.totalChars +
+        this.uploadedSpreadsheetAttachments.reduce((sum, item) => sum + item.text.length, 0)
     }
     this.refreshAuthorizedContentUi()
   }
 
   private clearAuthorizedContent(): void {
     this.authorizedContentPaths = []
+    this.uploadedSpreadsheetAttachments = []
     this.authorizedContentChars = 0
     this.longDocumentPath = ''
     this.longDocumentChars = 0
@@ -2117,6 +2128,12 @@ class ChatView extends ItemView {
         .setTitle('从电脑上传图片')
         .setIcon('folder-open')
         .onClick(() => void this.addComputerChatImages()),
+    )
+    menu.addItem((item) =>
+      item
+        .setTitle('从电脑上传 Excel（.xlsx）')
+        .setIcon('sheet')
+        .onClick(() => void this.addComputerSpreadsheets()),
     )
     menu.showAtMouseEvent(event)
   }
@@ -2155,6 +2172,27 @@ class ChatView extends ItemView {
     })
   }
 
+  private async addComputerSpreadsheets(): Promise<void> {
+    if (this.longDocumentPath) {
+      new Notice('长文任务不能同时带附件，请先清除长文任务')
+      return
+    }
+    if (!(await this.plugin.requireProAccess('主对话 Excel 附件'))) return
+    const input = this.containerEl.ownerDocument.createElement('input')
+    input.type = 'file'
+    input.accept = '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    input.multiple = true
+    input.hidden = true
+    this.containerEl.ownerDocument.body.appendChild(input)
+    input.addEventListener('change', () => {
+      const files = Array.from(input.files ?? [])
+      input.remove()
+      if (files.length > 0) void this.acceptDroppedFiles(files, [])
+    }, { once: true })
+    input.addEventListener('cancel', () => input.remove(), { once: true })
+    input.click()
+  }
+
   private clearChatImageAttachments(): void {
     if (this.chatImageAttachments.length === 0) return
     this.chatImageAttachments = []
@@ -2172,8 +2210,9 @@ class ChatView extends ItemView {
    *   Windows 的 Win+PrtScn 截到文件后拖进来也走这条。
    * - Obsidian 文件树拖拽：负载是内部相对路径（两平台都用 `/`，不受 Windows `\` 影响）。
    *
-   * 图片进图片附件（视觉输入），MD/TXT/PDF/DOCX/HTML/PPTX 进精确授权资料（文本输入，
-   * 仍只读 Vault 内文件）。分类与校验逻辑在 chat-drop-core.ts，可单测。
+   * 图片进图片附件（视觉输入），MD/TXT/PDF/DOCX/HTML/PPTX/XLSX 进精确授权资料。
+   * 一般文档仍只读 Vault 内文件；电脑 .xlsx 在本机解析后只把文字作为授权内容使用。
+   * 分类与校验逻辑在 chat-drop-core.ts，可单测。
    */
   private registerAttachmentDropAndPaste(zone: HTMLElement): void {
     this.registerDomEvent(this.inputEl, 'paste', (event: ClipboardEvent) => {
@@ -2258,20 +2297,31 @@ class ChatView extends ItemView {
       return
     }
     const candidates: DropCandidate[] = [
-      ...files.map((file) => ({ name: file.name || '剪贴板图片.png', mimeType: file.type, size: file.size })),
+      ...files.map((file, sourceIndex) => ({
+        name: file.name || '剪贴板图片.png',
+        mimeType: file.type,
+        size: file.size,
+        sourceIndex,
+      })),
       ...vaultFiles.map((file) => ({ name: file.name, size: file.stat.size, vaultPath: file.path })),
     ]
     const plan = planDroppedFiles(candidates, this.chatImageAttachments.length)
-    if (plan.images.length > 0 && !(await this.plugin.requireProAccess('主对话图片附件'))) return
+    if (
+      plan.images.length + plan.documents.length > 0 &&
+      !(await this.plugin.requireProAccess(plan.documents.length > 0 ? '主对话文件附件' : '主对话图片附件'))
+    ) return
 
     let added = 0
     for (const candidate of plan.images) {
       try {
+        const sourceFile = candidate.sourceIndex === undefined
+          ? undefined
+          : files[candidate.sourceIndex]
         const dataUrl = candidate.vaultPath
           ? await vaultImageToReferenceDataUrl(this.plugin, candidate.vaultPath)
-          : await fileToReferenceDataUrl(
-              files.find((file) => (file.name || '剪贴板图片.png') === candidate.name) as File,
-            )
+          : sourceFile
+            ? await fileToReferenceDataUrl(sourceFile)
+            : (() => { throw new Error('没有找到原始图片') })()
         this.chatImageAttachments.push({ name: candidate.name, dataUrl })
         added += 1
       } catch (error) {
@@ -2280,15 +2330,75 @@ class ChatView extends ItemView {
     }
     const documentPaths = plan.documents
       .map((candidate) => candidate.vaultPath as string)
+      .filter(Boolean)
       .filter((path) => !this.authorizedContentPaths.includes(path))
     if (documentPaths.length > 0) {
       this.authorizedContentPaths = [...this.authorizedContentPaths, ...documentPaths]
       added += documentPaths.length
     }
+    let addedComputerSpreadsheets = 0
+    if (plan.documents.some((candidate) => !candidate.vaultPath)) {
+      let capabilities: PluginCapabilities | undefined
+      try {
+        capabilities = await this.plugin.getCapabilities()
+      } catch {
+        // requireProAccess 已完成真实权限校验；旧能力接口时沿用保守默认值。
+      }
+      const limits = this.authorizedContentLimits(capabilities)
+      for (const candidate of plan.documents.filter((item) => !item.vaultPath)) {
+        try {
+          const sourceFile = candidate.sourceIndex === undefined
+            ? undefined
+            : files[candidate.sourceIndex]
+          if (!sourceFile) throw new Error('没有找到原始 Excel 文件')
+          const maxBytes = LOCAL_SEARCH_FILE_LIMITS.xlsx
+          if (sourceFile.size > maxBytes) {
+            throw new Error(`文件超过 ${Math.round(maxBytes / 1024 / 1024)}MB 上限`)
+          }
+          if (
+            this.authorizedContentPaths.length +
+            this.uploadedSpreadsheetAttachments.length +
+            1 > limits.maxFiles
+          ) {
+            throw new Error(`主对话单次最多带上 ${limits.maxFiles} 份资料`)
+          }
+          const text = extractXlsxText(
+            new Uint8Array(await sourceFile.arrayBuffer()),
+            limits.maxPerFileChars + 1,
+          )
+          if (!text.trim()) throw new Error('工作簿里没有可读取的单元格内容')
+          if (text.length > limits.maxPerFileChars) {
+            throw new Error(
+              `解析后超过单份 ${limits.maxPerFileChars.toLocaleString('zh-CN')} 字上限，请拆分工作簿`,
+            )
+          }
+          const nextTotal = this.authorizedContentChars + text.length
+          if (nextTotal > limits.maxTotalChars) {
+            throw new Error(
+              `已授权内容超过 ${limits.maxTotalChars.toLocaleString('zh-CN')} 字上限，请减少文件`,
+            )
+          }
+          this.uploadedSpreadsheetAttachments.push({
+            id: uid(),
+            filename: candidate.name,
+            text,
+          })
+          this.authorizedContentChars = nextTotal
+          addedComputerSpreadsheets += 1
+          added += 1
+        } catch (error) {
+          plan.rejections.push(`${candidate.name} 解析失败：${(error as Error).message}`)
+        }
+      }
+    }
     if (added > 0) {
       this.refreshAuthorizedContentUi()
       this.inputEl.focus()
-      const summary = dropSummary({ ...plan, documents: plan.documents.slice(0, documentPaths.length) })
+      const acceptedDocumentCount = documentPaths.length + addedComputerSpreadsheets
+      const summary = dropSummary({
+        ...plan,
+        documents: plan.documents.slice(0, acceptedDocumentCount),
+      })
       if (summary) new Notice(summary, 3000)
     }
     for (const reason of plan.rejections.slice(0, 3)) new Notice(reason, 6000)
@@ -2296,7 +2406,9 @@ class ChatView extends ItemView {
 
   private refreshAuthorizedContentUi(): void {
     if (!this.authorizedContentBtn || !this.authorizedContentStatusEl) return
-    const count = this.authorizedContentPaths.length
+    const vaultDocumentCount = this.authorizedContentPaths.length
+    const spreadsheetCount = this.uploadedSpreadsheetAttachments.length
+    const count = vaultDocumentCount + spreadsheetCount
     const imageCount = this.chatImageAttachments.length
     const isLongDocument = Boolean(this.longDocumentPath)
     const attachmentCount = (isLongDocument ? 1 : count) + imageCount
@@ -2340,6 +2452,13 @@ class ChatView extends ItemView {
             ? ` · ${this.authorizedContentChars.toLocaleString('zh-CN')} 字`
             : ''),
       )
+      if (spreadsheetCount > 0) {
+        statusParts.push(
+          `电脑 Excel（仅本机解析）：${this.uploadedSpreadsheetAttachments
+            .map((item) => item.filename)
+            .join('、')}`,
+        )
+      }
     }
     if (imageCount > 0) {
       statusParts.push(
@@ -2360,7 +2479,10 @@ class ChatView extends ItemView {
   private async authorizedContentContext(
     currentNotePath?: string,
   ): Promise<{ items: { filename: string; path: string; text: string }[] } | undefined> {
-    if (this.authorizedContentPaths.length === 0) return undefined
+    if (
+      this.authorizedContentPaths.length === 0 &&
+      this.uploadedSpreadsheetAttachments.length === 0
+    ) return undefined
     const capabilities = await this.plugin.getCapabilities()
     if (capabilities.tier !== 'pro' && capabilities.tier !== 'business') {
       this.clearAuthorizedContent()
@@ -2389,8 +2511,28 @@ class ChatView extends ItemView {
       }
       items.push({ filename: file.name, path: file.path, text })
     }
+    for (const attachment of this.uploadedSpreadsheetAttachments) {
+      if (!attachment.text.trim()) continue
+      if (attachment.text.length > limits.maxPerFileChars) {
+        throw new Error(
+          `《${attachment.filename}》超过单份 ${limits.maxPerFileChars.toLocaleString('zh-CN')} 字上限，` +
+          '请拆分工作簿后再使用',
+        )
+      }
+      totalChars += attachment.text.length
+      if (totalChars > limits.maxTotalChars) {
+        throw new Error(
+          `已授权内容超过 ${limits.maxTotalChars.toLocaleString('zh-CN')} 字上限，请减少文件后重试`,
+        )
+      }
+      items.push({
+        filename: attachment.filename,
+        path: `computer-upload/${attachment.id}/${attachment.filename}`,
+        text: attachment.text,
+      })
+    }
     if (items.length > limits.maxFiles) {
-      throw new Error(`单次最多带上 ${limits.maxFiles} 篇笔记`)
+      throw new Error(`单次最多带上 ${limits.maxFiles} 份资料`)
     }
     this.authorizedContentChars = totalChars
     this.refreshAuthorizedContentUi()
@@ -2754,7 +2896,9 @@ class ChatView extends ItemView {
             localSkillContext: localSkill ? this.localSkills.context(localSkill) : undefined,
             // 已由用户精确勾选的整篇资料可以直接用于回答或生成成品，但这一轮不再
             // 额外开放整个 Vault 工具，避免“精确授权”被扩大成未选择文件的读取。
-            vaultAccess: this.authorizedContentPaths.length === 0,
+            vaultAccess:
+              this.authorizedContentPaths.length === 0 &&
+              this.uploadedSpreadsheetAttachments.length === 0,
             vaultSearch: vaultSearch.context,
             noteEdit,
             noteImageIntent: singleIllustration,
@@ -3700,10 +3844,12 @@ class ChatView extends ItemView {
         // 0.7.59：只有服务端确认真的执行过写入工具，才算成功。此前仅凭「有文字返回」
         // 就显示「✅ 云端写入轮完成」，模型嘴上说「已登记在 CRM 里」却一个工具都没调时，
         // 用户以为客户录进去了、实际数据库里没有（Alina 2026-08-19 报障）。
-        const executedTools = Array.isArray(data.executedTools)
-          ? (data.executedTools as unknown[]).filter((name): name is string => typeof name === 'string')
+        const successfulWriteTools = Array.isArray(data.successfulWriteTools)
+          ? (data.successfulWriteTools as unknown[]).filter(
+              (name): name is string => typeof name === 'string',
+            )
           : []
-        if (executedTools.length === 0) {
+        if (successfulWriteTools.length === 0) {
           this.activityStep('⚠️ 本轮没有真正写入，已拦下', null)
           return {
             text:
@@ -3713,7 +3859,7 @@ class ChatView extends ItemView {
             localSkillRunIds,
           }
         }
-        this.activityStep(`✅ 云端写入完成（${executedTools.length} 项）`, null)
+        this.activityStep(`✅ 云端写入完成（${successfulWriteTools.length} 项）`, null)
         return { text: cloudText, sources, localSkillRunIds }
       }
 

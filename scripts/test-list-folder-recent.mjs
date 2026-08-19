@@ -64,6 +64,9 @@ console.log('第5组 接线契约')
   assert.match(agent, /const sinceDays = clampInt\(call\.arguments\.sinceDays, 0, 0, 365\)/, '必须解析 sinceDays')
   assert.match(agent, /recentRequested \? LIST_FOLDER_MAX_DEPTH : 1/, '时间模式默认扫全库')
   assert.match(agent, /applyRecentListFilter\(entries, \{ sortBy, sinceDays, now: Date\.now\(\) \}\)/, '必须应用过滤')
+  assert.match(agent, /totalEntries: finalEntries\.length/, '时间过滤后的 totalEntries 必须等于过滤结果')
+  assert.match(agent, /scannedEntries: entries\.length/, '原始扫描量必须单独回传，不能冒充过滤结果')
+  assert.match(agent, /path: root\.path \|\| '\/'/, '模糊命中的文件夹必须回传真正解析后的路径')
   assert.match(agent, /mode: 'recent'/, '返回体必须回显时间模式')
 }
 

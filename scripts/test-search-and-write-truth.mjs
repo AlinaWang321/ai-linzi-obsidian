@@ -53,8 +53,8 @@ console.log('第3组 文件夹名模糊匹配')
 console.log('第4组 云端写入不得谎报成功')
 {
   const main = readFileSync(join(root, 'src/main.ts'), 'utf8')
-  assert.match(main, /data\.executedTools/, '必须读取服务端回传的真实执行工具')
-  assert.match(main, /executedTools\.length === 0/, '零工具调用必须被识别')
+  assert.match(main, /data\.successfulWriteTools/, '必须读取服务端回传的已提交写入工具')
+  assert.match(main, /successfulWriteTools\.length === 0/, '零成功写入必须被识别')
   assert.match(main, /这一步没有真正保存/, '未写入时必须明确告诉用户')
   assert.ok(
     !/const cloudText[\s\S]{0,200}activityStep\('✅ 云端写入轮完成'/.test(main),

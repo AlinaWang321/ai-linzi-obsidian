@@ -9,7 +9,7 @@
 /** 与主对话图片附件一致：服务端只接受这三种，且单次最多 3 张。 */
 export const DROP_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp'])
 /** 能在本机抽出文字、可作为「精确授权资料」的文档类型。 */
-export const DROP_DOCUMENT_EXTENSIONS = new Set(['md', 'txt', 'pdf', 'docx', 'html', 'htm', 'pptx'])
+export const DROP_DOCUMENT_EXTENSIONS = new Set(['md', 'txt', 'pdf', 'docx', 'html', 'htm', 'pptx', 'xlsx'])
 export const DROP_MAX_IMAGES = 3
 /** 单张图片上限；服务端 dataUrl 上限 200 万字符，base64 膨胀约 1.37 倍，留足余量。 */
 export const DROP_IMAGE_MAX_BYTES = 8 * 1024 * 1024
@@ -42,6 +42,8 @@ export interface DropCandidate {
   size?: number
   /** Vault 内文件才有；从 Finder 拖进来的没有。 */
   vaultPath?: string
+  /** 对应 dataTransfer.files 的稳定位置；同名文件也不能串到第一份。 */
+  sourceIndex?: number
 }
 
 export interface DropPlan {
@@ -57,8 +59,8 @@ export interface DropPlan {
  * 规则：
  * - 图片总数（已有 + 新增）不超过 3 张，超出的逐个说明被跳过；
  * - 单张图片超过 8MB 拒绝（避免请求被服务端整单拒收）；
- * - 资料文件必须在 Vault 内——插件只能读 Vault 里的文件，从 Finder 拖进来的
- *   文档没有 Vault 路径，与其静默失败不如明确告诉用户先放进库里；
+ * - 一般资料文件必须在 Vault 内；.xlsx 是唯一例外，可从电脑直接上传并在本机解析，
+ *   原文件不会发到云端；
  * - 不认识的类型直接说明，不静默丢弃。
  */
 export function planDroppedFiles(
@@ -86,7 +88,7 @@ export function planDroppedFiles(
       continue
     }
     if (kind === 'document') {
-      if (!candidate.vaultPath) {
+      if (!candidate.vaultPath && extensionOf(candidate.name) !== 'xlsx') {
         plan.rejections.push(`${label} 不在知识库里，请先把文件放进 Obsidian 库再拖进来`)
         continue
       }
@@ -94,7 +96,9 @@ export function planDroppedFiles(
       continue
     }
     plan.rejections.push(
-      `${label} 暂不支持：图片支持 PNG/JPG/WebP，资料支持 MD/TXT/PDF/DOCX/HTML/PPTX`,
+      extensionOf(candidate.name) === 'xls'
+        ? `${label} 是旧版 Excel .xls，请先在 Excel 中“另存为” .xlsx`
+        : `${label} 暂不支持：图片支持 PNG/JPG/WebP，资料支持 MD/TXT/PDF/DOCX/HTML/PPTX/XLSX`,
     )
   }
   return plan

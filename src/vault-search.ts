@@ -18,6 +18,7 @@ import {
   extractHtmlText,
   extractPdfText,
   extractPptxText,
+  extractXlsxText,
   isLocalSearchExtension,
   LOCAL_SEARCH_FILE_LIMITS,
 } from './local-document-text'
@@ -158,7 +159,9 @@ export class LocalVaultSearch {
     if (fact) {
       return responseFromLocalFact(fact, options.maxSources)
     }
-    return { results: searchVaultDocuments(query, availableDocuments, options) }
+    return {
+      results: searchVaultDocuments(query, availableDocuments, { ...options, explicit }),
+    }
   }
 
   /** 按精确相对路径读取一段本地文档；只返回本次工具调用需要的窗口。 */
@@ -175,7 +178,7 @@ export class LocalVaultSearch {
   }> {
     const file = this.app.vault.getAbstractFileByPath(path)
     if (!(file instanceof TFile) || !isLocalSearchExtension(file.extension)) {
-      throw new Error(`没有找到可读取的 MD/TXT/PDF/DOCX/HTML/PPTX 文件：${path}`)
+      throw new Error(`没有找到可读取的 MD/TXT/PDF/DOCX/HTML/PPTX/XLSX 文件：${path}`)
     }
     const document = await this.readDocument(file)
     if (!document) throw new Error(`文件暂时无法读取：${path}`)
@@ -217,6 +220,8 @@ export class LocalVaultSearch {
             text = extractHtmlText(data, MAX_INDEX_CHARS_PER_NOTE)
           } else if (extension === 'pptx') {
             text = extractPptxText(data, MAX_INDEX_CHARS_PER_NOTE)
+          } else if (extension === 'xlsx') {
+            text = extractXlsxText(data, MAX_INDEX_CHARS_PER_NOTE)
           }
         }
       }

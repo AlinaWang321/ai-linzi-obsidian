@@ -47,6 +47,20 @@ assert.ok(results.every((result) => !result.path.startsWith('.obsidian/')))
 assert.ok(results[0].excerpt.includes('高客单产品定位'))
 assert.deepEqual(core.searchVaultDocuments('你好', docs), [])
 
+const shortAliasDocs = [
+  {
+    path: '客户档案/小B.md',
+    filename: '小B.md',
+    text: '小B 想做高客单咨询产品。',
+  },
+]
+assert.deepEqual(core.searchVaultDocuments('小B', shortAliasDocs), [], '自动预扫仍保留超短输入门槛')
+assert.equal(
+  core.searchVaultDocuments('小B', shortAliasDocs, { explicit: true })[0]?.path,
+  '客户档案/小B.md',
+  'Agent 显式 vault_search 必须能搜到两字代号',
+)
+
 const privateNamedResults = core.searchVaultDocuments('内部年度预算秘密', docs)
 assert.equal(privateNamedResults[0]?.path, '㊙️财务/收入.md')
 
@@ -237,13 +251,15 @@ assert.match(localSearch, /\.getFiles\(\)/)
 assert.match(localSearch, /isLocalSearchExtension\(file\.extension\)/)
 assert.match(localSearch, /extractPdfText/)
 assert.match(localSearch, /extractDocxText/)
+assert.match(localSearch, /extractXlsxText/)
 assert.match(localSearch, /decodePlainText/)
 assert.match(localSearch, /binaryFiles\.length; offset \+= 2/)
 assert.match(localSearch, /sourceId: 'V1'/)
 assert.match(localSearch, /sourceId: `V\$\{index \+ 2\}`/)
 assert.match(localSearch, /excludedFolders/)
 assert.match(localAgent, /fact: response\.fact/)
-assert.match(localAgent, /totalEntries: entries\.length/)
+assert.match(localAgent, /totalEntries: finalEntries\.length/)
+assert.match(localAgent, /scannedEntries: entries\.length/)
 assert.match(localAgent, /totalFiles/)
 assert.match(localAgent, /totalFolders/)
 assert.match(localAgent, /nextOffset/)

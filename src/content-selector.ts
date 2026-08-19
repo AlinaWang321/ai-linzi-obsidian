@@ -65,7 +65,7 @@ export class AuthorizedContentModal extends Modal {
     this.contentEl.createDiv({
       cls: 'ai-linzi-content-selector-note',
       text:
-        `像电脑文件管理器一样按 Vault 文件夹查找 MD、TXT、PDF 和 DOCX。普通对话最多 ${this.limits.maxFiles} 份、` +
+        `像电脑文件管理器一样按 Vault 文件夹查找 MD、TXT、PDF、DOCX、PPTX 和 XLSX。普通对话最多 ${this.limits.maxFiles} 份、` +
         `合计 ${formatCharLimit(this.limits.maxTotalChars)}字的正文会供当前对话使用；` +
         '单选长文件可切换为“长文任务”。浏览、提取和切分均在本地完成。',
     })
@@ -232,7 +232,7 @@ export class AuthorizedContentModal extends Modal {
       this.listEl.createDiv({
         cls: 'ai-linzi-content-selector-empty',
         text: this.searchText
-          ? '没有找到匹配的 MD、TXT、PDF 或 DOCX'
+          ? '没有找到匹配的 MD、TXT、PDF、DOCX、PPTX 或 XLSX'
           : '这个文件夹没有直接存放支持的文件，可进入左侧子文件夹查看',
       })
       return

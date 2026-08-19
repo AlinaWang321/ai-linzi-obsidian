@@ -5,16 +5,18 @@ const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 const selector = await readFile(new URL('../src/content-selector.ts', import.meta.url), 'utf8')
 
 assert.match(main, /private authorizedContentPaths: string\[\] = \[\]/)
+assert.match(main, /private uploadedSpreadsheetAttachments:/)
 assert.match(main, /private chatImageAttachments: LocalImageReference\[\] = \[\]/)
 assert.match(main, /requireProAccess\('多笔记与文件夹授权'\)/)
 assert.match(main, /requireProAccess\('主对话图片附件'\)/)
 assert.match(main, /authorizedContent = await this\.authorizedContentContext\(noteContext\?\.path\)/)
-assert.match(main, /vaultAccess: this\.authorizedContentPaths\.length === 0/)
+assert.match(main, /vaultAccess:[\s\S]{0,160}this\.authorizedContentPaths\.length === 0[\s\S]{0,100}this\.uploadedSpreadsheetAttachments\.length === 0/)
 const modelRouting = main.match(/const modelDecidesVaultUse =[\s\S]*?const useVaultAgent/)?.[0] ?? ''
 assert.doesNotMatch(modelRouting, /authorizedContentPaths/, '精确授权资料仍应能让 Luna 输出只新建的成品方案')
 assert.match(main, /imageAttachments: imageAttachments\.map/)
 assert.match(main, /从 Vault 选择图片/)
 assert.match(main, /从电脑上传图片/)
+assert.match(main, /从电脑上传 Excel（\.xlsx）/)
 assert.match(main, /下一条消息带上/)
 assert.match(main, /this\.clearChatImageAttachments\(\)/)
 assert.match(main, /private loadConvo[\s\S]*?this\.clearAuthorizedContent\(\)/)
@@ -22,6 +24,7 @@ assert.match(main, /enterInterviewMode\(\)[\s\S]*?this\.clearAuthorizedContent\(
 assert.match(main, /exitInterviewMode\(\)[\s\S]*?this\.clearAuthorizedContent\(\)/)
 const savedConvo = main.match(/interface SavedConvo \{[\s\S]*?\n\}/)?.[0] ?? ''
 assert.doesNotMatch(savedConvo, /authorizedContent/, '授权路径和正文不能写进插件历史')
+assert.doesNotMatch(savedConvo, /Spreadsheet|xlsx/i, '电脑 Excel 的正文和文件身份不能写进插件历史')
 
 assert.match(selector, /文件夹浏览、搜索与勾选全部发生在用户自己的 Vault/)
 assert.match(selector, /getFiles\(\)/)

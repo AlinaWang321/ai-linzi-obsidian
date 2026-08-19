@@ -34,11 +34,13 @@ try {
   assert.equal(parser.isLocalSearchExtension('html'), true)
   assert.equal(parser.isLocalSearchExtension('HTM'), true)
   assert.equal(parser.isLocalSearchExtension('pptx'), true)
+  assert.equal(parser.isLocalSearchExtension('xlsx'), true)
   assert.equal(parser.isLocalSearchExtension('doc'), false)
   assert.equal(parser.isLocalSearchExtension('ppt'), false)
   assert.ok(parser.LOCAL_SEARCH_FILE_LIMITS.html > 0, 'html 缺少体积上限会被静默跳过')
   assert.ok(parser.LOCAL_SEARCH_FILE_LIMITS.htm > 0, 'htm 缺少体积上限会被静默跳过')
   assert.ok(parser.LOCAL_SEARCH_FILE_LIMITS.pptx > 0, 'pptx 缺少体积上限会被静默跳过')
+  assert.ok(parser.LOCAL_SEARCH_FILE_LIMITS.xlsx > 0, 'xlsx 缺少体积上限会被静默跳过')
 
   const plain = parser.decodePlainText(new TextEncoder().encode('本地 TXT 搜索\n第二行'), 120_000)
   assert.match(plain, /本地 TXT 搜索/)
@@ -83,6 +85,52 @@ try {
   assert.ok(pptxText.indexOf('打卡营第一课') < pptxText.indexOf('第二页'), '幻灯片必须按页码排序')
   assert.doesNotMatch(pptxText, /not-xml/)
 
+  const excelDate = Math.round(
+    (Date.UTC(2026, 7, 19) - Date.UTC(1899, 11, 30)) / 86_400_000,
+  )
+  const xlsx = zipSync({
+    'xl/workbook.xml': strToU8(
+      '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+      '<sheets><sheet name="销售明细" sheetId="1" r:id="rId1"/>' +
+      '<sheet name="备注" sheetId="2" r:id="rId2"/></sheets></workbook>',
+    ),
+    'xl/_rels/workbook.xml.rels': strToU8(
+      '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/>' +
+      '<Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>',
+    ),
+    'xl/sharedStrings.xml': strToU8(
+      '<sst><si><t>客户</t></si><si><t>成交额</t></si><si><t>小B</t></si></sst>',
+    ),
+    'xl/styles.xml': strToU8(
+      '<styleSheet><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs></styleSheet>',
+    ),
+    'xl/worksheets/sheet1.xml': strToU8(
+      '<worksheet><sheetData>' +
+      '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="inlineStr"><is><t>日期</t></is></c></row>' +
+      `<row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>9800</v></c><c r="C2" s="1"><v>${excelDate}</v></c></row>` +
+      '</sheetData></worksheet>',
+    ),
+    'xl/worksheets/sheet2.xml': strToU8(
+      '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>跟进复购</t></is></c></row></sheetData></worksheet>',
+    ),
+  })
+  const xlsxText = parser.extractXlsxText(xlsx, 120_000)
+  assert.match(xlsxText, /【工作表：销售明细】/)
+  assert.match(xlsxText, /客户\t成交额\t日期/)
+  assert.match(xlsxText, /小B\t9800\t2026-08-19/)
+  assert.match(xlsxText, /【工作表：备注】[\s\S]*跟进复购/)
+
+  const bombPart = new Uint8Array(2 * 1024 * 1024)
+  const bombEntries = Object.fromEntries(
+    Array.from({ length: 17 }, (_, index) => [`xl/worksheets/sheet${index + 1}.xml`, bombPart]),
+  )
+  const officeBomb = zipSync(bombEntries, { level: 1 })
+  assert.throws(
+    () => parser.extractXlsxText(officeBomb, 120_000),
+    /解压后 XML 总量超过 32MB/,
+    'Office XML 必须按总解压量拦截，不能只看单项大小',
+  )
+
   const html =
     '<!doctype html><html><head><title>课堂讲义</title><style>body{color:red}</style>' +
     '<script>console.log("skip me")</script></head>' +
@@ -107,7 +155,7 @@ try {
     )
   }
 
-  console.log('local TXT, PDF, DOCX, HTML and PPTX extraction tests passed')
+  console.log('local TXT, PDF, DOCX, HTML, PPTX and XLSX extraction tests passed')
 } finally {
   await rm(tempDir, { recursive: true, force: true })
 }

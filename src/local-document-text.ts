@@ -1,7 +1,7 @@
 import { unzipSync, strFromU8, type UnzipFileInfo } from 'fflate'
 
 export const LOCAL_SEARCH_EXTENSIONS = new Set([
-  'md', 'txt', 'pdf', 'docx', 'html', 'htm', 'pptx',
+  'md', 'txt', 'pdf', 'docx', 'html', 'htm', 'pptx', 'xlsx',
 ])
 
 export const LOCAL_SEARCH_FILE_LIMITS: Record<string, number> = {
@@ -12,9 +12,14 @@ export const LOCAL_SEARCH_FILE_LIMITS: Record<string, number> = {
   html: 8 * 1024 * 1024,
   htm: 8 * 1024 * 1024,
   pptx: 50 * 1024 * 1024,
+  xlsx: 25 * 1024 * 1024,
 }
 
 const MAX_DOCX_XML_BYTES = 12 * 1024 * 1024
+export const MAX_OFFICE_XML_TOTAL_BYTES = 32 * 1024 * 1024
+export const MAX_OFFICE_XML_ENTRIES = 2_048
+const MAX_XLSX_COLUMNS = 256
+const MAX_XLSX_ROWS = 20_000
 /** 原始 HTML 里标签占比很高；先按放大的上限解码，剥完标签再截到目标字数。 */
 const MAX_RAW_HTML_CHARS = 1_500_000
 
@@ -40,11 +45,7 @@ export function decodePlainText(data: Uint8Array, maxChars: number): string {
 }
 
 export function extractDocxText(data: Uint8Array, maxChars: number): string {
-  const files = unzipSync(data, {
-    filter(file: UnzipFileInfo) {
-      return isSearchableDocxXml(file.name) && file.originalSize <= MAX_DOCX_XML_BYTES
-    },
-  })
+  const files = unzipOfficeXml(data, isSearchableDocxXml)
   const names = Object.keys(files).sort(docxXmlOrder)
   const parts: string[] = []
   let chars = 0
@@ -61,11 +62,7 @@ export function extractDocxText(data: Uint8Array, maxChars: number): string {
 }
 
 export function extractPptxText(data: Uint8Array, maxChars: number): string {
-  const files = unzipSync(data, {
-    filter(file: UnzipFileInfo) {
-      return isSearchablePptxXml(file.name) && file.originalSize <= MAX_DOCX_XML_BYTES
-    },
-  })
+  const files = unzipOfficeXml(data, isSearchablePptxXml)
   const names = Object.keys(files).sort(pptxXmlOrder)
   const parts: string[] = []
   let chars = 0
@@ -82,6 +79,250 @@ export function extractPptxText(data: Uint8Array, maxChars: number): string {
     chars += block.length
   }
   return cleanExtractedText(parts.join('\n\n'), maxChars)
+}
+
+/**
+ * Office Open XML（DOCX/PPTX/XLSX）安全解压：单项、总解压量和条目数三道上限。
+ * fflate 会在 filter 返回 true 后按 originalSize 分配内存，所以必须在这里累计，
+ * 不能等 unzipSync 完成后才检查。
+ */
+function unzipOfficeXml(
+  data: Uint8Array,
+  searchable: (name: string) => boolean,
+): Record<string, Uint8Array> {
+  let entries = 0
+  let totalBytes = 0
+  return unzipSync(data, {
+    filter(file: UnzipFileInfo) {
+      if (!searchable(file.name)) return false
+      if (file.originalSize > MAX_DOCX_XML_BYTES) {
+        throw new Error('Office 文件内部单个 XML 解压后过大，请拆分文档后重试')
+      }
+      entries += 1
+      totalBytes += file.originalSize
+      if (entries > MAX_OFFICE_XML_ENTRIES) {
+        throw new Error(`Office 文件内部 XML 超过 ${MAX_OFFICE_XML_ENTRIES} 个，已停止解析`)
+      }
+      if (totalBytes > MAX_OFFICE_XML_TOTAL_BYTES) {
+        throw new Error('Office 文件解压后 XML 总量超过 32MB，请拆分文档后重试')
+      }
+      return true
+    },
+  })
+}
+
+export function extractXlsxText(data: Uint8Array, maxChars: number): string {
+  const files = unzipOfficeXml(data, isSearchableXlsxXml)
+  const workbookXml = textOf(files, 'xl/workbook.xml')
+  const relationships = workbookRelationships(textOf(files, 'xl/_rels/workbook.xml.rels'))
+  const sharedStrings = xlsxSharedStrings(textOf(files, 'xl/sharedStrings.xml'))
+  const dateStyles = xlsxDateStyles(textOf(files, 'xl/styles.xml'))
+  const date1904 = /<workbookPr\b[^>]*\bdate1904=["'](?:1|true)["']/i.test(workbookXml)
+  const sheets = workbookSheets(workbookXml, relationships, Object.keys(files))
+  const parts: string[] = []
+  let chars = 0
+  for (const sheet of sheets) {
+    const remaining = maxChars - chars
+    if (remaining <= 0) break
+    const xml = textOf(files, sheet.path)
+    if (!xml) continue
+    const table = worksheetXmlToText(xml, sharedStrings, dateStyles, date1904, remaining)
+    if (!table) continue
+    const block = `【工作表：${sheet.name}】\n${table}`.slice(0, remaining)
+    parts.push(block)
+    chars += block.length + 2
+  }
+  return cleanExtractedText(parts.join('\n\n'), maxChars)
+}
+
+function isSearchableXlsxXml(name: string): boolean {
+  return (
+    /^xl\/worksheets\/sheet\d+\.xml$/i.test(name) ||
+    /^xl\/(?:workbook|sharedStrings|styles)\.xml$/i.test(name) ||
+    /^xl\/_rels\/workbook\.xml\.rels$/i.test(name)
+  )
+}
+
+function textOf(files: Record<string, Uint8Array>, path: string): string {
+  const data = files[path]
+  return data ? strFromU8(data) : ''
+}
+
+function xmlAttribute(tag: string, name: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = tag.match(new RegExp(`(?:^|\\s)${escaped}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, 'i'))
+  return match ? decodeXmlEntities(match[2]) : ''
+}
+
+function normalizeArchivePath(value: string): string {
+  const parts: string[] = []
+  for (const segment of value.replace(/^\/+/, '').split('/')) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') parts.pop()
+    else parts.push(segment)
+  }
+  return parts.join('/')
+}
+
+function workbookRelationships(xml: string): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const match of xml.matchAll(/<Relationship\b[^>]*\/?\s*>/gi)) {
+    const id = xmlAttribute(match[0], 'Id')
+    const target = xmlAttribute(match[0], 'Target')
+    if (!id || !target || /:/.test(target.split('/')[0])) continue
+    const path = target.startsWith('/')
+      ? normalizeArchivePath(target)
+      : normalizeArchivePath(`xl/${target}`)
+    out.set(id, path)
+  }
+  return out
+}
+
+function workbookSheets(
+  workbookXml: string,
+  relationships: Map<string, string>,
+  names: string[],
+): Array<{ name: string; path: string }> {
+  const sheets: Array<{ name: string; path: string }> = []
+  for (const match of workbookXml.matchAll(/<sheet\b[^>]*\/?\s*>/gi)) {
+    const name = xmlAttribute(match[0], 'name') || `Sheet${sheets.length + 1}`
+    const relationshipId = xmlAttribute(match[0], 'r:id')
+    const path = relationships.get(relationshipId)
+    if (path && /^xl\/worksheets\/sheet\d+\.xml$/i.test(path)) sheets.push({ name, path })
+  }
+  if (sheets.length > 0) return sheets
+  return names
+    .filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name))
+    .sort((left, right) => xlsxSheetIndex(left) - xlsxSheetIndex(right))
+    .map((path, index) => ({ name: `Sheet${index + 1}`, path }))
+}
+
+function xlsxSheetIndex(path: string): number {
+  return Number.parseInt(path.match(/sheet(\d+)\.xml$/i)?.[1] ?? '0', 10)
+}
+
+function xlsxSharedStrings(xml: string): string[] {
+  const values: string[] = []
+  for (const match of xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/gi)) {
+    const text = [...match[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/gi)]
+      .map((item) => decodeXmlEntities(item[1]))
+      .join('')
+    values.push(text)
+  }
+  return values
+}
+
+function xlsxDateStyles(xml: string): Set<number> {
+  const customDateFormats = new Set<number>()
+  for (const match of xml.matchAll(/<numFmt\b[^>]*\/?\s*>/gi)) {
+    const id = Number.parseInt(xmlAttribute(match[0], 'numFmtId'), 10)
+    const format = xmlAttribute(match[0], 'formatCode')
+      .replace(/"[^"]*"/g, '')
+      .replace(/\[[^\]]*]/g, '')
+      .replace(/\\./g, '')
+    if (Number.isFinite(id) && /[ymdhs]/i.test(format)) customDateFormats.add(id)
+  }
+  const builtInDateFormats = new Set([
+    14, 15, 16, 17, 18, 19, 20, 21, 22,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+    45, 46, 47, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+  ])
+  const dateStyles = new Set<number>()
+  const cellXfs = xml.match(/<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/i)?.[1] ?? ''
+  let styleIndex = 0
+  for (const match of cellXfs.matchAll(/<xf\b[^>]*\/?\s*>/gi)) {
+    const numFmtId = Number.parseInt(xmlAttribute(match[0], 'numFmtId'), 10)
+    if (builtInDateFormats.has(numFmtId) || customDateFormats.has(numFmtId)) {
+      dateStyles.add(styleIndex)
+    }
+    styleIndex += 1
+  }
+  return dateStyles
+}
+
+function worksheetXmlToText(
+  xml: string,
+  sharedStrings: string[],
+  dateStyles: Set<number>,
+  date1904: boolean,
+  maxChars: number,
+): string {
+  const lines: string[] = []
+  let chars = 0
+  let rowCount = 0
+  for (const rowMatch of xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/gi)) {
+    rowCount += 1
+    if (rowCount > MAX_XLSX_ROWS || chars >= maxChars) break
+    const cells = new Map<number, string>()
+    let lastColumn = 0
+    let fallbackColumn = 1
+    for (const cellMatch of rowMatch[1].matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/gi)) {
+      const tag = cellMatch[1]
+      const inner = cellMatch[2] ?? ''
+      const ref = xmlAttribute(tag, 'r')
+      const column = xlsxColumnIndex(ref) || fallbackColumn
+      fallbackColumn = column + 1
+      if (column > MAX_XLSX_COLUMNS) continue
+      const type = xmlAttribute(tag, 't')
+      const style = Number.parseInt(xmlAttribute(tag, 's'), 10)
+      const value = xlsxCellText(inner, type, sharedStrings, dateStyles.has(style), date1904)
+      if (!value) continue
+      cells.set(column, value)
+      lastColumn = Math.max(lastColumn, column)
+    }
+    if (lastColumn === 0) continue
+    const line = Array.from({ length: lastColumn }, (_, index) => cells.get(index + 1) ?? '').join('\t')
+    if (chars + line.length + 1 > maxChars) break
+    lines.push(line)
+    chars += line.length + 1
+  }
+  return lines.join('\n')
+}
+
+function xlsxColumnIndex(reference: string): number {
+  const letters = reference.match(/^([A-Z]+)/i)?.[1]?.toUpperCase() ?? ''
+  let value = 0
+  for (const letter of letters) value = value * 26 + letter.charCodeAt(0) - 64
+  return value
+}
+
+function xlsxCellText(
+  inner: string,
+  type: string,
+  sharedStrings: string[],
+  isDate: boolean,
+  date1904: boolean,
+): string {
+  if (type === 'inlineStr') {
+    return cleanXlsxCell(
+      [...inner.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/gi)]
+        .map((match) => decodeXmlEntities(match[1]))
+        .join(''),
+    )
+  }
+  const raw = decodeXmlEntities(inner.match(/<v\b[^>]*>([\s\S]*?)<\/v>/i)?.[1] ?? '')
+  if (type === 's') return cleanXlsxCell(sharedStrings[Number.parseInt(raw, 10)] ?? '')
+  if (type === 'b') return raw === '1' ? 'TRUE' : 'FALSE'
+  if (type === 'e') return cleanXlsxCell(raw)
+  if (type === 'd') return cleanXlsxCell(raw)
+  if (isDate && /^-?\d+(?:\.\d+)?$/.test(raw)) return excelSerialDate(Number(raw), date1904)
+  const formula = decodeXmlEntities(inner.match(/<f\b[^>]*>([\s\S]*?)<\/f>/i)?.[1] ?? '')
+  if (raw) return cleanXlsxCell(raw)
+  return formula ? cleanXlsxCell(`=${formula}`) : ''
+}
+
+function cleanXlsxCell(value: string): string {
+  return value.replace(/[\t\r\n]+/g, ' ').replace(/\s{2,}/g, ' ').trim()
+}
+
+function excelSerialDate(serial: number, date1904: boolean): string {
+  const epoch = Date.UTC(date1904 ? 1904 : 1899, date1904 ? 0 : 11, date1904 ? 1 : 30)
+  const date = new Date(epoch + serial * 86_400_000)
+  if (!Number.isFinite(date.getTime())) return String(serial)
+  const iso = date.toISOString()
+  return Math.abs(serial - Math.trunc(serial)) < 1e-9
+    ? iso.slice(0, 10)
+    : iso.replace('T', ' ').slice(0, 16)
 }
 
 export function extractHtmlText(data: Uint8Array, maxChars: number): string {
