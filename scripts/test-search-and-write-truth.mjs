@@ -67,4 +67,18 @@ console.log('第4组 云端写入不得谎报成功')
   assert.ok(!/积分|扣费/.test(hint), '报错文案不得提计费')
 }
 
-console.log('search & write truth tests: ok')
+
+
+console.log('第5组 续跑轮也能切云端写入（0.7.61 技能串联接缝）')
+{
+  const main = readFileSync(join(root, 'src/main.ts'), 'utf8')
+  assert.ok(
+    /if \(round === 0 && isCloudToolsTurnRequest\(lastText\)\)/.test(main),
+    'round 0 必须无条件认云端标记',
+  )
+  assert.ok(
+    !/round === 0 && intent === 'auto' && isCloudToolsTurnRequest/.test(main),
+    '不得再按 intent 锁死云端标记——续跑轮(如档案创建后说「继续」进CRM)会被锁死',
+  )
+}
+console.log('search \& write truth tests: ok')

@@ -3675,7 +3675,11 @@ class ChatView extends ItemView {
       // v0.7.35+：首轮不挂云端写工具（换回 Luna 完整推理）。Luna 判断本轮是
       // 任务/CRM 云端写入时单独输出标记，插件补一轮挂上工具执行——判断轮全
       // 推理、执行轮零推理，两边都拿到各自需要的能力。
-      if (round === 0 && intent === 'auto' && isCloudToolsTurnRequest(lastText)) {
+      // 0.7.61：round 0 一律认云端标记，不再要求 intent==='auto'。实测(一条龙技能
+      // E2E)：创建档案后用户说「继续」进入 CRM 登记，续跑轮继承 organize 意图，
+      // 旧门禁把标记当普通文字→强制要 Vault 方案→模型在本地瞎搜「CRM」直到撞
+      // 轮次上限。标记本身就是模型对「本轮目的=云端写入」的判断，与意图来源无关。
+      if (round === 0 && isCloudToolsTurnRequest(lastText)) {
         this.activityStep('☁️ 判定为云端写入（任务清单 / 客户管理）', '正在执行云端写入…')
         const data = await this.plugin.api('/api/plugin/v1/chat', {
           method: 'POST',
