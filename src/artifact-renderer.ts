@@ -101,7 +101,9 @@ function taskItem(raw: string): { done: boolean; text: string } | null {
 }
 
 /** 按关键词给分区/卡片配一个语义色，纯展示，识别不出就用中性色。 */
-function toneOf(text: string): 'urgent' | 'warn' | 'calm' | 'muted' | 'none' {
+function toneOf(text: string): 'urgent' | 'risk' | 'warn' | 'calm' | 'muted' | 'none' {
+  // 盲区/风险类先判：它比「优先级一」更需要被一眼看见，用陶土色区别于暖金。
+  if (/盲区|风险|隐患|停滞|卡住|遗漏|预警|逾期/.test(text)) return 'risk'
   if (/优先级一|必须|今天必须|紧急|立即|高优/.test(text)) return 'urgent'
   if (/优先级二|建议|完成一项|中优/.test(text)) return 'warn'
   if (/优先级三|有余力|可选|低优|以后/.test(text)) return 'calm'
@@ -137,9 +139,13 @@ function dashboardBlockHtml(block: ArtifactBlock): string {
 }
 
 /**
- * 交互看板版式（0.7.54，Alina 2026-08-19 反馈「文档式太丑，要能点标签分类、有交互感」）：
- * 顶层小标题切成标签页，下层小标题成卡片，`- [ ]` 成真实可勾选任务（进度实时统计、
- * 勾选状态存 localStorage），支持深色模式与搜索过滤。整页自包含、零外部依赖、可离线打开。
+ * 交互看板版式（0.7.64 按「水·木·光」品牌视觉重做）。
+ *
+ * 视觉规范（05_System/品牌视觉规范）：日报/看板属于「产品 · 文档底」场景 ——
+ * 暖米底 + 海军蓝结构 + 墨色正文，青碧只用正向语义（完成/进度），暖金只点睛
+ * （一屏几处），大圆角 + 充足留白；背景用极淡「水波涟漪」母题，进度条用
+ * 水→木→光渐变（sea → jade → gold）。动效克制：入场轻微上浮、数字滚动、
+ * hover 抬起，不炫技。整页自包含、零外部依赖、可离线打开、可直接打印。
  */
 function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'clean'): string {
   const headings = document.blocks.filter(
@@ -178,7 +184,7 @@ function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'cle
       const inner = card.blocks.map((block) => dashboardBlockHtml(block)).join('\n')
       if (!head && !inner.trim()) return ''
       return `<article class="card tone-${tone}">${head}<div class="card-body">${inner}</div></article>`
-    }).filter(Boolean).join('\n')
+    }).join('\n')
     return `<section class="panel${index === 0 ? ' active' : ''}" data-panel="${index}">${body}</section>`
   }
 
@@ -186,11 +192,35 @@ function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'cle
     `<button class="tab${index === 0 ? ' active' : ''} tone-${toneOf(section.title)}" type="button" data-tab="${index}">${escapeHtml(section.title)}<span class="tab-count" data-tab-count="${index}"></span></button>`,
   ).join('')
   const panels = sections.map((section, index) => renderSection(section, index)).join('\n')
-  const introHtml = intro.length > 0
-    ? `<div class="intro">${intro.map((block) => dashboardBlockHtml(block)).join('\n')}</div>`
+
+  // 摘要区：正文前的引用 → 判断条（宋体金句）；两三列的表格 → 指标卡组；其余照常。
+  const metricTable = intro.find(
+    (block): block is Extract<ArtifactBlock, { type: 'table' }> =>
+      block.type === 'table' && block.headers.length >= 2 && block.headers.length <= 3,
+  )
+  const judges = intro.filter(
+    (block): block is Extract<ArtifactBlock, { type: 'quote' }> => block.type === 'quote',
+  )
+  const consumed = new Set<ArtifactBlock>(judges)
+  if (metricTable) consumed.add(metricTable)
+  const restIntro = intro.filter((block) => !consumed.has(block))
+  const metricsHtml = metricTable
+    ? `<div class="metrics">${metricTable.rows.map((row) => {
+        const value = (row[1] ?? '').trim()
+        const numeric = /^-?\d+(\.\d+)?/.exec(value)
+        return `<div class="metric"><div class="metric-num"${numeric ? ` data-count="${numeric[0]}"` : ''}>${escapeHtml(value)}</div><div class="metric-label">${escapeHtml((row[0] ?? '').trim())}</div>${row[2] ? `<div class="metric-note">${escapeHtml(row[2].trim())}</div>` : ''}</div>`
+      }).join('')}</div>`
     : ''
-  const accent = theme === 'clean' ? '#1f2937' : `#${BRAND.orange}`
-  const blue = theme === 'clean' ? '#475569' : `#${BRAND.blue}`
+  const judgeHtml = judges.length > 0
+    ? `<div class="judge">${judges.map((block) => `<p>${escapeHtml(block.text)}</p>`).join('')}</div>`
+    : ''
+  const introHtml = restIntro.length > 0
+    ? `<div class="intro">${restIntro.map((block) => dashboardBlockHtml(block)).join('\n')}</div>`
+    : ''
+
+  // clean 主题：去掉品牌暖金点睛，改用海军蓝单色，其余版式一致。
+  const gold = theme === 'clean' ? '#2E5A8F' : '#F5C518'
+  const goldSoft = theme === 'clean' ? '#CBD9EA' : '#FCE38A'
   const storageKey = `ai-linzi-board:${document.title}`
   const script = [
     '(function(){',
@@ -227,7 +257,7 @@ function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'cle
     '      [].slice.call(document.querySelectorAll(".panel")).forEach(function(p){p.classList.remove("active")});',
     '      tab.classList.add("active");',
     '      var panel=document.querySelector(\'[data-panel="\'+tab.dataset.tab+\'"]\');',
-    '      if(panel)panel.classList.add("active");',
+    '      if(panel){panel.classList.add("active");panel.classList.remove("replay");void panel.offsetWidth;panel.classList.add("replay")}',
     '    });',
     '  });',
     '  [].slice.call(document.querySelectorAll(".fold")).forEach(function(btn){',
@@ -253,6 +283,20 @@ function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'cle
     '      });',
     '    });',
     '  }',
+    '  // 指标数字滚动:只对纯数字生效,尊重「减少动态效果」系统设置。',
+    '  var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;',
+    '  [].slice.call(document.querySelectorAll(".metric-num[data-count]")).forEach(function(el){',
+    '    var target=parseFloat(el.dataset.count);if(isNaN(target)||reduce)return;',
+    '    var suffix=el.textContent.replace(el.dataset.count,"");',
+    '    var dec=(el.dataset.count.split(".")[1]||"").length,start=null,dur=760;',
+    '    function step(ts){',
+    '      if(start===null)start=ts;var p=Math.min(1,(ts-start)/dur);',
+    '      var eased=1-Math.pow(1-p,3);',
+    '      el.textContent=(target*eased).toFixed(dec)+suffix;',
+    '      if(p<1)requestAnimationFrame(step);',
+    '    }',
+    '    el.textContent="0"+suffix;requestAnimationFrame(step);',
+    '  });',
     '  paint();',
     '})();',
   ].join('\n')
@@ -263,59 +307,136 @@ function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'cle
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${escapeHtml(document.title)}</title>
   <style>
-    :root{--accent:${accent};--blue:${blue};--ink:#172033;--muted:#667085;--line:#e7eaf0;--paper:#fff;--bg:#f4f6f8;--soft:#f8fafc}
-    @media(prefers-color-scheme:dark){:root{--ink:#e8ecf4;--muted:#9aa5b8;--line:#2a3446;--paper:#151b26;--bg:#0d1219;--soft:#1b2331}}
+    /* 水·木·光 —— 产品/文档底：暖米底 + 海军蓝结构 + 墨色正文 */
+    :root{
+      --navy:#293857;--ink-navy:#0B1730;--navy-light:#5C7BB0;--sea:#2E5A8F;
+      --jade:#3DB389;--jade-soft:#6FD9B0;--gold:${gold};--gold-soft:${goldSoft};
+      --clay:#B0532F;
+      --cream:#FAF6F0;--warm:#F1ECE3;--line:#E7DFD2;
+      --ink:#1A1612;--ink-soft:#4A4036;--ink-mute:#8A7E74;
+      --paper:#FFFDFA;--shadow:14px 30px rgba(41,56,87,.07);
+    }
+    @media(prefers-color-scheme:dark){
+      :root{
+        --cream:#0B1730;--warm:#16243f;--line:#25344f;--paper:#101d33;
+        --ink:#FAF6F0;--ink-soft:#D8DEEA;--ink-mute:#A6B6D4;--navy:#FAF6F0;
+        --shadow:14px 30px rgba(0,0,0,.34);
+      }
+    }
     *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);color:var(--ink);font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;line-height:1.7;-webkit-font-smoothing:antialiased}
-    .wrap{width:min(1180px,calc(100% - 32px));margin:28px auto 64px}
-    .top{background:var(--paper);border-radius:18px;padding:26px 30px;box-shadow:0 10px 34px rgba(15,23,42,.08);border:1px solid var(--line)}
-    .top h1{margin:0;font-size:29px;line-height:1.3;letter-spacing:-.01em}
-    .top .sub{margin:8px 0 0;color:var(--muted);font-size:14px}
-    .meter{display:flex;align-items:center;gap:14px;margin-top:20px;flex-wrap:wrap}
-    .track{flex:1;min-width:220px;height:9px;background:var(--soft);border-radius:99px;overflow:hidden;border:1px solid var(--line)}
-    #bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--blue));border-radius:99px;transition:width .35s cubic-bezier(.4,0,.2,1)}
-    #num{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
-    #q{flex:0 1 240px;padding:9px 14px;border-radius:99px;border:1px solid var(--line);background:var(--soft);color:var(--ink);font-size:14px;outline:none}
-    #q:focus{border-color:var(--accent)}
-    .intro{margin-top:18px;padding-top:16px;border-top:1px dashed var(--line);color:var(--muted);font-size:15px}
-    .intro p{margin:.5em 0}.intro blockquote{margin:.6em 0;padding:12px 16px;border-left:4px solid var(--accent);background:var(--soft);border-radius:8px}
-    .tabs{display:flex;gap:8px;overflow-x:auto;padding:20px 2px 4px;scrollbar-width:thin}
-    .tab{flex:0 0 auto;display:inline-flex;align-items:center;gap:7px;padding:9px 17px;border-radius:99px;border:1px solid var(--line);background:var(--paper);color:var(--muted);font-size:14px;font-family:inherit;cursor:pointer;transition:all .18s}
-    .tab:hover{color:var(--ink);border-color:var(--accent);transform:translateY(-1px)}
-    .tab.active{background:var(--ink);color:var(--paper);border-color:var(--ink);font-weight:600}
-    .tab-count{font-size:12px;opacity:.65;font-variant-numeric:tabular-nums}
-    .tab.tone-urgent:not(.active){border-left:3px solid #e5484d}.tab.tone-warn:not(.active){border-left:3px solid var(--accent)}
-    .tab.tone-calm:not(.active){border-left:3px solid var(--blue)}.tab.tone-muted:not(.active){opacity:.72}
-    .panel{display:none;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px;margin-top:10px}
+    body{
+      margin:0;background:var(--cream);color:var(--ink);line-height:1.75;
+      font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+      -webkit-font-smoothing:antialiased;
+      /* 水波涟漪母题：极淡同心圆，浅底上几乎只留呼吸感 */
+      background-image:
+        radial-gradient(circle at 88% -8%, rgba(46,90,143,.055), transparent 46%),
+        radial-gradient(circle at -6% 102%, rgba(61,179,137,.05), transparent 42%);
+      background-attachment:fixed;
+    }
+    .wrap{width:min(1120px,calc(100% - 40px));margin:44px auto 72px}
+    @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+    .top{
+      background:var(--paper);border:1px solid var(--line);border-radius:24px;
+      padding:34px 38px;box-shadow:0 var(--shadow);animation:rise .5s ease both;
+    }
+    .top h1{margin:0;font-size:32px;line-height:1.3;font-weight:800;color:var(--navy);letter-spacing:-.01em}
+    .top .sub{margin:10px 0 0;color:var(--ink-mute);font-size:13.5px;letter-spacing:.02em}
+    /* 判断条：大金句用宋体，暖金点睛 */
+    .judge{
+      margin-top:22px;padding:16px 22px;border-left:3px solid var(--gold);
+      background:linear-gradient(90deg,rgba(245,197,24,.09),transparent 78%);border-radius:0 14px 14px 0;
+    }
+    .judge p{
+      margin:.28em 0;font-family:"Songti SC","STSong",Georgia,serif;font-style:italic;
+      font-size:19px;line-height:1.7;color:var(--ink-soft);
+    }
+    /* 指标卡：数字大、留白足、不加阴影（克制） */
+    .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px;margin-top:24px}
+    .metric{background:var(--warm);border:1px solid var(--line);border-radius:16px;padding:16px 18px}
+    .metric-num{font-size:29px;font-weight:800;color:var(--navy);line-height:1.2;font-variant-numeric:tabular-nums}
+    .metric-label{margin-top:4px;font-size:13px;color:var(--ink-mute)}
+    .metric-note{margin-top:6px;font-size:12px;color:var(--ink-mute);opacity:.85;line-height:1.5}
+    .meter{display:flex;align-items:center;gap:16px;margin-top:26px;flex-wrap:wrap}
+    /* 进度条彩蛋：水 → 木 → 光 */
+    .track{flex:1;min-width:220px;height:8px;background:var(--warm);border-radius:99px;overflow:hidden;border:1px solid var(--line)}
+    #bar{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--sea),var(--jade),var(--gold));transition:width .5s cubic-bezier(.4,0,.2,1)}
+    #num{font-size:13px;color:var(--ink-mute);font-variant-numeric:tabular-nums}
+    #q{flex:0 1 230px;padding:9px 16px;border-radius:99px;border:1px solid var(--line);background:var(--cream);color:var(--ink);font-size:14px;font-family:inherit;outline:none;transition:border-color .18s}
+    #q:focus{border-color:var(--navy-light)}
+    .intro{margin-top:20px;padding-top:18px;border-top:1px solid var(--line);color:var(--ink-soft);font-size:15px}
+    .intro p{margin:.5em 0}
+    .tabs{display:flex;gap:9px;overflow-x:auto;padding:26px 2px 6px;scrollbar-width:thin;animation:rise .5s .06s ease both}
+    .tab{
+      flex:0 0 auto;display:inline-flex;align-items:center;gap:8px;padding:9px 18px;border-radius:99px;
+      border:1px solid var(--line);background:var(--paper);color:var(--ink-soft);font-size:14px;
+      font-family:inherit;cursor:pointer;transition:transform .18s,border-color .18s,color .18s;
+    }
+    .tab:hover{color:var(--navy);border-color:var(--navy-light);transform:translateY(-1px)}
+    .tab.active{background:var(--navy);color:var(--cream);border-color:var(--navy);font-weight:600}
+    @media(prefers-color-scheme:dark){.tab.active{background:var(--navy-light);color:var(--ink-navy);border-color:var(--navy-light)}}
+    .tab-count{font-size:12px;opacity:.7;font-variant-numeric:tabular-nums}
+    .tab.tone-urgent:not(.active){border-left:3px solid var(--gold)}
+    .tab.tone-risk:not(.active){border-left:3px solid var(--clay)}
+    .tab.tone-warn:not(.active){border-left:3px solid var(--sea)}
+    .tab.tone-calm:not(.active){border-left:3px solid var(--jade)}
+    .tab.tone-muted:not(.active){opacity:.66}
+    .panel{display:none;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;margin-top:14px}
     .panel.active{display:grid}
-    .card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:20px 22px;box-shadow:0 3px 14px rgba(15,23,42,.05);transition:box-shadow .2s,transform .2s}
-    .card:hover{box-shadow:0 10px 26px rgba(15,23,42,.09);transform:translateY(-2px)}
-    .card.tone-urgent{border-top:3px solid #e5484d}.card.tone-warn{border-top:3px solid var(--accent)}
-    .card.tone-calm{border-top:3px solid var(--blue)}.card.tone-muted{background:var(--soft)}
-    .card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
-    .card h3{margin:0;font-size:17px;line-height:1.45}
-    .card h4{margin:1.1em 0 .4em;font-size:15px;color:var(--blue)}
-    .fold{border:0;background:var(--soft);color:var(--muted);width:26px;height:26px;border-radius:8px;cursor:pointer;font-size:15px;line-height:1;flex:0 0 auto;font-family:inherit}
-    .fold:hover{background:var(--accent);color:#fff}
+    .card{
+      background:var(--paper);border:1px solid var(--line);border-radius:20px;padding:22px 24px;
+      transition:box-shadow .22s,transform .22s,border-color .22s;animation:rise .45s ease both;
+    }
+    .panel.active .card:nth-child(1){animation-delay:.02s}
+    .panel.active .card:nth-child(2){animation-delay:.06s}
+    .panel.active .card:nth-child(3){animation-delay:.1s}
+    .panel.active .card:nth-child(4){animation-delay:.14s}
+    .panel.active .card:nth-child(n+5){animation-delay:.18s}
+    .card:hover{box-shadow:0 var(--shadow);transform:translateY(-2px);border-color:var(--navy-light)}
+    .card.tone-urgent{border-left:3px solid var(--gold)}
+    .card.tone-risk{border-left:3px solid var(--clay)}
+    .card.tone-warn{border-left:3px solid var(--sea)}
+    .card.tone-calm{border-left:3px solid var(--jade)}
+    .card.tone-muted{background:var(--warm);opacity:.88}
+    .card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px}
+    .card h3{margin:0;font-size:17.5px;line-height:1.45;font-weight:700;color:var(--navy)}
+    .card h4{margin:1.1em 0 .4em;font-size:15px;color:var(--sea)}
+    .fold{
+      border:1px solid var(--line);background:var(--cream);color:var(--ink-mute);width:26px;height:26px;
+      border-radius:9px;cursor:pointer;font-size:15px;line-height:1;flex:0 0 auto;font-family:inherit;transition:.16s;
+    }
+    .fold:hover{background:var(--navy);color:var(--cream);border-color:var(--navy)}
     .card.folded .card-body{display:none}
-    .card p{margin:.55em 0;font-size:14.5px}
-    .card ul,.card ol{margin:.5em 0;padding-left:20px}.card li{margin:.3em 0;font-size:14.5px}
+    .card p{margin:.55em 0;font-size:14.5px;color:var(--ink-soft)}
+    .card ul,.card ol{margin:.5em 0;padding-left:20px}
+    .card li{margin:.32em 0;font-size:14.5px;color:var(--ink-soft)}
     .card ul.tasks{list-style:none;padding-left:0}
     li.task{display:block;margin:.3em 0}
-    li.task label{display:flex;align-items:flex-start;gap:9px;cursor:pointer;padding:5px 8px;border-radius:8px;transition:background .15s}
-    li.task label:hover{background:var(--soft)}
-    li.task input{margin:4px 0 0;width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex:0 0 auto}
-    li.task.checked span{text-decoration:line-through;color:var(--muted)}
-    .card blockquote{margin:.7em 0;padding:11px 15px;border-left:4px solid var(--accent);background:var(--soft);border-radius:8px;font-size:14px;color:var(--muted)}
-    .card pre{overflow:auto;padding:13px 15px;background:#111827;color:#f9fafb;border-radius:9px;font-size:13px}
+    li.task label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:6px 9px;border-radius:10px;transition:background .15s}
+    li.task label:hover{background:var(--warm)}
+    li.task input{margin:4px 0 0;width:16px;height:16px;accent-color:var(--jade);cursor:pointer;flex:0 0 auto}
+    li.task.checked span{text-decoration:line-through;color:var(--ink-mute)}
+    .card blockquote{margin:.7em 0;padding:11px 16px;border-left:3px solid var(--jade);background:rgba(61,179,137,.07);border-radius:0 10px 10px 0;font-size:14px;color:var(--ink-soft)}
+    .card pre{overflow:auto;padding:13px 16px;background:var(--ink-navy);color:#FAF6F0;border-radius:12px;font-size:13px}
     .table-wrap{overflow-x:auto;margin:.8em 0}
     table{width:100%;border-collapse:collapse;font-size:13.5px}
-    th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
-    th{background:var(--soft);color:var(--blue);font-weight:600}
+    th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+    th{background:var(--warm);color:var(--navy);font-weight:600}
     hr{border:0;border-top:1px solid var(--line);margin:1.1em 0}
-    footer{margin-top:30px;color:var(--muted);font-size:12.5px;text-align:center}
-    @media(max-width:640px){.wrap{width:calc(100% - 20px);margin:14px auto 40px}.top{padding:20px}.top h1{font-size:23px}.panel.active{grid-template-columns:1fr}}
-    @media print{body{background:#fff}.tabs,#q,.fold{display:none}.panel{display:grid!important}.card{break-inside:avoid;box-shadow:none}}
+    footer{margin-top:34px;color:var(--ink-mute);font-size:12.5px;text-align:center;letter-spacing:.02em}
+    @media(max-width:640px){
+      .wrap{width:calc(100% - 24px);margin:18px auto 44px}
+      .top{padding:24px 22px;border-radius:20px}.top h1{font-size:25px}
+      .panel.active{grid-template-columns:1fr}
+    }
+    @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+    @media print{
+      body{background:#fff;background-image:none}
+      .tabs,#q,.fold{display:none}
+      .panel{display:grid!important}
+      .card{break-inside:avoid;box-shadow:none;animation:none}
+      .top{box-shadow:none}
+    }
   </style>
 </head>
 <body>
@@ -323,6 +444,8 @@ function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'cle
     <div class="top">
       <h1>${escapeHtml(document.title)}</h1>
       <p class="sub">AI霖子 · 交互看板 · 勾选进度会保存在本机浏览器</p>
+      ${judgeHtml}
+      ${metricsHtml}
       <div class="meter">
         <div class="track"><div id="bar"></div></div>
         <span id="num"></span>

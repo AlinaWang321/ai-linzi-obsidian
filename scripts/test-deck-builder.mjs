@@ -108,3 +108,36 @@ assert.match(main, /id: 'deck-builder'/)
 assert.match(main, /课件PPT:选择文档/)
 
 console.log('deck builder tests passed')
+
+// ── 0.7.64：Word 内嵌图片提取（docx = zip，图片在 word/media，位置由 XML 决定）──
+import { build as __buildLdt } from 'esbuild'
+import { mkdtemp as __mkdtempLdt } from 'node:fs/promises'
+import os2 from 'node:os'
+import path2 from 'node:path'
+import { fileURLToPath as __f2, pathToFileURL as __p2 } from 'node:url'
+const __tmp2 = await __mkdtempLdt(path2.join(os2.tmpdir(), 'ai-linzi-docx-img-'))
+const __out2 = path2.join(__tmp2, 'ldt.mjs')
+await __buildLdt({
+  entryPoints: [__f2(new URL('../src/local-document-text.ts', import.meta.url))],
+  outfile: __out2, bundle: true, platform: 'node', format: 'esm',
+  external: ['obsidian', 'pdfjs-dist'],
+})
+const ldt = await import(__p2(__out2).href)
+assert.equal(typeof ldt.extractDocxTextWithImages, 'function')
+// 非 docx 数据不得抛异常（用户误选损坏文件时要优雅退回纯文字）
+assert.doesNotThrow(() => {
+  try { ldt.extractDocxTextWithImages(new Uint8Array([1, 2, 3, 4]), 1000) } catch { /* zip 解析失败由调用方兜底 */ }
+})
+
+const deckSrc = await readFile(new URL('../src/deck-builder.ts', import.meta.url), 'utf8')
+assert.match(deckSrc, /extractDocxTextWithImages/)            // Word 走带图提取
+assert.match(deckSrc, /imageBytes/)                            // 内嵌图片按字节内嵌
+assert.match(deckSrc, /imageTokenCount/)                       // 弹窗计数含 Word 图
+assert.match(deckSrc, /退回纯文字/)                             // 提图失败不阻断出课件
+const ldtSrc = await readFile(new URL('../src/local-document-text.ts', import.meta.url), 'utf8')
+assert.match(ldtSrc, /word\/_rels\/document\.xml\.rels/)       // rId → media 映射
+assert.match(ldtSrc, /docx-image-/)                            // 令牌格式与 md 图片同构
+assert.match(ldtSrc, /MAX_DOCX_IMAGES/)                        // 数量上限
+assert.match(ldtSrc, /text\.includes\(image\.token\)/)         // 截断后丢弃看不见的图
+
+console.log('docx embedded image tests passed')

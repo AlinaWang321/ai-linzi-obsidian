@@ -18,6 +18,10 @@ export const LOCAL_SEARCH_FILE_LIMITS: Record<string, number> = {
 const MAX_DOCX_XML_BYTES = 12 * 1024 * 1024
 export const MAX_OFFICE_XML_TOTAL_BYTES = 32 * 1024 * 1024
 export const MAX_OFFICE_XML_ENTRIES = 2_048
+/** 单张内嵌图上限 12MB：再大的图对 1400px 课件没有意义，直接跳过。 */
+const MAX_DOCX_MEDIA_BYTES = 12 * 1024 * 1024
+/** 单份 Word 最多带出的图片数，防超长文档把课件撑爆。 */
+const MAX_DOCX_IMAGES = 40
 const MAX_XLSX_COLUMNS = 256
 const MAX_XLSX_ROWS = 20_000
 /** 原始 HTML 里标签占比很高；先按放大的上限解码，剥完标签再截到目标字数。 */
@@ -59,6 +63,82 @@ export function extractDocxText(data: Uint8Array, maxChars: number): string {
     chars += Math.min(text.length, remaining)
   }
   return cleanExtractedText(parts.join('\n\n'), maxChars)
+}
+
+export interface DocxImage {
+  /** 正文里对应的占位令牌，形如 `![](docx-image-1)`，模型按它引用这张图。 */
+  token: string
+  /** zip 内的原始文件名，用于推断 MIME。 */
+  name: string
+  bytes: Uint8Array
+}
+
+export interface DocxWithImages {
+  /** 与 extractDocxText 相同的正文，但在图片原始位置插入了占位令牌。 */
+  text: string
+  images: DocxImage[]
+}
+
+/**
+ * 提取 Word 正文 **并按原始位置带出内嵌图片**（0.7.64，课件PPT 用）。
+ *
+ * docx 本质是 zip：正文在 word/document.xml，图片实体在 word/media/*，
+ * 二者靠 word/_rels/document.xml.rels 的 rId 关联。这里在正文转文字前，
+ * 把 <w:drawing>/<w:pict> 整段替换成占位令牌，令牌顺序即图片在文中的顺序，
+ * 模型因此能把图片排到讲对应内容的那一页。图片二进制只留在本机、不上传。
+ */
+export function extractDocxTextWithImages(data: Uint8Array, maxChars: number): DocxWithImages {
+  const files = unzipSync(data, {
+    filter(file: UnzipFileInfo) {
+      if (file.name === 'word/document.xml') return true
+      if (file.name === 'word/_rels/document.xml.rels') return true
+      if (!/^word\/media\/[^/]+\.(?:png|jpe?g|gif|webp|bmp)$/i.test(file.name)) return false
+      // 单张过大的图不进课件（课件图片会被压到 1400px，原图再大也没意义）。
+      return file.originalSize <= MAX_DOCX_MEDIA_BYTES
+    },
+  })
+  const documentXml = files['word/document.xml']
+  if (!documentXml) return { text: '', images: [] }
+
+  // rId → media 路径
+  const relsXml = files['word/_rels/document.xml.rels']
+  const relTarget = new Map<string, string>()
+  if (relsXml) {
+    const rels = strFromU8(relsXml)
+    for (const match of rels.matchAll(/<Relationship\b[^>]*>/gi)) {
+      const tag = match[0]
+      const id = /\bId="([^"]+)"/i.exec(tag)?.[1]
+      const target = /\bTarget="([^"]+)"/i.exec(tag)?.[1]
+      if (!id || !target) continue
+      if (!/image/i.test(/\bType="([^"]+)"/i.exec(tag)?.[1] ?? '')) continue
+      relTarget.set(id, `word/${target.replace(/^\.?\//, '').replace(/^\.\.\//, '')}`)
+    }
+  }
+
+  const images: DocxImage[] = []
+  const seen = new Map<string, string>() // media 路径 → 已分配令牌（同一张图复用）
+  const placeholder = (block: string): string => {
+    if (images.length >= MAX_DOCX_IMAGES) return ''
+    const rid = /r:(?:embed|id|link)="([^"]+)"/i.exec(block)?.[1]
+    const path = rid ? relTarget.get(rid) : undefined
+    if (!path) return ''
+    const existing = seen.get(path)
+    if (existing) return `\n${existing}\n`
+    const bytes = files[path]
+    if (!bytes || bytes.length === 0) return ''
+    const token = `![](docx-image-${images.length + 1})`
+    seen.set(path, token)
+    images.push({ token, name: path, bytes })
+    return `\n${token}\n`
+  }
+
+  const withTokens = strFromU8(documentXml)
+    .replace(/<w:drawing\b[\s\S]*?<\/w:drawing>/gi, (block) => placeholder(block))
+    .replace(/<w:pict\b[\s\S]*?<\/w:pict>/gi, (block) => placeholder(block))
+  const text = cleanExtractedText(wordXmlToText(withTokens), maxChars)
+  // 正文被 maxChars 截断时，落在截断之后的图片一并丢弃，避免模型引用看不见的图。
+  const kept = images.filter((image) => text.includes(image.token))
+  return { text, images: kept }
 }
 
 export function extractPptxText(data: Uint8Array, maxChars: number): string {

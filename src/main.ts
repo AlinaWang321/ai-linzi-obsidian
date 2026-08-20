@@ -1854,7 +1854,10 @@ class ChatView extends ItemView {
           .setTitle(localSkillMenuTitle(skill))
           .setIcon('sparkles')
           .onClick(() => {
-            this.inputEl.value = `用${skill.displayName}技能处理当前笔记`
+            // Skill 在正文「AI霖子自动调用」里声明过短语就直接用它——不同技能的处理对象
+            // 天差地别(当前笔记 / 整个知识库 / 某份逐字稿),统一填「处理当前笔记」会误导。
+            this.inputEl.value = skill.autoTriggers[0]?.trim()
+              || `用${skill.displayName}技能处理当前笔记`
             this.inputEl.focus()
           }),
       )

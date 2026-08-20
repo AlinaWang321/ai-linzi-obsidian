@@ -171,3 +171,11 @@ assert.equal(
 )
 
 console.log('local skill tests passed')
+
+// 0.7.64:点技能菜单时优先用 Skill 自己声明的触发短语(不同技能处理对象不同,
+// 统一填「处理当前笔记」会误导——知识库日报看板处理的是整个知识库)。
+import { readFileSync as __readMainForMenu } from 'node:fs'
+const __mainForMenu = __readMainForMenu(new URL('../src/main.ts', import.meta.url), 'utf8')
+if (!__mainForMenu.includes('skill.autoTriggers[0]?.trim()')) {
+  throw new Error('技能菜单未优先使用 Skill 声明的触发短语')
+}

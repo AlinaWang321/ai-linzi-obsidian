@@ -10,6 +10,7 @@ import { Modal, Notice, Setting, TFile, normalizePath } from 'obsidian'
 import type AiLinziPlugin from './main'
 import { selectTranscriptSource } from './transcript-source'
 import { friendlyErrorMessage } from './friendly-error'
+import { extractDocxTextWithImages } from './local-document-text'
 import {
   DECK_BUILDER_OUTPUT_FOLDER,
   DECK_SOURCE_MAX,
@@ -90,17 +91,16 @@ function resolveImageTarget(plugin: AiLinziPlugin, sourceFile: TFile, target: st
 }
 
 /** 本机压缩：宽度压到 ≤1400、重编码 JPEG，先铺白底防止透明 PNG 变黑块。 */
-async function imageFileToDeckDataUrl(plugin: AiLinziPlugin, file: TFile): Promise<string | null> {
+async function imageBytesToDeckDataUrl(bytes: Uint8Array): Promise<string | null> {
   try {
-    const binary = await plugin.app.vault.readBinary(file)
-    const blob = new Blob([new Uint8Array(binary)])
+    const blob = new Blob([new Uint8Array(bytes).slice().buffer])
     const url = URL.createObjectURL(blob)
     try {
       const image = new Image()
       image.decoding = 'async'
       await new Promise<void>((resolve, reject) => {
         image.onload = () => resolve()
-        image.onerror = () => reject(new Error(`无法解码图片 ${file.path}`))
+        image.onerror = () => reject(new Error('无法解码这张图片'))
         image.src = url
       })
       const scale = Math.min(1, DECK_IMAGE_MAX_WIDTH / Math.max(1, image.naturalWidth))
@@ -116,6 +116,14 @@ async function imageFileToDeckDataUrl(plugin: AiLinziPlugin, file: TFile): Promi
     } finally {
       URL.revokeObjectURL(url)
     }
+  } catch {
+    return null
+  }
+}
+
+async function imageFileToDeckDataUrl(plugin: AiLinziPlugin, file: TFile): Promise<string | null> {
+  try {
+    return await imageBytesToDeckDataUrl(new Uint8Array(await plugin.app.vault.readBinary(file)))
   } catch {
     return null
   }
@@ -210,27 +218,45 @@ export async function runDeckBuilder(plugin: AiLinziPlugin): Promise<void> {
   const statusId = plugin.reportSkillStatus(
     `🖥️ 课件PPT · 已锁定《${source.file.name}》（${source.text.length.toLocaleString('zh-CN')} 字），准备编排…`,
   )
-  if (source.text.length < DECK_SOURCE_MIN) {
-    new Notice(`《${source.file.name}》内容太少（不足 ${DECK_SOURCE_MIN} 字），先把讲义写得完整一点再来生成课件`, 8000)
-    plugin.reportSkillStatus(`⚠️ 课件PPT已停止：《${source.file.name}》内容不足 ${DECK_SOURCE_MIN} 字。`, statusId)
-    return
-  }
-
-  // 图片引用只对 Markdown 源生效：PDF/DOCX 的文字提取不携带可靠图片信息。
+  // 图片来源两条：Markdown 引用 Vault 里的图片文件；Word 把图片内嵌在 docx 里。
+  // （PDF/TXT 暂不提取图片：PDF 的图形对象没有可靠的「这张图属于哪段话」信息。）
+  const extension = source.file.extension.toLocaleLowerCase()
   const imageFiles = new Map<string, TFile>()
-  if (source.file.extension.toLocaleLowerCase() === 'md') {
+  const imageBytes = new Map<string, Uint8Array>()
+  let sourceText = source.text
+  if (extension === 'md') {
     for (const token of extractSourceImageTokens(source.text)) {
       if (imageFiles.size >= DECK_MAX_IMAGE_TOKENS) break
       const file = resolveImageTarget(plugin, source.file, token.target)
       if (file) imageFiles.set(token.token, file)
     }
+  } else if (extension === 'docx') {
+    try {
+      const binary = new Uint8Array(await plugin.app.vault.readBinary(source.file))
+      const extracted = extractDocxTextWithImages(binary, DECK_SOURCE_MAX)
+      // 正文换成带图片占位令牌的版本，模型才知道每张图原本出现在哪一段。
+      if (extracted.text.trim()) sourceText = extracted.text
+      for (const image of extracted.images.slice(0, DECK_MAX_IMAGE_TOKENS)) {
+        imageBytes.set(image.token, image.bytes)
+      }
+    } catch {
+      // 解析图片失败不影响出课件：退回纯文字（source.text 已经可用）。
+    }
   }
+  const imageTokenCount = imageFiles.size + imageBytes.size
+
+  if (sourceText.length < DECK_SOURCE_MIN) {
+    new Notice(`《${source.file.name}》内容太少（不足 ${DECK_SOURCE_MIN} 字），先把讲义写得完整一点再来生成课件`, 8000)
+    plugin.reportSkillStatus(`⚠️ 课件PPT已停止：《${source.file.name}》内容不足 ${DECK_SOURCE_MIN} 字。`, statusId)
+    return
+  }
+
 
   const input = await new DeckBuilderModal(
     plugin,
     source.file.name,
-    source.text.length,
-    imageFiles.size,
+    sourceText.length,
+    imageTokenCount,
   ).result
   if (!input) {
     plugin.reportSkillStatus(`已取消本次课件生成，《${source.file.name}》未处理。`, statusId)
@@ -245,8 +271,8 @@ export async function runDeckBuilder(plugin: AiLinziPlugin): Promise<void> {
   const running = new Notice('🤖 AI霖子正在编排课件大纲…（约 1-2 分钟，请别关闭 Obsidian）', 0)
   try {
     const response = await plugin.apiText('/api/plugin/v1/skills/deck-builder', {
-      text: source.text,
-      images: [...imageFiles.keys()],
+      text: sourceText,
+      images: [...imageFiles.keys(), ...imageBytes.keys()],
       presenter: input.presenter || undefined,
       brand: input.brand || undefined,
     })
@@ -260,8 +286,12 @@ export async function runDeckBuilder(plugin: AiLinziPlugin): Promise<void> {
     const imageDataUrls = new Map<string, string>()
     for (const token of deckImageTokens(verdict.outline)) {
       const file = imageFiles.get(token)
-      if (!file) continue
-      const dataUrl = await imageFileToDeckDataUrl(plugin, file)
+      const bytes = imageBytes.get(token)
+      const dataUrl = file
+        ? await imageFileToDeckDataUrl(plugin, file)
+        : bytes
+          ? await imageBytesToDeckDataUrl(bytes)
+          : null
       if (dataUrl) imageDataUrls.set(token, dataUrl)
     }
     const html = assembleDeckHtml({ outline: verdict.outline, theme: input.theme, imageDataUrls })
