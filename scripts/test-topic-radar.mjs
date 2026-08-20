@@ -17,6 +17,6 @@ assert.doesNotMatch(main, /技能是否使用当前笔记，以弹窗说明为�
 assert.match(main, /title: '添加文件或图片（Pro）'/)
 assert.doesNotMatch(main, /text: ' 智能搜索 Vault'/)
 assert.match(main, /const modelDecidesVaultUse =/)
-assert.match(main, /intent: 'auto'/)
+assert.match(main, /\? 'organize'\s*: 'auto'/)
 
 console.log('topic radar note opt-in tests passed')

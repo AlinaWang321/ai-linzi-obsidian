@@ -104,6 +104,9 @@ ${input.steps.map((item, index) => `${index + 1}. ${item}`).join('\n')}
 ${input.outputRequirements.map((item) => `- ${item}`).join('\n')}
 ${template}
 ## AI霖子输出方式
+${input.output}
+
+## 交付与写入
 ${outputInstruction}`
 }
 

@@ -2829,10 +2829,16 @@ class ChatView extends ItemView {
     if (!text || this.sending) return
     const pendingVaultQuestion = this.recentPendingVaultQuestion()
     const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
+    // 原生 ask_user 的回答必须先续接同一个文件任务。回答正文可能恰好描述
+    // “课后让学员创建 Skill”等业务内容，不能因此被重新分流到 Skill Creator。
+    // 若用户确实想放弃原任务创建 Skill，应新开对话，避免隐式丢失待续状态。
     const skillCreatorTurn =
-      options.skillCreator === true ||
-      pendingSkillCreatorInterview ||
-      isExplicitLocalSkillCreationIntent(text)
+      !pendingVaultQuestion &&
+      (
+        options.skillCreator === true ||
+        pendingSkillCreatorInterview ||
+        isExplicitLocalSkillCreationIntent(text)
+      )
 
     const imageAttachments = this.chatImageAttachments.slice()
     this.messages.push({
@@ -2906,7 +2912,12 @@ class ChatView extends ItemView {
         await this.persistNow()
         return
       }
-      let localSkillMatch = await this.localSkills.resolve(text, { allowAutomatic: true })
+      // Skill Studio 的专用创建提示里固定包含“AI霖子 Skill Creator”。如果仍交给
+      // 本地 Skill 名称解析器，它会把 Skill Creator 误认成用户点名调用的 Skill，
+      // 并在真正请求创建接口前以“没有找到你点名的 Skill”中断。
+      let localSkillMatch = skillCreatorTurn
+        ? { kind: 'none' as const }
+        : await this.localSkills.resolve(text, { allowAutomatic: true })
       if (pendingVaultQuestion) localSkillMatch = { kind: 'none' }
       if (
         localSkillMatch.kind === 'none' &&
@@ -3087,7 +3098,16 @@ class ChatView extends ItemView {
             vaultSearch: vaultSearch.context,
             noteEdit,
             noteImageIntent: singleIllustration,
-            intent: 'auto',
+            // create-note 是 Skill 作者已经声明、用户本轮也已触发的落盘意图。
+            // 如果仍按普通问答(auto)运行，模型可能只把成品贴在聊天里，跳过
+            // 预览/确认卡。这里单向升级为 organize，让安全循环强制收尾到方案卡。
+            // ask_user 是文件任务中的暂停点。用户回答后仍属于同一个写入任务，
+            // 必须保持 organize 语义；否则原生通道若临时回退，兼容通道会把它
+            // 当普通问答，只输出“请确认吗”的文字而没有可点击确认卡。
+            intent:
+              pendingVaultQuestion || localSkill?.output === 'create-note'
+                ? 'organize'
+                : 'auto',
             resumeQuestion: pendingVaultQuestion?.question,
           })
         } catch (error) {
@@ -3152,6 +3172,13 @@ class ChatView extends ItemView {
           })
           answer = typeof data.text === 'string' ? data.text : '(空响应)'
         }
+      }
+      // 模型偶尔会同时返回旧「新建笔记」块和新的 Vault 变更集。两者内容相同，
+      // 同时渲染会让用户看到两个创建按钮；保留已通过预检、支持版本锁与回滚的
+      // Vault 变更集，剥掉旧兼容块。
+      const answerPlan = extractVaultOrganizePlan(answer)
+      if (answerPlan.plan && extractCreateNoteBlocks(answer).blocks.length > 0) {
+        answer = extractCreateNoteBlocks(answer).cleanText
       }
       const vaultQuestion = extractVaultQuestion(answer)
       if (vaultQuestion.invalid) {
@@ -3791,7 +3818,7 @@ class ChatView extends ItemView {
               }],
             }
           : null
-        let stalledRetried = false
+        let stalledRetries = 0
         for (let step = 0; step < VAULT_AGENT_MAX_ROUNDS; step++) {
           this.activityCurrent(
             step === 0
@@ -3945,12 +3972,19 @@ class ChatView extends ItemView {
             const planProbe = extractVaultOrganizePlan(text)
             const needsPlan =
               !planProbe.plan &&
-              !stalledRetried &&
-              this.pendingVaultTask !== null &&
-              this.pendingVaultTask.stage !== 'previewed' &&
-              vaultWriteFlowRetryReason(this.pendingVaultTask, 'organize', false, false) !== undefined
+              stalledRetries < 2 &&
+              (
+                // ask_user 只用于正在执行的文件任务。用户刚回答关键问题后，
+                // 不能再次口头问“要不要创建”；必须继续到可确认方案。
+                Boolean(input.resumeQuestion) ||
+                (
+                  this.pendingVaultTask !== null &&
+                  this.pendingVaultTask.stage !== 'previewed' &&
+                  vaultWriteFlowRetryReason(this.pendingVaultTask, 'organize', false, false) !== undefined
+                )
+              )
             if (needsPlan && step + 1 < VAULT_AGENT_MAX_ROUNDS) {
-              stalledRetried = true
+              stalledRetries += 1
               nextBody = {
                 question: input.question,
                 round: Math.min(requestRound + 1, VAULT_AGENT_MAX_ROUNDS - 1),
@@ -4116,6 +4150,10 @@ class ChatView extends ItemView {
       // 引擎失败则回到散文协议并强制工具纠正，绝不接受口头承诺。
       if (round === 0 && intent === 'auto' && !nativeChannelFailed && isVaultNativeTurnRequest(lastText)) {
         this.activityStep('🔁 AI 判定要动文件，切换文件操作引擎', '文件操作引擎启动…')
+        // 模型自主切换标记的含义就是“最终目的需要动文件”。同步升级客户端
+        // intent，确保引擎随后若只用文字追问/确认，会被结构化纠正为 ask_user
+        // 或 propose_organize_plan，而不是把普通文字当成合法终态。
+        intent = 'organize'
         const nativeText = await runNativeChannel()
         if (nativeText !== null) {
           lastText = nativeText
@@ -4138,6 +4176,17 @@ class ChatView extends ItemView {
           }
           pendingRetryReason = 'invalid_plan'
           continue
+        }
+        // create-note Skill 的服务端兼容协议会返回 <<<新建笔记>>> 确认卡。
+        // organize 安全循环不能把这个合法终态当成“没有实际调用工具”继续空转；
+        // 如果同一回复也有更严格的 Vault 变更集，则优先走变更集预检，避免双确认卡。
+        // 只有没有变更集时，才由兼容确认卡接管（仍只新建、不覆盖）。
+        if (
+          input.localSkill?.output === 'create-note' &&
+          extractCreateNoteBlocks(lastText).blocks.length > 0 &&
+          !plan.plan
+        ) {
+          return { text: lastText, sources, localSkillRunIds }
         }
         if (input.intent === 'answer' && plan.plan) {
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
@@ -4173,15 +4222,21 @@ class ChatView extends ItemView {
           pendingRetryReason = 'unexpected_plan'
           continue
         }
-        const directArtifactPlan = plan.plan?.operations.length === 1 &&
-          plan.plan.operations[0].type === 'create_artifact'
+        const noReadRequiredCreationPlan =
+          Boolean(plan.plan?.operations.length) &&
+          plan.plan!.operations.every(
+            (operation) =>
+              operation.type === 'create_note' ||
+              operation.type === 'create_folder' ||
+              operation.type === 'create_artifact',
+          )
         // 明确的 Vault 文件检索/修改任务至少必须有一条本机工具结果。由当前对话或
         // 已锁定当前笔记直接生成新成品时不强迫空搜 Vault；Luna 需要其他资料时会自行检索。
         // “我现在扫描”或直接猜出的方案都只是口头承诺/幻觉，绝不能结束本轮。
         if (
           input.vaultAccess &&
           toolResults.length === 0 &&
-          !directArtifactPlan &&
+          !noReadRequiredCreationPlan &&
           (input.intent !== 'auto' || Boolean(plan.plan) || mutationAsk)
         ) {
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {

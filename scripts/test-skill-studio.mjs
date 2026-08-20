@@ -16,6 +16,7 @@ async function importBundle(options) {
 
 const studioCore = await importBundle({ entryPoints: ['src/skill-studio-core.ts'] })
 const skillParser = await importBundle({ entryPoints: ['src/create-local-skill.ts'] })
+const localSkillCore = await importBundle({ entryPoints: ['src/local-skill-core.ts'] })
 const questionCore = await importBundle({ entryPoints: ['src/vault-question-core.ts'] })
 
 console.log('[test-skill-studio]')
@@ -38,6 +39,7 @@ for (const template of studioCore.OFFICIAL_SKILL_TEMPLATES) {
   assert.equal(template.block.files.some((file) => file.path.startsWith('scripts/')), false)
   assert.match(template.block.content, /^description: .+时使用。$/m)
   assert.match(template.block.content, /references\/ai-linzi-skill-manifest\.json/)
+  assert.equal(localSkillCore.localSkillOutputFromMarkdown(template.block.content), 'create-note')
   assert.equal(studioCore.skillBlockManifest(template.block).valid, true)
   for (const file of template.block.files.filter(
     (item) => item.path.startsWith('references/') && !item.path.endsWith('ai-linzi-skill-manifest.json'),
@@ -45,7 +47,7 @@ for (const template of studioCore.OFFICIAL_SKILL_TEMPLATES) {
     assert.ok(template.block.content.includes(file.path), `${template.id} 必须在 SKILL.md 指向 ${file.path}`)
   }
 }
-console.log('  ✓ 5 个官方模板都可移植、触发说明完整、引用可达且不含脚本')
+console.log('  ✓ 5 个官方模板都可移植、触发说明完整、输出方式可解析、引用可达且不含脚本')
 
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('帮我创建一个客户跟进 Skill'), true)
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('Skill 是什么？'), false)
@@ -221,6 +223,36 @@ assert.doesNotMatch(studioSource, /archive\[`\$\{block\.name\}\/INSTALL\.md`\]/)
 assert.match(mainSource, /message\.skillCreatorResult && !manifest\.valid/)
 assert.match(mainSource, /private hasPendingSkillCreatorInterview\(\): boolean \{[\s\S]*?return message\.skillCreatorPending === true/)
 assert.doesNotMatch(mainSource, /hasPendingSkillCreatorInterview[\s\S]{0,600}continue[\s\S]{0,200}skillCreatorPending === true[\s\S]{0,100}continue/)
+assert.match(mainSource, /let localSkillMatch = skillCreatorTurn\s*\? \{ kind: 'none' as const \}\s*: await this\.localSkills\.resolve/)
+assert.match(
+  mainSource,
+  /const skillCreatorTurn =\s*!pendingVaultQuestion\s*&&[\s\S]{0,220}isExplicitLocalSkillCreationIntent\(text\)/,
+)
+assert.match(mainSource, /input\.localSkill\?\.output === 'create-note'[\s\S]{0,220}extractCreateNoteBlocks\(lastText\)\.blocks\.length > 0[\s\S]{0,80}!plan\.plan/)
+assert.match(mainSource, /answerPlan\.plan && extractCreateNoteBlocks\(answer\)\.blocks\.length > 0/)
+assert.match(mainSource, /Boolean\(input\.resumeQuestion\)[\s\S]{0,280}vaultWriteFlowRetryReason/)
+assert.match(
+  mainSource,
+  /pendingVaultQuestion \|\| localSkill\?\.output === 'create-note'[\s\S]{0,120}\? 'organize'/,
+)
+assert.match(mainSource, /let stalledRetries = 0/)
+assert.match(mainSource, /stalledRetries < 2/)
+assert.match(mainSource, /stalledRetries \+= 1/)
+assert.match(
+  mainSource,
+  /noReadRequiredCreationPlan[\s\S]{0,260}operation\.type === 'create_note'[\s\S]{0,160}operation\.type === 'create_folder'[\s\S]{0,160}operation\.type === 'create_artifact'/,
+)
+assert.match(
+  mainSource,
+  /toolResults\.length === 0[\s\S]{0,80}!noReadRequiredCreationPlan/,
+)
+assert.match(
+  mainSource,
+  /isVaultNativeTurnRequest\(lastText\)[\s\S]{0,360}intent = 'organize'[\s\S]{0,120}runNativeChannel\(\)/,
+)
 console.log('  ✓ Skill Creator 完成后不会被历史待访谈状态劫持')
+console.log('  ✓ Skill Creator 专用提示不会被误判为本地 Skill 调用')
+console.log('  ✓ create-note Skill 强制进入预览确认流程')
+console.log('  ✓ create-note 兼容协议是安全循环的合法终态')
 
 console.log('[test-skill-studio] 全部通过')

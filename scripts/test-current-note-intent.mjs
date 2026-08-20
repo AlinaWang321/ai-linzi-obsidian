@@ -25,6 +25,9 @@ for (const text of [
   '分析这份咨询逐字稿',
   '根据当前笔记给我一些商业建议',
   '给正在打开的文档配图',
+  '把当前会议记录整理成行动看板',
+  '整理当前会议的待办',
+  '用当前周报做一次经营复盘',
 ]) {
   assert.equal(core.shouldUseCurrentNote(text), true, text)
 }
