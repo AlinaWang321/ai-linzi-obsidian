@@ -75,6 +75,49 @@ function contentId(): string {
   return `ailinzi-${stamp}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+const IMAGE_API_ATTEMPTS = 3
+
+function isRetryableImageTransportError(value: string): boolean {
+  return /ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_NETWORK_CHANGED|ERR_NETWORK_IO_SUSPENDED|socket hang up|ECONNRESET|Connection closed|ETIMEDOUT|timed out/i.test(value)
+}
+
+function imageFailureMessage(value: string): string {
+  if (isRetryableImageTransportError(value)) {
+    return '网络中断了，系统已经保留这次图片任务；请稍后重试'
+  }
+  return friendlyErrorMessage(value)
+}
+
+/**
+ * 图片请求使用稳定 requestId 自动恢复瞬时断连。
+ *
+ * 后端会按 requestId 回放已成功保存的图片，因此这里的重试不会重复生成已经完成
+ * 的同一张图。只重试传输层中断；权限、余额、参数与速率限制错误立即返回。
+ */
+async function callImageApi<T>(
+  plugin: AiLinziPlugin,
+  path: string,
+  body: Record<string, unknown>,
+  requestId = contentId(),
+): Promise<T> {
+  let lastError = ''
+  for (let attempt = 1; attempt <= IMAGE_API_ATTEMPTS; attempt++) {
+    try {
+      return await plugin.api(path, {
+        method: 'POST',
+        body: { ...body, requestId },
+      }) as T
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+      if (!isRetryableImageTransportError(lastError) || attempt >= IMAGE_API_ATTEMPTS) {
+        throw new Error(imageFailureMessage(lastError))
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 800))
+    }
+  }
+  throw new Error(imageFailureMessage(lastError))
+}
+
 function sanitizeTitle(s: string): string {
   return s.replace(/[\\/:*?"<>|#^[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60)
 }
@@ -897,6 +940,8 @@ interface SavedIllustrationJob {
   articleFingerprint: string
   articleTitle: string
   count: number
+  /** 同一篇未完成配图续跑时复用，避免断连后重复生成已经成功的图片。 */
+  requestId?: string
   pendingPlan: IllustrationPlan
   updatedAt: number
 }
@@ -1286,22 +1331,7 @@ export async function generateArticleIllustrationFromChat(
     prepared.titleCandidates[0]?.trim() ||
     note.filename.replace(/\.md$/i, '').replace(/^\d{4}[.-]\d{1,2}[.-]\d{1,2}_?/, '').trim()
   const characterReferenceImageDataUrl = await configuredIllustrationCharacterReference(plugin)
-  const data = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
-    method: 'POST',
-    body: {
-      article: clip(article, 20_000, '文章'),
-      articleTitle,
-      mode: 'single',
-      sessionId: options?.sessionId,
-      characterReferenceImageDataUrl,
-      single: {
-        instruction: instruction.trim(),
-        referenceImageDataUrl: options?.referenceImageDataUrl,
-        referenceImages: options?.referenceImageDataUrls?.slice(0, 3),
-        ratio: options?.ratio ?? '16:9',
-      },
-    },
-  })) as {
+  const data = await callImageApi<{
     image?: {
       imageUrl?: string
       ratio?: AiImageRatio
@@ -1309,7 +1339,19 @@ export async function generateArticleIllustrationFromChat(
       title?: string
       coreIdea?: string
     }
-  }
+  }>(plugin, ARTICLE_ILLUSTRATION_API, {
+    article: clip(article, 20_000, '文章'),
+    articleTitle,
+    mode: 'single',
+    sessionId: options?.sessionId,
+    characterReferenceImageDataUrl,
+    single: {
+      instruction: instruction.trim(),
+      referenceImageDataUrl: options?.referenceImageDataUrl,
+      referenceImages: options?.referenceImageDataUrls?.slice(0, 3),
+      ratio: options?.ratio ?? '16:9',
+    },
+  })
   const image = data.image
   if (
     !image?.imageUrl ||
@@ -1374,6 +1416,12 @@ export async function insertChatIllustrationIntoNote(
     if (result.hits < 1) throw new Error(`写入前文章发生变化，找不到「${candidate.anchor}」`)
     return result.out
   })
+  await plugin.rememberImageStyleContext({
+    source: 'article-illustration',
+    referencePaths: [path],
+    notePath: file.path,
+    ratio: candidate.ratio ?? '16:9',
+  })
   return path
 }
 
@@ -1396,6 +1444,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
   let count = 3
   let confirmed: IllustrationPlan | null = null
   let planning: Notice | null = null
+  let taskRequestId = resumable?.requestId || contentId()
 
   try {
     if (resumable) {
@@ -1408,6 +1457,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
         new Notice(`继续补齐上次未完成的 ${remaining} 张图片，不重新生成方案`, 5000)
       } else {
         await clearIllustrationJob(plugin, note.file.path)
+        taskRequestId = contentId()
       }
     }
 
@@ -1417,12 +1467,14 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       count = setup.count
 
       planning = new Notice('🤖 正在读文章并规划配图点…', 0)
-      const planData = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
-        method: 'POST',
-        body: { article: clip(article, 20_000, '文章'), articleTitle, count, mode: 'plan' },
-      })) as {
+      const planData = await callImageApi<{
         plan?: IllustrationPlan
-      }
+      }>(plugin, ARTICLE_ILLUSTRATION_API, {
+        article: clip(article, 20_000, '文章'),
+        articleTitle,
+        count,
+        mode: 'plan',
+      }, taskRequestId)
       planning.hide()
       planning = null
       if (!planData.plan || (!planData.plan.cover && planData.plan.images.length === 0)) {
@@ -1442,6 +1494,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       articleFingerprint: fingerprint,
       articleTitle,
       count,
+      requestId: taskRequestId,
       pendingPlan: confirmed,
       updatedAt: Date.now(),
     })
@@ -1462,9 +1515,10 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       // 图片整组重画；最多三轮，覆盖临时限流、单张错字或质检偶发失败。
       for (let round = 1; round <= 3; round++) {
         if (round > 1) generating.setMessage(`文章配图：正在补齐第 ${round} 轮（只重试缺失图片）…`)
-        const result = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
-          method: 'POST',
-          body: {
+        const result = await callImageApi<IllustrationGenerateResult>(
+          plugin,
+          ARTICLE_ILLUSTRATION_API,
+          {
             article: clip(article, 20_000, '文章'),
             articleTitle,
             count,
@@ -1472,7 +1526,8 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
             plan: pendingPlan,
             characterReferenceImageDataUrl,
           },
-        })) as IllustrationGenerateResult
+          taskRequestId,
+        )
         lastResult = result
         if (result.cover?.imageUrl) generatedCover = result.cover
         for (const image of result.images ?? []) {
@@ -1485,6 +1540,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
           articleFingerprint: fingerprint,
           articleTitle,
           count,
+          requestId: taskRequestId,
           pendingPlan,
           updatedAt: Date.now(),
         })
@@ -1541,6 +1597,18 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       if (coverPath) out = insertCoverEmbed(out, coverPath)
       return out
     })
+    const styleReferencePaths = [
+      ...saved.map((item) => item.path),
+      ...(coverPath ? [coverPath] : []),
+    ].slice(0, 3)
+    if (styleReferencePaths.length > 0) {
+      await plugin.rememberImageStyleContext({
+        source: 'article-illustration',
+        referencePaths: styleReferencePaths,
+        notePath: note.file.path,
+        ratio: '16:9',
+      })
+    }
     if (complete) await clearIllustrationJob(plugin, note.file.path)
     const completionSummary = complete
       ? `已生成 ${actualTotal} 张图片：${coverPath ? '1 张封面 + ' : ''}${saved.length} 张正文插图（${hits} 张按段落定位）。`
@@ -1551,7 +1619,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
     }).open()
   } catch (e) {
     planning?.hide()
-    new Notice(`❌ 文章配图:${e instanceof Error ? e.message : String(e)}`, 10000)
+    new Notice(`❌ 文章配图:${imageFailureMessage(e instanceof Error ? e.message : String(e))}`, 10000)
   }
 }
 
@@ -1964,9 +2032,10 @@ export async function runArticleIllustrationEdit(plugin: AiLinziPlugin, initialI
       const imageDataUrl = await imageFileToReferenceDataUrl(plugin, request.image.file)
       const characterReferenceImageDataUrl = await configuredIllustrationCharacterReference(plugin)
       const article = prepareWechatArticle(note.text).body
-      const data = (await plugin.api(ARTICLE_ILLUSTRATION_API, {
-        method: 'POST',
-        body: {
+      const data = await callImageApi<{ imageUrl?: string }>(
+        plugin,
+        ARTICLE_ILLUSTRATION_API,
+        {
           article: clip(article, 20_000, '文章'),
           mode: 'edit',
           characterReferenceImageDataUrl,
@@ -1977,11 +2046,11 @@ export async function runArticleIllustrationEdit(plugin: AiLinziPlugin, initialI
             referenceImages: request.referenceImages,
           },
         },
-      })) as { imageUrl?: string }
+      )
       imageUrl = data.imageUrl ?? ''
       if (!imageUrl) throw new Error('服务端没有返回修改后的图片')
     } catch (error) {
-      new Notice(`❌ 修改配图:${error instanceof Error ? error.message : String(error)}`, 10000)
+      new Notice(`❌ 修改配图:${imageFailureMessage(error instanceof Error ? error.message : String(error))}`, 10000)
       return
     } finally {
       working.hide()
@@ -2044,18 +2113,21 @@ export async function generateAiImage(
   sessionId?: string,
   editPreviousImage = false,
   preserveOriginalRatio = false,
+  inheritStyle = false,
 ): Promise<{ imageUrl: string; ratio: AiImageRatio }> {
-  const data = (await plugin.api(AI_IMAGE_API, {
-    method: 'POST',
-    body: {
+  const data = await callImageApi<{ imageUrl?: string; ratio?: AiImageRatio }>(
+    plugin,
+    AI_IMAGE_API,
+    {
       instruction: instruction.trim(),
       ratio,
       referenceImages: referenceImages.slice(0, 3),
       sessionId,
       editPreviousImage,
       preserveOriginalRatio,
+      inheritStyle,
     },
-  })) as { imageUrl?: string; ratio?: AiImageRatio }
+  )
   if (!data.imageUrl) throw new Error('服务端没有返回图片')
   return { imageUrl: data.imageUrl, ratio: data.ratio ?? ratio }
 }

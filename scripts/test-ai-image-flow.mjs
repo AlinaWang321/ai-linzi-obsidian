@@ -33,7 +33,13 @@ assert.match(
   '改图默认保留原比例，明确改平台画布时使用新比例',
 )
 assert.match(main, /request\.preserveOriginalRatio,/)
+assert.match(main, /shouldInheritRecentImageStyle\(text\)/)
+assert.match(main, /recentImageStyleReferencePaths\(\)/)
+assert.match(main, /rememberImageStyleContext/)
 assert.match(actions, /\/api\/plugin\/v1\/images\/generate/)
+assert.match(actions, /ERR_NETWORK_IO_SUSPENDED/)
+assert.match(actions, /body: \{ \.\.\.body, requestId \}/)
+assert.match(actions, /inheritStyle,/)
 assert.match(actions, /export type AiImageRatio = '2\.35:1' \| '16:9' \| '3:4' \| '1:1'/)
 assert.match(actions, /preserveOriginalRatio = false/)
 assert.match(actions, /preserveOriginalRatio,/)

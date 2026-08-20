@@ -57,4 +57,14 @@ assert.equal(image.isDirectAiImageEditRequest('把第2张的标题改成一人�
 assert.equal(image.requestedAiImageIndex('修改第六张卡片'), 6)
 assert.equal(image.requestedAiImageIndex('修改上一张'), null)
 
+for (const text of [
+  '再继续生成第4张内容图',
+  '沿用刚才同样的风格继续做一张横版配图',
+  '与前面内容图保持统一横版视觉风格',
+]) {
+  assert.equal(image.shouldInheritRecentImageStyle(text), true, text)
+}
+assert.equal(image.shouldInheritRecentImageStyle('换成一个完全不同的视觉风格'), false)
+assert.equal(image.shouldInheritRecentImageStyle('重新生成一张新的活动海报'), false)
+
 console.log('chat AI image request tests passed')

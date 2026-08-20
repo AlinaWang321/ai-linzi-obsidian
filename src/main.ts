@@ -174,6 +174,7 @@ import {
   extractChatAiImageRequests,
   isDirectAiImageEditRequest,
   requestedAiImageIndex,
+  shouldInheritRecentImageStyle,
   type ChatAiImageRequest,
 } from './chat-ai-image'
 import {
@@ -521,6 +522,15 @@ interface ChatAiImageResult {
   insertedNotePath?: string
 }
 
+interface SavedImageStyleContext {
+  source: 'article-illustration' | 'chat-image'
+  /** 只保存 Vault 相对路径；图片正文仍留在用户本机。 */
+  referencePaths: string[]
+  notePath?: string
+  ratio: AiImageRatio
+  updatedAt: number
+}
+
 /** 本地保存的会话（由 Obsidian Plugin.loadData/saveData 管理） */
 interface SavedConvo {
   id: string
@@ -533,8 +543,39 @@ interface SavedConvo {
 interface AiLinziPluginData extends LegacyAiLinziSettings {
   conversations?: SavedConvo[]
   illustrationJobs?: unknown[]
+  imageStyleContext?: unknown
   vaultActionHistory?: VaultActionRecord[]
   localSkillRunHistory?: LocalSkillRunRecord[]
+}
+
+const IMAGE_STYLE_CONTEXT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+function storedImageStyleContext(value: unknown): SavedImageStyleContext | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const source = raw.source === 'article-illustration' || raw.source === 'chat-image'
+    ? raw.source
+    : null
+  const ratio = raw.ratio === '2.35:1' || raw.ratio === '3:4' || raw.ratio === '1:1'
+    ? raw.ratio
+    : '16:9'
+  const updatedAt = typeof raw.updatedAt === 'number' ? raw.updatedAt : 0
+  const referencePaths = Array.isArray(raw.referencePaths)
+    ? raw.referencePaths
+        .filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+        .map((path) => normalizePath(path.trim()))
+        .slice(0, 3)
+    : []
+  if (!source || referencePaths.length === 0 || updatedAt < Date.now() - IMAGE_STYLE_CONTEXT_MAX_AGE_MS) {
+    return null
+  }
+  return {
+    source,
+    referencePaths,
+    notePath: typeof raw.notePath === 'string' ? normalizePath(raw.notePath.trim()) : undefined,
+    ratio,
+    updatedAt,
+  }
 }
 
 interface CloudSessionSummary {
@@ -974,6 +1015,7 @@ export default class AiLinziPlugin extends Plugin {
   private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
   private savedConversations: SavedConvo[] = []
   private savedIllustrationJobs: unknown[] = []
+  private imageStyleContext: SavedImageStyleContext | null = null
   private vaultActionHistory: VaultActionRecord[] = []
   private localSkillRunHistory: LocalSkillRunRecord[] = []
   /**
@@ -1144,12 +1186,14 @@ export default class AiLinziPlugin extends Plugin {
       cleanChatDefaultsV1: legacyCleanChatDefaultsV1,
       conversations,
       illustrationJobs,
+      imageStyleContext,
       vaultActionHistory,
       localSkillRunHistory,
       ...safeSettings
     } = raw
     this.savedConversations = Array.isArray(conversations) ? conversations : []
     this.savedIllustrationJobs = Array.isArray(illustrationJobs) ? illustrationJobs : []
+    this.imageStyleContext = storedImageStyleContext(imageStyleContext)
     this.vaultActionHistory = Array.isArray(vaultActionHistory)
       ? vaultActionHistory.filter(isStoredVaultActionRecord).slice(0, 20)
       : []
@@ -1369,6 +1413,34 @@ export default class AiLinziPlugin extends Plugin {
     await this.saveSettings()
   }
 
+  async rememberImageStyleContext(
+    input: Omit<SavedImageStyleContext, 'updatedAt'>,
+  ): Promise<void> {
+    const referencePaths = [...new Set(input.referencePaths.map((path) => normalizePath(path)))]
+      .filter((path) => {
+        const file = this.app.vault.getAbstractFileByPath(path)
+        return file instanceof TFile && /^(?:png|jpe?g|webp)$/i.test(file.extension)
+      })
+      .slice(0, 3)
+    if (referencePaths.length === 0) return
+    this.imageStyleContext = {
+      ...input,
+      referencePaths,
+      notePath: input.notePath ? normalizePath(input.notePath) : undefined,
+      updatedAt: Date.now(),
+    }
+    await this.saveSettings()
+  }
+
+  recentImageStyleReferencePaths(): string[] {
+    const context = this.imageStyleContext
+    if (!context || context.updatedAt < Date.now() - IMAGE_STYLE_CONTEXT_MAX_AGE_MS) return []
+    return context.referencePaths.filter((path) => {
+      const file = this.app.vault.getAbstractFileByPath(path)
+      return file instanceof TFile && /^(?:png|jpe?g|webp)$/i.test(file.extension)
+    })
+  }
+
   getVaultActionRecord(id?: string): VaultActionRecord | undefined {
     if (id) return this.vaultActionHistory.find((record) => record.id === id)
     // 0.7.54：「撤销上一次」必须真的指向最近一次整理。旧实现跳过所有无移动记录的
@@ -1526,6 +1598,7 @@ export default class AiLinziPlugin extends Plugin {
       ...this.settings,
       conversations: this.savedConversations,
       illustrationJobs: this.savedIllustrationJobs,
+      imageStyleContext: this.imageStyleContext ?? undefined,
       vaultActionHistory: this.vaultActionHistory,
       localSkillRunHistory: this.localSkillRunHistory,
     } satisfies AiLinziPluginData)
@@ -1993,7 +2066,7 @@ class ChatView extends ItemView {
       parts: [
         {
           type: 'text',
-          text: '配图已经写入文章。请先在正文里查看整体效果；需要调整时，可以从这里选择并修改其中一张。',
+          text: '配图已经写入文章。请先在正文里查看整体效果；需要调整时，可以修改其中一张，也可以直接说“沿用刚才的风格继续生成一张内容图”。',
         },
       ],
       articleIllustrationEditOffer: {
@@ -3315,7 +3388,11 @@ class ChatView extends ItemView {
         await runCustomerConsultationBrief(this.plugin, source instanceof TFile ? source : undefined)
       }
       if (aiImageRequest.requests.length > 0 && !answer.startsWith('⚠️')) {
-        await this.executeChatAiImageRequests(aiImageRequest.requests, imageAttachments)
+        await this.executeChatAiImageRequests(
+          aiImageRequest.requests,
+          imageAttachments,
+          shouldInheritRecentImageStyle(text),
+        )
       }
       if (singleIllustration && noteContext && !answer.startsWith('⚠️')) {
         await this.generateChatIllustration(text, noteContext)
@@ -3524,6 +3601,7 @@ class ChatView extends ItemView {
   private async executeChatAiImageRequests(
     requests: ChatAiImageRequest[],
     userReferences: LocalImageReference[],
+    inheritRecentStyle = false,
   ): Promise<void> {
     if (!(await this.plugin.requireProAccess('AI 生图'))) {
       this.messages.push({
@@ -3538,6 +3616,17 @@ class ChatView extends ItemView {
     const batchId = uid()
     let styleReference = ''
     let completed = 0
+    const successfulPaths: string[] = []
+    const inheritedStyleReferences: string[] = []
+    if (inheritRecentStyle) {
+      for (const path of this.plugin.recentImageStyleReferencePaths().slice(0, 2)) {
+        try {
+          inheritedStyleReferences.push(await vaultImageToReferenceDataUrl(this.plugin, path))
+        } catch {
+          // 参考图被移动或暂时读不到时跳过；不影响本轮正常生图。
+        }
+      }
+    }
     for (const [index, request] of requests.entries()) {
       const displayIndex = index + 1
       const progress: WireMessage = {
@@ -3560,11 +3649,15 @@ class ChatView extends ItemView {
         const editReference = editTarget
           ? await vaultImageToReferenceDataUrl(this.plugin, editTarget.result.savedPath)
           : ''
-        const references = [
-          ...(editReference ? [editReference] : []),
-          ...userReferences.map((reference) => reference.dataUrl),
-          ...(!editReference && styleReference ? [styleReference] : []),
-        ].slice(0, 3)
+        const styleReferences = styleReference
+          ? [styleReference]
+          : inheritedStyleReferences
+        const references = editReference
+          ? [editReference, ...userReferences.map((reference) => reference.dataUrl)].slice(0, 3)
+          : [
+              ...userReferences.map((reference) => reference.dataUrl).slice(0, styleReferences.length ? 2 : 3),
+              ...styleReferences,
+            ].slice(0, 3)
         const ratio = editTarget && request.preserveOriginalRatio
           ? editTarget.result.ratio
           : request.ratio
@@ -3576,6 +3669,7 @@ class ChatView extends ItemView {
           undefined,
           Boolean(editReference),
           request.preserveOriginalRatio,
+          inheritRecentStyle && !editReference && styleReferences.length > 0,
         )
         const savedPath = await saveAiImageToVault(
           this.plugin,
@@ -3601,6 +3695,7 @@ class ChatView extends ItemView {
         }]
         this.activeImageMessageId = progress.id
         completed += 1
+        successfulPaths.push(savedPath)
         if (!styleReference && requests.length > 1 && !editReference) {
           styleReference = await vaultImageToReferenceDataUrl(this.plugin, savedPath)
         }
@@ -3612,6 +3707,13 @@ class ChatView extends ItemView {
       }
       await this.persistNow()
       this.renderMessages()
+    }
+    if (successfulPaths.length > 0) {
+      await this.plugin.rememberImageStyleContext({
+        source: 'chat-image',
+        referencePaths: successfulPaths.slice(-3),
+        ratio: requests.at(-1)?.ratio ?? '16:9',
+      })
     }
     new Notice(
       completed === requests.length

@@ -114,6 +114,25 @@ export function isDirectAiImageEditRequest(value: string): boolean {
   return target && edit
 }
 
+/**
+ * 用户明确要求继续同一组视觉时，允许插件复用最近成功图片作为风格参考。
+ *
+ * 这里只决定“是否带上本机最近风格参考”，不读取 Vault 正文，也不把本地路径
+ * 发给服务端。图片会在本机压缩为参考图后随本次明确的生图请求发送。
+ */
+export function shouldInheritRecentImageStyle(value: string): boolean {
+  const textValue = value.trim()
+  if (!textValue) return false
+  if (/(?:换个|换成|改成|改为|不要|别用|不同|全新).{0,8}(?:风格|视觉|版式)/.test(textValue)) {
+    return false
+  }
+  const continuation =
+    /(?:继续|沿用|保持|统一|同样|相同|一致|刚才|前面|此前|上一张|这一套|同一套)/.test(textValue)
+  const visual =
+    /(?:风格|视觉|版式|构图|画面|内容图|图片|图像|配图|插画|海报|封面|第[一二三四五六\d]+张)/.test(textValue)
+  return continuation && visual
+}
+
 export function requestedAiImageIndex(value: string): number | null {
   const match = /第\s*([一二三四五六\d]+)\s*张/.exec(value)
   if (!match) return null

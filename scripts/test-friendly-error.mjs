@@ -17,6 +17,7 @@ assert.match(closed, /拆成两段/, '长内容场景必须给出拆分建议')
 for (const [raw, expect] of [
   ['ERR_CONNECTION_REFUSED', /连不上服务器/],
   ['ERR_NAME_NOT_RESOLVED', /连不上服务器/],
+  ['net::ERR_NETWORK_IO_SUSPENDED', /网络中断|重试/],
   ['The operation timed out', /时间太长|拆成两段/],
   ['FUNCTION_INVOCATION_TIMEOUT', /时间太长/],
   ['net::ERR_CERT_AUTHORITY_INVALID', /拦截|代理/],
