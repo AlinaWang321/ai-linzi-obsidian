@@ -98,6 +98,19 @@ console.log('  ✓ 2 个真实业务官方模板可移植、权限透明、引�
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('帮我创建一个客户跟进 Skill'), true)
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('Skill 是什么？'), false)
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('列出我的 Skills'), false)
+assert.equal(
+  studioCore.isExplicitLocalSkillCreationIntent(
+    '调用 weekly-business-dashboard Skill，生成本周经营周报交互看板。',
+  ),
+  false,
+  '运行现有 Skill 并生成业务产物时不能误入 Skill Creator',
+)
+assert.equal(
+  studioCore.isExplicitLocalSkillRunIntent(
+    '调用 weekly-business-dashboard Skill，生成本周经营周报交互看板。',
+  ),
+  true,
+)
 const prompt = studioCore.buildSkillStudioPrompt({
   name: 'client-follow-up',
   purpose: '把咨询记录变成后续行动清单',
@@ -216,6 +229,31 @@ const normalizedNarrativeOutput = studioCore.normalizeGeneratedSkillManifest(
 )
 assert.match(normalizedNarrativeOutput.block.content, /## AI霖子输出方式\ncreate-note$/u)
 assert.ok(normalizedNarrativeOutput.repairs.includes('已补充输出方式：create-note'))
+
+const generatedWithInlineOutputAndNegativeHtml = {
+  ...generatedWithoutSampleInput,
+  description: '把当前笔记变成七天行动计划',
+  content: generatedWithoutSampleInput.content.replace(
+    /\n## AI霖子输出方式\ncreate-note\s*$/u,
+    '\n## 输出格式\n输出方式为 `create-note`。\n\n本 Skill 不会生成 HTML、DOCX、PDF 或 PPTX。',
+  ),
+}
+generatedWithInlineOutputAndNegativeHtml.files = generatedWithInlineOutputAndNegativeHtml.files.map(
+  (file) =>
+    file.path === 'SKILL.md'
+      ? { ...file, content: generatedWithInlineOutputAndNegativeHtml.content }
+      : file,
+)
+const normalizedInlineOutputAndNegativeHtml = studioCore.normalizeGeneratedSkillManifest(
+  generatedWithInlineOutputAndNegativeHtml,
+)
+assert.match(
+  normalizedInlineOutputAndNegativeHtml.block.content,
+  /## AI霖子输出方式\ncreate-note$/u,
+)
+assert.ok(
+  normalizedInlineOutputAndNegativeHtml.repairs.includes('已补充输出方式：create-note'),
+)
 console.log('  ✓ 常见的对象版 skillVersion 与空试运行输入会在本机确定性修正')
 
 const pendingQuestion = {
@@ -375,7 +413,7 @@ assert.match(mainSource, /private hasPendingSkillCreatorInterview\(\): boolean \
 assert.doesNotMatch(mainSource, /hasPendingSkillCreatorInterview[\s\S]{0,600}continue[\s\S]{0,200}skillCreatorPending === true[\s\S]{0,100}continue/)
 assert.match(
   mainSource,
-  /let localSkillMatch = skillCreatorTurn \|\| consultationWorkflowTaskTurn\s*\? \{ kind: 'none' as const \}\s*: await this\.localSkills\.resolve/,
+  /let localSkillMatch = skillCreatorTurn \|\| consultationWorkflowTaskTurn\s*\? \{ kind: 'none' as const \}[\s\S]{0,180}explicitInstalledLocalSkill[\s\S]{0,120}explicitLocalSkillMatch[\s\S]{0,120}this\.localSkills\.resolve/,
 )
 assert.match(mainSource, /localSkillForbidsVaultExpansion\(localSkill\.fullContent\)/)
 assert.match(
@@ -397,11 +435,31 @@ assert.match(mainSource, /if \(round === 0 && input\.forceCloudToolsTurn\)/)
 assert.match(mainSource, /successfulWriteTools\.includes\('addTask'\)/)
 assert.match(
   mainSource,
+  /if \(!skillCreatorTurn && isFullCurrentNoteReplaceIntent\(text\)\)/,
+  'Skill Studio 提示里的“不覆盖”不能误触发当前笔记整篇替换',
+)
+assert.match(
+  mainSource,
+  /input\.localSkill\?\.name === WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME[\s\S]{0,500}id: 'weekly-dashboard-preload'[\s\S]{0,300}name: 'read_recent_documents'/,
+  '官方经营周报必须由本机预读最近文档，不能等待模型自行决定是否扫描',
+)
+assert.match(
+  mainSource,
   /const currentRoot = this\.localSkills\.root\(\)[\s\S]{0,180}currentRoot !== root[\s\S]{0,260}this\.renderMessages\(\)/,
 )
 assert.match(
   mainSource,
   /const skillCreatorTurn =\s*!pendingVaultQuestion\s*&&[\s\S]{0,220}isExplicitLocalSkillCreationIntent\(text\)/,
+)
+assert.match(
+  mainSource,
+  /const explicitLocalSkillRun = isExplicitLocalSkillRunIntent\(text\)[\s\S]{0,500}const explicitInstalledLocalSkill = explicitLocalSkillMatch\?\.kind === 'matched'[\s\S]{0,350}options\.skillCreator === true[\s\S]{0,120}!explicitLocalSkillRun/,
+  '显式运行已安装 Skill 时必须退出历史 Skill Creator 访谈状态',
+)
+assert.match(
+  mainSource,
+  /explicitInstalledLocalSkill\s*\? explicitLocalSkillMatch\s*: await this\.localSkills\.resolve\(text, \{ allowAutomatic: true \}\)/,
+  '已在本机解析到的 Skill 运行意图必须复用同一匹配结果',
 )
 assert.match(mainSource, /input\.localSkill\?\.output === 'create-note'[\s\S]{0,220}extractCreateNoteBlocks\(lastText\)\.blocks\.length > 0[\s\S]{0,80}!plan\.plan/)
 assert.match(mainSource, /answerPlan\.plan && extractCreateNoteBlocks\(answer\)\.blocks\.length > 0/)

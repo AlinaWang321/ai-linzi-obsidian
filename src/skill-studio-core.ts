@@ -29,11 +29,21 @@ export interface SkillStudioDraft {
 const CREATE_SKILL_INTENT =
   /(?:创建|生成|新建|做|制作|设计|搭建|保存成|沉淀成).{0,18}(?:skill|技能|工作流)|(?:skill|技能|工作流).{0,18}(?:创建|生成|新建|做|制作|设计|搭建)/iu
 
+export function isExplicitLocalSkillRunIntent(text: string): boolean {
+  return /(?:^|[，,。.!！?？:：]|请|帮我)(?:用|使用|调用|运行|执行|启用)\s*[^\r\n]{1,80}?(?:skill|技能)(?:\s|，|,|来)*(?:处理|整理|生成|制作|运行|执行|分析|改写|更新|创建)(?![^\r\n]{0,18}(?:skill|技能))/iu.test(
+    text.trim(),
+  )
+}
+
 export function isExplicitLocalSkillCreationIntent(text: string): boolean {
   const normalized = text.trim()
   if (!normalized || /(?:什么是|怎么用|如何用|介绍|解释|查看|列出|有哪些).{0,12}(?:skill|技能)/iu.test(normalized)) {
     return false
   }
+  // “调用某个 Skill，生成/创建一份业务产物”是在运行现有 Skill，不是在创建
+  // 新 Skill。这里必须先让显式调用进入本地 Skill 解析器，否则带“生成”二字的
+  // 正常调用（例如经营周报）会被 Skill Creator 抢走。
+  if (isExplicitLocalSkillRunIntent(normalized)) return false
   return CREATE_SKILL_INTENT.test(normalized)
 }
 
@@ -410,13 +420,31 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
       const permissions = Array.isArray(value.permissions)
         ? value.permissions.filter((item): item is string => typeof item === 'string')
         : []
-      const output = /(?:html|dashboard|看板|交互成品)/iu.test(
-        `${block.description}\n${skillContent}`,
-      )
-        ? 'create-artifact'
-        : permissions.some((item) => /(?:write|create|update|sync|写入|创建|更新|同步)/iu.test(item))
+      // 先尊重正文中明确写出的输出路由。模型常写成“输出方式为
+      // `create-note`”，而不是标准标题；同时又会在能力边界里写“不会生成
+      // HTML”。如果直接对整篇正文搜索 HTML，会把这种否定说明误判成
+      // create-artifact，造成同一份 Skill 自相矛盾。
+      const inlineOutput = skillContent.match(
+        /(?:输出方式|输出路由)\s*(?:为|是|[:：])\s*`?(chat|create-note|update-current-note|create-artifact|新建笔记|创建笔记|更新当前笔记|修改当前笔记|生成成品|生成HTML看板|生成交互看板)`?/iu,
+      )?.[1]
+      const normalizedInlineOutput = inlineOutput
+        ? /^(?:新建笔记|创建笔记)$/u.test(inlineOutput)
           ? 'create-note'
-          : 'chat'
+          : /^(?:更新当前笔记|修改当前笔记)$/u.test(inlineOutput)
+            ? 'update-current-note'
+            : /^(?:生成成品|生成HTML看板|生成交互看板)$/u.test(inlineOutput)
+              ? 'create-artifact'
+              : inlineOutput
+        : ''
+      const output = normalizedInlineOutput || (
+        /(?:html|dashboard|看板|交互成品|本机成品文件)/iu.test(
+          `${block.description}\n${permissions.join('\n')}`,
+        )
+          ? 'create-artifact'
+          : permissions.some((item) => /(?:write|create|update|sync|写入|创建|更新|同步)/iu.test(item))
+            ? 'create-note'
+            : 'chat'
+      )
       skillContent = `${skillContent.trim()}\n\n## AI霖子输出方式\n${output}`
       repairs.push(`已补充输出方式：${output}`)
     }

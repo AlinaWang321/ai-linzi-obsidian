@@ -61,6 +61,11 @@ assert.equal(
   core.matchLocalSkillInvocation('用每周经营复盘技能整理当前笔记', [portable]).kind,
   'matched',
 )
+assert.equal(
+  core.matchLocalSkillInvocation('使用 weekly-review Skill 运行', [portable]).kind,
+  'matched',
+  '“使用 + Skill 名称”也应视为显式调用',
+)
 
 const dashboard = core.buildLocalSkillDescriptor(
   '05_System/Skills/weekly-business-dashboard/SKILL.md',

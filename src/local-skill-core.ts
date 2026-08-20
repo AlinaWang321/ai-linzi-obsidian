@@ -345,7 +345,7 @@ function invocationContext(message: string): {
   return {
     normalized: normalizeText(trimmed),
     explicit:
-      /(?:^|[\s，,。.!！?？:：]|请|帮我)(?:用|调用|运行|执行|启用|按照|按)\s*/u.test(
+      /(?:^|[\s，,。.!！?？:：]|请|帮我)(?:用|使用|调用|运行|执行|启用|按照|按)\s*/u.test(
         trimmed,
       ),
     slash: /^\/[^\s/]+/u.test(trimmed),

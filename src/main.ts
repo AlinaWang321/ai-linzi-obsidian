@@ -86,6 +86,7 @@ import { createLocalSkillBundleAtomically } from './create-local-skill-vault'
 import { exportSkillBundle, SkillStudioModal } from './skill-studio'
 import {
   isExplicitLocalSkillCreationIntent,
+  isExplicitLocalSkillRunIntent,
   normalizeGeneratedSkillManifest,
   skillBlockManifest,
 } from './skill-studio-core'
@@ -2859,6 +2860,14 @@ class ChatView extends ItemView {
     if (!text || this.sending) return
     const pendingVaultQuestion = this.recentPendingVaultQuestion()
     const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
+    const explicitLocalSkillRun = isExplicitLocalSkillRunIntent(text)
+    // 先在本机确认“调用 + 已安装 Skill 名称”是否真实存在。只靠创建意图词表
+    // 分流仍可能被历史 Skill Creator 访谈状态劫持；已解析到本地 Skill 时，
+    // 运行意图拥有确定性优先级。
+    const explicitLocalSkillMatch = explicitLocalSkillRun
+      ? await this.localSkills.resolve(text, { allowAutomatic: false })
+      : undefined
+    const explicitInstalledLocalSkill = explicitLocalSkillMatch?.kind === 'matched'
     // 原生 ask_user 的回答必须先续接同一个文件任务。回答正文可能恰好描述
     // “课后让学员创建 Skill”等业务内容，不能因此被重新分流到 Skill Creator。
     // 若用户确实想放弃原任务创建 Skill，应新开对话，避免隐式丢失待续状态。
@@ -2866,8 +2875,11 @@ class ChatView extends ItemView {
       !pendingVaultQuestion &&
       (
         options.skillCreator === true ||
-        pendingSkillCreatorInterview ||
-        isExplicitLocalSkillCreationIntent(text)
+        (
+          !explicitLocalSkillRun &&
+          !explicitInstalledLocalSkill &&
+          (pendingSkillCreatorInterview || isExplicitLocalSkillCreationIntent(text))
+        )
       )
     const consultationWorkflowTaskTurn = Boolean(options.consultationWorkflowTaskOriginId)
 
@@ -2948,7 +2960,9 @@ class ChatView extends ItemView {
       // 并在真正请求创建接口前以“没有找到你点名的 Skill”中断。
       let localSkillMatch = skillCreatorTurn || consultationWorkflowTaskTurn
         ? { kind: 'none' as const }
-        : await this.localSkills.resolve(text, { allowAutomatic: true })
+        : explicitInstalledLocalSkill
+          ? explicitLocalSkillMatch
+          : await this.localSkills.resolve(text, { allowAutomatic: true })
       if (pendingVaultQuestion) localSkillMatch = { kind: 'none' }
       if (
         localSkillMatch.kind === 'none' &&
@@ -3007,7 +3021,9 @@ class ChatView extends ItemView {
         : localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME
           ? noteContext?.path ?? this.recentConsultationWorkflowSourcePath()
           : undefined
-      if (isFullCurrentNoteReplaceIntent(text)) {
+      // Skill Studio 的生成提示会把“不覆盖同名文件”写进安全边界；这不是要求
+      // 覆盖当前笔记。专用 Skill Creator 回合必须跳过正文替换快捷通道。
+      if (!skillCreatorTurn && isFullCurrentNoteReplaceIntent(text)) {
         if (!noteContext) throw new Error('没有读取到要覆盖的当前笔记')
         const replacement = this.lastAssistantContentForReplace()
         if (!replacement) {
@@ -3830,6 +3846,87 @@ class ChatView extends ItemView {
         sources.push(...templates.sources)
       }
       this.activityStep('🧩 已查看知识库根目录，并预读咨询闭环规则与客户模板')
+    }
+    // 经营周报的唯一可信输入是最近 7 天真实改动的文档快照。不能把首个
+    // read_recent_documents 调用交给模型自由选择：实测模型可能先追问 KPI，
+    // 或退回普通关键词搜索，导致“官方模板”没有真的执行。用户点名调用本
+    // Skill 已在 manifest 中授权这次只读扫描，因此由本机确定性建立快照并
+    // 自动追完分页，再把完整结果交给模型整理；任何写入仍保留确认卡。
+    if (
+      input.localSkill?.name === WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME &&
+      input.localSkillContext &&
+      input.vaultAccess
+    ) {
+      const seed = {
+        id: 'weekly-dashboard-preload',
+        name: 'read_recent_documents' as const,
+        arguments: { sinceDays: 7, offset: 0, maxChars: 70_000 },
+      }
+      const preload = await this.plugin.vaultAgent.executeCalls([seed], input.localSkillContext)
+      let current = preload.results[0]
+      let page = 1
+      let projectedChars =
+        toolResults.reduce((sum, item) => sum + item.output.length, 0) +
+        preload.results.reduce((sum, item) => sum + item.output.length, 0)
+      while (
+        current?.ok &&
+        page < 24 &&
+        projectedChars < WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS
+      ) {
+        let parsed: {
+          nextOffset?: unknown
+          nextCharOffset?: unknown
+          snapshotId?: unknown
+          truncated?: unknown
+        }
+        try {
+          parsed = JSON.parse(current.output) as {
+            nextOffset?: unknown
+            nextCharOffset?: unknown
+            snapshotId?: unknown
+            truncated?: unknown
+          }
+        } catch {
+          break
+        }
+        if (parsed.truncated === true) {
+          preload.results.push({
+            callId: `${seed.id}-truncated-${page}`,
+            name: 'read_recent_documents',
+            ok: false,
+            output: '最近文档这一页的工具结果被截断，尚未读完。必须如实报告扫描未完成，不能生成伪完整经营周报。',
+          })
+          break
+        }
+        if (!Number.isInteger(parsed.nextOffset)) break
+        const followup = await this.plugin.vaultAgent.executeReadCalls([{
+          id: `${seed.id}-auto-${page}`,
+          name: 'read_recent_documents',
+          arguments: {
+            ...seed.arguments,
+            ...(typeof parsed.snapshotId === 'string'
+              ? { snapshotId: parsed.snapshotId }
+              : {}),
+            offset: Number(parsed.nextOffset),
+            charOffset: Number.isInteger(parsed.nextCharOffset)
+              ? Number(parsed.nextCharOffset)
+              : 0,
+          },
+        }])
+        const nextResult = followup.results[0]
+        if (!nextResult) break
+        preload.results.push(nextResult)
+        preload.sources.push(...followup.sources)
+        projectedChars += nextResult.output.length
+        current = nextResult
+        page += 1
+      }
+      preload.sources = [
+        ...new Map(preload.sources.map((source) => [source.path, source])).values(),
+      ]
+      appendToolResults(preload.results)
+      sources.push(...preload.sources)
+      this.activityStep(`📚 已批量读取最近 7 天文档 → ${preload.sources.length} 份可读正文`)
     }
     // 阶段 A：intent 只允许 auto → organize 单向升级；跨轮任务状态在会话上保存。
     if (this.pendingVaultTask && isVaultTaskExpired(this.pendingVaultTask, Date.now())) {
