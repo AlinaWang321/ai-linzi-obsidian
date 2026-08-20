@@ -876,19 +876,6 @@ export function detectVaultAgentIntent(text: string): VaultAgentIntent {
   // 0.7.48 追加：「处理/放到 + 文件对象」也是整理请求（Alina 08-18 截图实测的
   // 第三批逃逸句式：「给我按照分类处理 raw 文件夹」「把它们放到 wiki 文件夹里去」）。
   // 疑问词豁免：「逐字稿怎么处理」这类请教型问题仍是普通问答，不得强制进整理流程。
-  // 0.7.66：「在 wiki 里生成一份客户档案」这类「产出物 + 落点」请求也是写入请求。
-  // 旧词表只认 写入/追加/保存/新建/创建/更新，用户口语里的「生成/做/建/整理出/提炼出」
-  // 全部逃逸 → intent 判成 answer → 整个 organize 结构化护栏（收尾必须出方案卡）失效，
-  // 模型只能一轮轮口头承诺（柚柠客户档案案，2026-08-20 学员实测连续 4 次空承诺）。
-  // 判定必须同时命中「产出物」和「落点」，避免「帮我生成一份周报」这类纯对话输出被误升级。
-  const produceIntoVault =
-    /(?:生成|做|建|建立|新建|创建|制作|整理出|整理成|提炼出|提炼成|提炼|归纳出|归纳成|梳理出|梳理成|输出|建档|写)(?:一)?(?:份|个|篇|条|张)?[^。！？!?]{0,24}(?:档案|笔记|文档|文件|清单|台账|索引|表格|简报)/.test(
-      normalized,
-    ) &&
-    /(?:在|到|进|放到|存到|存进|写到|保存到|落到)[^。！？!?]{0,16}(?:wiki|vault|obsidian|知识库|数字大脑|文件夹|目录|库里|档案库)/.test(
-      normalized,
-    )
-  if (produceIntoVault) return 'organize'
   const fileHandlingAsk =
     /(?:处理|整理|归类|分类).{0,16}(?:文件夹|文件|资料|素材|逐字稿|raw|wiki)|(?:放到|放进|移到|移进|挪到|归到|整理到).{0,20}(?:wiki|知识库|文件夹|目录)|(?:文件名|文件|档案|笔记|名字).{0,12}(?:加上|加个|改成|改为|统一|重命名|命名)|(?:加上|统一|改成).{0,10}(?:日期|前缀|后缀|编号)/.test(
       normalized,
@@ -959,12 +946,18 @@ function isActionAnnouncementSentence(sentence: string): boolean {
   // 于是「我现在需要继续读取剩下的档案」这种典型空承诺被豁免掉。
   if (/^(?:如果|若|要是|需要的话|需要我|要不要|想不想)/.test(last)) return false
   if (/(?:吗|呢)[？?]?$/.test(last) && !/我(?:现在|马上|立刻|这就|接下来)/.test(last)) return false
+  // 「还剩/还有 X 没读完」＝宣告剩余工作，本身就是「本轮没做完」的自白
+  // （小A案第二轮：「逐字稿还剩一段需要读完」）。
+  if (/(?:还剩|还有|剩余|尚未|还没)[^，,；;]{0,16}(?:读|看|核|查|处理|整理|完成)/.test(last)) {
+    return true
+  }
   return (
     /我/.test(last) &&
-    /(?:继续|接下来|然后|稍后|随后|下一步|现在|马上|立刻|这就|先|再)/.test(last) &&
-    // 0.7.66 扩表：读/读完/提炼/梳理/核实/处理/建档 也是本机动作，旧表只有
-    // 读取/检索/搜索/查/核对/翻阅/整理/生成/输出/追加/写入/补进/补充/更新。
-    /(?:读|阅|检索|搜索|查|核对|核实|翻阅|梳理|整理|归类|提炼|生成|输出|追加|写入|补进|补充|更新|扫描|统计|建档|处理)/.test(
+    // 0.7.66 增补「同时」（小A案：「同时我核实一下 Wiki…」）。
+    /(?:继续|接下来|然后|稍后|随后|下一步|现在|马上|立刻|这就|先|再|同时)/.test(last) &&
+    // 0.7.66 扩表：读/提炼/核实/处理/建档 是本机动作；「再给你/发给/交给 一份
+    // 方案」是交付式拖延（小A案：「确认无重复后，我再给你一份待确认方案」）。
+    /(?:读|阅|检索|搜索|查|核对|核实|翻阅|梳理|整理|归类|提炼|生成|输出|追加|写入|补进|补充|更新|扫描|统计|建档|处理|给你|发给|交给)/.test(
       last,
     )
   )
@@ -1077,63 +1070,6 @@ export function normalizeFolderKey(name: string): string {
     .toLocaleLowerCase()
     .replace(/^[\s_\-.]*[0-9①-⑳]{1,3}[\s_\-.）)、.]*/u, '')
     .replace(/[\s_\-.]/g, '')
-}
-
-/**
- * 空承诺熔断时插件代跑的检索词（0.7.66）。
- *
- * 背景：模型连着两轮既不调工具也不出方案时，再退回去要求它「当场完成」只会
- * 换一种措辞再承诺一次（柚柠客户档案案：连续 4 次口头承诺，一个工具都没调）。
- * 与其用更严厉的措辞，不如插件自己按用户原话做一次只读检索，把真实文件清单
- * 交回模型——用数据打断循环。纯函数，只负责从原话里抽检索词。
- *
- * 规则：先把请求套话（帮我/根据/一份/文件夹/生成…）整体挖成分隔符，再按非
- * 字词字符切段；中文保留 ≥2 字、英数保留 ≥3 位，去重后最多 3 个。
- */
-const VAULT_RESCUE_STOPWORDS = [
-  '帮我', '请帮', '麻烦', '我要', '我想', '需要', '可以', '能否', '能不能', '给我', '请',
-  '根据', '依据', '按照', '参考', '基于', '按',
-  '一份', '一个', '一篇', '一条', '一张', '这个', '那个', '这份', '那份', '这些', '那些',
-  '里面', '下面', '上面', '当中', '其中', '里', '中', '的', '了', '吗', '呢', '在', '到', '进', '把', '将', '和', '与', '以及', '并',
-  '文件夹', '文件', '目录', '资料', '素材', '内容', '东西', '材料',
-  '生成', '建立', '新建', '创建', '制作', '整理', '归类', '分类', '写入', '追加', '保存',
-  '更新', '读取', '查找', '搜索', '提炼', '梳理', '建档', '做', '写', '找', '看', '读',
-  '统计', '汇总', '核对', '检查', '列出', '一下', '多少', '几个', '所有', '全部', '有', '是',
-]
-
-const VAULT_RESCUE_GENERIC = [
-  '档案', '逐字稿', '笔记', '文档', '清单', '台账', '模板', '记录', '咨询', '方案', '报告', '简报',
-]
-
-export function extractVaultRescueQueries(question: string, limit = 3): string[] {
-  let normalized = question.normalize('NFKC').toLocaleLowerCase()
-  for (const word of VAULT_RESCUE_STOPWORDS) {
-    normalized = normalized.split(word).join('\u0000')
-  }
-  const seen = new Set<string>()
-  const tokens: string[] = []
-  for (const raw of normalized.split(/[^\p{Script=Han}\p{L}\p{N}]+/u)) {
-    const token = raw.trim()
-    if (!token) continue
-    const hasHan = /\p{Script=Han}/u.test(token)
-    if (hasHan ? token.length < 2 : token.length < 3) continue
-    if (token.length > 16) continue
-    if (seen.has(token)) continue
-    seen.add(token)
-    tokens.push(token)
-  }
-  // 排序而非截断长度：人名/项目名这类专有名词才是最有区分度的检索词，
-  // 「客户档案」「逐字稿」这类领域通用词命中太宽（按长度排会把「柚柠」挤掉）。
-  // 英数词多半是目录名（raw / wiki），留在最后兜底。
-  const rank = (token: string): number => {
-    if (!/\p{Script=Han}/u.test(token)) return 2
-    return VAULT_RESCUE_GENERIC.some((word) => token.includes(word)) ? 1 : 0
-  }
-  return tokens
-    .map((token, index) => ({ token, index, rank: rank(token) }))
-    .sort((a, b) => a.rank - b.rank || a.index - b.index)
-    .map((item) => item.token)
-    .slice(0, Math.max(0, limit))
 }
 
 /** list_folder 的时间查询模式（0.7.60）。 */

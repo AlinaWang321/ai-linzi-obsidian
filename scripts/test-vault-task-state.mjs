@@ -359,29 +359,25 @@ console.log('第12组 VAULT_NATIVE_TURN 标记行为（0.7.54 补齐）')
   assert.equal(core.isVaultNativeTurnRequest('我已经帮你整理好了'), false)
 }
 
-// ── 0.7.66 第13组：空承诺循环根因（柚柠客户档案案，2026-08-20 学员实测）──
+// ── 0.7.66 第13组：空承诺形态整段扫描（柚柠客户档案案，2026-08-20 学员实测）──
 // 学员连发同一句请求，四轮拿到的都是「我先读完再生成」的承诺，一个文件都没动。
-// 三处根因各自锁一条断言：①意图漏判 ②承诺检测只看收尾句 ③熔断检索词。
-console.log('第13组 空承诺循环根因（0.7.66）')
+// 空承诺的真实形态=「承诺在前 + 安抚收尾」，只看收尾句必然整类漏判：短回答改
+// 整篇逐句扫描，长回答仍只看收尾句（正文里「我现在整理如下」是真交付开场白）。
+// 注：意图路由不再走客户端词表扩表（0.7.30 纪律：词表不得成为能力路由）——
+// 「生成一份客户档案」的进引擎判断由服务端 round-0 指令交 Luna 完成。
+console.log('第13组 空承诺整段扫描（0.7.66）')
 {
   const question = '帮我根据raw文件夹里面柚柠的资料，在wiki里面生成一份柚柠的客户档案'
 
-  // ① 「在 wiki 里生成一份客户档案」＝写入请求。旧词表只认 写入/追加/新建/创建/更新，
-  // 判成 answer 后整套 organize 结构化护栏（收尾必须出方案卡）全不生效。
-  assert.equal(core.detectVaultAgentIntent(question), 'organize')
-  assert.equal(core.detectVaultAgentIntent('把逐字稿提炼成客户档案存到知识库'), 'organize')
-  assert.equal(core.detectVaultAgentIntent('在 Obsidian 里新建一个会议纪要文档'), 'organize')
-  // 没有落点的纯对话输出不得被升级成写入流程
-  assert.equal(core.detectVaultAgentIntent('帮我生成一份周报'), 'answer')
-  assert.equal(core.detectVaultAgentIntent('在知识库里找一份客户档案模板'), 'answer')
-  assert.equal(core.detectVaultAgentIntent('先不要写入任何文件，只读取并生成草稿'), 'answer')
-
-  // ② 空承诺的典型形态是「承诺在前 + 安抚收尾」，旧实现只看收尾句 → 整类漏判。
+  // 四条真实截图原文必须全部被判为空承诺并强制重做。
   const stalls = [
     '江老师，我继续把柚柠这份逐字稿完整读完，再提炼客户档案。现在已有的片段能确认：对方正在读学前教育——但还不够支撑完整建档，我先把全文读完。',
     '我继续处理柚柠这份材料，先把唯一一份逐字稿完整读完，再生成客户档案预览。信息不足的字段会写"待补充"，确认后才写入 Wiki。',
     '我按确认内容执行：先核对柚柠对应的原始材料和 Wiki 里的真实目录，再完整读取材料，最后生成一份待确认写入方案。不会覆盖已有文件；只有你在插件里再次确认后，才会写入。',
     '我先核对 RAW 里柚柠的真实材料，以及 Wiki 里对应文件夹的现状；确认无误后，按你已经确认的内容生成一份客户档案写入方案。插件二次确认后才会写入。',
+    // 小A案（2026-08-20 Alina 真机复现）的两条收尾也必须拦住
+    '我继续处理小A这份资料。先把逐字稿剩余部分读完，并核实 Wiki 里是否已有小A档案，避免覆盖或重复创建。',
+    '继续。逐字稿还剩一段需要读完，同时我核实一下 Wiki 里是否已经有小A档案；确认无重复后，我再给你一份完整的待确认档案方案。',
   ]
   for (const stall of stalls) {
     assert.equal(core.isTrailingActionAnnouncement(stall), true, stall.slice(0, 20))
@@ -393,12 +389,14 @@ console.log('第13组 空承诺循环根因（0.7.66）')
   // 原有豁免不能被整篇扫描破坏
   assert.equal(core.isTrailingActionAnnouncement('如果需要我可以继续核对其他档案。'), false)
   assert.equal(core.isTrailingActionAnnouncement('建议你继续读一下这两份逐字稿。'), false)
+  assert.equal(core.isTrailingActionAnnouncement('需要我继续读取剩下的档案吗？'), false)
   assert.equal(core.isTrailingActionAnnouncement('我刚才已经读完了逐字稿，结论是她的核心痛点在定价。'), false)
+  assert.equal(core.isTrailingActionAnnouncement('可以，我们先讨论客户档案模板应该包含哪些字段。'), false)
 
-  // ③ 熔断代跑的检索词：人名/项目名这类专有名词必须排在领域通用词和目录名前面。
-  const queries = core.extractVaultRescueQueries(question)
-  assert.equal(queries[0], '柚柠')
-  assert.ok(queries.length <= 3)
-  assert.deepEqual(core.extractVaultRescueQueries('把01_Raw里小马哥的周会逐字稿整理进知识库')[0], '小马哥')
-  assert.deepEqual(core.extractVaultRescueQueries('   '), [])
+  // 意图词表保持 0.7.65 原状：不因本批扩表（能力路由归 Luna + 服务端指令）。
+  assert.equal(core.detectVaultAgentIntent('先不要写入任何文件，只读取并生成草稿'), 'answer')
+  assert.equal(core.detectVaultAgentIntent('帮我生成一份周报'), 'answer')
+  // 熔断代搜已按 Codex 复核移除：纯聊天默认带 Vault 权限，误判两轮会导致
+  // 插件未经模型请求预扫 Vault，违反市场审核承诺的边界。
+  assert.equal(typeof core.extractVaultRescueQueries, 'undefined')
 }
