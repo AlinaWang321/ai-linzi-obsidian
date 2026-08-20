@@ -122,6 +122,7 @@ import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
   VAULT_AGENT_MAX_CALLS_PER_ROUND,
   VAULT_AGENT_MAX_ROUNDS,
+  WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS,
   advanceVaultTask,
   appendToolResultsWithinBudget,
   buildVaultExecuteFailureToolResult,
@@ -180,6 +181,11 @@ import {
   localSkillActionSummary,
   type LocalSkillActionProposal,
 } from './local-skill-execution-core'
+import {
+  CONSULTATION_WORKFLOW_SKILL_NAME,
+  WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME,
+  extractConsultationBriefAction,
+} from './official-skill-runtime-core'
 import {
   isExplicitCurrentNoteIntent,
   selectCurrentOpenMarkdownPath,
@@ -445,6 +451,8 @@ interface WireMessage {
   localSkillRunIds?: string[]
   /** 本轮实际调用的本地 Skill 入口；只用于同一对话续跑，不上传到服务端。 */
   localSkillPath?: string
+  /** 咨询闭环首次锁定的逐字稿；只保存本机 Vault 路径，不上传。 */
+  consultationWorkflowSourcePath?: string
   /** 成功写入后识别到的本地客户档案；只存 Vault 路径，不存正文。 */
   customerCrmSyncPath?: string
   /** 用户二次确认后完成的 CRM 同步回执。 */
@@ -2765,6 +2773,14 @@ class ChatView extends ItemView {
     return undefined
   }
 
+  private recentConsultationWorkflowSourcePath(): string | undefined {
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      const path = this.messages[index].consultationWorkflowSourcePath
+      if (path) return path
+    }
+    return undefined
+  }
+
   private recentPendingVaultQuestion(): { message: WireMessage; question: PendingVaultQuestion } | undefined {
     for (let index = this.messages.length - 1; index >= 0; index--) {
       const message = this.messages[index]
@@ -2971,6 +2987,10 @@ class ChatView extends ItemView {
         )
       }
       if (noteContext) new Notice(`本轮只读取当前笔记：${noteContext.filename}`, 3500)
+      const consultationWorkflowSourcePath =
+        localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME
+          ? noteContext?.path ?? this.recentConsultationWorkflowSourcePath()
+          : undefined
       if (isFullCurrentNoteReplaceIntent(text)) {
         if (!noteContext) throw new Error('没有读取到要覆盖的当前笔记')
         const replacement = this.lastAssistantContentForReplace()
@@ -3105,7 +3125,9 @@ class ChatView extends ItemView {
             // 必须保持 organize 语义；否则原生通道若临时回退，兼容通道会把它
             // 当普通问答，只输出“请确认吗”的文字而没有可点击确认卡。
             intent:
-              pendingVaultQuestion || localSkill?.output === 'create-note'
+              pendingVaultQuestion ||
+              localSkill?.output === 'create-note' ||
+              localSkill?.output === 'create-artifact'
                 ? 'organize'
                 : 'auto',
             resumeQuestion: pendingVaultQuestion?.question,
@@ -3176,6 +3198,11 @@ class ChatView extends ItemView {
       // 模型偶尔会同时返回旧「新建笔记」块和新的 Vault 变更集。两者内容相同，
       // 同时渲染会让用户看到两个创建按钮；保留已通过预检、支持版本锁与回滚的
       // Vault 变更集，剥掉旧兼容块。
+      const consultationBriefAction = extractConsultationBriefAction(answer)
+      answer = consultationBriefAction.cleanText ||
+        (consultationBriefAction.requested
+          ? '前四步已经完成。现在打开客户咨询简报生成窗口，并继续使用最初锁定的逐字稿。'
+          : answer)
       const answerPlan = extractVaultOrganizePlan(answer)
       if (answerPlan.plan && extractCreateNoteBlocks(answer).blocks.length > 0) {
         answer = extractCreateNoteBlocks(answer).cleanText
@@ -3209,12 +3236,21 @@ class ChatView extends ItemView {
           : undefined,
         localSkillRunIds,
         localSkillPath: localSkill?.path,
+        consultationWorkflowSourcePath,
         vaultQuestion: vaultQuestion.question,
         skillStudioTestInput: skillCreatorTurn ? options.skillStudioTestInput : undefined,
         skillCreatorPending,
         skillCreatorResult: skillCreatorTurn || undefined,
       })
       await this.persistNow()
+      if (consultationBriefAction.requested && !answer.startsWith('⚠️')) {
+        this.renderMessages()
+        const source = consultationWorkflowSourcePath
+          ? this.app.vault.getAbstractFileByPath(consultationWorkflowSourcePath)
+          : null
+        const { runCustomerConsultationBrief } = await import('./customer-consultation-brief')
+        await runCustomerConsultationBrief(this.plugin, source instanceof TFile ? source : undefined)
+      }
       if (aiImageRequest.requests.length > 0 && !answer.startsWith('⚠️')) {
         await this.executeChatAiImageRequests(aiImageRequest.requests, imageAttachments)
       }
@@ -3674,13 +3710,75 @@ class ChatView extends ItemView {
     // 改为提示模型基于已读内容收尾，并关闭后续工具轮。
     let toolBudgetExhausted = false
     const appendToolResults = (incoming: VaultAgentToolResult[]) => {
-      const merged = appendToolResultsWithinBudget(toolResults, incoming)
+      const merged = appendToolResultsWithinBudget(
+        toolResults,
+        incoming,
+        input.localSkill?.name === WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME
+          ? WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS
+          : undefined,
+      )
       toolResults = merged.results
       if (merged.exhausted && !toolBudgetExhausted) {
         toolBudgetExhausted = true
         this.activityStep('📦 本次读取量较大，将基于已读内容收尾')
         new Notice('本次任务读取量较大，AI霖子将基于已读内容收尾；更多材料建议分批处理。', 6000)
       }
+    }
+    // 官方咨询闭环的前置条件是固定且完全本机的：工作流规则、
+    // 用户的客户库一级目录和客户模板候选。若全部交给模型逐轮请求，
+    // 实测会在找到真实目录后才撞满 12 轮。用户显式调用该 Skill 时，
+    // 先在本机预读这些已授权材料；不扩大到其他 Skill，也不产生任何写入。
+    if (
+      input.localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME &&
+      input.localSkillContext &&
+      input.vaultAccess
+    ) {
+      const preload = await this.plugin.vaultAgent.executeCalls([
+        {
+          id: 'consultation-preload-client-library',
+          name: 'list_folder',
+          arguments: { path: '02_Wiki', depth: 1, offset: 0, maxEntries: 160 },
+        },
+        {
+          id: 'consultation-preload-template-search',
+          name: 'vault_search',
+          arguments: { query: '客户档案模板', maxResults: 8 },
+        },
+        ...[
+          'references/ai-linzi-skill-manifest.json',
+          'references/customer-profile-fallback.md',
+          'references/workflow-checklist.md',
+        ].map((path, index) => ({
+          id: `consultation-preload-rule-${index + 1}`,
+          name: 'read_skill_file' as const,
+          arguments: { path, offset: 0, maxChars: 16_000 },
+        })),
+      ], input.localSkillContext)
+      appendToolResults(preload.results)
+      sources.push(...preload.sources)
+
+      const templateCandidates = preload.sources
+        .filter((source) =>
+          source.sourceId === 'consultation-preload-template-search' &&
+          /(?:客户档案模板|客户模板)/.test(source.filename),
+        )
+        .slice(0, 2)
+      if (templateCandidates.length > 0) {
+        const templates = await this.plugin.vaultAgent.executeReadCalls(
+          templateCandidates.map((source, index) => ({
+            id: `consultation-preload-template-${index + 1}`,
+            name: 'read_note' as const,
+            arguments: { path: source.path, offset: 0, maxChars: 16_000 },
+          })),
+        )
+        appendToolResults(templates.results)
+        sources.push(...templates.sources)
+        for (const source of templateCandidates) {
+          const stat = this.plugin.vaultFileStat(source.path)
+          if (stat) verifiedWritePaths.add(source.path)
+        }
+      }
+      this.activityStep('🧩 已预读咨询闭环规则、客户库目录与模板')
     }
     // 阶段 A：intent 只允许 auto → organize 单向升级；跨轮任务状态在会话上保存。
     if (this.pendingVaultTask && isVaultTaskExpired(this.pendingVaultTask, Date.now())) {
@@ -4145,6 +4243,13 @@ class ChatView extends ItemView {
         return { text: cloudText, sources, localSkillRunIds }
       }
 
+      if (
+        input.localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME &&
+        extractConsultationBriefAction(lastText).requested
+      ) {
+        return { text: lastText, sources, localSkillRunIds }
+      }
+
       // 0.7.52：模型自主切换文件操作引擎——词表判不准的最终解。round 0 的 auto
       // 判断轮（全推理）认定本句要动文件时输出标记，插件立即转入原生引擎；
       // 引擎失败则回到散文协议并强制工具纠正，绝不接受口头承诺。
@@ -4303,15 +4408,26 @@ class ChatView extends ItemView {
         if (intent === 'organize' && !plan.plan) {
           // 阶段 A：写入流程的结构化判定优先于文字匹配。已搜到目标却没读原文
           // 就收尾 → stalled_write_flow；完全没动工具 → missing_tool_use。
-          const stalled = vaultWriteFlowRetryReason(
-            this.pendingVaultTask,
-            intent,
-            false,
-            false,
-          )
+          // 官方 create-note/create-artifact Skill 会由客户端先读固定规则、
+          // 用户模板与真实目录。这些 toolResults 就是本轮的真实工具证据；
+          // 模型若仍只输出“我准备好了”，应强制它基于已读内容交付方案卡，
+          // 不能反向误报“没有调用工具”并重复扫描。
+          const hasPreloadedCreateSkillEvidence =
+            toolResults.length > 0 &&
+            (input.localSkill?.output === 'create-note' ||
+              input.localSkill?.output === 'create-artifact')
+          const stalled = hasPreloadedCreateSkillEvidence
+            ? 'deferred_answer'
+            : vaultWriteFlowRetryReason(
+                this.pendingVaultTask,
+                intent,
+                false,
+                false,
+              )
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
             throw new Error(
-              '这次没做成：AI 没能给出可确认的整理方案。请缩小范围（一次只处理一个文件夹或一份文件）后再试一次。',
+              '这次没做成：AI 没能在安全轮次内给出可确认的整理方案。' +
+                '请检查活动记录里的未读或失败文件，再重试；批量任务可以按时间或文件夹拆分。',
             )
           }
           pendingRetryReason = stalled ?? pendingRetryReason
@@ -4497,6 +4613,52 @@ class ChatView extends ItemView {
         readCalls,
         input.localSkillContext,
       )
+      // 官方经营周报不再把分页继续交给模型“自觉”完成。
+      // 实测 Luna 在拿到第 1 页后会直接出看板，把剩余文档误写成跳过。
+      // 插件因此在本机按工具返回的文件游标+字符游标自动追页，
+      // 直到完整读完或显式撞到 100 万字结果预算。普通对话和其他 Skill 不受影响。
+      if (input.localSkill?.name === WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME) {
+        const seedCalls = readCalls.filter((call) => call.name === 'read_recent_documents')
+        let projectedChars =
+          toolResults.reduce((sum, item) => sum + item.output.length, 0) +
+          executed.results.reduce((sum, item) => sum + item.output.length, 0)
+        for (const seed of seedCalls) {
+          let current = executed.results.find((item) => item.callId === seed.id)
+          let page = 1
+          while (current?.ok && page < 24 && projectedChars < WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS) {
+            let parsed: { nextOffset?: unknown; nextCharOffset?: unknown }
+            try {
+              parsed = JSON.parse(current.output) as { nextOffset?: unknown; nextCharOffset?: unknown }
+            } catch {
+              break
+            }
+            if (!Number.isInteger(parsed.nextOffset)) break
+            const nextOffset = Number(parsed.nextOffset)
+            const nextCharOffset = Number.isInteger(parsed.nextCharOffset)
+              ? Number(parsed.nextCharOffset)
+              : 0
+            const followup = await this.plugin.vaultAgent.executeReadCalls([{
+              id: `${seed.id}-auto-${page}`,
+              name: 'read_recent_documents',
+              arguments: {
+                ...seed.arguments,
+                offset: nextOffset,
+                charOffset: nextCharOffset,
+              },
+            }])
+            const nextResult = followup.results[0]
+            if (!nextResult) break
+            executed.results.push(nextResult)
+            executed.sources.push(...followup.sources)
+            projectedChars += nextResult.output.length
+            current = nextResult
+            page += 1
+          }
+        }
+        executed.sources = [
+          ...new Map(executed.sources.map((source) => [source.path, source])).values(),
+        ]
+      }
       // 用户可见的真实进度：每个动作实时滚动进对话区活动流(0.7.53)。
       for (const call of readCalls) {
         const result = executed.results.find((item) => item.callId === call.id)
@@ -4533,6 +4695,18 @@ class ChatView extends ItemView {
               ? call.arguments.path.trim()
               : 'Vault 根目录'
           this.activityStep(`📁 查看 ${folder}`)
+        }
+        if (call.name === 'read_recent_documents') {
+          const hitPaths = executed.sources
+            .filter((source) =>
+              source.sourceId === call.id || source.sourceId.startsWith(`${call.id}-auto-`),
+            )
+            .map((source) => source.path)
+          for (const path of hitPaths) {
+            const stat = this.plugin.vaultFileStat(path)
+            if (stat) updateTask({ type: 'read', snapshot: stat, isTarget: false })
+          }
+          this.activityStep(`📚 批量读取最近文档 → ${hitPaths.length} 份可读正文`)
         }
         if (call.name === 'read_skill_file' && typeof call.arguments.path === 'string') {
           this.activityStep(`🧩 读取技能文件 ${call.arguments.path.split('/').at(-1)}`)

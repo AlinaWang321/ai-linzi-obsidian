@@ -19,6 +19,8 @@ import {
   type CustomerConsultationBriefInput,
 } from './customer-consultation-brief-core'
 import { selectTranscriptSource } from './transcript-source'
+import { stripFrontmatter } from './article-format'
+import { readLocalDocumentText } from './long-document'
 
 function fileDate(): string {
   const date = new Date()
@@ -271,12 +273,35 @@ class CustomerConsultationBriefModal extends Modal {
   }
 }
 
-export async function runCustomerConsultationBrief(plugin: AiLinziPlugin): Promise<void> {
-  const source = await selectTranscriptSource(
-    plugin,
-    '客户咨询简报',
-    CUSTOMER_CONSULTATION_TRANSCRIPT_MAX,
-  )
+export async function runCustomerConsultationBrief(
+  plugin: AiLinziPlugin,
+  lockedSourceFile?: TFile,
+): Promise<void> {
+  const source = lockedSourceFile
+    ? await (async () => {
+        try {
+          const result = await readLocalDocumentText(
+            plugin.app,
+            lockedSourceFile,
+            CUSTOMER_CONSULTATION_TRANSCRIPT_MAX,
+            'skill',
+          )
+          const text = lockedSourceFile.extension.toLocaleLowerCase() === 'md'
+            ? stripFrontmatter(result.text).trim()
+            : result.text.trim()
+          return text ? { file: lockedSourceFile, text } : null
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          plugin.reportSkillStatus(`⚠️ 客户咨询简报已停止：${message}`)
+          new Notice(message, 9000)
+          return null
+        }
+      })()
+    : await selectTranscriptSource(
+        plugin,
+        '客户咨询简报',
+        CUSTOMER_CONSULTATION_TRANSCRIPT_MAX,
+      )
   if (!source) return
   const sourceFile = source.file
   const transcript = source.text

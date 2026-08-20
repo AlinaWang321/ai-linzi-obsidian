@@ -67,7 +67,11 @@ export function localSkillLinkedPathCandidates(
   return [...new Set([relative, direct].filter((path): path is string => Boolean(path)))]
 }
 
-export type LocalSkillOutput = 'chat' | 'create-note' | 'update-current-note'
+export type LocalSkillOutput =
+  | 'chat'
+  | 'create-note'
+  | 'update-current-note'
+  | 'create-artifact'
 
 export interface LocalSkillDescriptor {
   name: string
@@ -151,6 +155,19 @@ function normalizeOutput(value: unknown): LocalSkillOutput {
   const raw = normalizeText(stringValue(value))
   if (
     [
+      'createartifact',
+      'createdashboard',
+      '生成成品',
+      '生成html看板',
+      '生成交互看板',
+      '创建html看板',
+      '创建交互看板',
+    ].includes(raw)
+  ) {
+    return 'create-artifact'
+  }
+  if (
+    [
       'updatecurrentnote',
       'editcurrentnote',
       'modifycurrentnote',
@@ -175,7 +192,7 @@ function normalizeOutput(value: unknown): LocalSkillOutput {
  */
 export function localSkillOutputFromMarkdown(content: string): LocalSkillOutput {
   const match = content.match(
-    /^#{1,6}\s*(?:AI\s*霖子\s*)?输出方式\s*$\r?\n\s*`?(chat|create-note|update-current-note|新建笔记|创建笔记|更新当前笔记|修改当前笔记)`?\s*$/imu,
+    /^#{1,6}\s*(?:AI\s*霖子\s*)?输出方式\s*$\r?\n\s*`?(chat|create-note|update-current-note|create-artifact|新建笔记|创建笔记|更新当前笔记|修改当前笔记|生成成品|生成HTML看板|生成交互看板)`?\s*$/imu,
   )
   return normalizeOutput(match?.[1] ?? '')
 }

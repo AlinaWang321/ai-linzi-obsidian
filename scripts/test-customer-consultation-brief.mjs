@@ -15,6 +15,15 @@ await build({
   format: 'esm',
 })
 const core = await import(pathToFileURL(outfile).href)
+const runtimeOutfile = path.join(tempDir, 'runtime.mjs')
+await build({
+  entryPoints: [fileURLToPath(new URL('../src/official-skill-runtime-core.ts', import.meta.url))],
+  outfile: runtimeOutfile,
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+})
+const runtime = await import(pathToFileURL(runtimeOutfile).href)
 
 assert.equal(core.CUSTOMER_CONSULTATION_TRANSCRIPT_MIN, 800)
 assert.equal(core.CUSTOMER_CONSULTATION_TRANSCRIPT_MAX, 100_000)
@@ -24,6 +33,11 @@ assert.equal(
   '2026.08.15_客户 A_客户咨询简报',
 )
 assert.equal(core.normalizeConsultationBriefMarkdown('```markdown\n# 客户 A · 咨询简报\n```'), '# 客户 A · 咨询简报')
+const action = runtime.extractConsultationBriefAction(
+  `前四步完成\n${runtime.CONSULTATION_BRIEF_ACTION_MARKER}`,
+)
+assert.equal(action.requested, true)
+assert.equal(action.cleanText, '前四步完成')
 
 const source = await readFile(new URL('../src/customer-consultation-brief.ts', import.meta.url), 'utf8')
 const actions = await readFile(new URL('../src/actions.ts', import.meta.url), 'utf8')
@@ -34,6 +48,8 @@ assert.match(source, /\/api\/plugin\/v1\/skills\/consultation-brief/)
 assert.match(source, /createBinary\(path, png\)/)
 assert.match(source, /CUSTOMER_CONSULTATION_OUTPUT_FOLDER/)
 assert.match(source, /selectTranscriptSource\(/)
+assert.match(source, /lockedSourceFile\?: TFile/)
+assert.match(source, /readLocalDocumentText\(/)
 assert.doesNotMatch(source, /writeOutput\(/)
 assert.doesNotMatch(source, /toneMode/)
 assert.match(source, /toPng\(card/)

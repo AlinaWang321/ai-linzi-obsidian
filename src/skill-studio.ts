@@ -178,6 +178,7 @@ export class SkillStudioModal extends Modal {
         .addOption('chat', '只在聊天中预览')
         .addOption('create-note', '确认后新建笔记')
         .addOption('update-current-note', '确认后更新当前笔记')
+        .addOption('create-artifact', '确认后生成 HTML / Word / PDF / PPT')
         .setValue(this.draft.output)
         .onChange((value) => (this.draft.output = value as SkillStudioOutput)))
     new Setting(this.contentEl)

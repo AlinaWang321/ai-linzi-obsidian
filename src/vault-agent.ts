@@ -32,6 +32,9 @@ import {
 } from './artifact-renderer-core'
 
 const TOOL_OUTPUT_MAX_CHARS = 20_000
+const RECENT_DOCUMENT_OUTPUT_MAX_CHARS = 100_000
+const RECENT_DOCUMENT_PAGE_MAX_CHARS = 70_000
+const RECENT_DOCUMENT_FILE_MAX_CHARS = 80_000
 const READ_NOTE_MAX_CHARS = 16_000
 const LIST_FOLDER_MAX_ENTRIES = 160
 const LIST_FOLDER_SCAN_MAX_ENTRIES = 20_000
@@ -71,11 +74,14 @@ function toolText(value: unknown, max: number): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
 }
 
-function outputJson(value: unknown): string {
+function outputJson(value: unknown, maxChars = TOOL_OUTPUT_MAX_CHARS): string {
   const raw = JSON.stringify(value)
-  return raw.length <= TOOL_OUTPUT_MAX_CHARS
+  return raw.length <= maxChars
     ? raw
-    : JSON.stringify({ truncated: true, preview: raw.slice(0, 18_000) })
+    : JSON.stringify({
+        truncated: true,
+        preview: raw.slice(0, Math.max(0, maxChars - 2_000)),
+      })
 }
 
 function fileExtension(path: string): string {
@@ -242,6 +248,25 @@ export class LocalVaultAgent {
         operation.type === 'update_note',
     )
     if (writeOperations.length === 0) return
+    // 官方“咨询交付闭环”明确承诺优先复用用户的真实客户库。
+    // 普通 create_note 可以按用户指定路径自动补父目录，但这个 Skill 不能：
+    // 模型实测会把已存在的 02_Wiki/01_客户档案 猜成 02_Wiki/客户档案，
+    // 还在文字里说“已核实”。这里只对官方闭环收紧，确认卡前必须真看到父目录。
+    if (skillContext?.entryPath?.endsWith('/consultation-client-workflow/SKILL.md')) {
+      for (const operation of writeOperations) {
+        if (operation.type !== 'create_note') continue
+        const parentPath = operation.path.split('/').slice(0, -1).join('/')
+        const parent = parentPath
+          ? this.app.vault.getAbstractFileByPath(normalizePath(parentPath))
+          : this.app.vault.getRoot()
+        if (!(parent instanceof TFolder)) {
+          throw new Error(
+            `客户档案父目录不存在：${parentPath || '/'}。` +
+            '必须用 list_folder 核对用户真实客户库后重新生成，不得自动创建猜测目录。',
+          )
+        }
+      }
+    }
     const previews = await Promise.all(writeOperations.map((operation) => this.previewNoteWrite(operation)))
     if (!skillContext?.templatePath) return
     const templateFile = this.app.vault.getAbstractFileByPath(skillContext.templatePath)
@@ -284,7 +309,17 @@ export class LocalVaultAgent {
     for (const call of calls) {
       try {
         const value = await this.executeReadCall(call, sources, skillContext)
-        results.push({ callId: call.id, name: call.name, ok: true, output: outputJson(value) })
+        results.push({
+          callId: call.id,
+          name: call.name,
+          ok: true,
+          output: outputJson(
+            value,
+            call.name === 'read_recent_documents'
+              ? RECENT_DOCUMENT_OUTPUT_MAX_CHARS
+              : TOOL_OUTPUT_MAX_CHARS,
+          ),
+        })
       } catch (error) {
         results.push({
           callId: call.id,
@@ -448,6 +483,100 @@ export class LocalVaultAgent {
         truncated: nextOffset !== null || scanTruncated,
         scanTruncated,
         entries: page,
+      }
+    }
+
+    if (call.name === 'read_recent_documents') {
+      const sinceDays = clampInt(call.arguments.sinceDays, 7, 1, 31)
+      const offset = clampInt(call.arguments.offset, 0, 0, LIST_FOLDER_SCAN_MAX_ENTRIES)
+      const firstCharOffset = clampInt(call.arguments.charOffset, 0, 0, 8_000_000)
+      const maxChars = clampInt(
+        call.arguments.maxChars,
+        RECENT_DOCUMENT_PAGE_MAX_CHARS,
+        20_000,
+        RECENT_DOCUMENT_PAGE_MAX_CHARS,
+      )
+      const cutoff = Date.now() - sinceDays * 86_400_000
+      const skillRoot = normalizePath(this.localSkillsRoot())
+      const weeklyOutputRoot = normalizePath(`${this.outputRoot()}/经营周报`)
+      const files = this.app.vault
+        .getFiles()
+        .filter((file) =>
+          file.stat.mtime >= cutoff &&
+          isLocalSearchExtension(file.extension) &&
+          !this.protected(file.path) &&
+          !file.path.startsWith(`${skillRoot}/`) &&
+          file.path !== weeklyOutputRoot &&
+          !file.path.startsWith(`${weeklyOutputRoot}/`),
+        )
+        .sort(
+          (left, right) =>
+            right.stat.mtime - left.stat.mtime ||
+            left.path.localeCompare(right.path, 'zh-CN'),
+        )
+
+      const documents: Array<{
+        path: string
+        modified: string
+        chars: number
+        offset: number
+        content: string
+        nextOffset: number | null
+      }> = []
+      const skipped: Array<{ path: string; reason: string }> = []
+      let usedChars = 0
+      let index = offset
+      let charOffset = firstCharOffset
+      let nextCharOffset = 0
+      for (; index < files.length; index++) {
+        const file = files[index]
+        try {
+          const remaining = Math.max(1, maxChars - usedChars - file.path.length - 180)
+          if (documents.length > 0 && remaining < 1_000) break
+          const result = await this.search.readPathForRecentBatch(
+            file.path,
+            {
+              offset: index === offset ? charOffset : 0,
+              maxChars: Math.min(RECENT_DOCUMENT_FILE_MAX_CHARS, remaining),
+            },
+          )
+          const estimated = result.text.length + file.path.length + 120
+          if (documents.length > 0 && usedChars + estimated > maxChars) break
+          documents.push({
+            path: file.path,
+            modified: new Date(file.stat.mtime).toISOString(),
+            chars: result.totalChars,
+            offset: result.offset,
+            content: result.text,
+            nextOffset: result.nextOffset,
+          })
+          if (result.nextOffset !== null) {
+            nextCharOffset = result.nextOffset
+            usedChars += estimated
+            sources.push({ sourceId: call.id, filename: file.name, path: file.path })
+            break
+          }
+          usedChars += estimated
+          charOffset = 0
+          sources.push({ sourceId: call.id, filename: file.name, path: file.path })
+        } catch (error) {
+          skipped.push({
+            path: file.path,
+            reason: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+      return {
+        mode: 'recent-documents',
+        sinceDays,
+        totalFiles: files.length,
+        returnedFiles: documents.length,
+        offset,
+        nextOffset: index < files.length ? index : null,
+        nextCharOffset: index < files.length ? nextCharOffset : null,
+        complete: index >= files.length && skipped.length === 0,
+        documents,
+        skipped,
       }
     }
 

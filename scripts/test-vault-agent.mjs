@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { build } from 'esbuild'
 
 const bundled = await build({
@@ -192,6 +193,24 @@ const unsafeWritePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
 <<<VAULT_ORGANIZE_PLAN_END>>>`)
 assert.equal(unsafeWritePlan.invalid, true)
 assert.equal(core.VAULT_NOTE_WRITE_MAX_CHARS, 30000)
+
+const vaultAgentSource = readFileSync(new URL('../src/vault-agent.ts', import.meta.url), 'utf8')
+assert.match(
+  vaultAgentSource,
+  /客户档案父目录不存在/,
+  '官方咨询闭环必须在确认卡前拦截猜测的客户库目录',
+)
+const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
+assert.match(
+  mainSource,
+  /consultation-preload-client-library/,
+  '官方咨询闭环必须预读客户库目录，避免把安全轮次浪费在固定前置资料上',
+)
+assert.match(
+  mainSource,
+  /hasPreloadedCreateSkillEvidence[\s\S]*?'deferred_answer'/,
+  '官方成品 Skill 已有预读证据时必须强制生成确认方案，不得误报未调用工具',
+)
 
 assert.equal(core.normalizeVaultRelativePath('../secret.md'), null)
 assert.equal(core.normalizeVaultRelativePath('/absolute/file.md'), null)

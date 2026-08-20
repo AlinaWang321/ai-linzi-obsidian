@@ -21,7 +21,7 @@ const questionCore = await importBundle({ entryPoints: ['src/vault-question-core
 
 console.log('[test-skill-studio]')
 
-assert.equal(studioCore.OFFICIAL_SKILL_TEMPLATES.length, 5)
+assert.equal(studioCore.OFFICIAL_SKILL_TEMPLATES.length, 2)
 for (const template of studioCore.OFFICIAL_SKILL_TEMPLATES) {
   const protocol = template.block.files
     .map((file) => `<<<Skill文件 path=${file.path}>>>\n${file.content}\n<<<Skill文件结束>>>`)
@@ -37,9 +37,12 @@ for (const template of studioCore.OFFICIAL_SKILL_TEMPLATES) {
   assert.deepEqual(manifest.programs, [])
   assert.deepEqual(manifest.sampleInputs, [template.sampleInput])
   assert.equal(template.block.files.some((file) => file.path.startsWith('scripts/')), false)
-  assert.match(template.block.content, /^description: .+时使用。$/m)
+  assert.match(template.block.content, /^description: .+$/m)
   assert.match(template.block.content, /references\/ai-linzi-skill-manifest\.json/)
-  assert.equal(localSkillCore.localSkillOutputFromMarkdown(template.block.content), 'create-note')
+  assert.equal(
+    localSkillCore.localSkillOutputFromMarkdown(template.block.content),
+    template.id === 'weekly-business-dashboard' ? 'create-artifact' : 'create-note',
+  )
   assert.equal(studioCore.skillBlockManifest(template.block).valid, true)
   for (const file of template.block.files.filter(
     (item) => item.path.startsWith('references/') && !item.path.endsWith('ai-linzi-skill-manifest.json'),
@@ -47,7 +50,28 @@ for (const template of studioCore.OFFICIAL_SKILL_TEMPLATES) {
     assert.ok(template.block.content.includes(file.path), `${template.id} 必须在 SKILL.md 指向 ${file.path}`)
   }
 }
-console.log('  ✓ 5 个官方模板都可移植、触发说明完整、输出方式可解析、引用可达且不含脚本')
+const consultation = studioCore.OFFICIAL_SKILL_TEMPLATES.find(
+  (item) => item.id === 'consultation-client-workflow',
+)
+assert.match(consultation.block.content, /模板优先级/)
+assert.match(consultation.block.content, /AI霖子 CRM/)
+assert.match(consultation.block.content, /客户咨询简报/)
+assert.match(consultation.block.content, /普通文字“继续”不能代替这次文件写入确认/)
+assert.match(consultation.block.content, /不得把确认客户档案的一次操作同时解释为确认 CRM/)
+assert.match(consultation.block.content, /不得把客户档案写进模板目录/)
+assert.match(consultation.block.content, /必须再用 list_folder 真实列出候选父目录/)
+assert.match(consultation.block.content, /客户档案保存到哪个 Vault 文件夹/)
+const weeklyDashboard = studioCore.OFFICIAL_SKILL_TEMPLATES.find(
+  (item) => item.id === 'weekly-business-dashboard',
+)
+assert.match(weeklyDashboard.block.content, /read_recent_documents/)
+assert.match(weeklyDashboard.block.content, /\$OUTPUT\/经营周报/)
+assert.match(weeklyDashboard.block.content, /所有 read_recent_documents 工具结果的合集/)
+assert.match(weeklyDashboard.block.content, /不得改称 03_Dashboard/)
+assert.match(weeklyDashboard.block.content, /不得按扩展名笼统宣称“PDF 不可读”/)
+assert.match(weeklyDashboard.block.content, /layout=dashboard/)
+assert.match(weeklyDashboard.block.content, /nextOffset 不是 null 就继续按 offset 分页/)
+console.log('  ✓ 2 个真实业务官方模板可移植、权限透明、引用可达且不含脚本')
 
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('帮我创建一个客户跟进 Skill'), true)
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('Skill 是什么？'), false)
@@ -245,8 +269,9 @@ assert.match(mainSource, /answerPlan\.plan && extractCreateNoteBlocks\(answer\)\
 assert.match(mainSource, /Boolean\(input\.resumeQuestion\)[\s\S]{0,280}vaultWriteFlowRetryReason/)
 assert.match(
   mainSource,
-  /pendingVaultQuestion \|\| localSkill\?\.output === 'create-note'[\s\S]{0,120}\? 'organize'/,
+  /pendingVaultQuestion \|\|[\s\S]{0,100}localSkill\?\.output === 'create-note'[\s\S]{0,100}localSkill\?\.output === 'create-artifact'[\s\S]{0,80}\? 'organize'/,
 )
+assert.match(studioSource, /addOption\('create-artifact'/)
 assert.match(mainSource, /let stalledRetries = 0/)
 assert.match(mainSource, /stalledRetries < 2/)
 assert.match(mainSource, /stalledRetries \+= 1/)

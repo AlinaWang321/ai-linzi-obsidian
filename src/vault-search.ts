@@ -196,6 +196,40 @@ export class LocalVaultSearch {
     }
   }
 
+  /**
+   * 官方经营周报 Skill 的分页批读窗口。与 readPath 的 16,000 字交互窗口分开，
+   * 避免普通对话静默扩大；单篇仍受本地索引 120,000 字硬上限保护。
+   */
+  async readPathForRecentBatch(
+    path: string,
+    options: { offset?: number; maxChars?: number } = {},
+  ): Promise<{
+    path: string
+    filename: string
+    text: string
+    offset: number
+    totalChars: number
+    nextOffset: number | null
+  }> {
+    const file = this.app.vault.getAbstractFileByPath(path)
+    if (!(file instanceof TFile) || !isLocalSearchExtension(file.extension)) {
+      throw new Error(`没有找到可读取的 MD/TXT/PDF/DOCX/HTML/PPTX/XLSX 文件：${path}`)
+    }
+    const document = await this.readDocument(file)
+    if (!document) throw new Error(`文件暂时无法读取：${path}`)
+    const offset = Math.max(0, Math.min(Math.trunc(options.offset ?? 0), document.text.length))
+    const limit = Math.max(1, Math.min(Math.trunc(options.maxChars ?? 80_000), 80_000))
+    const text = document.text.slice(offset, offset + limit)
+    return {
+      path,
+      filename: file.name,
+      text,
+      offset,
+      totalChars: document.text.length,
+      nextOffset: offset + text.length < document.text.length ? offset + text.length : null,
+    }
+  }
+
   private async readDocument(file: TFile): Promise<VaultSearchDocument | null> {
     const cached = this.cache.get(file.path)
     if (cached && cached.mtime === file.stat.mtime && cached.size === file.stat.size) {

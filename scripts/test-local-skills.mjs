@@ -62,6 +62,14 @@ assert.equal(
   'matched',
 )
 
+const dashboard = core.buildLocalSkillDescriptor(
+  '05_System/Skills/weekly-business-dashboard/SKILL.md',
+  { name: 'weekly-business-dashboard', description: '生成经营周报 HTML 看板' },
+  '# 经营周报交互看板\n\n## AI霖子输出方式\ncreate-artifact',
+)
+assert.ok(dashboard)
+assert.equal(dashboard.output, 'create-artifact')
+
 const customerProfile = core.buildLocalSkillDescriptor(
   '05_System/Skills/customer-profile/SKILL.md',
   { name: 'customer-profile', description: '按统一模板创建或更新客户档案' },

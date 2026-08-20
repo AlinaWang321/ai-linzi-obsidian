@@ -22,6 +22,8 @@ import {
 export const VAULT_AGENT_MAX_ROUNDS = 12
 export const VAULT_AGENT_MAX_CALLS_PER_ROUND = 4
 export const VAULT_AGENT_MAX_TOTAL_RESULT_CHARS = 360_000
+/** 经营周报官方 Skill 的显式全库批读上限；普通对话仍保持 36 万字符。 */
+export const WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS = 1_000_000
 export const VAULT_AGENT_MAX_PLAN_OPERATIONS = 60
 export const VAULT_NOTE_WRITE_MAX_CHARS = 30_000
 export const VAULT_NOTE_UPDATE_MAX_OPERATIONS = 30
@@ -30,6 +32,7 @@ export const VAULT_NOTE_WRITE_MAX_FILES = 12
 export type VaultAgentToolName =
   | 'vault_search'
   | 'list_folder'
+  | 'read_recent_documents'
   | 'read_note'
   | 'read_skill_file'
   | 'propose_skill_action'
@@ -270,6 +273,7 @@ const PLAN_BLOCK_RE =
 const TOOL_NAMES = new Set<VaultAgentToolName>([
   'vault_search',
   'list_folder',
+  'read_recent_documents',
   'read_note',
   'read_skill_file',
   'propose_skill_action',
