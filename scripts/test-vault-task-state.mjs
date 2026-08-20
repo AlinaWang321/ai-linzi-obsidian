@@ -358,3 +358,47 @@ console.log('第12组 VAULT_NATIVE_TURN 标记行为（0.7.54 补齐）')
   )
   assert.equal(core.isVaultNativeTurnRequest('我已经帮你整理好了'), false)
 }
+
+// ── 0.7.66 第13组：空承诺循环根因（柚柠客户档案案，2026-08-20 学员实测）──
+// 学员连发同一句请求，四轮拿到的都是「我先读完再生成」的承诺，一个文件都没动。
+// 三处根因各自锁一条断言：①意图漏判 ②承诺检测只看收尾句 ③熔断检索词。
+console.log('第13组 空承诺循环根因（0.7.66）')
+{
+  const question = '帮我根据raw文件夹里面柚柠的资料，在wiki里面生成一份柚柠的客户档案'
+
+  // ① 「在 wiki 里生成一份客户档案」＝写入请求。旧词表只认 写入/追加/新建/创建/更新，
+  // 判成 answer 后整套 organize 结构化护栏（收尾必须出方案卡）全不生效。
+  assert.equal(core.detectVaultAgentIntent(question), 'organize')
+  assert.equal(core.detectVaultAgentIntent('把逐字稿提炼成客户档案存到知识库'), 'organize')
+  assert.equal(core.detectVaultAgentIntent('在 Obsidian 里新建一个会议纪要文档'), 'organize')
+  // 没有落点的纯对话输出不得被升级成写入流程
+  assert.equal(core.detectVaultAgentIntent('帮我生成一份周报'), 'answer')
+  assert.equal(core.detectVaultAgentIntent('在知识库里找一份客户档案模板'), 'answer')
+  assert.equal(core.detectVaultAgentIntent('先不要写入任何文件，只读取并生成草稿'), 'answer')
+
+  // ② 空承诺的典型形态是「承诺在前 + 安抚收尾」，旧实现只看收尾句 → 整类漏判。
+  const stalls = [
+    '江老师，我继续把柚柠这份逐字稿完整读完，再提炼客户档案。现在已有的片段能确认：对方正在读学前教育——但还不够支撑完整建档，我先把全文读完。',
+    '我继续处理柚柠这份材料，先把唯一一份逐字稿完整读完，再生成客户档案预览。信息不足的字段会写"待补充"，确认后才写入 Wiki。',
+    '我按确认内容执行：先核对柚柠对应的原始材料和 Wiki 里的真实目录，再完整读取材料，最后生成一份待确认写入方案。不会覆盖已有文件；只有你在插件里再次确认后，才会写入。',
+    '我先核对 RAW 里柚柠的真实材料，以及 Wiki 里对应文件夹的现状；确认无误后，按你已经确认的内容生成一份客户档案写入方案。插件二次确认后才会写入。',
+  ]
+  for (const stall of stalls) {
+    assert.equal(core.isTrailingActionAnnouncement(stall), true, stall.slice(0, 20))
+    assert.equal(core.vaultAnswerRetryReason(question, stall), 'deferred_answer', stall.slice(0, 20))
+  }
+  // 长答复正文里的「我现在整理如下」是真交付的开场白，仍然只看收尾句，不得误伤。
+  const delivered = `我现在把读到的内容整理成下面这份档案。${'字段内容'.repeat(80)}\n以上就是完整档案。`
+  assert.equal(core.isTrailingActionAnnouncement(delivered), false)
+  // 原有豁免不能被整篇扫描破坏
+  assert.equal(core.isTrailingActionAnnouncement('如果需要我可以继续核对其他档案。'), false)
+  assert.equal(core.isTrailingActionAnnouncement('建议你继续读一下这两份逐字稿。'), false)
+  assert.equal(core.isTrailingActionAnnouncement('我刚才已经读完了逐字稿，结论是她的核心痛点在定价。'), false)
+
+  // ③ 熔断代跑的检索词：人名/项目名这类专有名词必须排在领域通用词和目录名前面。
+  const queries = core.extractVaultRescueQueries(question)
+  assert.equal(queries[0], '柚柠')
+  assert.ok(queries.length <= 3)
+  assert.deepEqual(core.extractVaultRescueQueries('把01_Raw里小马哥的周会逐字稿整理进知识库')[0], '小马哥')
+  assert.deepEqual(core.extractVaultRescueQueries('   '), [])
+}

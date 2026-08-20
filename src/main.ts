@@ -128,6 +128,7 @@ import {
   namespaceVaultToolCalls,
   operationLabel,
   upgradeVaultIntent,
+  extractVaultRescueQueries,
   vaultAutoAnswerRetryReason,
   vaultAnswerRetryReason,
   vaultWriteFlowRetryReason,
@@ -3500,6 +3501,9 @@ class ChatView extends ItemView {
     const verifiedWritePaths = new Set<string>()
     let lastText = ''
     let pendingRetryReason: VaultAnswerRetryReason | undefined
+    // 0.7.66 空承诺熔断计数：一轮既没调工具也没出方案就算「零进展」。
+    let noProgressRounds = 0
+    let localRescueDone = false
     // 本机结果预算（2026-08-18 开放到 36 万字符）：满了不再报错断头，
     // 改为提示模型基于已读内容收尾，并关闭后续工具轮。
     let toolBudgetExhausted = false
@@ -3944,6 +3948,7 @@ class ChatView extends ItemView {
       }
       const toolRequest = extractVaultToolCalls(lastText)
       if (toolRequest.invalid) throw new Error('AI 返回的 Vault 工具请求格式不安全，请重试')
+      if (toolRequest.calls.length > 0) noProgressRounds = 0
       if (toolRequest.calls.length === 0) {
         const plan = extractVaultOrganizePlan(lastText)
         if (plan.invalid) {
@@ -3952,6 +3957,51 @@ class ChatView extends ItemView {
           }
           pendingRetryReason = 'invalid_plan'
           continue
+        }
+        if (plan.plan) noProgressRounds = 0
+        else noProgressRounds += 1
+        // 0.7.66 空承诺熔断：连着两轮既不调工具也不出方案时，再退回去要求它
+        // 「当场完成」只会换一种措辞再承诺一次（柚柠客户档案案：连续 4 次口头
+        // 承诺，一个工具都没调）。这里改为插件自己按用户原话跑一次只读检索，
+        // 把真实文件清单交回模型——用数据打断循环，而不是用更严厉的措辞。
+        // 只读、只跑一次；不写入、不扩大授权边界，失败就退回原有纠正路径。
+        if (
+          noProgressRounds >= 2 &&
+          !localRescueDone &&
+          input.vaultAccess &&
+          !plan.plan &&
+          round + 1 < VAULT_AGENT_MAX_ROUNDS
+        ) {
+          localRescueDone = true
+          // 「继续」这类短确认本身没有检索词，改用上一轮任务目标。
+          const rescueSource = taskContinuation && this.pendingVaultTask
+            ? this.pendingVaultTask.goal
+            : input.question
+          const queries = extractVaultRescueQueries(rescueSource)
+          if (queries.length > 0) {
+            const rescueCalls: VaultAgentToolCall[] = [
+              ...queries.map((query, index) => ({
+                id: `rescue-search-${round}-${index + 1}`,
+                name: 'vault_search' as const,
+                arguments: { query },
+              })),
+              {
+                id: `rescue-list-${round}`,
+                name: 'list_folder' as const,
+                arguments: { path: '' },
+              },
+            ]
+            const rescued = await this.plugin.vaultAgent.executeReadCalls(rescueCalls)
+            appendToolResults(rescued.results)
+            sources.push(...rescued.sources)
+            const hitPaths = [...new Set(rescued.sources.map((source) => source.path))]
+            if (hitPaths.length > 0) updateTask({ type: 'search', candidatePaths: hitPaths })
+            this.activityStep(
+              `🛟 AI 连着两轮只说不做，插件已代为检索「${queries[0]}」→ ${hitPaths.length} 个相关文件`,
+            )
+            pendingRetryReason = 'missing_tool_use'
+            continue
+          }
         }
         if (input.intent === 'answer' && plan.plan) {
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
@@ -4064,7 +4114,9 @@ class ChatView extends ItemView {
             false,
           )
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
-            throw new Error('AI 没有生成可确认的 Vault 整理方案，请缩小范围后重试')
+            throw new Error(
+              '这次没做成：AI 没能给出可确认的整理方案。请缩小范围（一次只处理一个文件夹或一份文件）后再试一次。',
+            )
           }
           pendingRetryReason = stalled ?? pendingRetryReason
           continue
@@ -4077,7 +4129,8 @@ class ChatView extends ItemView {
             if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
               throw new Error(
                 retryReason === 'deferred_answer'
-                  ? 'AI 只承诺稍后处理，没有在安全轮次内给出最终答案，请重试'
+                  ? '这次没做成：AI 一直说「接下来去读/去写」，但始终没真的动文件。' +
+                    '请把目标说得更具体（点名文件夹或文件名），或者分两步——先让它找到文件，再让它写。'
                   : retryReason === 'missing_count'
                     ? 'AI 没有在安全轮次内给出明确数量或可信的不足说明，请重试'
                     : retryReason === 'missing_tool_use'
