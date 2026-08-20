@@ -31,7 +31,7 @@ for (const template of studioCore.OFFICIAL_SKILL_TEMPLATES) {
   const manifest = JSON.parse(
     template.block.files.find((file) => file.path === 'references/ai-linzi-skill-manifest.json').content,
   )
-  assert.equal(manifest.skillVersion, '1.0.0')
+  assert.equal(manifest.skillVersion, '1.1.0')
   assert.equal(manifest.createdWith, 'AI霖子 Skill Studio')
   assert.ok(Array.isArray(manifest.permissions) && manifest.permissions.length > 0)
   assert.deepEqual(manifest.programs, [])
@@ -61,16 +61,38 @@ assert.match(consultation.block.content, /不得把确认客户档案的一次�
 assert.match(consultation.block.content, /不得把客户档案写进模板目录/)
 assert.match(consultation.block.content, /必须再用 list_folder 真实列出候选父目录/)
 assert.match(consultation.block.content, /客户档案保存到哪个 Vault 文件夹/)
+const consultationDescriptor = localSkillCore.buildLocalSkillDescriptor(
+  '05_System/Skills/consultation-client-workflow/SKILL.md',
+  { name: consultation.block.name },
+  consultation.block.content,
+)
+assert.equal(
+  localSkillCore.matchLocalSkillInvocation(
+    '用咨询交付闭环处理当前打开的咨询文档',
+    [consultationDescriptor],
+    { allowAutomatic: true },
+  ).kind,
+  'matched',
+)
+assert.equal(
+  localSkillCore.matchLocalSkillInvocation(
+    '咨询交付闭环这个 Skill 为什么要这样设计？',
+    [consultationDescriptor],
+    { allowAutomatic: true },
+  ).kind,
+  'none',
+)
 const weeklyDashboard = studioCore.OFFICIAL_SKILL_TEMPLATES.find(
   (item) => item.id === 'weekly-business-dashboard',
 )
 assert.match(weeklyDashboard.block.content, /read_recent_documents/)
 assert.match(weeklyDashboard.block.content, /\$OUTPUT\/经营周报/)
-assert.match(weeklyDashboard.block.content, /所有 read_recent_documents 工具结果的合集/)
+assert.match(weeklyDashboard.block.content, /固定文件快照/)
+assert.match(weeklyDashboard.block.content, /同一 snapshotId/)
 assert.match(weeklyDashboard.block.content, /不得改称 03_Dashboard/)
 assert.match(weeklyDashboard.block.content, /不得按扩展名笼统宣称“PDF 不可读”/)
 assert.match(weeklyDashboard.block.content, /layout=dashboard/)
-assert.match(weeklyDashboard.block.content, /nextOffset 不是 null 就继续按 offset 分页/)
+assert.match(weeklyDashboard.block.content, /追完文件分页和长文字符分页/)
 console.log('  ✓ 2 个真实业务官方模板可移植、权限透明、引用可达且不含脚本')
 
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('帮我创建一个客户跟进 Skill'), true)
@@ -90,6 +112,8 @@ assert.match(prompt, /ai-linzi-skill-manifest\.json/)
 assert.match(prompt, /本版禁止生成 scripts/)
 assert.match(prompt, /sampleInputs=/)
 assert.match(prompt, /SKILL\.md 必须链接该 manifest/)
+assert.match(prompt, /"skillVersion":"1\.0\.0"/)
+assert.match(prompt, /绝不能写成 \{"major":1,"minor":0,"patch":0\} 对象/)
 const broadScopePrompt = studioCore.buildSkillStudioPrompt({
   name: 'weekly-review',
   purpose: '做周复盘',
@@ -102,6 +126,26 @@ const broadScopePrompt = studioCore.buildSkillStudioPrompt({
 })
 assert.match(broadScopePrompt, /仅在用户明确要求时搜索 Vault/)
 console.log('  ✓ 创建意图与 Skill Studio 结构化提示词')
+
+const generatedWithObjectVersion = {
+  ...consultation.block,
+  files: consultation.block.files.map((file) =>
+    file.path === 'references/ai-linzi-skill-manifest.json'
+      ? {
+          ...file,
+          content: JSON.stringify({
+            ...JSON.parse(file.content),
+            skillVersion: { major: 1, minor: 2, patch: 3 },
+          }),
+        }
+      : file,
+  ),
+}
+assert.equal(studioCore.skillBlockManifest(generatedWithObjectVersion).valid, false)
+const normalizedGenerated = studioCore.normalizeGeneratedSkillManifest(generatedWithObjectVersion)
+assert.equal(studioCore.skillBlockManifest(normalizedGenerated.block).valid, true)
+assert.deepEqual(normalizedGenerated.repairs, ['已把 skillVersion 自动规范为 1.2.3'])
+console.log('  ✓ 常见的对象版 skillVersion 会在本机确定性修正')
 
 const pendingQuestion = {
   callId: 'call-1',
@@ -252,10 +296,21 @@ console.log('  ✓ Skill ZIP 可往返导入，并拒绝隐藏路径')
 const mainSource = await (await import('node:fs/promises')).readFile('src/main.ts', 'utf8')
 const studioSource = await (await import('node:fs/promises')).readFile('src/skill-studio.ts', 'utf8')
 assert.doesNotMatch(studioSource, /archive\[`\$\{block\.name\}\/INSTALL\.md`\]/)
+assert.match(studioSource, /自动识别的调用说法/)
+assert.match(studioSource, /创建后测试示例/)
+assert.doesNotMatch(studioSource, /\.setName\('课堂试运行输入'\)/)
 assert.match(mainSource, /message\.skillCreatorResult && !manifest\.valid/)
 assert.match(mainSource, /private hasPendingSkillCreatorInterview\(\): boolean \{[\s\S]*?return message\.skillCreatorPending === true/)
 assert.doesNotMatch(mainSource, /hasPendingSkillCreatorInterview[\s\S]{0,600}continue[\s\S]{0,200}skillCreatorPending === true[\s\S]{0,100}continue/)
-assert.match(mainSource, /let localSkillMatch = skillCreatorTurn\s*\? \{ kind: 'none' as const \}\s*: await this\.localSkills\.resolve/)
+assert.match(
+  mainSource,
+  /let localSkillMatch = skillCreatorTurn \|\| consultationWorkflowTaskTurn\s*\? \{ kind: 'none' as const \}\s*: await this\.localSkills\.resolve/,
+)
+assert.match(mainSource, /consultationWorkflowTaskOriginId: message\.id/)
+assert.match(mainSource, /consultationWorkflowTaskTurn \|\| localSkill\?\.name === CONSULTATION_WORKFLOW_SKILL_NAME/)
+assert.match(mainSource, /forceCloudToolsTurn: consultationWorkflowTaskTurn/)
+assert.match(mainSource, /if \(round === 0 && input\.forceCloudToolsTurn\)/)
+assert.match(mainSource, /successfulWriteTools\.includes\('addTask'\)/)
 assert.match(
   mainSource,
   /const currentRoot = this\.localSkills\.root\(\)[\s\S]{0,180}currentRoot !== root[\s\S]{0,260}this\.renderMessages\(\)/,
@@ -275,6 +330,10 @@ assert.match(studioSource, /addOption\('create-artifact'/)
 assert.match(mainSource, /let stalledRetries = 0/)
 assert.match(mainSource, /stalledRetries < 2/)
 assert.match(mainSource, /stalledRetries \+= 1/)
+assert.match(
+  mainSource,
+  /const structuredStall = vaultWriteFlowRetryReason[\s\S]{0,260}structuredStall \?\?[\s\S]{0,120}hasPreloadedCreateSkillEvidence \? 'deferred_answer'/,
+)
 assert.match(
   mainSource,
   /noReadRequiredCreationPlan[\s\S]{0,260}operation\.type === 'create_note'[\s\S]{0,160}operation\.type === 'create_folder'[\s\S]{0,160}operation\.type === 'create_artifact'/,

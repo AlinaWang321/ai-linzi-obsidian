@@ -86,6 +86,7 @@ import { createLocalSkillBundleAtomically } from './create-local-skill-vault'
 import { exportSkillBundle, SkillStudioModal } from './skill-studio'
 import {
   isExplicitLocalSkillCreationIntent,
+  normalizeGeneratedSkillManifest,
   skillBlockManifest,
 } from './skill-studio-core'
 import {
@@ -457,9 +458,15 @@ interface WireMessage {
   customerCrmSyncPath?: string
   /** 用户二次确认后完成的 CRM 同步回执。 */
   customerCrmSynced?: { id: number; label: string; syncedAt: number }
+  /** 咨询闭环中已由云端真实写入跟进任务；仅保存工具名与时间，不保存客户正文。 */
+  consultationWorkflowTaskCreatedAt?: number
+  /** 用户已从流程卡进入任务步骤，避免重复点击造成两轮并发。 */
+  consultationWorkflowTaskRequestedAt?: number
+  /** 该流程卡触发的任务已经真实写入；用于防止成功后再次创建重复任务。 */
+  consultationWorkflowTaskCompletedAt?: number
   /** 原生 Vault 引擎的结构化澄清问题；只保存在插件本机，不进入云端普通消息。 */
   vaultQuestion?: PendingVaultQuestion
-  /** Skill Studio 创建完成后的课堂试运行输入；只用于本机按钮。 */
+  /** Skill Studio 创建完成后的推荐试运行指令；只用于本机按钮。 */
   skillStudioTestInput?: string
   /** Skill Creator 正在等待用户补充；下一轮继续走专用创建路由，不进入 Vault agent。 */
   skillCreatorPending?: boolean
@@ -2839,7 +2846,13 @@ class ChatView extends ItemView {
   }
 
   private async send(
-    options: { skillCreator?: boolean; skillStudioTestInput?: string } = {},
+    options: {
+      skillCreator?: boolean
+      skillStudioTestInput?: string
+      /** 咨询闭环第 4 步是云端任务写入，不得再次按 create-note Skill 跑 Vault 整理。 */
+      consultationWorkflowTaskOriginId?: string
+      consultationWorkflowSourcePath?: string
+    } = {},
   ) {
     const text = this.inputEl.value.trim()
     if (!text || this.sending) return
@@ -2855,6 +2868,7 @@ class ChatView extends ItemView {
         pendingSkillCreatorInterview ||
         isExplicitLocalSkillCreationIntent(text)
       )
+    const consultationWorkflowTaskTurn = Boolean(options.consultationWorkflowTaskOriginId)
 
     const imageAttachments = this.chatImageAttachments.slice()
     this.messages.push({
@@ -2931,7 +2945,7 @@ class ChatView extends ItemView {
       // Skill Studio 的专用创建提示里固定包含“AI霖子 Skill Creator”。如果仍交给
       // 本地 Skill 名称解析器，它会把 Skill Creator 误认成用户点名调用的 Skill，
       // 并在真正请求创建接口前以“没有找到你点名的 Skill”中断。
-      let localSkillMatch = skillCreatorTurn
+      let localSkillMatch = skillCreatorTurn || consultationWorkflowTaskTurn
         ? { kind: 'none' as const }
         : await this.localSkills.resolve(text, { allowAutomatic: true })
       if (pendingVaultQuestion) localSkillMatch = { kind: 'none' }
@@ -2987,8 +3001,9 @@ class ChatView extends ItemView {
         )
       }
       if (noteContext) new Notice(`本轮只读取当前笔记：${noteContext.filename}`, 3500)
-      const consultationWorkflowSourcePath =
-        localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME
+      const consultationWorkflowSourcePath = consultationWorkflowTaskTurn
+        ? options.consultationWorkflowSourcePath ?? this.recentConsultationWorkflowSourcePath()
+        : localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME
           ? noteContext?.path ?? this.recentConsultationWorkflowSourcePath()
           : undefined
       if (isFullCurrentNoteReplaceIntent(text)) {
@@ -3086,6 +3101,7 @@ class ChatView extends ItemView {
       }
       let answer: string
       let localSkillRunIds: string[] | undefined
+      let successfulCloudWriteTools: string[] | undefined
       let answerSources = [
         ...(noteContext
           ? [{
@@ -3102,6 +3118,7 @@ class ChatView extends ItemView {
           text: string
           sources: VaultMessageSource[]
           localSkillRunIds?: string[]
+          successfulCloudWriteTools?: string[]
         }
         try {
           agentResult = await this.runVaultAgentLoop({
@@ -3131,6 +3148,9 @@ class ChatView extends ItemView {
                 ? 'organize'
                 : 'auto',
             resumeQuestion: pendingVaultQuestion?.question,
+            // 用户已经点击咨询闭环的“创建跟进任务”，这就是本次云端写入确认。
+            // 直接进入 addTask 执行轮；不得再次让模型判断是否要搜 Vault。
+            forceCloudToolsTurn: consultationWorkflowTaskTurn,
           })
         } catch (error) {
           // 活动流定格为中断原因后再抛出，交由统一错误气泡处理。
@@ -3144,6 +3164,7 @@ class ChatView extends ItemView {
           answeredAt: Date.now(),
         }
         localSkillRunIds = agentResult.localSkillRunIds
+        successfulCloudWriteTools = agentResult.successfulCloudWriteTools
         answerSources = [
           ...new Map(
             [...answerSources, ...agentResult.sources].map((source) => [source.path, source]),
@@ -3198,11 +3219,13 @@ class ChatView extends ItemView {
       // 模型偶尔会同时返回旧「新建笔记」块和新的 Vault 变更集。两者内容相同，
       // 同时渲染会让用户看到两个创建按钮；保留已通过预检、支持版本锁与回滚的
       // Vault 变更集，剥掉旧兼容块。
-      const consultationBriefAction = extractConsultationBriefAction(answer)
-      answer = consultationBriefAction.cleanText ||
-        (consultationBriefAction.requested
-          ? '前四步已经完成。现在打开客户咨询简报生成窗口，并继续使用最初锁定的逐字稿。'
-          : answer)
+      const consultationBriefAction = localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME
+        ? extractConsultationBriefAction(answer)
+        : { requested: false, cleanText: answer }
+      if (consultationBriefAction.requested) {
+        answer = consultationBriefAction.cleanText ||
+          '前四步已经完成。现在打开客户咨询简报生成窗口，并继续使用最初锁定的咨询材料。'
+      }
       const answerPlan = extractVaultOrganizePlan(answer)
       if (answerPlan.plan && extractCreateNoteBlocks(answer).blocks.length > 0) {
         answer = extractCreateNoteBlocks(answer).cleanText
@@ -3226,6 +3249,11 @@ class ChatView extends ItemView {
         !answer.startsWith('⚠️') &&
         extractCreateLocalSkillBlocks(answer).blocks.length === 0
       const pendingVaultPlan = extractVaultOrganizePlan(visibleAnswer).plan
+      const consultationWorkflowTaskCreatedAt =
+        (consultationWorkflowTaskTurn || localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME) &&
+        successfulCloudWriteTools?.includes('addTask')
+          ? Date.now()
+          : undefined
       this.messages.push({
         id: uid(),
         role: 'assistant',
@@ -3237,11 +3265,24 @@ class ChatView extends ItemView {
         localSkillRunIds,
         localSkillPath: localSkill?.path,
         consultationWorkflowSourcePath,
+        consultationWorkflowTaskCreatedAt,
         vaultQuestion: vaultQuestion.question,
         skillStudioTestInput: skillCreatorTurn ? options.skillStudioTestInput : undefined,
         skillCreatorPending,
         skillCreatorResult: skillCreatorTurn || undefined,
       })
+      if (consultationWorkflowTaskTurn && !consultationWorkflowTaskCreatedAt) {
+        const origin = this.messages.find(
+          (message) => message.id === options.consultationWorkflowTaskOriginId,
+        )
+        if (origin) origin.consultationWorkflowTaskRequestedAt = undefined
+      }
+      if (consultationWorkflowTaskTurn && consultationWorkflowTaskCreatedAt) {
+        const origin = this.messages.find(
+          (message) => message.id === options.consultationWorkflowTaskOriginId,
+        )
+        if (origin) origin.consultationWorkflowTaskCompletedAt = consultationWorkflowTaskCreatedAt
+      }
       await this.persistNow()
       if (consultationBriefAction.requested && !answer.startsWith('⚠️')) {
         this.renderMessages()
@@ -3268,6 +3309,12 @@ class ChatView extends ItemView {
           parts: [{ type: 'text', text: `⚠️ ${msg}` }],
           skillCreatorPending: skillCreatorTurn || undefined,
         })
+      }
+      if (options.consultationWorkflowTaskOriginId) {
+        const origin = this.messages.find(
+          (message) => message.id === options.consultationWorkflowTaskOriginId,
+        )
+        if (origin) origin.consultationWorkflowTaskRequestedAt = undefined
       }
     } finally {
       this.sending = false
@@ -3693,12 +3740,15 @@ class ChatView extends ItemView {
     noteEdit: boolean
     noteImageIntent: boolean
     intent: VaultAgentIntent
+    /** 已由专用确认按钮授权的云端写入，跳过首轮路由判断。 */
+    forceCloudToolsTurn?: boolean
     /** 上一轮原生 ask_user 的本机续接信息；回答作为同一个 Responses 调用继续。 */
     resumeQuestion?: PendingVaultQuestion
   }): Promise<{
     text: string
     sources: VaultMessageSource[]
     localSkillRunIds?: string[]
+    successfulCloudWriteTools?: string[]
   }> {
     let toolResults: VaultAgentToolResult[] = []
     const sources: VaultMessageSource[] = []
@@ -3737,7 +3787,7 @@ class ChatView extends ItemView {
         {
           id: 'consultation-preload-client-library',
           name: 'list_folder',
-          arguments: { path: '02_Wiki', depth: 1, offset: 0, maxEntries: 160 },
+          arguments: { path: '', depth: 2, offset: 0, maxEntries: 160 },
         },
         {
           id: 'consultation-preload-template-search',
@@ -3773,12 +3823,8 @@ class ChatView extends ItemView {
         )
         appendToolResults(templates.results)
         sources.push(...templates.sources)
-        for (const source of templateCandidates) {
-          const stat = this.plugin.vaultFileStat(source.path)
-          if (stat) verifiedWritePaths.add(source.path)
-        }
       }
-      this.activityStep('🧩 已预读咨询闭环规则、客户库目录与模板')
+      this.activityStep('🧩 已查看知识库根目录，并预读咨询闭环规则与客户模板')
     }
     // 阶段 A：intent 只允许 auto → organize 单向升级；跨轮任务状态在会话上保存。
     if (this.pendingVaultTask && isVaultTaskExpired(this.pendingVaultTask, Date.now())) {
@@ -4153,6 +4199,44 @@ class ChatView extends ItemView {
             }
           : undefined,
       }
+      if (round === 0 && input.forceCloudToolsTurn) {
+        this.activityStep('☁️ 已确认创建跟进任务，直接写入任务清单', '正在创建跟进任务…')
+        const data = await this.plugin.api('/api/plugin/v1/chat', {
+          method: 'POST',
+          body: {
+            messages: this.messagesForApi(),
+            sessionId: this.sessionId,
+            stream: false,
+            noteContext: input.noteContext,
+            authorizedContent: input.authorizedContent,
+            noteEdit: input.noteEdit,
+            noteImageIntent: input.noteImageIntent,
+            vaultAgent: { ...vaultAgentRequest, cloudToolsTurn: true },
+          },
+        })
+        const cloudText = typeof data.text === 'string' ? data.text.trim() : ''
+        if (!cloudText) throw new Error('云端任务写入没有返回内容，请重试')
+        const successfulWriteTools = Array.isArray(data.successfulWriteTools)
+          ? (data.successfulWriteTools as unknown[]).filter(
+              (name): name is string => typeof name === 'string',
+            )
+          : []
+        if (!successfulWriteTools.includes('addTask')) {
+          this.activityStep('⚠️ 跟进任务没有真正保存，已拦下', null)
+          return {
+            text: `${cloudText}\n\n> ⚠️ **跟进任务没有真正保存。** 请点击上一步的任务按钮重试。`,
+            sources,
+            localSkillRunIds,
+          }
+        }
+        this.activityStep('✅ 跟进任务已写入', null)
+        return {
+          text: cloudText,
+          sources,
+          localSkillRunIds,
+          successfulCloudWriteTools: successfulWriteTools,
+        }
+      }
       if (pendingNativeText !== null) {
         // 原生通道已拿到最终文本：跳过本轮模型调用，直接进入共用收尾管线。
         lastText = pendingNativeText
@@ -4240,7 +4324,12 @@ class ChatView extends ItemView {
           }
         }
         this.activityStep(`✅ 云端写入完成（${successfulWriteTools.length} 项）`, null)
-        return { text: cloudText, sources, localSkillRunIds }
+        return {
+          text: cloudText,
+          sources,
+          localSkillRunIds,
+          successfulCloudWriteTools: successfulWriteTools,
+        }
       }
 
       if (
@@ -4416,14 +4505,16 @@ class ChatView extends ItemView {
             toolResults.length > 0 &&
             (input.localSkill?.output === 'create-note' ||
               input.localSkill?.output === 'create-artifact')
-          const stalled = hasPreloadedCreateSkillEvidence
-            ? 'deferred_answer'
-            : vaultWriteFlowRetryReason(
-                this.pendingVaultTask,
-                intent,
-                false,
-                false,
-              )
+          const structuredStall = vaultWriteFlowRetryReason(
+            this.pendingVaultTask,
+            intent,
+            false,
+            false,
+          )
+          // 先保留任务状态机给出的真实失败原因。只有结构化门禁已经满足、
+          // 但模型仍停在“接下来会做”时，才把它判为 deferred_answer。
+          const stalled = structuredStall ??
+            (hasPreloadedCreateSkillEvidence ? 'deferred_answer' : undefined)
           if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
             throw new Error(
               '这次没做成：AI 没能在安全轮次内给出可确认的整理方案。' +
@@ -4626,10 +4717,29 @@ class ChatView extends ItemView {
           let current = executed.results.find((item) => item.callId === seed.id)
           let page = 1
           while (current?.ok && page < 24 && projectedChars < WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS) {
-            let parsed: { nextOffset?: unknown; nextCharOffset?: unknown }
+            let parsed: {
+              nextOffset?: unknown
+              nextCharOffset?: unknown
+              snapshotId?: unknown
+              truncated?: unknown
+            }
             try {
-              parsed = JSON.parse(current.output) as { nextOffset?: unknown; nextCharOffset?: unknown }
+              parsed = JSON.parse(current.output) as {
+                nextOffset?: unknown
+                nextCharOffset?: unknown
+                snapshotId?: unknown
+                truncated?: unknown
+              }
             } catch {
+              break
+            }
+            if (parsed.truncated === true) {
+              executed.results.push({
+                callId: `${seed.id}-truncated-${page}`,
+                name: 'read_recent_documents',
+                ok: false,
+                output: '最近文档这一页的工具结果被截断，尚未读完。必须如实报告扫描未完成，不能生成伪完整经营周报。',
+              })
               break
             }
             if (!Number.isInteger(parsed.nextOffset)) break
@@ -4642,6 +4752,9 @@ class ChatView extends ItemView {
               name: 'read_recent_documents',
               arguments: {
                 ...seed.arguments,
+                ...(typeof parsed.snapshotId === 'string'
+                  ? { snapshotId: parsed.snapshotId }
+                  : {}),
                 offset: nextOffset,
                 charOffset: nextCharOffset,
               },
@@ -4858,7 +4971,11 @@ class ChatView extends ItemView {
     blocks: CreateLocalSkillBlock[],
     message: WireMessage,
   ) {
-    for (const block of blocks) {
+    for (const rawBlock of blocks) {
+      const normalized = message.skillCreatorResult
+        ? normalizeGeneratedSkillManifest(rawBlock)
+        : { block: rawBlock, repairs: [] }
+      const block = normalized.block
       const root = this.localSkills.root()
       const skillRoot = normalizePath(`${root}/${block.name}`)
       const files = block.files
@@ -4870,6 +4987,12 @@ class ChatView extends ItemView {
       })
       card.createDiv({ text: block.description, cls: 'ai-linzi-create-note-preview' })
       const manifest = skillBlockManifest(block)
+      if (normalized.repairs.length > 0) {
+        card.createDiv({
+          text: `✅ 本机已自动修正：${normalized.repairs.join('；')}`,
+          cls: 'ai-linzi-create-note-preview',
+        })
+      }
       card.createDiv({
         text: `保存位置:${skillRoot}/（版本 ${manifest.version} · 共 ${files.length} 个文件）`,
         cls: 'ai-linzi-create-note-preview',
@@ -5275,13 +5398,57 @@ class ChatView extends ItemView {
           })()
         }
       }
+      if (message.customerCrmSyncPath) {
+        actions.createSpan({
+          text: message.customerCrmSynced
+            ? '咨询交付闭环：客户档案、CRM 已完成（3/5）'
+            : '咨询交付闭环：客户档案已完成（2/5）',
+          cls: 'ai-linzi-create-note-done',
+        })
+      }
       if (message.customerCrmSynced) {
         actions.createSpan({
           text: `☁️ 已同步 AI霖子 CRM：${message.customerCrmSynced.label}`,
           cls: 'ai-linzi-create-note-done',
         })
+        if (message.consultationWorkflowTaskCompletedAt) {
+          actions.createSpan({
+            text: '✅ 跟进任务已创建；请在下方继续生成客户咨询简报。',
+            cls: 'ai-linzi-create-note-done',
+          })
+        } else if (message.consultationWorkflowTaskRequestedAt && this.sending) {
+          actions.createSpan({
+            text: '正在创建跟进任务…',
+            cls: 'ai-linzi-create-note-done',
+          })
+        } else {
+          const taskBtn = actions.createEl('button', {
+            text: '下一步：确认创建跟进任务',
+            cls: 'mod-cta',
+          })
+          taskBtn.onclick = () => {
+            taskBtn.disabled = true
+            message.consultationWorkflowTaskRequestedAt = Date.now()
+            void (async () => {
+              await this.persistNow()
+              this.renderMessages()
+              this.inputEl.value =
+                '继续咨询交付闭环：我已确认创建第 4 步客户跟进任务。' +
+                '请根据当前咨询材料中已经明确的共识创建一条本周任务；标题以动词开头，写清对象和完成标准。' +
+                '不要扫描 Vault，不要再次询问确认，不要添加原文没有的金额或客户事实。'
+              this.inputEl.focus()
+              await this.send({
+                consultationWorkflowTaskOriginId: message.id,
+                consultationWorkflowSourcePath: message.consultationWorkflowSourcePath,
+              })
+            })()
+          }
+        }
       } else if (message.customerCrmSyncPath) {
-        const syncBtn = actions.createEl('button', { text: '查看 CRM 同步差异' })
+        const syncBtn = actions.createEl('button', {
+          text: '下一步：同步到 AI霖子 CRM',
+          cls: 'mod-cta',
+        })
         syncBtn.onclick = () => {
           syncBtn.disabled = true
           void (async () => {
@@ -5435,6 +5602,44 @@ class ChatView extends ItemView {
           await this.persistNow()
           this.renderMessages()
           new Notice(`执行失败：${failureMessage}`, 9000)
+        }
+      })()
+    }
+  }
+
+  /** 咨询闭环第 4 步真实写入后，直接给出最后一步入口，不再让用户猜“继续”怎么说。 */
+  private renderConsultationWorkflowTaskOffer(row: HTMLElement, message: WireMessage): void {
+    if (!message.consultationWorkflowTaskCreatedAt) return
+    const card = row.createDiv({ cls: 'ai-linzi-create-note-card ai-linzi-vault-plan-card' })
+    card.createDiv({
+      text: '咨询交付闭环 · 已完成 4/5',
+      cls: 'ai-linzi-create-note-title',
+    })
+    card.createDiv({
+      text: '✅ 客户档案已写入 · CRM 已同步 · 跟进任务已创建',
+      cls: 'ai-linzi-create-note-done',
+    })
+    const actions = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
+    const briefBtn = actions.createEl('button', {
+      text: '下一步：生成客户咨询简报',
+      cls: 'mod-cta',
+    })
+    briefBtn.onclick = () => {
+      briefBtn.disabled = true
+      void (async () => {
+        try {
+          const sourcePath =
+            message.consultationWorkflowSourcePath ?? this.recentConsultationWorkflowSourcePath()
+          const source = sourcePath ? this.app.vault.getAbstractFileByPath(sourcePath) : null
+          if (!(source instanceof TFile)) {
+            throw new Error('没有找到第 1 步锁定的原咨询材料，请重新打开原文后再生成简报')
+          }
+          const { runCustomerConsultationBrief } = await import('./customer-consultation-brief')
+          await runCustomerConsultationBrief(this.plugin, source)
+        } catch (error) {
+          new Notice(`无法生成客户咨询简报：${error instanceof Error ? error.message : String(error)}`, 9000)
+        } finally {
+          briefBtn.disabled = false
         }
       })()
     }
@@ -5634,6 +5839,9 @@ class ChatView extends ItemView {
         }
         if (vaultPlanResult.plan) {
           this.renderVaultPlanOffer(row, vaultPlanResult.plan, m)
+        }
+        if (m.consultationWorkflowTaskCreatedAt) {
+          this.renderConsultationWorkflowTaskOffer(row, m)
         }
         if (m.articleIllustrationEditOffer) {
           this.renderArticleIllustrationEditOffer(row, m.articleIllustrationEditOffer)

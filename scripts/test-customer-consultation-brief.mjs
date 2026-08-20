@@ -38,6 +38,10 @@ const action = runtime.extractConsultationBriefAction(
 )
 assert.equal(action.requested, true)
 assert.equal(action.cleanText, '前四步完成')
+const ordinaryReply = '第一段。\n\n\n第二段。  '
+const untouched = runtime.extractConsultationBriefAction(ordinaryReply)
+assert.equal(untouched.requested, false)
+assert.equal(untouched.cleanText, ordinaryReply)
 
 const source = await readFile(new URL('../src/customer-consultation-brief.ts', import.meta.url), 'utf8')
 const actions = await readFile(new URL('../src/actions.ts', import.meta.url), 'utf8')

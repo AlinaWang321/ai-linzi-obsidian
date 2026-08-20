@@ -8,8 +8,9 @@ export function extractConsultationBriefAction(text: string): {
   cleanText: string
 } {
   const requested = text.includes(CONSULTATION_BRIEF_ACTION_MARKER)
+  if (!requested) return { requested: false, cleanText: text }
   return {
-    requested,
+    requested: true,
     cleanText: text
       .replaceAll(CONSULTATION_BRIEF_ACTION_MARKER, '')
       .replace(/\n{3,}/g, '\n\n')

@@ -91,17 +91,17 @@ export class SkillStudioModal extends Modal {
   private render(): void {
     this.contentEl.empty()
     this.contentEl.createDiv({
-      text: '从官方模板开始，或把你反复做的一套工作教给 AI霖子。创建前会展示权限和全部文件，确认后才写入。',
+      text: '你可以直接安装官方 Skill，也可以把自己反复做的一套工作教给 AI霖子。安装或创建前都会先展示它会读取什么、生成什么，确认后才写入。',
       cls: 'ai-linzi-skill-studio-intro',
     })
 
     new Setting(this.contentEl)
-      .setName('起点')
-      .setDesc('官方模板不消耗 AI 积分；自定义 Skill 会让 AI 生成可确认的完整文件夹。')
+      .setName('选择创建方式')
+      .setDesc('安装官方模板本身不消耗积分；安装后运行 Skill 会正常使用 AI 并消耗账户积分。自己创建 Skill 时也会调用 AI 生成内容。')
       .addDropdown((dropdown) => {
-        dropdown.addOption('custom', '从零创建自己的 Skill')
+        dropdown.addOption('custom', '让 AI 帮我创建新 Skill')
         for (const template of OFFICIAL_SKILL_TEMPLATES) {
-          dropdown.addOption(template.id, `官方模板 · ${template.label}`)
+          dropdown.addOption(template.id, `直接安装 · ${template.label}`)
         }
         dropdown.setValue(this.templateId).onChange((value) => {
           this.templateId = value
@@ -114,19 +114,20 @@ export class SkillStudioModal extends Modal {
       this.contentEl.createEl('h3', { text: template.label })
       this.contentEl.createDiv({ text: template.description, cls: 'ai-linzi-skill-studio-intro' })
       const permissionCard = this.contentEl.createDiv({ cls: 'ai-linzi-skill-permissions' })
-      permissionCard.createEl('strong', { text: '权限预览' })
+      permissionCard.createEl('strong', { text: '运行这个 Skill 时，AI霖子会做这些事' })
       const list = permissionCard.createEl('ul')
       for (const permission of template.permissions) list.createEl('li', { text: permission })
-      permissionCard.createDiv({ text: '版本 1.0.0 · 官方模板 · 无本机脚本', cls: 'ai-linzi-skill-studio-meta' })
+      permissionCard.createDiv({ text: '官方版本 1.1.0 · 不包含可执行脚本', cls: 'ai-linzi-skill-studio-meta' })
       new Setting(this.contentEl)
-        .setName('课堂试运行输入')
+        .setName('推荐调用示例')
+        .setDesc('安装后可以直接用这句话测试，也可以换成意思相近的自然说法。')
         .addText((input) => input
           .setValue(template.sampleInput)
           .onChange((value) => (this.draft.sampleInput = value.trim())))
       if (!this.draft.sampleInput) this.draft.sampleInput = template.sampleInput
       new Setting(this.contentEl)
         .addButton((button) => button
-          .setButtonText('预览并安装官方模板')
+          .setButtonText('查看详情并安装')
           .setCta()
           .onClick(() => {
             this.close()
@@ -163,9 +164,9 @@ export class SkillStudioModal extends Modal {
         .setPlaceholder('用换行写清楚 3—6 步，包含事实边界和验收标准')
         .setValue(this.draft.steps)
         .onChange((value) => (this.draft.steps = value.trim())))
-    new Setting(this.contentEl)
-      .setName('自动触发短语')
-      .setDesc('用逗号分隔完整动作句；留空则只允许点名调用。')
+      new Setting(this.contentEl)
+        .setName('自动识别的调用说法')
+        .setDesc('填完整动作句并用逗号分隔；完全命中时会自动调用。无论这里怎么填，只要明确说“用/调用 + Skill 名称”，后面用自然说法描述材料也能调用。')
       .addText((input) => input
         .setPlaceholder('生成客户简报,整理本次咨询行动项')
         .setValue(this.draft.triggers.join(','))
@@ -187,9 +188,9 @@ export class SkillStudioModal extends Modal {
       .addText((input) => input
         .setValue(this.draft.version)
         .onChange((value) => (this.draft.version = value.trim())))
-    new Setting(this.contentEl)
-      .setName('试运行输入')
-      .setDesc('创建成功后，确认卡会提供“立即试运行”。')
+      new Setting(this.contentEl)
+        .setName('创建后测试示例')
+        .setDesc('这不是固定触发词。创建成功后点“立即试运行”，会自动填入这句话，你也可以再修改。')
       .addText((input) => input
         .setPlaceholder('例如：把当前咨询记录生成客户简报')
         .setValue(this.draft.sampleInput)

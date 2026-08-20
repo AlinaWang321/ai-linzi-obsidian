@@ -32,7 +32,7 @@ import {
 } from './artifact-renderer-core'
 
 const TOOL_OUTPUT_MAX_CHARS = 20_000
-const RECENT_DOCUMENT_OUTPUT_MAX_CHARS = 100_000
+const RECENT_DOCUMENT_OUTPUT_MAX_CHARS = 180_000
 const RECENT_DOCUMENT_PAGE_MAX_CHARS = 70_000
 const RECENT_DOCUMENT_FILE_MAX_CHARS = 80_000
 const READ_NOTE_MAX_CHARS = 16_000
@@ -114,6 +114,15 @@ function matchFoldersByName(root: TFolder, query: string, loose = false): TFolde
 }
 
 export class LocalVaultAgent {
+  /**
+   * 最近文档分页必须基于同一份路径快照。否则翻页期间 Obsidian 自动保存一篇笔记，
+   * mtime 排序就会变化，offset 会静默跳过或重复文件。快照只驻本机内存，十分钟过期。
+   */
+  private readonly recentDocumentSnapshots = new Map<
+    string,
+    { createdAt: number; sinceDays: number; paths: string[] }
+  >()
+
   constructor(
     private readonly app: App,
     private readonly search: LocalVaultSearch,
@@ -249,9 +258,9 @@ export class LocalVaultAgent {
     )
     if (writeOperations.length === 0) return
     // 官方“咨询交付闭环”明确承诺优先复用用户的真实客户库。
-    // 普通 create_note 可以按用户指定路径自动补父目录，但这个 Skill 不能：
-    // 模型实测会把已存在的 02_Wiki/01_客户档案 猜成 02_Wiki/客户档案，
-    // 还在文字里说“已核实”。这里只对官方闭环收紧，确认卡前必须真看到父目录。
+    // 普通 create_note 可以按用户指定路径自动补父目录。官方咨询闭环更严格：
+    // 现有客户库必须真实存在；只有方案同时明确创建“客户档案”父目录、且它的
+    // 上一级真实存在时才放行。这样既支持新用户首次建库，也阻止模型凭空猜整条路径。
     if (skillContext?.entryPath?.endsWith('/consultation-client-workflow/SKILL.md')) {
       for (const operation of writeOperations) {
         if (operation.type !== 'create_note') continue
@@ -260,9 +269,19 @@ export class LocalVaultAgent {
           ? this.app.vault.getAbstractFileByPath(normalizePath(parentPath))
           : this.app.vault.getRoot()
         if (!(parent instanceof TFolder)) {
+          const plannedParent = plan.operations.some(
+            (candidate) =>
+              candidate.type === 'create_folder' &&
+              normalizePath(candidate.path) === normalizePath(parentPath),
+          )
+          const grandparentPath = parentPath.split('/').slice(0, -1).join('/')
+          const grandparent = grandparentPath
+            ? this.app.vault.getAbstractFileByPath(normalizePath(grandparentPath))
+            : this.app.vault.getRoot()
+          if (plannedParent && grandparent instanceof TFolder) continue
           throw new Error(
             `客户档案父目录不存在：${parentPath || '/'}。` +
-            '必须用 list_folder 核对用户真实客户库后重新生成，不得自动创建猜测目录。',
+            '必须用 list_folder 核对用户真实客户库；若确需新建，方案必须同时创建该目录且其上一级真实存在，不得自动创建猜测目录。',
           )
         }
       }
@@ -490,6 +509,7 @@ export class LocalVaultAgent {
       const sinceDays = clampInt(call.arguments.sinceDays, 7, 1, 31)
       const offset = clampInt(call.arguments.offset, 0, 0, LIST_FOLDER_SCAN_MAX_ENTRIES)
       const firstCharOffset = clampInt(call.arguments.charOffset, 0, 0, 8_000_000)
+      const requestedSnapshotId = toolText(call.arguments.snapshotId, 120)
       const maxChars = clampInt(
         call.arguments.maxChars,
         RECENT_DOCUMENT_PAGE_MAX_CHARS,
@@ -498,22 +518,40 @@ export class LocalVaultAgent {
       )
       const cutoff = Date.now() - sinceDays * 86_400_000
       const skillRoot = normalizePath(this.localSkillsRoot())
-      const weeklyOutputRoot = normalizePath(`${this.outputRoot()}/经营周报`)
-      const files = this.app.vault
-        .getFiles()
-        .filter((file) =>
-          file.stat.mtime >= cutoff &&
-          isLocalSearchExtension(file.extension) &&
-          !this.protected(file.path) &&
-          !file.path.startsWith(`${skillRoot}/`) &&
-          file.path !== weeklyOutputRoot &&
-          !file.path.startsWith(`${weeklyOutputRoot}/`),
-        )
-        .sort(
-          (left, right) =>
-            right.stat.mtime - left.stat.mtime ||
-            left.path.localeCompare(right.path, 'zh-CN'),
-        )
+      const outputRoot = normalizePath(this.outputRoot())
+      const now = Date.now()
+      for (const [id, snapshot] of this.recentDocumentSnapshots) {
+        if (now - snapshot.createdAt > 10 * 60 * 1000) this.recentDocumentSnapshots.delete(id)
+      }
+      let snapshotId = requestedSnapshotId
+      let snapshot = snapshotId ? this.recentDocumentSnapshots.get(snapshotId) : undefined
+      if (!snapshot || snapshot.sinceDays !== sinceDays) {
+        const paths = this.app.vault
+          .getFiles()
+          .filter((file) =>
+            file.stat.mtime >= cutoff &&
+            !this.protected(file.path) &&
+            file.path !== skillRoot &&
+            !file.path.startsWith(`${skillRoot}/`) &&
+            file.path !== outputRoot &&
+            !file.path.startsWith(`${outputRoot}/`),
+          )
+          .sort(
+            (left, right) =>
+              right.stat.mtime - left.stat.mtime ||
+              left.path.localeCompare(right.path, 'zh-CN'),
+          )
+          .map((file) => file.path)
+        snapshotId = `recent-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+        snapshot = { createdAt: now, sinceDays, paths }
+        this.recentDocumentSnapshots.set(snapshotId, snapshot)
+        while (this.recentDocumentSnapshots.size > 8) {
+          const oldest = this.recentDocumentSnapshots.keys().next().value
+          if (!oldest) break
+          this.recentDocumentSnapshots.delete(oldest)
+        }
+      }
+      const paths = snapshot.paths
 
       const documents: Array<{
         path: string
@@ -528,8 +566,17 @@ export class LocalVaultAgent {
       let index = offset
       let charOffset = firstCharOffset
       let nextCharOffset = 0
-      for (; index < files.length; index++) {
-        const file = files[index]
+      for (; index < paths.length; index++) {
+        const path = paths[index]
+        const file = this.app.vault.getAbstractFileByPath(path)
+        if (!(file instanceof TFile)) {
+          skipped.push({ path, reason: '分页期间文件已移动或删除' })
+          continue
+        }
+        if (!isLocalSearchExtension(file.extension)) {
+          skipped.push({ path: file.path, reason: '本机暂不支持提取此文件类型的正文' })
+          continue
+        }
         try {
           const remaining = Math.max(1, maxChars - usedChars - file.path.length - 180)
           if (documents.length > 0 && remaining < 1_000) break
@@ -569,12 +616,16 @@ export class LocalVaultAgent {
       return {
         mode: 'recent-documents',
         sinceDays,
-        totalFiles: files.length,
+        snapshotId,
+        dateBasis: 'file-mtime',
+        scopeWarning: '按文件修改时间统计；同步、git pull 或批量脚本改写可能影响本周口径。',
+        excludedRoots: [skillRoot, outputRoot],
+        totalFiles: paths.length,
         returnedFiles: documents.length,
         offset,
-        nextOffset: index < files.length ? index : null,
-        nextCharOffset: index < files.length ? nextCharOffset : null,
-        complete: index >= files.length && skipped.length === 0,
+        nextOffset: index < paths.length ? index : null,
+        nextCharOffset: index < paths.length ? nextCharOffset : null,
+        complete: index >= paths.length,
         documents,
         skipped,
       }

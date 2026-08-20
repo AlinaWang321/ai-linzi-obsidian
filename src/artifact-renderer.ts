@@ -118,18 +118,10 @@ function dashboardBlockHtml(block: ArtifactBlock): string {
   if (block.type === 'rule') return '<hr>'
   if (block.type === 'heading') return `<h4>${escapeHtml(block.text)}</h4>`
   if (block.type === 'list') {
-    const tasks = block.items.map((item) => taskItem(item))
-    if (tasks.every((task) => task !== null) && tasks.length > 0) {
-      const rows = tasks.map((item) => {
-        return `<li class="task"><label><input type="checkbox" class="tick"${item.done ? ' checked' : ''}><span>${escapeHtml(item.text)}</span></label></li>`
-      }).join('')
-      return `<ul class="tasks">${rows}</ul>`
-    }
     const tag = block.ordered ? 'ol' : 'ul'
     return `<${tag}>${block.items.map((item) => {
       const task = taskItem(item)
-      if (!task) return `<li>${escapeHtml(item)}</li>`
-      return `<li class="task"><label><input type="checkbox" class="tick"${task.done ? ' checked' : ''}><span>${escapeHtml(task.text)}</span></label></li>`
+      return `<li>${escapeHtml(task?.text ?? item)}</li>`
     }).join('')}</${tag}>`
   }
   const head = `<thead><tr>${block.headers.map((cell) => `<th>${escapeHtml(cell)}</th>`).join('')}</tr></thead>`
@@ -146,159 +138,276 @@ function dashboardBlockHtml(block: ArtifactBlock): string {
  * 水→木→光渐变（sea → jade → gold）。动效克制：入场轻微上浮、数字滚动、
  * hover 抬起，不炫技。整页自包含、零外部依赖、可离线打开、可直接打印。
  */
-function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'clean'): string {
+export function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'clean'): string {
+  type DashboardSection = { title: string; level: number; blocks: ArtifactBlock[] }
+  type DashboardCard = { title: string; blocks: ArtifactBlock[] }
   const headings = document.blocks.filter(
     (block): block is Extract<ArtifactBlock, { type: 'heading' }> => block.type === 'heading',
   )
-  const tabLevel = headings.length > 0 ? Math.min(...headings.map((block) => block.level)) : 0
+  const sectionLevel = headings.length > 0 ? Math.min(...headings.map((block) => block.level)) : 2
   const intro: ArtifactBlock[] = []
-  const sections: { title: string; blocks: ArtifactBlock[] }[] = []
+  const sections: DashboardSection[] = []
   for (const block of document.blocks) {
-    if (block.type === 'heading' && block.level === tabLevel && tabLevel > 0) {
-      sections.push({ title: block.text, blocks: [] })
-      continue
+    if (block.type === 'heading' && block.level === sectionLevel) {
+      sections.push({ title: block.text, level: block.level, blocks: [] })
+    } else if (sections.length === 0) {
+      intro.push(block)
+    } else {
+      sections[sections.length - 1].blocks.push(block)
     }
-    if (sections.length === 0) intro.push(block)
-    else sections[sections.length - 1].blocks.push(block)
   }
-  if (sections.length === 0) sections.push({ title: '全部内容', blocks: intro.splice(0, intro.length) })
 
-  // 卡片切分：分区内的下层小标题各起一张卡；标题前的内容并入首卡。
-  const renderSection = (section: { title: string; blocks: ArtifactBlock[] }, index: number): string => {
-    const cards: { title: string | null; blocks: ArtifactBlock[] }[] = []
+  const splitCards = (section: DashboardSection): DashboardCard[] => {
+    const cards: DashboardCard[] = []
     for (const block of section.blocks) {
-      if (block.type === 'heading' && block.level > tabLevel) {
+      if (block.type === 'heading' && block.level > section.level) {
         cards.push({ title: block.text, blocks: [] })
-        continue
+      } else {
+        if (cards.length === 0) cards.push({ title: '', blocks: [] })
+        cards[cards.length - 1].blocks.push(block)
       }
-      if (cards.length === 0) cards.push({ title: null, blocks: [] })
-      cards[cards.length - 1].blocks.push(block)
     }
-    if (cards.length === 0) cards.push({ title: null, blocks: [] })
-    const body = cards.map((card) => {
-      const tone = toneOf(`${section.title} ${card.title ?? ''}`)
-      const head = card.title
-        ? `<div class="card-head"><h3>${escapeHtml(card.title)}</h3><button class="fold" type="button" aria-label="折叠">−</button></div>`
-        : ''
-      const inner = card.blocks.map((block) => dashboardBlockHtml(block)).join('\n')
-      if (!head && !inner.trim()) return ''
-      return `<article class="card tone-${tone}">${head}<div class="card-body">${inner}</div></article>`
-    }).join('\n')
-    return `<section class="panel${index === 0 ? ' active' : ''}" data-panel="${index}">${body}</section>`
+    return cards.length > 0 ? cards : [{ title: '', blocks: [] }]
   }
+  const findSection = (pattern: RegExp): DashboardSection | undefined =>
+    sections.find((section) => pattern.test(section.title))
+  const recognized = new Set<DashboardSection>()
+  const takeSection = (pattern: RegExp): DashboardSection | undefined => {
+    const section = findSection(pattern)
+    if (section) recognized.add(section)
+    return section
+  }
+  const todoSection = takeSection(/今日待办|今天做什么|今日任务/u)
+  const funnelSection = takeSection(/经营链路|漏在哪一步|转化漏斗/u)
+  const metricsSection = takeSection(/本周数字|经营总览|关键指标/u)
+  const weekSection = takeSection(/七天节奏|七天轨迹|每日进展/u)
+  const yesterdaySection = takeSection(/昨天发生了什么|昨日重点|昨日复盘/u)
+  const decisionSection = takeSection(/下周决策|下一步决策|决策/u)
+  const evidenceSection = takeSection(/数据依据|数据来源|统计口径/u)
 
-  const tabs = sections.map((section, index) =>
-    `<button class="tab${index === 0 ? ' active' : ''} tone-${toneOf(section.title)}" type="button" data-tab="${index}">${escapeHtml(section.title)}<span class="tab-count" data-tab-count="${index}"></span></button>`,
-  ).join('')
-  const panels = sections.map((section, index) => renderSection(section, index)).join('\n')
-
-  // 摘要区：正文前的引用 → 判断条（宋体金句）；两三列的表格 → 指标卡组；其余照常。
-  const metricTable = intro.find(
-    (block): block is Extract<ArtifactBlock, { type: 'table' }> =>
-      block.type === 'table' && block.headers.length >= 2 && block.headers.length <= 3,
+  const allBlocks = [...intro, ...sections.flatMap((section) => section.blocks)]
+  const coverageBlock = allBlocks.find(
+    (block): block is Extract<ArtifactBlock, { type: 'quote' }> =>
+      block.type === 'quote' && /扫描\s*\d+\s*份.*(?:完整)?读取\s*\d+\s*份.*跳过\s*\d+\s*份/u.test(block.text),
   )
+  const coverage = coverageBlock
+    ? /扫描\s*(\d+)\s*份.*(?:完整)?读取\s*(\d+)\s*份.*跳过\s*(\d+)\s*份/u.exec(coverageBlock.text)
+    : null
+  const total = Number(coverage?.[1] ?? 0)
+  const read = Number(coverage?.[2] ?? 0)
+  const skipped = Number(coverage?.[3] ?? 0)
+  const coveragePercent = total > 0 ? Math.min(100, Math.round((read / total) * 100)) : 0
   const judges = intro.filter(
-    (block): block is Extract<ArtifactBlock, { type: 'quote' }> => block.type === 'quote',
+    (block): block is Extract<ArtifactBlock, { type: 'quote' }> =>
+      block.type === 'quote' && block !== coverageBlock,
   )
-  const consumed = new Set<ArtifactBlock>(judges)
-  if (metricTable) consumed.add(metricTable)
-  const restIntro = intro.filter((block) => !consumed.has(block))
-  const metricsHtml = metricTable
+  const judgeBlocks = new Set<ArtifactBlock>(judges)
+
+  const numericValue = (value: string): number | null => {
+    const match = value.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/)
+    if (!match) return null
+    const result = Number(match[0])
+    return Number.isFinite(result) ? result : null
+  }
+  const deltaClass = (value: string): 'good' | 'bad' | 'flat' => {
+    if (/▲|\+|上升|增长|增加|向好/u.test(value)) return 'good'
+    if (/▼|下降|减少|走低|变差/u.test(value)) return 'bad'
+    return 'flat'
+  }
+  const metricTable =
+    metricsSection?.blocks.find(
+      (block): block is Extract<ArtifactBlock, { type: 'table' }> => block.type === 'table',
+    ) ??
+    intro.find(
+      (block): block is Extract<ArtifactBlock, { type: 'table' }> =>
+        block.type === 'table' && block.headers.length >= 2 && block.headers.length <= 4,
+    )
+  const metricHtml = metricTable
     ? `<div class="metrics">${metricTable.rows.map((row) => {
         const value = (row[1] ?? '').trim()
-        const numeric = /^-?\d+(\.\d+)?/.exec(value)
-        return `<div class="metric"><div class="metric-num"${numeric ? ` data-count="${numeric[0]}"` : ''}>${escapeHtml(value)}</div><div class="metric-label">${escapeHtml((row[0] ?? '').trim())}</div>${row[2] ? `<div class="metric-note">${escapeHtml(row[2].trim())}</div>` : ''}</div>`
+        const delta = (row[2] ?? '').trim()
+        const numeric = numericValue(value)
+        const trend = (row[3] ?? '')
+          .split(/[，,、\s]+/u)
+          .map((item) => numericValue(item))
+          .filter((item): item is number => item !== null)
+        let sparkline = ''
+        if (trend.length >= 3) {
+          const max = Math.max(...trend)
+          const min = Math.min(...trend)
+          const span = Math.max(1, max - min)
+          const points = trend.map((item, index) => {
+            const x = trend.length === 1 ? 0 : (index / (trend.length - 1)) * 100
+            const y = 28 - ((item - min) / span) * 24
+            return `${x.toFixed(1)},${y.toFixed(1)}`
+          }).join(' ')
+          sparkline = `<svg class="spark" viewBox="0 0 100 32" aria-label="七日趋势"><polyline points="${points}"></polyline></svg>`
+        }
+        return `<article class="metric"><div class="metric-label">${escapeHtml(row[0] ?? '')}</div><div class="metric-num"${numeric !== null ? ` data-count="${numeric}"` : ''}>${escapeHtml(value || '未记录')}</div>${delta ? `<div class="delta ${deltaClass(delta)}">${escapeHtml(delta)}</div>` : ''}${sparkline}</article>`
       }).join('')}</div>`
     : ''
-  const judgeHtml = judges.length > 0
-    ? `<div class="judge">${judges.map((block) => `<p>${escapeHtml(block.text)}</p>`).join('')}</div>`
-    : ''
-  const introHtml = restIntro.length > 0
-    ? `<div class="intro">${restIntro.map((block) => dashboardBlockHtml(block)).join('\n')}</div>`
+
+  const interactiveTasks = (blocks: ArtifactBlock[], core: boolean): string => {
+    const items = blocks.flatMap((block) => block.type === 'list' ? block.items : [])
+    const tasks = items.map((item) => taskItem(item)).filter((item): item is NonNullable<typeof item> => Boolean(item))
+    if (tasks.length === 0) return blocks.map((block) => dashboardBlockHtml(block)).join('\n')
+    return `<ul class="today-tasks">${tasks.map((task) => `<li class="today-task"><label><input type="checkbox" class="today-check"${core ? ' data-core="1"' : ''}${task.done ? ' checked' : ''}><span>${escapeHtml(task.text)}</span></label></li>`).join('')}</ul>`
+  }
+  const todoHtml = todoSection
+    ? (() => {
+        const cards = splitCards(todoSection)
+        const rendered = cards.map((card) => {
+          const core = /必须|核心|优先推进/u.test(card.title)
+          return `<article class="todo-card ${core ? 'core' : 'optional'}"><div class="tier"><i></i><span>${escapeHtml(card.title || (core ? '今天必须推进' : '今天待办'))}</span></div>${interactiveTasks(card.blocks, core)}</article>`
+        }).join('')
+        return `<section id="today" data-dashboard-section><div class="sec-head"><div><h2>今天做什么</h2><p id="today-meta">只统计今天的任务</p></div><div class="ring" aria-label="今日任务完成率"><svg viewBox="0 0 72 72"><circle class="ring-bg" cx="36" cy="36" r="26"></circle><circle id="ring-fg" cx="36" cy="36" r="26"></circle></svg><b id="ring-pct">0%</b></div></div><div class="todo-grid">${rendered}</div></section>`
+      })()
     : ''
 
-  // clean 主题：去掉品牌暖金点睛，改用海军蓝单色，其余版式一致。
+  const funnelHtml = funnelSection
+    ? (() => {
+        const table = funnelSection.blocks.find(
+          (block): block is Extract<ArtifactBlock, { type: 'table' }> =>
+            block.type === 'table' && block.headers.some((header) => /环节|阶段/u.test(header)),
+        )
+        if (!table) {
+          return `<section id="funnel" data-dashboard-section><div class="sec-head"><h2>漏在哪一步</h2></div><article class="card">${funnelSection.blocks.map((block) => dashboardBlockHtml(block)).join('')}</article></section>`
+        }
+        const rows = table.rows.map((row) => ({
+          label: row[0] ?? '',
+          currentText: row[1] ?? '未记录',
+          previousText: row[2] ?? '未记录',
+          current: numericValue(row[1] ?? ''),
+          previous: numericValue(row[2] ?? ''),
+        }))
+        const currentMax = Math.max(1, ...rows.map((row) => row.current ?? 0))
+        const conversions = rows.slice(0, -1).map((row, index) => {
+          const next = rows[index + 1]
+          const currentRate = row.current && next.current !== null
+            ? (next.current / row.current) * 100
+            : null
+          const previousRate = row.previous && next.previous !== null
+            ? (next.previous / row.previous) * 100
+            : null
+          return {
+            currentRate,
+            delta: currentRate !== null && previousRate !== null ? currentRate - previousRate : null,
+          }
+        })
+        let leakIndex = -1
+        let worstDelta = 0
+        conversions.forEach((item, index) => {
+          if (item.delta !== null && item.delta < worstDelta) {
+            worstDelta = item.delta
+            leakIndex = index
+          }
+        })
+        const bars = rows.map((row, index) => {
+          const width = row.current === null ? 34 : Math.max(18, Math.round((row.current / currentMax) * 100))
+          const conversion = conversions[index]
+          const conversionHtml = conversion
+            ? `<div class="conversion${index === leakIndex ? ' leak' : ''}"><span>${conversion.currentRate === null ? '转化率待补' : `转化 ${conversion.currentRate.toFixed(1)}%`}</span>${conversion.delta === null ? '' : `<em>${conversion.delta >= 0 ? '▲' : '▼'} ${Math.abs(conversion.delta).toFixed(1)}pp</em>`}${index === leakIndex ? '<b>最大漏点</b>' : ''}</div>`
+            : ''
+          return `<div class="funnel-row"><div class="funnel-bar fn${(index % 6) + 1}" style="--w:${width}%"><span>${escapeHtml(row.label)}</span><strong>${escapeHtml(row.currentText)}</strong></div><small>上周 ${escapeHtml(row.previousText)}</small></div>${conversionHtml}`
+        }).join('')
+        const notes = funnelSection.blocks.filter((block) => block !== table && block.type !== 'heading')
+        return `<section id="funnel" data-dashboard-section><div class="sec-head"><div><h2>漏在哪一步</h2><p>先看转化，再决定本周最该补哪一环</p></div></div><article class="card funnel-card">${bars}${notes.length > 0 ? `<div class="funnel-note">${notes.map((block) => dashboardBlockHtml(block)).join('')}</div>` : ''}</article></section>`
+      })()
+    : ''
+
+  const metricsHtml = metricHtml
+    ? `<section id="metrics" data-dashboard-section><div class="sec-head"><div><h2>本周数字</h2><p>有环比才知道是进步还是退步</p></div></div>${metricHtml}</section>`
+    : ''
+
+  const weekHtml = weekSection
+    ? (() => {
+        const table = weekSection.blocks.find(
+          (block): block is Extract<ArtifactBlock, { type: 'table' }> => block.type === 'table',
+        )
+        let rhythm = ''
+        if (table && table.rows.length > 0) {
+          const values = table.rows.map((row) => numericValue(row[1] ?? '') ?? 0)
+          const max = Math.max(1, ...values)
+          rhythm = `<div class="rhythm">${table.rows.slice(0, 7).map((row, index) => {
+            const value = values[index]
+            const height = Math.max(8, Math.round((value / max) * 100))
+            return `<article class="day${value === max && max > 0 ? ' peak' : ''}"><b>${escapeHtml(row[0] ?? '')}</b><div class="day-bar"><i style="--h:${height}%"></i></div><strong>${escapeHtml(row[1] ?? '')}</strong><span>${escapeHtml(row[2] ?? '')}</span><em>${escapeHtml(row[3] ?? '')}</em><p>${escapeHtml(row[4] ?? '')}</p></article>`
+          }).join('')}</div>`
+        }
+        const rest = weekSection.blocks.filter((block) => block !== table && block.type !== 'heading')
+        return `<section id="rhythm" data-dashboard-section><div class="sec-head"><div><h2>七天节奏</h2><p>哪一天真的产生了经营结果</p></div></div>${rhythm || `<article class="card">${weekSection.blocks.map((block) => dashboardBlockHtml(block)).join('')}</article>`}${rest.length > 0 ? `<div class="cards">${rest.map((block) => `<article class="card">${dashboardBlockHtml(block)}</article>`).join('')}</div>` : ''}</section>`
+      })()
+    : ''
+
+  const receiptBlocks = (blocks: ArtifactBlock[]): string => blocks.map((block) => {
+    if (block.type !== 'list') return dashboardBlockHtml(block)
+    return `<ul class="receipts">${block.items.map((item) => {
+      const task = taskItem(item)
+      const done = task?.done === true
+      return `<li class="${done ? 'done' : 'open'}"><i>${done ? '✓' : '—'}</i><span>${escapeHtml(task?.text ?? item)}</span></li>`
+    }).join('')}</ul>`
+  }).join('')
+  const yesterdayHtml = yesterdaySection
+    ? `<section id="yesterday" data-dashboard-section><div class="sec-head"><div><h2>昨天发生了什么</h2><p>已经发生的事只做回执，不参与今天进度</p></div></div><div class="cards">${splitCards(yesterdaySection).map((card) => `<article class="card"><h3>${escapeHtml(card.title || '昨日记录')}</h3>${receiptBlocks(card.blocks)}</article>`).join('')}</div></section>`
+    : ''
+
+  const decisionHtml = decisionSection
+    ? `<section id="decide" data-dashboard-section><div class="sec-head"><div><h2>下周决策</h2><p>三做一不做，减少分散</p></div></div><div class="cards">${splitCards(decisionSection).map((card) => `<article class="card ${toneOf(card.title) === 'muted' ? 'muted' : ''}"><h3>${escapeHtml(card.title || '行动')}</h3>${card.blocks.map((block) => dashboardBlockHtml(block)).join('')}</article>`).join('')}</div></section>`
+    : ''
+
+  const evidenceHtml = evidenceSection
+    ? `<section id="evidence" data-dashboard-section><details class="evidence"><summary>数据依据${total > 0 ? ` · ${read} 份读取、${skipped} 份跳过` : ''}</summary><div class="evidence-body">${evidenceSection.blocks.filter((block) => block.type !== 'heading').map((block) => dashboardBlockHtml(block)).join('')}<div class="warnbox"><b>口径提醒：</b>最近 7 天按文件修改时间统计；同步、git pull 或批量脚本改写会影响本周口径。AI霖子输出目录默认不参与扫描，附件只有本机工具明确读取成功才算已读。</div></div></details></section>`
+    : ''
+
+  const genericSections = sections.filter((section) => !recognized.has(section))
+  const genericHtml = genericSections.map((section, index) =>
+    `<section id="extra-${index}" data-dashboard-section><div class="sec-head"><h2>${escapeHtml(section.title)}</h2></div><div class="cards">${splitCards(section).map((card) => `<article class="card"><h3>${escapeHtml(card.title)}</h3>${card.blocks.map((block) => dashboardBlockHtml(block)).join('')}</article>`).join('')}</div></section>`,
+  ).join('')
+  const introRest = intro.filter((block) => block !== coverageBlock && !judgeBlocks.has(block) && block !== metricTable)
+  const navItems = [
+    todoHtml ? ['today', '今天', ''] : null,
+    funnelHtml ? ['funnel', '漏点', ''] : null,
+    metricsHtml ? ['metrics', '数字', ''] : null,
+    weekHtml ? ['rhythm', '七天', ''] : null,
+    yesterdayHtml ? ['yesterday', '昨天', ''] : null,
+    decisionHtml ? ['decide', '决策', ''] : null,
+    evidenceHtml ? ['evidence', '依据', ''] : null,
+  ].filter((item): item is string[] => Boolean(item))
+  if (navItems[0]) navItems[0][2] = '0/0'
+  const navigation = navItems.map((item, index) =>
+    `<a href="#${item[0]}"${index === 0 ? ' class="on"' : ''}><span>${escapeHtml(item[1])}</span>${item[2] ? `<b>${item[2]}</b>` : ''}</a>`,
+  ).join('')
+  const bodySections = `${todoHtml}${funnelHtml}${metricsHtml}${weekHtml}${yesterdayHtml}${decisionHtml}${evidenceHtml}${genericHtml}` ||
+    `<section data-dashboard-section><article class="card">${intro.map((block) => dashboardBlockHtml(block)).join('')}</article></section>`
+
   const gold = theme === 'clean' ? '#2E5A8F' : '#F5C518'
   const goldSoft = theme === 'clean' ? '#CBD9EA' : '#FCE38A'
   const storageKey = `ai-linzi-board:${document.title}`
   const script = [
     '(function(){',
-    `  var KEY=${JSON.stringify(storageKey)};`,
-    '  var ticks=[].slice.call(document.querySelectorAll(".tick"));',
-    '  ticks.forEach(function(box,i){box.dataset.idx=String(i)});',
-    '  var saved={};',
-    '  try{saved=JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){saved={}}',
-    '  ticks.forEach(function(box){var v=saved[box.dataset.idx];if(typeof v==="boolean")box.checked=v});',
-    '  function persist(){',
-    '    var out={};ticks.forEach(function(box){out[box.dataset.idx]=box.checked});',
-    '    try{localStorage.setItem(KEY,JSON.stringify(out))}catch(e){}',
-    '  }',
-    '  function paint(){',
-    '    var total=ticks.length,done=ticks.filter(function(b){return b.checked}).length;',
-    '    var pct=total?Math.round(done/total*100):0;',
-    '    var bar=document.getElementById("bar"),num=document.getElementById("num");',
-    '    if(bar)bar.style.width=pct+"%";',
-    '    if(num)num.textContent=total?done+" / "+total+" 项完成 · "+pct+"%":"本页无勾选任务";',
-    '    ticks.forEach(function(b){var li=b.closest("li");if(li)li.classList.toggle("checked",b.checked)});',
-    '    [].slice.call(document.querySelectorAll("[data-tab-count]")).forEach(function(el){',
-    '      var panel=document.querySelector(\'[data-panel="\'+el.dataset.tabCount+\'"]\');',
-    '      if(!panel)return;',
-    '      var boxes=[].slice.call(panel.querySelectorAll(".tick"));',
-    '      if(boxes.length===0){el.textContent="";return}',
-    '      var d=boxes.filter(function(b){return b.checked}).length;',
-    '      el.textContent=d+"/"+boxes.length;',
-    '    });',
-    '  }',
-    '  ticks.forEach(function(box){box.addEventListener("change",function(){persist();paint()})});',
-    '  [].slice.call(document.querySelectorAll(".tab")).forEach(function(tab){',
-    '    tab.addEventListener("click",function(){',
-    '      [].slice.call(document.querySelectorAll(".tab")).forEach(function(t){t.classList.remove("active")});',
-    '      [].slice.call(document.querySelectorAll(".panel")).forEach(function(p){p.classList.remove("active")});',
-    '      tab.classList.add("active");',
-    '      var panel=document.querySelector(\'[data-panel="\'+tab.dataset.tab+\'"]\');',
-    '      if(panel){panel.classList.add("active");panel.classList.remove("replay");void panel.offsetWidth;panel.classList.add("replay")}',
-    '    });',
-    '  });',
-    '  [].slice.call(document.querySelectorAll(".fold")).forEach(function(btn){',
-    '    btn.addEventListener("click",function(){',
-    '      var card=btn.closest(".card");if(!card)return;',
-    '      var folded=card.classList.toggle("folded");',
-    '      btn.textContent=folded?"+":"−";',
-    '    });',
-    '  });',
-    '  var search=document.getElementById("q");',
-    '  if(search){',
-    '    search.addEventListener("input",function(){',
-    '      var q=search.value.trim().toLowerCase();',
-    '      [].slice.call(document.querySelectorAll(".panel")).forEach(function(p){p.classList.add("active")});',
-    '      [].slice.call(document.querySelectorAll(".tab")).forEach(function(t){t.classList.toggle("active",!q&&t.dataset.tab==="0")});',
-    '      if(!q){',
-    '        [].slice.call(document.querySelectorAll(".panel")).forEach(function(p){p.classList.toggle("active",p.dataset.panel==="0")});',
-    '        [].slice.call(document.querySelectorAll(".card")).forEach(function(c){c.style.display=""});',
-    '        return;',
-    '      }',
-    '      [].slice.call(document.querySelectorAll(".card")).forEach(function(c){',
-    '        c.style.display=c.textContent.toLowerCase().indexOf(q)>=0?"":"none";',
-    '      });',
-    '    });',
-    '  }',
-    '  // 指标数字滚动:只对纯数字生效,尊重「减少动态效果」系统设置。',
-    '  var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;',
-    '  [].slice.call(document.querySelectorAll(".metric-num[data-count]")).forEach(function(el){',
-    '    var target=parseFloat(el.dataset.count);if(isNaN(target)||reduce)return;',
-    '    var suffix=el.textContent.replace(el.dataset.count,"");',
-    '    var dec=(el.dataset.count.split(".")[1]||"").length,start=null,dur=760;',
-    '    function step(ts){',
-    '      if(start===null)start=ts;var p=Math.min(1,(ts-start)/dur);',
-    '      var eased=1-Math.pow(1-p,3);',
-    '      el.textContent=(target*eased).toFixed(dec)+suffix;',
-    '      if(p<1)requestAnimationFrame(step);',
-    '    }',
-    '    el.textContent="0"+suffix;requestAnimationFrame(step);',
-    '  });',
-    '  paint();',
+    `var KEY=${JSON.stringify(storageKey)}+":"+location.pathname;`,
+    'var boxes=[].slice.call(document.querySelectorAll("#today input[type=checkbox]"));',
+    'boxes.forEach(function(box,i){box.dataset.idx=String(i)});',
+    'var saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){saved={}}',
+    'boxes.forEach(function(box){if(typeof saved[box.dataset.idx]==="boolean")box.checked=saved[box.dataset.idx]});',
+    'var CIRC=2*Math.PI*26;',
+    'function paint(){',
+    'var total=boxes.length,done=boxes.filter(function(b){return b.checked}).length;',
+    'var core=boxes.filter(function(b){return b.dataset.core==="1"}),coreDone=core.filter(function(b){return b.checked}).length;',
+    `var pct=total?Math.round(done/total*100):0,ring=document.getElementById("ring-fg"),label=document.getElementById("ring-pct"),meta=document.getElementById("today-meta"),rail=document.querySelector('.rail a[href="#today"] b');`,
+    'if(ring)ring.setAttribute("stroke-dashoffset",String(CIRC*(1-pct/100)));if(label)label.textContent=pct+"%";if(rail)rail.textContent=coreDone+"/"+core.length;',
+    'if(meta)meta.textContent=core.length?(coreDone===core.length?"必须推进的 "+core.length+" 件已经全部完成":(core.length-coreDone)+" 件必须推进 · "+(total-core.length)+" 件完成一项即可"):"今天没有可勾选任务";',
+    'boxes.forEach(function(box){var li=box.closest("li");if(li)li.classList.toggle("done",box.checked)});',
+    '}',
+    'boxes.forEach(function(box){box.addEventListener("change",function(){var out={};boxes.forEach(function(item){out[item.dataset.idx]=item.checked});try{localStorage.setItem(KEY,JSON.stringify(out))}catch(e){}paint()})});',
+    'var links=[].slice.call(document.querySelectorAll(".rail a")),targets=links.map(function(link){return document.querySelector(link.getAttribute("href"))});',
+    'if("IntersectionObserver" in window){var io=new IntersectionObserver(function(entries){entries.forEach(function(entry){if(!entry.isIntersecting)return;links.forEach(function(link,index){link.classList.toggle("on",targets[index]===entry.target)})})},{rootMargin:"-12% 0px -70% 0px",threshold:0});targets.forEach(function(target){if(target)io.observe(target)})}',
+    'var search=document.getElementById("q");if(search)search.addEventListener("input",function(){var q=search.value.trim().toLowerCase();[].slice.call(document.querySelectorAll("[data-dashboard-section]")).forEach(function(section){section.hidden=Boolean(q)&&section.textContent.toLowerCase().indexOf(q)<0})});',
+    'var opened=[];window.addEventListener("beforeprint",function(){opened=[].slice.call(document.querySelectorAll("details:not([open])"));opened.forEach(function(item){item.open=true})});window.addEventListener("afterprint",function(){opened.forEach(function(item){item.open=false});opened=[]});',
+    'paint();',
     '})();',
   ].join('\n')
+
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -306,155 +415,73 @@ function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'cle
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${escapeHtml(document.title)}</title>
   <style>
-    /* 水·木·光 —— 产品/文档底：暖米底 + 海军蓝结构 + 墨色正文 */
     :root{
       --navy:#293857;--ink-navy:#0B1730;--navy-light:#5C7BB0;--sea:#2E5A8F;
-      --jade:#3DB389;--jade-soft:#6FD9B0;--gold:${gold};--gold-soft:${goldSoft};
-      --clay:#B0532F;
-      --cream:#FAF6F0;--warm:#F1ECE3;--line:#E7DFD2;
-      --ink:#1A1612;--ink-soft:#4A4036;--ink-mute:#8A7E74;
-      --paper:#FFFDFA;--shadow:14px 30px rgba(41,56,87,.07);
+      --jade:#3DB389;--positive:#237A5C;--gold:${gold};--gold-soft:${goldSoft};--clay:#B0532F;
+      --cream:#FAF6F0;--warm:#F1ECE3;--line:#E7DFD2;--paper:#FFFDFA;
+      --ink:#1A1612;--ink-soft:#4A4036;--ink-mute:#8A7E74;--shadow:0 14px 30px rgba(41,56,87,.07);
+      --fn1:#DCE8F5;--fn2:#C6D9ED;--fn3:#9CBBDD;--fn4:#739BC7;--fn5:#4B78AD;--fn6:#2E5A8F;
+      --num:"Avenir Next","DIN Alternate","Helvetica Neue",sans-serif;
     }
-    @media(prefers-color-scheme:dark){
-      :root{
-        --cream:#0B1730;--warm:#16243f;--line:#25344f;--paper:#101d33;
-        --ink:#FAF6F0;--ink-soft:#D8DEEA;--ink-mute:#A6B6D4;--navy:#FAF6F0;
-        --shadow:14px 30px rgba(0,0,0,.34);
-      }
+    @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
+      --cream:#0B1730;--warm:#16243F;--line:#2C3D5C;--paper:#101D33;--ink:#FAF6F0;
+      --ink-soft:#D8DEEA;--ink-mute:#A6B6D4;--navy:#FAF6F0;--positive:#6FD9B0;--clay:#E08A5F;
+      --shadow:0 14px 30px rgba(0,0,0,.34);--fn1:#263C60;--fn2:#2E4A74;--fn3:#365A88;--fn4:#4773A7;--fn5:#5C8BC0;--fn6:#75A4D4;
+    }}
+    :root[data-theme="dark"]{
+      --cream:#0B1730;--warm:#16243F;--line:#2C3D5C;--paper:#101D33;--ink:#FAF6F0;
+      --ink-soft:#D8DEEA;--ink-mute:#A6B6D4;--navy:#FAF6F0;--positive:#6FD9B0;--clay:#E08A5F;
+      --shadow:0 14px 30px rgba(0,0,0,.34);--fn1:#263C60;--fn2:#2E4A74;--fn3:#365A88;--fn4:#4773A7;--fn5:#5C8BC0;--fn6:#75A4D4;
     }
-    *{box-sizing:border-box}
-    body{
-      margin:0;background:var(--cream);color:var(--ink);line-height:1.75;
-      font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
-      -webkit-font-smoothing:antialiased;
-      /* 水波涟漪母题：极淡同心圆，浅底上几乎只留呼吸感 */
-      background-image:
-        radial-gradient(circle at 88% -8%, rgba(46,90,143,.055), transparent 46%),
-        radial-gradient(circle at -6% 102%, rgba(61,179,137,.05), transparent 42%);
-      background-attachment:fixed;
-    }
-    .wrap{width:min(1120px,calc(100% - 40px));margin:44px auto 72px}
-    @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-    .top{
-      background:var(--paper);border:1px solid var(--line);border-radius:24px;
-      padding:34px 38px;box-shadow:0 var(--shadow);animation:rise .5s ease both;
-    }
-    .top h1{margin:0;font-size:32px;line-height:1.3;font-weight:800;color:var(--navy);letter-spacing:-.01em}
-    .top .sub{margin:10px 0 0;color:var(--ink-mute);font-size:13.5px;letter-spacing:.02em}
-    /* 判断条：大金句用宋体，暖金点睛 */
-    .judge{
-      margin-top:22px;padding:16px 22px;border-left:3px solid var(--gold);
-      background:linear-gradient(90deg,rgba(245,197,24,.09),transparent 78%);border-radius:0 14px 14px 0;
-    }
-    .judge p{
-      margin:.28em 0;font-family:"Songti SC","STSong",Georgia,serif;font-style:italic;
-      font-size:19px;line-height:1.7;color:var(--ink-soft);
-    }
-    /* 指标卡：数字大、留白足、不加阴影（克制） */
-    .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px;margin-top:24px}
-    .metric{background:var(--warm);border:1px solid var(--line);border-radius:16px;padding:16px 18px}
-    .metric-num{font-size:29px;font-weight:800;color:var(--navy);line-height:1.2;font-variant-numeric:tabular-nums}
-    .metric-label{margin-top:4px;font-size:13px;color:var(--ink-mute)}
-    .metric-note{margin-top:6px;font-size:12px;color:var(--ink-mute);opacity:.85;line-height:1.5}
-    .meter{display:flex;align-items:center;gap:16px;margin-top:26px;flex-wrap:wrap}
-    /* 进度条彩蛋：水 → 木 → 光 */
-    .track{flex:1;min-width:220px;height:8px;background:var(--warm);border-radius:99px;overflow:hidden;border:1px solid var(--line)}
-    #bar{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--sea),var(--jade),var(--gold));transition:width .5s cubic-bezier(.4,0,.2,1)}
-    #num{font-size:13px;color:var(--ink-mute);font-variant-numeric:tabular-nums}
-    #q{flex:0 1 230px;padding:9px 16px;border-radius:99px;border:1px solid var(--line);background:var(--cream);color:var(--ink);font-size:14px;font-family:inherit;outline:none;transition:border-color .18s}
-    #q:focus{border-color:var(--navy-light)}
-    .intro{margin-top:20px;padding-top:18px;border-top:1px solid var(--line);color:var(--ink-soft);font-size:15px}
-    .intro p{margin:.5em 0}
-    .tabs{display:flex;gap:9px;overflow-x:auto;padding:26px 2px 6px;scrollbar-width:thin;animation:rise .5s .06s ease both}
-    .tab{
-      flex:0 0 auto;display:inline-flex;align-items:center;gap:8px;padding:9px 18px;border-radius:99px;
-      border:1px solid var(--line);background:var(--paper);color:var(--ink-soft);font-size:14px;
-      font-family:inherit;cursor:pointer;transition:transform .18s,border-color .18s,color .18s;
-    }
-    .tab:hover{color:var(--navy);border-color:var(--navy-light);transform:translateY(-1px)}
-    .tab.active{background:var(--navy);color:var(--cream);border-color:var(--navy);font-weight:600}
-    @media(prefers-color-scheme:dark){.tab.active{background:var(--navy-light);color:var(--ink-navy);border-color:var(--navy-light)}}
-    .tab-count{font-size:12px;opacity:.7;font-variant-numeric:tabular-nums}
-    .tab.tone-urgent:not(.active){border-left:3px solid var(--gold)}
-    .tab.tone-risk:not(.active){border-left:3px solid var(--clay)}
-    .tab.tone-warn:not(.active){border-left:3px solid var(--sea)}
-    .tab.tone-calm:not(.active){border-left:3px solid var(--jade)}
-    .tab.tone-muted:not(.active){opacity:.66}
-    .panel{display:none;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;margin-top:14px}
-    .panel.active{display:grid}
-    .card{
-      background:var(--paper);border:1px solid var(--line);border-radius:20px;padding:22px 24px;
-      transition:box-shadow .22s,transform .22s,border-color .22s;animation:rise .45s ease both;
-    }
-    .panel.active .card:nth-child(1){animation-delay:.02s}
-    .panel.active .card:nth-child(2){animation-delay:.06s}
-    .panel.active .card:nth-child(3){animation-delay:.1s}
-    .panel.active .card:nth-child(4){animation-delay:.14s}
-    .panel.active .card:nth-child(n+5){animation-delay:.18s}
-    .card:hover{box-shadow:0 var(--shadow);transform:translateY(-2px);border-color:var(--navy-light)}
-    .card.tone-urgent{border-left:3px solid var(--gold)}
-    .card.tone-risk{border-left:3px solid var(--clay)}
-    .card.tone-warn{border-left:3px solid var(--sea)}
-    .card.tone-calm{border-left:3px solid var(--jade)}
-    .card.tone-muted{background:var(--warm);opacity:.88}
-    .card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px}
-    .card h3{margin:0;font-size:17.5px;line-height:1.45;font-weight:700;color:var(--navy)}
-    .card h4{margin:1.1em 0 .4em;font-size:15px;color:var(--sea)}
-    .fold{
-      border:1px solid var(--line);background:var(--cream);color:var(--ink-mute);width:26px;height:26px;
-      border-radius:9px;cursor:pointer;font-size:15px;line-height:1;flex:0 0 auto;font-family:inherit;transition:.16s;
-    }
-    .fold:hover{background:var(--navy);color:var(--cream);border-color:var(--navy)}
-    .card.folded .card-body{display:none}
-    .card p{margin:.55em 0;font-size:14.5px;color:var(--ink-soft)}
-    .card ul,.card ol{margin:.5em 0;padding-left:20px}
-    .card li{margin:.32em 0;font-size:14.5px;color:var(--ink-soft)}
-    .card ul.tasks{list-style:none;padding-left:0}
-    li.task{display:block;margin:.3em 0}
-    li.task label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:6px 9px;border-radius:10px;transition:background .15s}
-    li.task label:hover{background:var(--warm)}
-    li.task input{margin:4px 0 0;width:16px;height:16px;accent-color:var(--jade);cursor:pointer;flex:0 0 auto}
-    li.task.checked span{text-decoration:line-through;color:var(--ink-mute)}
-    .card blockquote{margin:.7em 0;padding:11px 16px;border-left:3px solid var(--jade);background:rgba(61,179,137,.07);border-radius:0 10px 10px 0;font-size:14px;color:var(--ink-soft)}
-    .card pre{overflow:auto;padding:13px 16px;background:var(--ink-navy);color:#FAF6F0;border-radius:12px;font-size:13px}
-    .table-wrap{overflow-x:auto;margin:.8em 0}
-    table{width:100%;border-collapse:collapse;font-size:13.5px}
-    th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
-    th{background:var(--warm);color:var(--navy);font-weight:600}
-    hr{border:0;border-top:1px solid var(--line);margin:1.1em 0}
-    footer{margin-top:34px;color:var(--ink-mute);font-size:12.5px;text-align:center;letter-spacing:.02em}
-    @media(max-width:640px){
-      .wrap{width:calc(100% - 24px);margin:18px auto 44px}
-      .top{padding:24px 22px;border-radius:20px}.top h1{font-size:25px}
-      .panel.active{grid-template-columns:1fr}
-    }
-    @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
-    @media print{
-      body{background:#fff;background-image:none}
-      .tabs,#q,.fold{display:none}
-      .panel{display:grid!important}
-      .card{break-inside:avoid;box-shadow:none;animation:none}
-      .top{box-shadow:none}
-    }
+    *{box-sizing:border-box}html{scroll-behavior:smooth}
+    body{margin:0;background:var(--cream);color:var(--ink);font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;line-height:1.65;-webkit-font-smoothing:antialiased}
+    .shell{width:min(1240px,calc(100% - 32px));margin:34px auto 70px;display:grid;grid-template-columns:132px minmax(0,1fr);gap:24px;align-items:start}
+    .rail{position:sticky;top:24px;display:grid;gap:6px;padding:10px;border:1px solid var(--line);background:var(--paper);border-radius:18px;box-shadow:var(--shadow)}
+    .rail a{display:flex;justify-content:space-between;gap:8px;padding:9px 10px;border-radius:10px;color:var(--ink-mute);font-size:13px;text-decoration:none;transition:.18s}
+    .rail a:hover,.rail a.on{background:var(--warm);color:var(--navy);font-weight:650}.rail b{font-family:var(--num);font-size:11px;color:var(--positive)}
+    main{min-width:0}.hero,.card,.metric,.todo-card,.evidence{background:var(--paper);border:1px solid var(--line)}
+    .hero{padding:34px 38px;border-radius:24px;box-shadow:var(--shadow)}
+    h1{margin:0;color:var(--navy);font-size:clamp(27px,4vw,38px);line-height:1.25;letter-spacing:-.02em}.sub{margin:8px 0 0;color:var(--ink-mute);font-size:13px}
+    .judge{margin-top:22px;padding:15px 20px;border-left:3px solid var(--gold);border-radius:0 12px 12px 0;background:linear-gradient(90deg,var(--gold-soft),transparent 78%)}
+    .judge p{margin:.2em 0;font-family:"Songti SC","STSong",Georgia,serif;font-style:italic;color:var(--ink-soft);font-size:19px}
+    .coverage{margin-top:22px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;color:var(--ink-mute);font-size:12px}.coverage-track{height:7px;border-radius:99px;background:var(--warm);overflow:hidden}.coverage-track i{display:block;height:100%;width:var(--coverage);background:linear-gradient(90deg,var(--sea),var(--jade));border-radius:inherit}
+    #q{margin-top:20px;width:min(340px,100%);padding:10px 15px;border:1px solid var(--line);border-radius:99px;background:var(--cream);color:var(--ink);font:inherit;font-size:13px;outline:none}#q:focus{border-color:var(--sea)}
+    .intro{margin-top:18px;color:var(--ink-soft);font-size:14px}.intro p{margin:.5em 0}
+    section[data-dashboard-section]{margin-top:34px;scroll-margin-top:24px}.sec-head{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:14px}.sec-head h2{margin:0;color:var(--navy);font-size:24px}.sec-head p{margin:4px 0 0;color:var(--ink-mute);font-size:13px}
+    .ring{position:relative;width:72px;height:72px;flex:0 0 auto}.ring svg{display:block;width:72px;height:72px;transform:rotate(-90deg)}.ring circle{fill:none;stroke-width:7}.ring-bg{stroke:var(--warm)}#ring-fg{stroke:var(--jade);stroke-linecap:round;stroke-dasharray:163.36;stroke-dashoffset:163.36;transition:stroke-dashoffset .4s}.ring b{position:absolute;inset:0;display:grid;place-items:center;color:var(--navy);font:750 14px var(--num)}
+    .todo-grid,.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.todo-card,.card{border-radius:18px;padding:21px 23px}.todo-card.core{border-top:3px solid var(--gold)}.todo-card.optional{border-top:3px solid var(--sea)}
+    .tier{display:flex;align-items:center;gap:9px;margin-bottom:10px;color:var(--navy);font-weight:700}.tier i{width:9px;height:9px;border-radius:50%;background:var(--sea)}.core .tier i{background:var(--gold)}
+    .today-tasks,.receipts{list-style:none;padding:0;margin:0}.today-task{margin:6px 0}.today-task label{display:flex;gap:10px;align-items:flex-start;padding:8px 9px;border-radius:10px;cursor:pointer}.today-task label:hover{background:var(--warm)}.today-task input{width:17px;height:17px;margin:3px 0 0;accent-color:var(--jade)}.today-task.done span{text-decoration:line-through;color:var(--ink-mute)}
+    .funnel-card{padding:26px}.funnel-row{display:grid;grid-template-columns:minmax(0,1fr) 108px;gap:12px;align-items:center}.funnel-row small{color:var(--ink-mute);font:12px var(--num)}.funnel-bar{width:var(--w);min-width:160px;max-width:100%;display:flex;justify-content:space-between;gap:14px;padding:10px 14px;border-radius:8px;color:var(--ink-navy);transform-origin:left;animation:grow .65s ease both}.funnel-bar strong{font-family:var(--num)}.fn1{background:var(--fn1)}.fn2{background:var(--fn2)}.fn3{background:var(--fn3)}.fn4{background:var(--fn4)}.fn5{background:var(--fn5)}.fn6{background:var(--fn6);color:var(--paper)}
+    .conversion{display:flex;align-items:center;gap:10px;margin:5px 0 5px 20px;color:var(--ink-mute);font:12px var(--num)}.conversion em{font-style:normal}.conversion.leak{color:var(--clay);font-weight:700}.conversion b{padding:2px 7px;border:1px solid currentColor;border-radius:99px;font-size:10px}.funnel-note{margin-top:18px;padding:14px 16px;border-left:3px solid var(--clay);background:var(--warm);border-radius:0 10px 10px 0}.funnel-note p{margin:.35em 0}
+    .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.metric{border-radius:16px;padding:17px}.metric-label{font-size:12px;color:var(--ink-mute)}.metric-num{margin-top:4px;color:var(--navy);font:800 28px var(--num);font-variant-numeric:tabular-nums}.delta{margin-top:7px;font:12px var(--num)}.delta.good{color:var(--positive)}.delta.bad{color:var(--clay)}.delta.flat{color:var(--ink-mute)}.spark{width:100%;height:34px;margin-top:8px;overflow:visible}.spark polyline{fill:none;stroke:var(--sea);stroke-width:2;vector-effect:non-scaling-stroke}
+    .rhythm{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:9px}.day{min-width:0;padding:14px 10px;border:1px solid var(--line);border-radius:14px;background:var(--paper);text-align:center}.day>b{font:700 12px var(--num);color:var(--navy)}.day-bar{height:70px;margin:9px auto 7px;display:flex;align-items:flex-end;justify-content:center}.day-bar i{display:block;width:20px;height:var(--h);border-radius:6px 6px 2px 2px;background:var(--sea);transform-origin:bottom;animation:barGrow .6s ease both}.day.peak .day-bar i{background:var(--jade)}.day strong{display:block;font:700 13px var(--num)}.day span,.day em,.day p{display:block;margin:4px 0 0;color:var(--ink-mute);font-size:10px;font-style:normal;overflow-wrap:anywhere}.day em{color:var(--positive)}
+    .card h3{margin:0 0 10px;color:var(--navy);font-size:17px}.card h4{margin:1em 0 .4em;color:var(--sea);font-size:14px}.card p,.card li{color:var(--ink-soft);font-size:14px}.card ul,.card ol{padding-left:20px}.card.muted{background:var(--warm)}.receipts li{display:flex;gap:10px;align-items:flex-start;margin:8px 0}.receipts i{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--warm);color:var(--ink-mute);font-style:normal;font-size:11px;flex:0 0 auto}.receipts .done i{background:var(--jade);color:var(--ink-navy)}.receipts .open span{color:var(--ink-mute)}
+    .table-wrap{overflow-x:auto;margin:.7em 0}table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--warm);color:var(--navy)}pre{overflow:auto;padding:13px;background:var(--ink-navy);color:var(--cream);border-radius:10px}blockquote{margin:.7em 0;padding:10px 14px;border-left:3px solid var(--sea);background:var(--warm)}
+    .evidence{border-radius:18px;overflow:hidden}.evidence summary{padding:17px 20px;cursor:pointer;color:var(--navy);font-weight:700}.evidence-body{padding:0 20px 20px}.warnbox{margin-top:14px;padding:13px 15px;border-left:3px solid var(--clay);background:var(--warm);color:var(--ink-soft);font-size:12px}
+    footer{margin-top:38px;text-align:center;color:var(--ink-mute);font-size:12px}
+    @keyframes grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}@keyframes barGrow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+    @media(max-width:860px){.shell{grid-template-columns:1fr}.rail{position:static;display:flex;overflow-x:auto}.rail a{flex:0 0 auto}.rhythm{grid-template-columns:repeat(4,minmax(0,1fr))}}
+    @media(max-width:620px){.shell{width:calc(100% - 20px);margin-top:12px}.hero{padding:24px 21px}.todo-grid,.cards{grid-template-columns:1fr}.rhythm{grid-template-columns:repeat(2,minmax(0,1fr))}.funnel-row{grid-template-columns:1fr}.funnel-row small{padding-left:10px}.funnel-bar{min-width:120px}}
+    @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+    @media print{body{background:#fff}.shell{display:block;width:100%;margin:0}.rail,#q{display:none}.hero,.card,.metric,.todo-card,.evidence{box-shadow:none;break-inside:avoid}details .evidence-body{display:block!important}section{break-inside:avoid}}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="top">
-      <h1>${escapeHtml(document.title)}</h1>
-      <p class="sub">AI霖子 · 交互看板 · 勾选进度会保存在本机浏览器</p>
-      ${judgeHtml}
-      ${metricsHtml}
-      <div class="meter">
-        <div class="track"><div id="bar"></div></div>
-        <span id="num"></span>
-        <input id="q" type="search" placeholder="搜索卡片内容…" autocomplete="off">
-      </div>
-      ${introHtml}
-    </div>
-    <nav class="tabs">${tabs}</nav>
-    ${panels}
-    <footer>由 AI霖子生成 · 请在使用前核对关键信息</footer>
+  <div class="shell">
+    <nav class="rail" aria-label="看板导航">${navigation}</nav>
+    <main>
+      <header class="hero">
+        <h1>${escapeHtml(document.title)}</h1>
+        <p class="sub">AI霖子 · 经营驾驶舱 · 只有“今天做什么”可以勾选，进度保存在本机</p>
+        ${judges.length > 0 ? `<div class="judge">${judges.map((block) => `<p>${escapeHtml(block.text)}</p>`).join('')}</div>` : ''}
+        ${coverage ? `<div class="coverage"><span>本轮覆盖率</span><div class="coverage-track"><i style="--coverage:${coveragePercent}%"></i></div><b>${read}/${total} · 跳过 ${skipped}</b></div>` : ''}
+        <input id="q" type="search" placeholder="搜索看板内容…" autocomplete="off">
+        ${introRest.length > 0 ? `<div class="intro">${introRest.map((block) => dashboardBlockHtml(block)).join('')}</div>` : ''}
+      </header>
+      ${bodySections}
+      <footer>由 AI霖子生成 · 事实以文件原文为准，判断与假设请继续核对</footer>
+    </main>
   </div>
   <script>${script}</script>
 </body>
