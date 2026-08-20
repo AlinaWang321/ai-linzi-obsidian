@@ -13,6 +13,8 @@ import {
   normalizeFolderKey,
   applyRecentListFilter,
   isRecentListRequest,
+  VAULT_NOTE_WRITE_MAX_FILES,
+  vaultPathsOverlap,
 } from './vault-agent-core'
 import type { ActiveLocalSkillContext } from './local-skills'
 import { extendContiguousRead, localSkillLinkedPathCandidates } from './local-skill-core'
@@ -50,7 +52,7 @@ export interface VaultActionRecord {
   planTitle: string
   moves: { from: string; to: string }[]
   createdFolders: string[]
-  /** 兼容旧 data.json；v0.7.22 起只会记录一次确认的一篇 Markdown 笔记。 */
+  /** 兼容旧 data.json；v0.7.67 起可记录一次确认内最多 12 篇 Markdown。 */
   trashedNotes?: string[]
   /** 只保存路径元数据；正文由 Obsidian 文件恢复负责，不进入 data.json。 */
   createdNotes?: string[]
@@ -230,22 +232,24 @@ export class LocalVaultAgent {
       this.validateArtifactOperation(artifactOperation)
       return
     }
-    const writeOperation = plan.operations.length === 1 &&
-      (plan.operations[0].type === 'create_note' ||
-        plan.operations[0].type === 'append_note' ||
-        plan.operations[0].type === 'replace_note' ||
-        plan.operations[0].type === 'update_note')
-      ? plan.operations[0]
-      : undefined
-    if (!writeOperation) return
-    const preview = await this.previewNoteWrite(writeOperation)
+    const writeOperations = plan.operations.filter(
+      (operation): operation is Extract<VaultOrganizePlan['operations'][number], {
+        type: 'create_note' | 'append_note' | 'replace_note' | 'update_note'
+      }> =>
+        operation.type === 'create_note' ||
+        operation.type === 'append_note' ||
+        operation.type === 'replace_note' ||
+        operation.type === 'update_note',
+    )
+    if (writeOperations.length === 0) return
+    const previews = await Promise.all(writeOperations.map((operation) => this.previewNoteWrite(operation)))
     if (!skillContext?.templatePath) return
     const templateFile = this.app.vault.getAbstractFileByPath(skillContext.templatePath)
     if (!(templateFile instanceof TFile)) {
       throw new Error(`Skill 模板已经移动或删除：${skillContext.templatePath}`)
     }
     const template = await this.app.vault.cachedRead(templateFile)
-    validateMarkdownAgainstTemplate(preview, template)
+    for (const preview of previews) validateMarkdownAgainstTemplate(preview, template)
   }
 
   private artifactPath(operation: CreateArtifactOperation): string {
@@ -495,7 +499,7 @@ export class LocalVaultAgent {
       throw new Error('本地动作必须经过对话确认流程，不能作为只读工具直接执行')
     }
 
-    throw new Error(`不支持的 Vault 工具：${call.name satisfies never}`)
+    throw new Error('不支持的 Vault 工具')
   }
 
   async applyPlan(
@@ -528,7 +532,6 @@ export class LocalVaultAgent {
       (operation): operation is Extract<(typeof plan.operations)[number], { type: 'create_artifact' }> =>
         operation.type === 'create_artifact',
     )
-    let lockedWriteSnapshot: VaultWriteSnapshot | undefined
     const sources = new Set<string>()
     const destinations = new Set<string>()
 
@@ -574,9 +577,8 @@ export class LocalVaultAgent {
         for (const target of targets) {
           const current = this.app.vault.getAbstractFileByPath(target.path)
           if (!current) throw new Error(`执行前已被移动或删除：${target.path}`)
-          // Obsidian 的 system=true 会优先使用系统废纸篓/回收站；若系统不允许，
-          // Obsidian 会退回自己的 .trash。这里绝不调用 vault.delete() 永久删除。
-          await this.app.vault.trash(current, true)
+          // FileManager 会遵从用户选择的系统废纸篓 / Obsidian 回收站设置。
+          await this.app.fileManager.trashFile(current)
           trashed.push(target.path)
         }
       } catch (error) {
@@ -610,25 +612,28 @@ export class LocalVaultAgent {
     }
 
     if (noteWriteOps.length > 0) {
-      if (noteWriteOps.length !== 1 || plan.operations.length !== 1) {
-        throw new Error('为避免跨文件误写，每次确认只能写入一篇 Markdown 笔记，不能混入其他操作')
+      if (noteWriteOps.length > VAULT_NOTE_WRITE_MAX_FILES) {
+        throw new Error(`一次变更集最多写入 ${VAULT_NOTE_WRITE_MAX_FILES} 篇 Markdown，请分批处理`)
       }
-      const operation = noteWriteOps[0]
-      if (fileExtension(operation.path) !== 'md') {
-        throw new Error('跨文件写入只允许 Markdown 笔记，不能修改附件或其他文件类型')
-      }
-      const existing = this.app.vault.getAbstractFileByPath(operation.path)
-      if (operation.type === 'create_note') {
-        if (existing) throw new Error(`目标笔记已存在，绝不覆盖：${operation.path}`)
-      } else {
-        if (!(existing instanceof TFile)) throw new Error(`没有找到要写入的笔记：${operation.path}`)
-        lockedWriteSnapshot = writeSnapshots.find((item) => item.path === operation.path)
-        if (!lockedWriteSnapshot) throw new Error('缺少目标笔记的锁定版本，请让 AI 重新读取并生成方案')
-        if (
-          existing.stat.mtime !== lockedWriteSnapshot.mtime ||
-          existing.stat.size !== lockedWriteSnapshot.size
-        ) {
-          throw new Error(`目标笔记在确认前已经变化，已停止写入：${operation.path}`)
+      const seenWritePaths = new Set<string>()
+      for (const operation of noteWriteOps) {
+        if (fileExtension(operation.path) !== 'md') {
+          throw new Error('跨文件写入只允许 Markdown 笔记，不能修改附件或其他文件类型')
+        }
+        if (seenWritePaths.has(operation.path)) {
+          throw new Error(`同一变更集不能重复写入同一笔记：${operation.path}`)
+        }
+        seenWritePaths.add(operation.path)
+        const existing = this.app.vault.getAbstractFileByPath(operation.path)
+        if (operation.type === 'create_note') {
+          if (existing) throw new Error(`目标笔记已存在，绝不覆盖：${operation.path}`)
+        } else {
+          if (!(existing instanceof TFile)) throw new Error(`没有找到要写入的笔记：${operation.path}`)
+          const locked = writeSnapshots.find((item) => item.path === operation.path)
+          if (!locked) throw new Error(`缺少目标笔记的锁定版本：${operation.path}`)
+          if (existing.stat.mtime !== locked.mtime || existing.stat.size !== locked.size) {
+            throw new Error(`目标笔记在确认前已经变化，已停止写入：${operation.path}`)
+          }
         }
       }
     }
@@ -649,6 +654,13 @@ export class LocalVaultAgent {
       }
       sources.add(operation.from)
       destinations.add(operation.to)
+      if (
+        noteWriteOps.some(
+          (write) => vaultPathsOverlap(write.path, operation.from) || vaultPathsOverlap(write.path, operation.to),
+        )
+      ) {
+        throw new Error(`同一变更集不能同时写入笔记并移动它所在的路径：${operation.from} → ${operation.to}`)
+      }
     }
 
     const moveSources = [...sources]
@@ -682,6 +694,16 @@ export class LocalVaultAgent {
     const createdNotes: string[] = []
     const updatedNotes: string[] = []
     const createdArtifacts: string[] = []
+    const originalWriteContent = new Map<string, string>()
+    const preparedWriteContent = new Map<string, string>()
+    for (const operation of noteWriteOps) {
+      if (operation.type !== 'create_note') {
+        const file = this.app.vault.getAbstractFileByPath(operation.path)
+        if (!(file instanceof TFile)) throw new Error(`没有找到要写入的笔记：${operation.path}`)
+        originalWriteContent.set(operation.path, await this.app.vault.cachedRead(file))
+      }
+      preparedWriteContent.set(operation.path, await this.previewNoteWrite(operation))
+    }
     try {
       for (const operation of createOps) await ensureFolder(operation.path)
       if (artifactOps.length === 1) {
@@ -706,64 +728,22 @@ export class LocalVaultAgent {
         }
         createdArtifacts.push(path)
       }
-      if (noteWriteOps.length === 1) {
-        const operation = noteWriteOps[0]
+      for (const operation of noteWriteOps) {
         const parent = operation.path.split('/').slice(0, -1).join('/')
         if (parent) await ensureFolder(parent)
+        const next = preparedWriteContent.get(operation.path)
+        if (next === undefined) throw new Error(`缺少待写入内容：${operation.path}`)
         if (operation.type === 'create_note') {
-          await this.app.vault.create(normalizePath(operation.path), `${operation.content.trim()}\n`)
+          await this.app.vault.create(normalizePath(operation.path), next)
           createdNotes.push(operation.path)
-        } else if (operation.type === 'append_note') {
-          const file = this.app.vault.getAbstractFileByPath(operation.path)
-          if (!(file instanceof TFile)) throw new Error(`执行前目标笔记已移动或删除：${operation.path}`)
-          if (
-            !lockedWriteSnapshot ||
-            file.stat.mtime !== lockedWriteSnapshot.mtime ||
-            file.stat.size !== lockedWriteSnapshot.size
-          ) {
-            throw new Error(`目标笔记在确认前已经变化，已停止写入：${operation.path}`)
-          }
-          await this.app.vault.process(file, (content) => {
-            const next = appendNoteContent(content, operation.content)
-            this.validateYamlFrontmatter(next)
-            return next
-          })
-          updatedNotes.push(operation.path)
-        } else if (operation.type === 'replace_note') {
-          const file = this.app.vault.getAbstractFileByPath(operation.path)
-          if (!(file instanceof TFile)) throw new Error(`执行前目标笔记已移动或删除：${operation.path}`)
-          if (
-            !lockedWriteSnapshot ||
-            file.stat.mtime !== lockedWriteSnapshot.mtime ||
-            file.stat.size !== lockedWriteSnapshot.size
-          ) {
-            throw new Error(`目标笔记在确认前已经变化，已停止写入：${operation.path}`)
-          }
-          await this.app.vault.process(file, (content) => {
-            const next = replaceNoteBody(content, operation.content)
-            this.validateYamlFrontmatter(next)
-            return next
-          })
-          updatedNotes.push(operation.path)
         } else {
           const file = this.app.vault.getAbstractFileByPath(operation.path)
           if (!(file instanceof TFile)) throw new Error(`执行前目标笔记已移动或删除：${operation.path}`)
-          if (
-            !lockedWriteSnapshot ||
-            file.stat.mtime !== lockedWriteSnapshot.mtime ||
-            file.stat.size !== lockedWriteSnapshot.size
-          ) {
+          const locked = writeSnapshots.find((item) => item.path === operation.path)
+          if (!locked || file.stat.mtime !== locked.mtime || file.stat.size !== locked.size) {
             throw new Error(`目标笔记在确认前已经变化，已停止写入：${operation.path}`)
           }
-          await this.app.vault.process(file, (content) => {
-            const next = applyStructuredNoteUpdate(
-              content,
-              operation.replacements ?? [],
-              operation.frontmatter,
-            ).content
-            this.validateYamlFrontmatter(next)
-            return next
-          })
+          await this.app.vault.process(file, () => next)
           updatedNotes.push(operation.path)
         }
       }
@@ -776,6 +756,7 @@ export class LocalVaultAgent {
         completedMoves.push({ from: operation.from, to: operation.to })
       }
     } catch (error) {
+      const rollbackProblems: string[] = []
       for (const move of [...completedMoves].reverse()) {
         try {
           const current = this.app.vault.getAbstractFileByPath(move.to)
@@ -783,10 +764,57 @@ export class LocalVaultAgent {
             await this.app.fileManager.renameFile(current, normalizePath(move.from))
           }
         } catch {
-          // Best-effort rollback; caller still receives the original error.
+          rollbackProblems.push(`${move.to} → ${move.from}`)
         }
       }
-      throw error
+      for (const path of [...updatedNotes].reverse()) {
+        try {
+          const file = this.app.vault.getAbstractFileByPath(path)
+          const original = originalWriteContent.get(path)
+          const expected = preparedWriteContent.get(path)
+          if (!(file instanceof TFile) || original === undefined || expected === undefined) {
+            throw new Error('missing rollback source')
+          }
+          // 如果用户在本轮执行期间又编辑了笔记，宁可报告需要人工检查，
+          // 也不能用回滚内容覆盖用户的新修改。
+          if ((await this.app.vault.cachedRead(file)) !== expected) {
+            throw new Error('rollback target changed by user')
+          }
+          await this.app.vault.process(file, () => original)
+        } catch {
+          rollbackProblems.push(path)
+        }
+      }
+      for (const path of [...createdNotes].reverse()) {
+        try {
+          const file = this.app.vault.getAbstractFileByPath(path)
+          const expected = preparedWriteContent.get(path)
+          if (file instanceof TFile) {
+            if (expected === undefined || (await this.app.vault.cachedRead(file)) !== expected) {
+              throw new Error('rollback target changed by user')
+            }
+            await this.app.fileManager.trashFile(file)
+          }
+        } catch {
+          rollbackProblems.push(path)
+        }
+      }
+      for (const path of [...createdFolders].reverse()) {
+        try {
+          const folder = this.app.vault.getAbstractFileByPath(path)
+          if (folder instanceof TFolder && folder.children.length === 0) {
+            await this.app.fileManager.trashFile(folder)
+          }
+        } catch {
+          rollbackProblems.push(path)
+        }
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(
+        rollbackProblems.length > 0
+          ? `${message}；自动回滚仍有 ${rollbackProblems.length} 项失败，请检查：${rollbackProblems.slice(0, 3).join('、')}`
+          : `${message}；本轮变更已自动回滚`,
+      )
     }
 
     this.search.clear()

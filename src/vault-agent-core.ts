@@ -10,8 +10,6 @@ import {
   ARTIFACT_MAX_CONTENT_CHARS,
   ARTIFACT_MAX_TITLE_CHARS,
   type ArtifactFormat,
-  type ArtifactLayout,
-  type ArtifactTheme,
   type CreateArtifactOperation,
 } from './artifact-renderer-core'
 
@@ -27,6 +25,7 @@ export const VAULT_AGENT_MAX_TOTAL_RESULT_CHARS = 360_000
 export const VAULT_AGENT_MAX_PLAN_OPERATIONS = 60
 export const VAULT_NOTE_WRITE_MAX_CHARS = 30_000
 export const VAULT_NOTE_UPDATE_MAX_OPERATIONS = 30
+export const VAULT_NOTE_WRITE_MAX_FILES = 12
 
 export type VaultAgentToolName =
   | 'vault_search'
@@ -312,6 +311,7 @@ export function normalizeVaultRelativePath(value: unknown): string | null {
   const trimmed = value.trim()
   if (/^[\\/]/.test(trimmed) || /^[A-Za-z]:[\\/]/.test(trimmed)) return null
   const raw = trimmed.replace(/\\/g, '/').replace(/\/+$/g, '')
+  // eslint-disable-next-line no-control-regex -- Vault 相对路径必须拒绝控制字符。
   if (!raw || raw.length > 240 || /[\u0000-\u001f]/.test(raw)) return null
   const parts = raw.split('/')
   if (
@@ -391,6 +391,15 @@ export function shouldBlockPlanPath(
 export type VaultPathKind = 'file' | 'folder' | null
 
 /**
+ * 两个 Vault 相对路径是同一项，或其中一个是另一个的祖先目录。
+ * 批量变更集不允许一边写文件、一边移动它所在的父目录，否则成功记录和
+ * 回滚路径都会失真。
+ */
+export function vaultPathsOverlap(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`)
+}
+
+/**
  * 整理方案（新建文件夹/移动/删除）的本机预检：在渲染确认卡之前把注定执行
  * 失败的方案拦下来，并一次列出全部问题，反馈给模型自我纠正。
  *
@@ -451,11 +460,25 @@ export function collectOrganizePlanProblems(
   if (trashOps.length > 0 && trashOps.length !== opCount) {
     push('移入回收站的方案不能混入移动、新建等其他操作，请拆成两次确认')
   }
-  if (noteWriteOps.length > 0 && opCount !== 1) {
-    push('为避免跨文件误写，每次确认只能写入一篇 Markdown 笔记，不能混入其他操作')
+  if (noteWriteOps.length > VAULT_NOTE_WRITE_MAX_FILES) {
+    push(`一次变更集最多写入 ${VAULT_NOTE_WRITE_MAX_FILES} 篇 Markdown，请分批处理`)
   }
   if (artifactOps.length > 0 && opCount !== 1) {
     push('为避免误写，每次确认只能生成一个成品文件，不能混入其他操作')
+  }
+  const writeTargets = new Set<string>()
+  for (const operation of noteWriteOps) {
+    if (writeTargets.has(operation.path)) push(`同一变更集不能重复写入同一笔记：${operation.path}`)
+    writeTargets.add(operation.path)
+  }
+  for (const operation of moveOps) {
+    if (
+      noteWriteOps.some(
+        (write) => vaultPathsOverlap(write.path, operation.from) || vaultPathsOverlap(write.path, operation.to),
+      )
+    ) {
+      push(`同一变更集不能同时写入笔记并移动它所在的路径：${operation.from} → ${operation.to}`)
+    }
   }
   const trashTargets = new Set<string>()
   for (const operation of trashOps) {
@@ -674,13 +697,13 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
     const content = boundedContent(record.content, ARTIFACT_MAX_CONTENT_CHARS)
     const themeValue = shortText(record.theme, 12).toLocaleLowerCase()
     const theme = (themeValue === 'brand' || themeValue === 'clean')
-      ? themeValue as ArtifactTheme
+      ? themeValue
       : undefined
     // 0.7.54：HTML 版式（document 长文 / dashboard 交互看板）；不合法值一律忽略，
     // 交由 resolveArtifactLayout 按内容特征自动判断。
     const layoutValue = shortText(record.layout, 12).toLocaleLowerCase()
     const layout = (layoutValue === 'document' || layoutValue === 'dashboard')
-      ? layoutValue as ArtifactLayout
+      ? layoutValue
       : undefined
     if (
       !path ||

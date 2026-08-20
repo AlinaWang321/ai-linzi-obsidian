@@ -162,24 +162,26 @@ class XhsStylePickerModal extends Modal {
     })
     const actions = this.contentEl.createDiv({ cls: 'ai-linzi-wtheme-actions' })
     actions.createEl('button', { text: '取消' }).addEventListener('click', () => this.close())
-    actions.createEl('button', { text: '就用这个风格', cls: 'mod-cta' }).addEventListener('click', async () => {
-      if (this.selectedId === 'x-dark') {
-        const nickname = this.nicknameInput.value.trim()
-        const handle = this.handleInput.value.trim().replace(/^@+/, '')
-        if (!nickname || !handle) {
-          new Notice('X 推文风需要先填昵称和 @账号(只填一次,以后记住)')
-          return
+    actions.createEl('button', { text: '就用这个风格', cls: 'mod-cta' }).addEventListener('click', () => {
+      void (async () => {
+        if (this.selectedId === 'x-dark') {
+          const nickname = this.nicknameInput.value.trim()
+          const handle = this.handleInput.value.trim().replace(/^@+/, '')
+          if (!nickname || !handle) {
+            new Notice('X 推文风需要先填昵称和 @账号(只填一次,以后记住)')
+            return
+          }
+          this.plugin.settings.xhsCardNickname = nickname
+          this.plugin.settings.xhsCardHandle = handle
         }
-        this.plugin.settings.xhsCardNickname = nickname
-        this.plugin.settings.xhsCardHandle = handle
-      }
-      this.submitted = true
-      if (this.plugin.settings.xhsCardStyleId !== this.selectedId) {
-        this.plugin.settings.xhsCardStyleId = this.selectedId
-      }
-      await this.plugin.saveSettings()
-      this.close()
-      this.resolve({ styleId: this.selectedId })
+        this.submitted = true
+        if (this.plugin.settings.xhsCardStyleId !== this.selectedId) {
+          this.plugin.settings.xhsCardStyleId = this.selectedId
+        }
+        await this.plugin.saveSettings()
+        this.close()
+        this.resolve({ styleId: this.selectedId })
+      })()
     })
   }
 

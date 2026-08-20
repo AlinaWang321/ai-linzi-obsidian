@@ -121,9 +121,11 @@ function sourceFrontmatterText(
   file: TFile,
   keys: readonly string[],
 ): string {
-  const frontmatter = plugin.app.metadataCache.getFileCache(file)?.frontmatter
+  const frontmatter: unknown = plugin.app.metadataCache.getFileCache(file)?.frontmatter
+  if (!frontmatter || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) return ''
+  const values = frontmatter as Record<string, unknown>
   for (const key of keys) {
-    const value = frontmatter?.[key]
+    const value = values[key]
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
   return ''

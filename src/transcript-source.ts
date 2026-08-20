@@ -44,7 +44,7 @@ class TranscriptFileModal extends FuzzySuggestModal<TFile> {
   }
 
   onOpen(): void {
-    super.onOpen()
+    void super.onOpen()
     this.titleEl.setText(this.modalTitle)
   }
 

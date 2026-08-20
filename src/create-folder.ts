@@ -118,7 +118,7 @@ function parseVaultStructurePlan(raw: string): VaultStructurePlan | null {
     const source = record.bindings as Record<string, unknown>
     for (const key of Object.keys(BINDING_TO_SETTING) as VaultStructureBindingKey[]) {
       if (typeof source[key] !== 'string') continue
-      const path = sanitizeFolderPath(source[key] as string)
+      const path = sanitizeFolderPath(source[key])
       // 绑定路径必须同时出现在本次确认清单中，避免模型把未展示的任意路径写进设置。
       if (path && seen.has(path)) bindings[key] = path
     }

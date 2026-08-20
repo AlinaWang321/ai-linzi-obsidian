@@ -425,7 +425,7 @@ export function drawBodyPage(
       const image = sourceImages.get(block)
       const next = blocks[index + 1]
       if (image && shouldUseXhsSideBySideLayout(block, next)) {
-        const text = next as XhsCardBlock
+        const text = next
         const textX = 548
         const textWidth = 460
         const imageHeight = drawContainedImage(

@@ -189,7 +189,14 @@ export async function readLocalCustomerProfile(app: App, path: string): Promise<
 
 function valueText(value: unknown): string {
   if (value === null || value === undefined || value === '') return '（空）'
-  return String(value)
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return '（复杂值）'
+  }
 }
 
 class CustomerCrmSyncModal extends Modal {

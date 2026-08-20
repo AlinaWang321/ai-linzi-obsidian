@@ -155,6 +155,13 @@ const updatePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
 assert.equal(updatePlan.invalid, false)
 assert.equal(updatePlan.plan?.operations[0].type, 'update_note')
 
+const multiWritePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+{"title":"同步更新","summary":"逐篇预览后一次确认","operations":[{"type":"append_note","path":"02_Wiki/客户档案/客户甲.md","content":"## 新记录\\n\\n已确认"},{"type":"create_note","path":"04_Output/行动清单/客户甲.md","content":"# 行动清单"}],"notes":["任一步失败自动回滚"]}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+assert.equal(multiWritePlan.invalid, false)
+assert.equal(multiWritePlan.plan?.operations.length, 2)
+assert.equal(core.VAULT_NOTE_WRITE_MAX_FILES, 12)
+
 const frontmatterUpdatePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
 {"title":"更新属性","summary":"精确替换 YAML","operations":[{"type":"update_note","path":"02_Wiki/客户档案/客户甲.md","frontmatter":{"old":"---\\n姓名: 客户甲\\n---","new":"---\\n姓名: 客户甲\\n状态: 已更新\\n---"}}],"notes":[]}
 <<<VAULT_ORGANIZE_PLAN_END>>>`)
@@ -398,6 +405,21 @@ assert.equal(actionProposal.calls[0].name, 'propose_skill_action')
   const selfMoveProblems = core.collectOrganizePlanProblems(selfMove, lookup, '05_System/Skills')
   assert.ok(selfMoveProblems.some((item) => item.includes('不能把文件夹移动到自己内部')))
   assert.ok(selfMoveProblems.some((item) => item.includes('不能同时移动父文件夹和其中的子文件')))
+
+  // 写入父文件夹内的笔记时，不能在同一个事务里移动该父文件夹。
+  const writeInsideMovedFolder = {
+    title: '',
+    summary: '',
+    notes: [],
+    operations: [
+      { type: 'create_note', path: '01_Raw/卢欣怡/新笔记.md', content: '# 新笔记' },
+      { type: 'move', from: '01_Raw/卢欣怡', to: '02_Wiki/卢欣怡' },
+    ],
+  }
+  assert.ok(
+    core.collectOrganizePlanProblems(writeInsideMovedFolder, lookup, '05_System/Skills')
+      .some((item) => item.includes('写入笔记并移动它所在的路径')),
+  )
 }
 
 // 确认执行失败 → 合成工具结果交回模型（复用 read_note 通道）

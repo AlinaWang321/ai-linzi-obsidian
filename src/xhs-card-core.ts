@@ -299,7 +299,7 @@ export function parseXhsCardDocument(
 
 function visualLength(text: string): number {
   let length = 0
-  for (const char of text) length += /[\u0000-\u00ff]/.test(char) ? 0.56 : 1
+  for (const char of text) length += char.charCodeAt(0) <= 0xff ? 0.56 : 1
   return length
 }
 
@@ -347,7 +347,7 @@ function visualCutIndex(text: string, maxVisualChars: number): number {
   let width = 0
   let cursor = 0
   while (cursor < text.length && width < maxVisualChars) {
-    width += /[\u0000-\u00ff]/.test(text[cursor]) ? 0.56 : 1
+    width += text.charCodeAt(cursor) <= 0xff ? 0.56 : 1
     cursor++
   }
   const minimum = Math.max(1, Math.floor(cursor * 0.58))
@@ -404,7 +404,7 @@ function splitLongText(text: string, maxVisualChars: number): string[] {
     let cursor = 0
     let width = 0
     while (cursor < rest.length && width < maxVisualChars) {
-      width += /[\u0000-\u00ff]/.test(rest[cursor]) ? 0.56 : 1
+      width += rest.charCodeAt(cursor) <= 0xff ? 0.56 : 1
       cursor++
     }
     const start = Math.max(1, Math.floor(cursor * 0.55))
@@ -684,10 +684,10 @@ export function paginateXhsCardBlocks(blocks: XhsCardBlock[], maxUnits = 21): Xh
       const fullWidthNeeded = blockUnits(block)
       if (current.length > 0 && units + fullWidthNeeded > maxUnits) {
         if (canUseXhsSideBySideLayout(block, next)) {
-          const compactNeeded = sideBySideUnits(block, next as XhsCardBlock)
+          const compactNeeded = sideBySideUnits(block, next)
           if (units + compactNeeded <= maxUnits) {
             block.imageLayout = 'side'
-            current.push(block, next as XhsCardBlock)
+            current.push(block, next)
             units += compactNeeded
             index++
             continue

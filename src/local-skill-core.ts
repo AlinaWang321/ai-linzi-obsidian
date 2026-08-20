@@ -109,6 +109,7 @@ export function normalizeLocalSkillRoot(value: string | undefined): string {
         segment === '.' ||
         segment === '..' ||
         segment.startsWith('.') ||
+        // eslint-disable-next-line no-control-regex -- 路径安全校验必须拒绝控制字符。
         /[:*?"<>|#^[\]\u0000-\u001f\u007f]/.test(segment),
     )
   ) {

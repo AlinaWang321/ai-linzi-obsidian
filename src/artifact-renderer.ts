@@ -120,8 +120,7 @@ function dashboardBlockHtml(block: ArtifactBlock): string {
   if (block.type === 'list') {
     const tasks = block.items.map((item) => taskItem(item))
     if (tasks.every((task) => task !== null) && tasks.length > 0) {
-      const rows = tasks.map((task) => {
-        const item = task as { done: boolean; text: string }
+      const rows = tasks.map((item) => {
         return `<li class="task"><label><input type="checkbox" class="tick"${item.done ? ' checked' : ''}><span>${escapeHtml(item.text)}</span></label></li>`
       }).join('')
       return `<ul class="tasks">${rows}</ul>`
@@ -792,7 +791,7 @@ async function artifactPptx(document: ArtifactDocument, theme: 'brand' | 'clean'
     files[`ppt/slides/_rels/slide${index + 1}.xml.rels`] = strToU8(PPTX_SLIDE_RELS)
   })
   const archive = zipSync(files, { level: 6 })
-  return archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength) as ArrayBuffer
+  return Uint8Array.from(archive).buffer
 }
 
 const PPTX_XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'

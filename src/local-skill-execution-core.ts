@@ -46,6 +46,7 @@ function portablePath(value: unknown, allowedRoots: string[]): string | null {
         part === '.' ||
         part === '..' ||
         part.startsWith('.') ||
+        // eslint-disable-next-line no-control-regex -- 本机动作参数路径必须拒绝控制字符。
         /[\u0000-\u001f:*?"<>|]/.test(part) ||
         /[. ]$/.test(part) ||
         WINDOWS_RESERVED_RE.test(part),
@@ -59,6 +60,7 @@ function cleanArgs(value: unknown): string[] | null {
   const args: string[] = []
   let totalChars = 0
   for (const item of value) {
+    // eslint-disable-next-line no-control-regex -- 进程参数不能包含 NUL 或换行。
     if (typeof item !== 'string' || item.length > 1_000 || /[\u0000\r\n]/.test(item)) return null
     totalChars += item.length
     if (totalChars > LOCAL_SKILL_ACTION_MAX_TOTAL_ARG_CHARS) return null

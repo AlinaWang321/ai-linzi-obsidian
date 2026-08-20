@@ -80,7 +80,10 @@ const CLIP_LIMITS: Record<string, number> = {
 }
 
 function esc(value: unknown): string {
-  return String(value ?? '')
+  const text = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? String(value)
+    : ''
+  return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -89,7 +92,9 @@ function esc(value: unknown): string {
 
 /** 仅放行 <b>…</b> 强调；其余一律转义，防止模型夹带任意 HTML。 */
 function inline(value: unknown, limit: number): string {
-  const raw = String(value ?? '').trim()
+  const raw = (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? String(value)
+    : '').trim()
   const clipped = clipVisible(raw, limit)
   return esc(clipped).replace(/&lt;b&gt;/g, '<b>').replace(/&lt;\/b&gt;/g, '</b>')
 }

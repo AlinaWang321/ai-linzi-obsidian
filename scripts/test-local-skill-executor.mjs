@@ -87,8 +87,8 @@ fakeVault.refreshFile = async (path) => {
   }
 }
 fakeVault.files = new Map()
-fakeVault.trash = async (file, system) => {
-  trashCalls.push({ path: file.path, system })
+fakeVault.trash = async (file) => {
+  trashCalls.push({ path: file.path })
   await rm(join(fixture, file.path))
   fakeVault.files.delete(file.path)
 }
@@ -101,7 +101,10 @@ try {
     `import { writeFile } from 'node:fs/promises'\nawait writeFile(process.argv[2], 'safe output', 'utf8')\n`,
     'utf8',
   )
-  const executor = new executorModule.LocalSkillExecutor({ vault: fakeVault }, () => 'AI霖子输出')
+  const executor = new executorModule.LocalSkillExecutor({
+    vault: fakeVault,
+    fileManager: { trashFile: (file) => fakeVault.trash(file) },
+  }, () => 'AI霖子输出')
   const context = {
     root: 'system/skills',
     directory: skillDirectory,
@@ -132,7 +135,7 @@ try {
 
   await fakeVault.refreshFile(outputPath)
   await executor.undoCreatedOutputs(executed.record)
-  assert.deepEqual(trashCalls, [{ path: outputPath, system: true }])
+  assert.deepEqual(trashCalls, [{ path: outputPath }])
   await assert.rejects(readFile(join(fixture, outputPath)), { code: 'ENOENT' })
 
   await writeFile(join(fixture, outputPath), 'existing', 'utf8')

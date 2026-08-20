@@ -53,7 +53,7 @@ function parseFrontmatter(text: string): Record<string, unknown> {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text.replace(/^\uFEFF/, ''))
   if (!match) return {}
   try {
-    const parsed = parseYaml(match[1])
+    const parsed: unknown = parseYaml(match[1])
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : {}

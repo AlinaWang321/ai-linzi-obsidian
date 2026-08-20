@@ -173,7 +173,7 @@ export class LocalSkillExecutor {
     for (const output of record.createdOutputs) {
       const file = this.app.vault.getAbstractFileByPath(output.path)
       if (!(file instanceof TFile)) throw new Error(`生成文件已经不存在：${output.path}`)
-      await this.app.vault.trash(file, true)
+      await this.app.fileManager.trashFile(file)
     }
     record.undoneAt = Date.now()
   }

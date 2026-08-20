@@ -66,6 +66,8 @@ const module = await import(
 )
 
 const files = new Map()
+let failCreatePath = ''
+let onFailCreate = null
 const search = { clearCalls: 0, clear() { this.clearCalls += 1 } }
 const tick = (file, content) => {
   file.content = content
@@ -76,6 +78,10 @@ const app = {
     getAbstractFileByPath(path) { return files.get(path) ?? null },
     async createFolder(path) { files.set(path, new module.TFolder(path)) },
     async create(path, content) {
+      if (path === failCreatePath) {
+        onFailCreate?.()
+        throw new Error('simulated create failure')
+      }
       if (files.has(path)) throw new Error('exists')
       const file = new module.TFile(path, content)
       files.set(path, file)
@@ -94,9 +100,11 @@ const app = {
       tick(file, next)
     },
     async cachedRead(file) { return file.content },
+    async delete(item) { files.delete(item.path) },
   },
   fileManager: {
     async renameFile() { throw new Error('本测试不应移动文件') },
+    async trashFile(item) { files.delete(item.path) },
   },
 }
 const agent = new module.LocalVaultAgent(app, search, () => '05_System/Skills', () => 'AI霖子输出')
@@ -207,18 +215,79 @@ assert.ok(files.get('02_Wiki/新客户') instanceof module.TFolder)
 assert.equal(files.get('02_Wiki/新客户/客户乙.md').content, '# 客户乙\n')
 await assert.rejects(agent.applyPlan(createPlan), /目标笔记已存在/)
 
-await assert.rejects(
-  agent.applyPlan({
-    title: '混合写入',
-    summary: '',
-    operations: [
-      { type: 'create_folder', path: '混合目录' },
-      { type: 'create_note', path: '混合目录/内容.md', content: '内容' },
-    ],
-    notes: [],
-  }),
-  /每次确认只能写入一篇/,
+const multiWritePlan = {
+  title: '客户档案与行动清单变更集',
+  summary: '',
+  operations: [
+    {
+      type: 'update_note',
+      path: profilePath,
+      replacements: [{ old: '最终内容', new: '最终内容（已复核）' }],
+    },
+    { type: 'create_note', path: '02_Wiki/行动清单/客户甲.md', content: '# 客户甲行动清单' },
+  ],
+  notes: [],
+}
+await agent.preflightPlan(multiWritePlan)
+const multiWriteRecord = await agent.applyPlan(
+  multiWritePlan,
+  agent.captureWriteSnapshots(multiWritePlan),
 )
+assert.deepEqual(multiWriteRecord.updatedNotes, [profilePath])
+assert.deepEqual(multiWriteRecord.createdNotes, ['02_Wiki/行动清单/客户甲.md'])
+assert.match(profile.content, /最终内容（已复核）/)
+assert.equal(files.get('02_Wiki/行动清单/客户甲.md').content, '# 客户甲行动清单\n')
+
+const beforeRollback = profile.content
+const rollbackPlan = {
+  title: '失败自动回滚',
+  summary: '',
+  operations: [
+    {
+      type: 'update_note',
+      path: profilePath,
+      replacements: [{ old: '最终内容（已复核）', new: '不应留下的修改' }],
+    },
+    { type: 'create_note', path: '02_Wiki/回滚演示/第一篇.md', content: '# 第一篇' },
+    { type: 'create_note', path: '02_Wiki/回滚演示/第二篇.md', content: '# 第二篇' },
+  ],
+  notes: [],
+}
+failCreatePath = '02_Wiki/回滚演示/第二篇.md'
+await assert.rejects(
+  agent.applyPlan(rollbackPlan, agent.captureWriteSnapshots(rollbackPlan)),
+  /simulated create failure；本轮变更已自动回滚/,
+)
+failCreatePath = ''
+assert.equal(profile.content, beforeRollback)
+assert.equal(files.has('02_Wiki/回滚演示/第一篇.md'), false)
+assert.equal(files.has('02_Wiki/回滚演示/第二篇.md'), false)
+assert.equal(files.has('02_Wiki/回滚演示'), false)
+
+// 回滚期间若目标已被用户并发编辑，保留用户新内容并明确报告，绝不覆盖。
+const concurrentEditPlan = {
+  title: '并发编辑保护',
+  summary: '',
+  operations: [
+    {
+      type: 'update_note',
+      path: profilePath,
+      replacements: [{ old: '最终内容（已复核）', new: '等待回滚的修改' }],
+    },
+    { type: 'create_note', path: '02_Wiki/并发测试/失败.md', content: '# 失败' },
+  ],
+  notes: [],
+}
+failCreatePath = '02_Wiki/并发测试/失败.md'
+onFailCreate = () => tick(profile, `${profile.content}\n用户在执行期间的新编辑\n`)
+await assert.rejects(
+  agent.applyPlan(concurrentEditPlan, agent.captureWriteSnapshots(concurrentEditPlan)),
+  /自动回滚仍有 1 项失败/,
+)
+failCreatePath = ''
+onFailCreate = null
+assert.match(profile.content, /等待回滚的修改/)
+assert.match(profile.content, /用户在执行期间的新编辑/)
 
 const artifactPlan = {
   title: '生成客户方案 Word',
@@ -298,4 +367,4 @@ await assert.rejects(
   /保护目录/,
 )
 
-console.log('Vault single-note and artifact write integration tests passed')
+console.log('Vault multi-note transaction and artifact write integration tests passed')

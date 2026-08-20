@@ -120,10 +120,10 @@ function runCommand(
       },
       (error, stdout, stderr) => {
         if (isMissingExecutable(error)) {
-          reject(error)
+          reject(error instanceof Error ? error : new Error('本机没有找到所需程序'))
           return
         }
-        const processError = error as (ExecFileException & { killed?: boolean }) | null
+        const processError: (ExecFileException & { killed?: boolean }) | null = error
         resolvePromise({
           stdout: String(stdout ?? ''),
           stderr: String(stderr ?? ''),

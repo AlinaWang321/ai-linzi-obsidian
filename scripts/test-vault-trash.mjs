@@ -75,13 +75,13 @@ const search = { clearCalls: 0, clear() { this.clearCalls += 1 } }
 const app = {
   vault: {
     getAbstractFileByPath(path) { return files.get(path) ?? null },
-    async trash(file, system) {
-      trashCalls.push({ path: file.path, system })
-      files.delete(file.path)
-    },
   },
   fileManager: {
     async renameFile() { throw new Error('本测试不应移动文件') },
+    async trashFile(file) {
+      trashCalls.push({ path: file.path })
+      files.delete(file.path)
+    },
   },
 }
 const agent = new module.LocalVaultAgent(app, search, () => '05_System/Skills')
@@ -94,7 +94,7 @@ const record = await agent.applyPlan({
   operations: [{ type: 'trash_note', path: note.path }],
   notes: [],
 })
-assert.deepEqual(trashCalls, [{ path: note.path, system: true }])
+assert.deepEqual(trashCalls, [{ path: note.path }])
 assert.deepEqual(record.trashedNotes, [note.path])
 assert.deepEqual(record.moves, [])
 assert.equal(files.has(note.path), false)

@@ -185,8 +185,8 @@ async function renderConsultationBriefPng(
   try {
     await MarkdownRenderer.render(plugin.app, markdown, body, sourcePath, component)
     decorateConsultationCard(card, body, coachName)
-    if (document.fonts?.ready) await document.fonts.ready
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    await document.fonts?.ready
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
     const dataUrl = await toPng(card, {
       backgroundColor: '#fafaf7',
       pixelRatio: 2,

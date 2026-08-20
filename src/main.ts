@@ -79,8 +79,20 @@ import {
 } from './create-folder'
 import {
   extractCreateLocalSkillBlocks,
+  formatCreateLocalSkillBlock,
   type CreateLocalSkillBlock,
 } from './create-local-skill'
+import { createLocalSkillBundleAtomically } from './create-local-skill-vault'
+import { exportSkillBundle, SkillStudioModal } from './skill-studio'
+import {
+  isExplicitLocalSkillCreationIntent,
+  skillBlockManifest,
+} from './skill-studio-core'
+import {
+  extractVaultQuestion,
+  formatVaultQuestionMarker,
+  type PendingVaultQuestion,
+} from './vault-question-core'
 import {
   extractPluginSkillSuggestions,
   isArticleIllustrationEditIntent,
@@ -437,6 +449,16 @@ interface WireMessage {
   customerCrmSyncPath?: string
   /** 用户二次确认后完成的 CRM 同步回执。 */
   customerCrmSynced?: { id: number; label: string; syncedAt: number }
+  /** 原生 Vault 引擎的结构化澄清问题；只保存在插件本机，不进入云端普通消息。 */
+  vaultQuestion?: PendingVaultQuestion
+  /** Skill Studio 创建完成后的课堂试运行输入；只用于本机按钮。 */
+  skillStudioTestInput?: string
+  /** Skill Creator 正在等待用户补充；下一轮继续走专用创建路由，不进入 Vault agent。 */
+  skillCreatorPending?: boolean
+  /** 该回复由 Skill Creator/Studio 生成；本机必须验证版本、权限与引用闭环后才可安装。 */
+  skillCreatorResult?: boolean
+  /** 对话确认后已落盘的 Skill；只保存本机相对路径。 */
+  createdLocalSkill?: { root: string; entry: string }
 }
 
 interface VaultMessageSource {
@@ -841,6 +863,30 @@ function uid(): string {
   return window.activeWindow.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isStoredVaultActionRecord(value: unknown): value is VaultActionRecord {
+  if (!isUnknownRecord(value)) return false
+  return typeof value.id === 'string' &&
+    typeof value.createdAt === 'number' &&
+    typeof value.planTitle === 'string' &&
+    Array.isArray(value.moves) &&
+    Array.isArray(value.createdFolders)
+}
+
+function isStoredLocalSkillRunRecord(value: unknown): value is LocalSkillRunRecord {
+  if (!isUnknownRecord(value)) return false
+  return typeof value.id === 'string' &&
+    typeof value.skillName === 'string' &&
+    typeof value.label === 'string' &&
+    typeof value.startedAt === 'number' &&
+    typeof value.durationMs === 'number' &&
+    Array.isArray(value.declaredOutputs) &&
+    Array.isArray(value.createdOutputs)
+}
+
 /**
  * 插件会话必须使用独立命名空间。服务端只允许插件历史接口读取/删除这个前缀，
  * 因而网页端会话不会被插件历史列表拉回，也不会被插件的“清空历史”误删。
@@ -1087,10 +1133,10 @@ export default class AiLinziPlugin extends Plugin {
     this.savedConversations = Array.isArray(conversations) ? conversations : []
     this.savedIllustrationJobs = Array.isArray(illustrationJobs) ? illustrationJobs : []
     this.vaultActionHistory = Array.isArray(vaultActionHistory)
-      ? (vaultActionHistory as VaultActionRecord[]).slice(0, 20)
+      ? vaultActionHistory.filter(isStoredVaultActionRecord).slice(0, 20)
       : []
     this.localSkillRunHistory = Array.isArray(localSkillRunHistory)
-      ? (localSkillRunHistory as LocalSkillRunRecord[]).slice(0, 50)
+      ? localSkillRunHistory.filter(isStoredLocalSkillRunRecord).slice(0, 50)
       : []
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
     let migrated =
@@ -1421,19 +1467,22 @@ export default class AiLinziPlugin extends Plugin {
     const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''
     const data = await this.api(`/api/plugin/v1/chat/history${query}`)
     const id = typeof data.sessionId === 'string' ? data.sessionId : ''
-    const rows = Array.isArray(data.messages)
-      ? (data.messages as Array<{ id?: unknown; role?: unknown; content?: unknown; createdAt?: unknown }>)
+    const rows: Record<string, unknown>[] = Array.isArray(data.messages)
+      ? data.messages.filter(isUnknownRecord)
       : []
     if (!id || rows.length === 0) return null
     const messages: WireMessage[] = rows
       .filter((row) => row.role === 'user' || row.role === 'assistant')
       .map((row) => ({
-        id: String(row.id ?? uid()),
-        role: row.role as 'user' | 'assistant',
-        parts: [{ type: 'text' as const, text: String(row.content ?? '') }],
+        id: typeof row.id === 'string' ? row.id : uid(),
+        role: row.role === 'user' ? 'user' as const : 'assistant' as const,
+        parts: [{ type: 'text' as const, text: typeof row.content === 'string' ? row.content : '' }],
       }))
     const firstUser = messages.find((message) => message.role === 'user')
-    const lastCreatedAt = String(rows.at(-1)?.createdAt ?? '')
+    const rawCreatedAt = rows.at(-1)?.createdAt
+    const lastCreatedAt = typeof rawCreatedAt === 'string' || typeof rawCreatedAt === 'number'
+      ? String(rawCreatedAt)
+      : ''
     return {
       id,
       mode: 'chat',
@@ -1796,6 +1845,12 @@ class ChatView extends ItemView {
       attr: { title: `查看保存在 ${this.localSkills.root()}/ 中的自建 Skill` },
     })
     localSkillsBtn.onclick = (event: MouseEvent) => void this.showLocalSkillsMenu(event)
+    const skillStudioBtn = actionsRow.createEl('button', {
+      text: '创建 Skill',
+      cls: 'ai-linzi-action-btn ai-linzi-skill-studio-btn',
+      attr: { title: '打开 Skill Studio：官方模板、定制创建、试运行与导入分享' },
+    })
+    skillStudioBtn.onclick = () => this.openSkillStudio()
 
     this.authorizedContentStatusEl = footer.createDiv({
       cls: 'ai-linzi-authorized-content-status',
@@ -1843,11 +1898,17 @@ class ChatView extends ItemView {
 
   private async showLocalSkillsMenu(event: MouseEvent): Promise<void> {
     const skills = await this.localSkills.list()
-    if (skills.length === 0) {
-      new Notice('“我的 Skills”中还没有 Skill。你可以直接在主对话中让我创建。', 5000)
-      return
-    }
     const menu = new Menu()
+    menu.addItem((item) => item
+      .setTitle('＋ 打开 Skill Studio')
+      .setIcon('wand-sparkles')
+      .onClick(() => this.openSkillStudio()))
+    if (skills.length === 0) {
+      menu.addItem((item) => item
+        .setTitle('还没有 Skill，先从官方模板开始')
+        .setIcon('info')
+        .setDisabled(true))
+    }
     for (const skill of skills) {
       menu.addItem((item) =>
         item
@@ -1863,6 +1924,32 @@ class ChatView extends ItemView {
       )
     }
     menu.showAtMouseEvent(event)
+  }
+
+  private openSkillStudio(): void {
+    new SkillStudioModal(this.app, {
+      onCreateWithAi: (prompt, sampleInput) => {
+        this.inputEl.value = prompt
+        this.inputEl.focus()
+        void this.send({ skillCreator: true, skillStudioTestInput: sampleInput })
+      },
+      onOfferBundle: (block, sampleInput) => {
+        this.messages.push({
+          id: uid(),
+          role: 'user',
+          parts: [{ type: 'text', text: `从 Skill Studio 安装「${block.name}」` }],
+        })
+        this.messages.push({
+          id: uid(),
+          role: 'assistant',
+          parts: [{ type: 'text', text: formatCreateLocalSkillBlock(block) }],
+          skillStudioTestInput: sampleInput,
+          skillCreatorResult: true,
+        })
+        void this.persistNow()
+        this.renderMessages()
+      },
+    }).open()
   }
 
   /** 每轮对话后自动保存;消息为空不存 */
@@ -2678,6 +2765,28 @@ class ChatView extends ItemView {
     return undefined
   }
 
+  private recentPendingVaultQuestion(): { message: WireMessage; question: PendingVaultQuestion } | undefined {
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      const message = this.messages[index]
+      const question = message.vaultQuestion
+      if (!question || question.answeredAt) continue
+      if (Date.now() - question.createdAt > 30 * 60 * 1000) return undefined
+      return { message, question }
+    }
+    return undefined
+  }
+
+  private hasPendingSkillCreatorInterview(): boolean {
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      const message = this.messages[index]
+      if (message.role !== 'assistant' || message.localSkillStatus) continue
+      // 只看最近一条可见 AI 回复。新一轮已经生成 Skill 包后，
+      // 不能继续捡到更早的“访谈未完成”状态，否则之后的普通对话都会被劫持。
+      return message.skillCreatorPending === true
+    }
+    return false
+  }
+
   /** 取得上一条可直接写入 Markdown 的 AI 正文；所有本机协议块都先剥离。 */
   private lastAssistantContentForReplace(): string | undefined {
     for (let index = this.messages.length - 2; index >= 0; index--) {
@@ -2713,9 +2822,17 @@ class ChatView extends ItemView {
     throw new Error(data.reason ?? '事实记忆没有保存成功，请稍后再试')
   }
 
-  private async send() {
+  private async send(
+    options: { skillCreator?: boolean; skillStudioTestInput?: string } = {},
+  ) {
     const text = this.inputEl.value.trim()
     if (!text || this.sending) return
+    const pendingVaultQuestion = this.recentPendingVaultQuestion()
+    const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
+    const skillCreatorTurn =
+      options.skillCreator === true ||
+      pendingSkillCreatorInterview ||
+      isExplicitLocalSkillCreationIntent(text)
 
     const imageAttachments = this.chatImageAttachments.slice()
     this.messages.push({
@@ -2790,6 +2907,7 @@ class ChatView extends ItemView {
         return
       }
       let localSkillMatch = await this.localSkills.resolve(text, { allowAutomatic: true })
+      if (pendingVaultQuestion) localSkillMatch = { kind: 'none' }
       if (
         localSkillMatch.kind === 'none' &&
         /(?:继续|接着|下一步|上一份|下一份|最新一份|刚才|按照?(?:这个|刚才)|处理(?:这|它|最新)|更新已处理|写入客户档案)/u.test(text)
@@ -2908,7 +3026,8 @@ class ChatView extends ItemView {
         !this.longDocumentPath &&
         !singleIllustration &&
         !illustrationEdit &&
-        imageAttachments.length === 0
+        imageAttachments.length === 0 &&
+        !skillCreatorTurn
       const useVaultAgent = modelDecidesVaultUse
       // 没有手动搜索开关，也没有关键词预扫描。普通闲聊会在首轮直接回答；只有
       // Luna 判断本轮确实依赖本地资料时，才进入后续本机工具循环。
@@ -2935,6 +3054,7 @@ class ChatView extends ItemView {
         )
       }
       let answer: string
+      let localSkillRunIds: string[] | undefined
       let answerSources = [
         ...(noteContext
           ? [{
@@ -2968,6 +3088,7 @@ class ChatView extends ItemView {
             noteEdit,
             noteImageIntent: singleIllustration,
             intent: 'auto',
+            resumeQuestion: pendingVaultQuestion?.question,
           })
         } catch (error) {
           // 活动流定格为中断原因后再抛出，交由统一错误气泡处理。
@@ -2976,7 +3097,11 @@ class ChatView extends ItemView {
         }
         this.activityEnd('ok')
         answer = agentResult.text
-        var localSkillRunIds = agentResult.localSkillRunIds
+        if (pendingVaultQuestion) pendingVaultQuestion.message.vaultQuestion = {
+          ...pendingVaultQuestion.question,
+          answeredAt: Date.now(),
+        }
+        localSkillRunIds = agentResult.localSkillRunIds
         answerSources = [
           ...new Map(
             [...answerSources, ...agentResult.sources].map((source) => [source.path, source]),
@@ -2994,6 +3119,8 @@ class ChatView extends ItemView {
             imageAttachments,
             noteEdit,
             singleIllustration,
+            undefined,
+            skillCreatorTurn,
           )
         } catch {
           streamed = null
@@ -3020,11 +3147,17 @@ class ChatView extends ItemView {
               noteEdit,
               noteImageIntent: singleIllustration,
               localSkill: localSkillRequest,
+              skillCreator: skillCreatorTurn ? { mode: 'create', source: options.skillCreator ? 'studio' : 'chat' } : undefined,
             },
           })
           answer = typeof data.text === 'string' ? data.text : '(空响应)'
         }
       }
+      const vaultQuestion = extractVaultQuestion(answer)
+      if (vaultQuestion.invalid) {
+        throw new Error('AI 返回的澄清问题格式不完整，请重试')
+      }
+      answer = vaultQuestion.cleanText || vaultQuestion.question?.question || answer
       const aiImageRequest = extractChatAiImageRequests(answer)
       if (!answer.startsWith('⚠️')) this.clearChatImageAttachments()
       const imageProtocolWarning = aiImageRequest.invalid
@@ -3035,6 +3168,9 @@ class ChatView extends ItemView {
       const visibleAnswer = [aiImageRequest.cleanText, imageProtocolWarning]
         .filter(Boolean)
         .join('\n\n') || '我已经理解图片要求，正在准备生成。'
+      const skillCreatorPending = skillCreatorTurn &&
+        !answer.startsWith('⚠️') &&
+        extractCreateLocalSkillBlocks(answer).blocks.length === 0
       const pendingVaultPlan = extractVaultOrganizePlan(visibleAnswer).plan
       this.messages.push({
         id: uid(),
@@ -3046,6 +3182,10 @@ class ChatView extends ItemView {
           : undefined,
         localSkillRunIds,
         localSkillPath: localSkill?.path,
+        vaultQuestion: vaultQuestion.question,
+        skillStudioTestInput: skillCreatorTurn ? options.skillStudioTestInput : undefined,
+        skillCreatorPending,
+        skillCreatorResult: skillCreatorTurn || undefined,
       })
       await this.persistNow()
       if (aiImageRequest.requests.length > 0 && !answer.startsWith('⚠️')) {
@@ -3063,6 +3203,7 @@ class ChatView extends ItemView {
           id: uid(),
           role: 'assistant',
           parts: [{ type: 'text', text: `⚠️ ${msg}` }],
+          skillCreatorPending: skillCreatorTurn || undefined,
         })
       }
     } finally {
@@ -3489,6 +3630,8 @@ class ChatView extends ItemView {
     noteEdit: boolean
     noteImageIntent: boolean
     intent: VaultAgentIntent
+    /** 上一轮原生 ask_user 的本机续接信息；回答作为同一个 Responses 调用继续。 */
+    resumeQuestion?: PendingVaultQuestion
   }): Promise<{
     text: string
     sources: VaultMessageSource[]
@@ -3624,18 +3767,30 @@ class ChatView extends ItemView {
     // 0.7.54：引擎失败通常是网络/服务端原因，短时间内重试大概率同样失败。
     // 记住失败，标记路径不再把同一个引擎整轮重跑一遍（白等一次超时+白扣积分）。
     let nativeChannelFailed = false
-    const nativeEligible =
+    const nativeEligible = Boolean(input.resumeQuestion) || (
       input.vaultAccess &&
       !input.localSkill &&
       !input.localSkillContext &&
       !input.noteEdit &&
       !input.noteImageIntent &&
       (mutationAsk || (taskContinuation && this.pendingVaultTask?.intent === 'organize'))
+    )
     // 抽成闭包函数：词表命中的快路径与「模型自主切换标记」（0.7.52）共用同一引擎。
     const runNativeChannel = async (): Promise<string | null> => {
       try {
-        let previousResponseId = ''
-        let nextBody: Record<string, unknown> | null = null
+        let previousResponseId = input.resumeQuestion?.responseId ?? ''
+        let nextBody: Record<string, unknown> | null = input.resumeQuestion
+          ? {
+              question: input.question,
+              round: input.resumeQuestion.round,
+              sessionId: this.sessionId,
+              previousResponseId: input.resumeQuestion.responseId,
+              toolOutputs: [{
+                callId: input.resumeQuestion.callId,
+                output: input.question.slice(0, 4_000),
+              }],
+            }
+          : null
         let stalledRetried = false
         for (let step = 0; step < VAULT_AGENT_MAX_ROUNDS; step++) {
           this.activityCurrent(
@@ -3643,34 +3798,62 @@ class ChatView extends ItemView {
               ? '文件操作引擎启动，正在核对相关文件…'
               : `文件引擎 第 ${step + 1}/${VAULT_AGENT_MAX_ROUNDS} 步 · 继续执行…`,
           )
+          const requestBody = nextBody ?? {
+            question: input.question,
+            round: 0,
+            sessionId: this.sessionId,
+            pendingTaskGoal: taskContinuation ? this.pendingVaultTask?.goal : undefined,
+          }
+          const requestRound = typeof requestBody.round === 'number' ? requestBody.round : 0
           const data = await this.plugin.api('/api/plugin/v1/vault-native/step', {
             method: 'POST',
-            body: nextBody ?? {
-              question: input.question,
-              round: 0,
-              sessionId: this.sessionId,
-              pendingTaskGoal: taskContinuation ? this.pendingVaultTask?.goal : undefined,
-            },
+            body: requestBody,
           })
           const responseId = typeof data.responseId === 'string' ? data.responseId : ''
-          const nativeCalls = Array.isArray(data.toolCalls) ? data.toolCalls : []
+          const nativeCalls: Record<string, unknown>[] = Array.isArray(data.toolCalls)
+            ? data.toolCalls.filter(isUnknownRecord)
+            : []
           const text = typeof data.text === 'string' ? data.text.trim() : ''
           if (!responseId) throw new Error('native: missing responseId')
           previousResponseId = responseId
           if (nativeCalls.length > 0) {
+            const askUser = nativeCalls.find(
+              (item) => item.name === 'ask_user',
+            )
+            if (askUser) {
+              if (nativeCalls.length !== 1) throw new Error('native: ask_user must be the only tool call')
+              const record = askUser
+              const args = isUnknownRecord(record.arguments)
+                ? record.arguments
+                : {}
+              const callId = typeof record.callId === 'string' ? record.callId : ''
+              const question = typeof args.question === 'string' ? args.question.trim().slice(0, 600) : ''
+              if (!callId || !question) throw new Error('native: invalid ask_user')
+              const pendingQuestion: PendingVaultQuestion = {
+                callId,
+                responseId,
+                question,
+                options: Array.isArray(args.options)
+                  ? args.options.filter((item): item is string => typeof item === 'string').map((item) => item.trim().slice(0, 120)).filter(Boolean).slice(0, 6)
+                  : [],
+                allowFreeText: args.allowFreeText !== false,
+                round: Math.min(requestRound + 1, VAULT_AGENT_MAX_ROUNDS - 1),
+                goal: this.pendingVaultTask?.goal ?? input.resumeQuestion?.goal ?? input.question.slice(0, 300),
+                createdAt: Date.now(),
+              }
+              this.activityStep('❓ 需要你补充一个关键信息', null)
+              return `${question}\n\n${formatVaultQuestionMarker(pendingQuestion)}`
+            }
             // 方案作为原生工具提交（0.7.49 E2E 第二轮发现：只给只读工具时 Luna 会
             // 诚实地声称「缺少整理能力」——把方案提交纳入它的行动空间才符合原生
             // 工具心理学）。收到即合成方案块，走与散文协议同一套预检/确认卡。
             const propose = nativeCalls.find(
-              (item) => (item as Record<string, unknown>).name === 'propose_organize_plan',
+              (item) => item.name === 'propose_organize_plan',
             )
             if (propose) {
               this.activityStep('📋 已生成整理方案，等待你确认', null)
-              const record = propose as Record<string, unknown>
-              const args =
-                record.arguments && typeof record.arguments === 'object' && !Array.isArray(record.arguments)
-                  ? (record.arguments as Record<string, unknown>)
-                  : {}
+              const record = propose
+              const args = isUnknownRecord(record.arguments) ? record.arguments : {}
               const planPayload = {
                 title: typeof args.title === 'string' ? args.title : '整理方案',
                 summary: typeof args.summary === 'string' ? args.summary : '',
@@ -3686,7 +3869,7 @@ class ChatView extends ItemView {
             }
             const calls: VaultAgentToolCall[] = []
             for (const item of nativeCalls.slice(0, VAULT_AGENT_MAX_CALLS_PER_ROUND)) {
-              const record = item as Record<string, unknown>
+              const record = item
               const name = record.name
               if (name !== 'vault_search' && name !== 'list_folder' && name !== 'read_note') {
                 throw new Error(`native: unsupported tool ${String(name)}`)
@@ -3745,7 +3928,7 @@ class ChatView extends ItemView {
             toolResults.push(...merged.results)
             nextBody = {
               question: input.question,
-              round: Math.min(step + 1, VAULT_AGENT_MAX_ROUNDS - 1),
+              round: Math.min(requestRound + 1, VAULT_AGENT_MAX_ROUNDS - 1),
               sessionId: this.sessionId,
               previousResponseId,
               toolOutputs: executed.results.map((result) => ({
@@ -3770,7 +3953,7 @@ class ChatView extends ItemView {
               stalledRetried = true
               nextBody = {
                 question: input.question,
-                round: step + 1,
+                round: Math.min(requestRound + 1, VAULT_AGENT_MAX_ROUNDS - 1),
                 sessionId: this.sessionId,
                 previousResponseId,
                 toolOutputs: [],
@@ -3943,6 +4126,9 @@ class ChatView extends ItemView {
         }
       }
       const toolRequest = extractVaultToolCalls(lastText)
+      if (lastText.includes('<<<AI_LINZI_ASK_USER>>>')) {
+        return { text: lastText, sources, localSkillRunIds }
+      }
       if (toolRequest.invalid) throw new Error('AI 返回的 Vault 工具请求格式不安全，请重试')
       if (toolRequest.calls.length === 0) {
         const plan = extractVaultOrganizePlan(lastText)
@@ -4004,30 +4190,35 @@ class ChatView extends ItemView {
           pendingRetryReason = 'missing_tool_use'
           continue
         }
-        const writeOperation = plan.plan?.operations.length === 1
-          ? plan.plan.operations[0]
-          : undefined
-        if (
-          writeOperation &&
-          (writeOperation.type === 'append_note' ||
-            writeOperation.type === 'replace_note' ||
-            writeOperation.type === 'update_note') &&
-          !verifiedWritePaths.has(writeOperation.path)
-        ) {
-          // 模型不能仅凭搜索片段就修改现有档案。客户端自动把模型点名的准确目标
-          // 做一次只读核验，再把结果交回下一轮；失败时模型只能改为新建或说明找不到。
-          const verification = await this.plugin.vaultAgent.executeReadCalls([{
-            id: `verify-write-target-${round}`,
-            name: 'read_note',
-            arguments: { path: writeOperation.path, offset: 0, maxChars: 16_000 },
-          }])
+        const writeOperations = (plan.plan?.operations ?? []).filter(
+          (operation): operation is Extract<VaultOrganizePlan['operations'][number], {
+            type: 'append_note' | 'replace_note' | 'update_note'
+          }> =>
+            operation.type === 'append_note' ||
+            operation.type === 'replace_note' ||
+            operation.type === 'update_note',
+        )
+        const unverifiedWriteOperations = writeOperations
+          .filter((operation) => !verifiedWritePaths.has(operation.path))
+          .slice(0, VAULT_AGENT_MAX_CALLS_PER_ROUND)
+        if (unverifiedWriteOperations.length > 0) {
+          // 模型不能仅凭搜索片段批量修改现有档案。客户端按准确目标分批做只读核验，
+          // 全部目标都锁定后才展示一个变更集确认卡。
+          const verification = await this.plugin.vaultAgent.executeReadCalls(
+            unverifiedWriteOperations.map((operation, index) => ({
+              id: `verify-write-target-${round}-${index + 1}`,
+              name: 'read_note' as const,
+              arguments: { path: operation.path, offset: 0, maxChars: 16_000 },
+            })),
+          )
           appendToolResults(verification.results)
           sources.push(...verification.sources)
-          if (verification.results[0]?.ok) {
-            verifiedWritePaths.add(writeOperation.path)
-            const stat = this.plugin.vaultFileStat(writeOperation.path)
+          for (const [index, operation] of unverifiedWriteOperations.entries()) {
+            if (!verification.results[index]?.ok) continue
+            verifiedWritePaths.add(operation.path)
+            const stat = this.plugin.vaultFileStat(operation.path)
             if (stat) updateTask({ type: 'read', snapshot: stat, isTarget: true })
-            this.activityStep(`🔎 核对目标档案原文：${writeOperation.path.split('/').at(-1)}`)
+            this.activityStep(`🔎 核对目标档案原文：${operation.path.split('/').at(-1)}`)
           }
           pendingRetryReason = undefined
           continue
@@ -4346,6 +4537,7 @@ class ChatView extends ItemView {
       /** v0.7.35+：云端任务/CRM 工具执行轮标记。 */
       cloudToolsTurn?: boolean
     },
+    skillCreator = false,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
@@ -4373,6 +4565,7 @@ class ChatView extends ItemView {
         noteImageIntent,
         localSkill,
         vaultAgent,
+        skillCreator: skillCreator ? { mode: 'create' } : undefined,
       }),
     })
     if (!res.ok) {
@@ -4431,14 +4624,15 @@ class ChatView extends ItemView {
    * - v0.7.28 起可新建 SKILL.md + references/scripts/assets 文本文件；
    * - 所有路径均被解析器限制在 Skill 自己的目录内，只新建、不覆盖。
    */
-  private renderCreateLocalSkillOffers(row: HTMLElement, blocks: CreateLocalSkillBlock[]) {
+  private renderCreateLocalSkillOffers(
+    row: HTMLElement,
+    blocks: CreateLocalSkillBlock[],
+    message: WireMessage,
+  ) {
     for (const block of blocks) {
       const root = this.localSkills.root()
       const skillRoot = normalizePath(`${root}/${block.name}`)
-      const files = block.files.map((file) => ({
-        ...file,
-        vaultPath: normalizePath(`${skillRoot}/${file.path}`),
-      }))
+      const files = block.files
       const filePath = normalizePath(`${skillRoot}/SKILL.md`)
       const card = row.createDiv({ cls: 'ai-linzi-create-note-card' })
       card.createDiv({
@@ -4446,16 +4640,63 @@ class ChatView extends ItemView {
         cls: 'ai-linzi-create-note-title',
       })
       card.createDiv({ text: block.description, cls: 'ai-linzi-create-note-preview' })
+      const manifest = skillBlockManifest(block)
       card.createDiv({
-        text: `保存位置:${skillRoot}/（共 ${files.length} 个文件）`,
+        text: `保存位置:${skillRoot}/（版本 ${manifest.version} · 共 ${files.length} 个文件）`,
         cls: 'ai-linzi-create-note-preview',
       })
+      const permissionCard = card.createDiv({ cls: 'ai-linzi-skill-permissions' })
+      permissionCard.createEl('strong', { text: '权限清单' })
+      const permissions = permissionCard.createEl('ul')
+      for (const permission of manifest.permissions) permissions.createEl('li', { text: permission })
+      if (message.skillCreatorResult && !manifest.valid) {
+        const invalid = card.createDiv({ cls: 'ai-linzi-create-note-preview' })
+        invalid.createEl('strong', { text: '⚠️ Skill 包未通过本机校验' })
+        const problems = invalid.createEl('ul')
+        for (const problem of manifest.problems) problems.createEl('li', { text: problem })
+      }
       for (const file of files) {
         const details = card.createEl('details')
         details.createEl('summary', { text: `查看 ${file.path}` })
         details.createEl('pre', { text: file.content, cls: 'ai-linzi-vault-write-preview' })
       }
       const actionsRow = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
+      if (message.skillCreatorResult && !manifest.valid) {
+        actionsRow.createSpan({
+          text: '本次不允许安装，请让 AI霖子重新生成完整 Skill 包。',
+          cls: 'ai-linzi-create-note-done',
+        })
+        continue
+      }
+      if (message.createdLocalSkill?.root === skillRoot) {
+        actionsRow.createSpan({ text: '✅ 已创建', cls: 'ai-linzi-create-note-done' })
+        const open = actionsRow.createEl('button', { text: '打开 SKILL.md' })
+        open.onclick = () => void this.app.workspace.openLinkText(message.createdLocalSkill?.entry ?? filePath, '', false)
+        const test = actionsRow.createEl('button', { text: '立即试运行' })
+        test.onclick = () => {
+          this.inputEl.value = message.skillStudioTestInput?.trim() || `用 ${block.name} Skill 处理当前笔记`
+          this.inputEl.focus()
+        }
+        const share = actionsRow.createEl('button', { text: '导出分享 ZIP' })
+        share.onclick = () => {
+          share.disabled = true
+          void (async () => {
+            try {
+              const file = await exportSkillBundle(
+                this.app,
+                this.plugin.settings.outputFolder,
+                block,
+              )
+              new Notice(`✅ 已导出可分享 Skill：${file.path}`, 7000)
+              share.disabled = false
+            } catch (error) {
+              share.disabled = false
+              new Notice(`导出失败：${error instanceof Error ? error.message : String(error)}`, 8000)
+            }
+          })()
+        }
+        continue
+      }
       const createBtn = actionsRow.createEl('button', {
         text: files.length === 1 ? '创建 SKILL.md' : `创建完整 Skill（${files.length} 个文件）`,
       })
@@ -4463,35 +4704,11 @@ class ChatView extends ItemView {
         createBtn.disabled = true
         void (async () => {
           try {
-            if (this.app.vault.getAbstractFileByPath(skillRoot)) {
-              throw new Error(`已存在 ${skillRoot}/，为避免混入旧文件请让 AI 换一个 Skill 名称`)
-            }
-            const conflicts = files.filter((file) => this.app.vault.getAbstractFileByPath(file.vaultPath))
-            if (conflicts.length > 0) {
-              throw new Error(`已存在 ${conflicts[0].vaultPath}，为避免覆盖请让 AI 换一个 Skill 名称`)
-            }
-            for (const file of files) {
-              const parent = file.vaultPath.split('/').slice(0, -1)
-              let current = ''
-              for (const segment of parent) {
-                current = current ? `${current}/${segment}` : segment
-                if (this.app.vault.getAbstractFileByPath(current)) continue
-                await this.app.vault.createFolder(current)
-              }
-            }
-            const created = []
-            for (const file of files) {
-              created.push(await this.app.vault.create(file.vaultPath, file.content))
-            }
-            const entry = created.find((file) => file.path === filePath) ?? created[0]
-            card.empty()
-            const done = card.createDiv({ cls: 'ai-linzi-create-note-done' })
-            done.createSpan({ text: `✅ 已创建完整 Skill（${created.length} 个文件）:` })
-            const link = done.createEl('a', { text: entry.path, href: '#' })
-            link.onclick = (event) => {
-              event.preventDefault()
-              void this.app.workspace.openLinkText(entry.path, '', false)
-            }
+            const created = await createLocalSkillBundleAtomically(this.app, root, block)
+            const entry = created.files.find((file) => file.path === filePath) ?? created.files[0]
+            message.createdLocalSkill = { root: created.root, entry: entry.path }
+            await this.persistNow()
+            this.renderMessages()
             new Notice(`已创建到“我的 Skills”：${skillRoot}/`, 6000)
           } catch (error) {
             createBtn.disabled = false
@@ -4659,13 +4876,17 @@ class ChatView extends ItemView {
     const trashOnlyPlan = trashOperations.length > 0 &&
       trashOperations.length === plan.operations.length
     const onlyOperation = plan.operations.length === 1 ? plan.operations[0] : null
-    const noteWriteOperation = onlyOperation &&
-      (onlyOperation.type === 'create_note' ||
-        onlyOperation.type === 'append_note' ||
-        onlyOperation.type === 'replace_note' ||
-        onlyOperation.type === 'update_note')
-      ? onlyOperation
-      : null
+    const noteWriteOperations = plan.operations.filter(
+      (operation): operation is Extract<
+        (typeof plan.operations)[number],
+        { type: 'create_note' | 'append_note' | 'replace_note' | 'update_note' }
+      > =>
+        operation.type === 'create_note' ||
+        operation.type === 'append_note' ||
+        operation.type === 'replace_note' ||
+        operation.type === 'update_note',
+    )
+    const noteWritePlan = noteWriteOperations.length > 0
     const artifactOperation = onlyOperation?.type === 'create_artifact'
       ? onlyOperation
       : null
@@ -4673,7 +4894,7 @@ class ChatView extends ItemView {
       ? resolveArtifactPath(artifactOperation.path, this.plugin.settings.outputFolder)
       : null
     card.createDiv({
-      text: `${trashOnlyPlan ? '🗑️' : noteWriteOperation ? '📝' : artifactOperation ? '📦' : '🗂️'} 待确认：${plan.title}`,
+      text: `${trashOnlyPlan ? '🗑️' : noteWritePlan ? '📝' : artifactOperation ? '📦' : '🗂️'} 待确认：${plan.title}`,
       cls: 'ai-linzi-create-note-title',
     })
     if (plan.summary) {
@@ -4767,18 +4988,21 @@ class ChatView extends ItemView {
     const actions = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
     if (record) {
       const trashedCount = record.trashedNotes?.length ?? 0
-      const createdNote = record.createdNotes?.[0]
-      const updatedNote = record.updatedNotes?.[0]
+      const createdNoteCount = record.createdNotes?.length ?? 0
+      const updatedNoteCount = record.updatedNotes?.length ?? 0
+      const writtenNoteCount = createdNoteCount + updatedNoteCount
       const createdArtifact = record.createdArtifacts?.[0]
       actions.createSpan({
         text: trashedCount > 0
           ? trashedCount === 1
             ? `✅ 已移入回收站：${record.trashedNotes?.[0]}`
             : `✅ 已移入回收站 ${trashedCount} 项`
-          : createdNote
-            ? `✅ 已新建笔记：${createdNote}`
-            : updatedNote
-              ? `✅ 已更新笔记：${updatedNote}`
+          : writtenNoteCount > 1
+            ? `✅ 已完成 Markdown 变更集：新建 ${createdNoteCount} 篇，更新 ${updatedNoteCount} 篇`
+            : createdNoteCount === 1
+              ? `✅ 已新建笔记：${record.createdNotes?.[0]}`
+              : updatedNoteCount === 1
+                ? `✅ 已更新笔记：${record.updatedNotes?.[0]}`
               : createdArtifact
                 ? `✅ 已生成成品：${createdArtifact}`
           : `✅ 已执行：移动/重命名 ${record.moves.length} 项，新建文件夹 ${record.createdFolders.length} 个`,
@@ -4848,8 +5072,10 @@ class ChatView extends ItemView {
         ? trashOperations.length > 1
           ? `移入回收站（${trashOperations.length} 项）`
           : '移入回收站'
-        : noteWriteOperation
-          ? noteWriteOperation.type === 'create_note' ? '确认新建笔记' : '确认写入笔记'
+        : noteWritePlan
+          ? noteWriteOperations.length === 1 && noteWriteOperations[0].type === 'create_note'
+            ? '确认新建笔记'
+            : `确认写入 ${noteWriteOperations.length} 篇`
           : artifactOperation
             ? `确认生成 ${artifactFormatLabel(artifactOperation.format)}`
           : `确认执行 ${plan.operations.length} 项`,
@@ -4873,18 +5099,23 @@ class ChatView extends ItemView {
                   ? `确认移入回收站（${trashOperations.length} 项）`
                   : '确认移入回收站',
               }
-            : noteWriteOperation
+            : noteWritePlan
               ? {
-                  title: noteWriteOperation.type === 'create_note' ? '再次确认新建笔记' : '再次确认写入笔记',
+                  title: noteWriteOperations.length === 1 && noteWriteOperations[0].type === 'create_note'
+                    ? '再次确认新建笔记'
+                    : '再次确认 Markdown 变更集',
                   message:
-                    `目标路径：${noteWriteOperation.path}\n\n` +
-                    (noteWriteOperation.type === 'create_note'
-                      ? '只会新建这一篇 Markdown；缺少的父目录会同时创建。如果目标已存在就停止，绝不覆盖。'
-                      : noteWriteOperation.type === 'update_note' && noteWriteOperation.frontmatter
-                        ? '只会更新这一篇 Markdown；YAML 原文、格式与目标版本已在本机预检，确认前发生变化就停止。'
-                        : '只会更新这一篇 Markdown；如果它在方案生成后有变化就停止。整篇替换会保留 frontmatter。') +
-                    '\n需要回滚时可使用 Obsidian 撤销或“文件恢复”。',
-                  confirmLabel: noteWriteOperation.type === 'create_note' ? '确认新建' : '确认写入',
+                    `即将写入以下 ${noteWriteOperations.length} 篇 Markdown：\n` +
+                    noteWriteOperations.map((operation) => `· ${operation.path}`).join('\n') +
+                    (plan.operations.length > noteWriteOperations.length
+                      ? `\n\n同时执行另外 ${plan.operations.length - noteWriteOperations.length} 项文件夹或移动操作。`
+                      : '') +
+                    '\n\n每篇目标和修改前版本都已锁定，上方可逐篇展开查看完整内容或差异。' +
+                    '缺少的父目录会同时创建；目标冲突或确认后文件发生变化就停止。' +
+                    '\n执行中任意一步失败，插件会自动恢复本次已改内容并清理本次新建文件。',
+                  confirmLabel: noteWriteOperations.length === 1 && noteWriteOperations[0].type === 'create_note'
+                    ? '确认新建'
+                    : `确认写入 ${noteWriteOperations.length} 篇`,
                 }
               : artifactOperation
                 ? {
@@ -4912,8 +5143,12 @@ class ChatView extends ItemView {
           message.vaultExecuteError = undefined
           // 确认卡已执行 → 跨轮任务结清；下一句「继续」不再重新进入旧写入流程。
           this.pendingVaultTask = null
-          const writtenPath = applied.createdNotes?.[0] ?? applied.updatedNotes?.[0]
-          if (writtenPath) {
+          const writtenPaths = [
+            ...(applied.createdNotes ?? []),
+            ...(applied.updatedNotes ?? []),
+          ]
+          if (writtenPaths.length === 1) {
+            const writtenPath = writtenPaths[0]
             const profile = await readLocalCustomerProfile(this.app, writtenPath)
             if (profile) message.customerCrmSyncPath = writtenPath
           }
@@ -4924,10 +5159,12 @@ class ChatView extends ItemView {
               ? (applied.trashedNotes?.length ?? 0) === 1
                 ? `✅ 已把「${applied.trashedNotes?.[0]}」移入回收站`
                 : `✅ 已把 ${applied.trashedNotes?.length} 项移入回收站`
-              : (applied.createdNotes?.length ?? 0) > 0
-                ? `✅ 已新建笔记「${applied.createdNotes?.[0]}」`
-              : (applied.updatedNotes?.length ?? 0) > 0
-                  ? `✅ 已更新笔记「${applied.updatedNotes?.[0]}」`
+              : writtenPaths.length > 1
+                ? `✅ 已完成 Markdown 变更集：新建 ${applied.createdNotes?.length ?? 0} 篇，更新 ${applied.updatedNotes?.length ?? 0} 篇`
+                : (applied.createdNotes?.length ?? 0) > 0
+                  ? `✅ 已新建笔记「${applied.createdNotes?.[0]}」`
+                  : (applied.updatedNotes?.length ?? 0) > 0
+                    ? `✅ 已更新笔记「${applied.updatedNotes?.[0]}」`
                 : (applied.createdArtifacts?.length ?? 0) > 0
                   ? `✅ 已生成成品「${applied.createdArtifacts?.[0]}」`
               : `✅ 已完成「${plan.title}」：移动/重命名 ${applied.moves.length} 项，新建文件夹 ${applied.createdFolders.length} 个`,
@@ -5023,6 +5260,30 @@ class ChatView extends ItemView {
     }
   }
 
+  private renderVaultQuestionOffer(row: HTMLElement, message: WireMessage): void {
+    const question = message.vaultQuestion
+    if (!question) return
+    const card = row.createDiv({ cls: 'ai-linzi-vault-question-card' })
+    card.createDiv({
+      text: question.answeredAt ? '✅ 已补充信息，任务已继续' : '回答后会从刚才停下的位置继续',
+      cls: 'ai-linzi-vault-question-hint',
+    })
+    if (question.answeredAt) return
+    if (question.options.length > 0) {
+      const actions = card.createDiv({ cls: 'ai-linzi-vault-question-options' })
+      for (const option of question.options) {
+        const button = actions.createEl('button', { text: option })
+        button.onclick = () => {
+          this.inputEl.value = option
+          this.inputEl.focus()
+        }
+      }
+    }
+    if (question.allowFreeText) {
+      card.createDiv({ text: '也可以直接在输入框补充你的答案。', cls: 'ai-linzi-vault-question-hint' })
+    }
+  }
+
   private renderMessages(thinking = false) {
     this.listEl.empty()
     if (this.messages.length === 0) {
@@ -5109,10 +5370,11 @@ class ChatView extends ItemView {
         const cleanText = folderResult.cleanText
         const patch = parseNotePatch(cleanText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
+        if (m.vaultQuestion) this.renderVaultQuestionOffer(row, m)
         if ((m.vaultSources?.length ?? 0) > 0) this.renderVaultSources(row, m.vaultSources ?? [])
         if ((m.localSkillRunIds?.length ?? 0) > 0) this.renderLocalSkillRunOffer(row, m)
         if (localSkillCreateResult.blocks.length > 0) {
-          this.renderCreateLocalSkillOffers(row, localSkillCreateResult.blocks)
+          this.renderCreateLocalSkillOffers(row, localSkillCreateResult.blocks, m)
         }
         if (createResult.blocks.length > 0) this.renderCreateNoteOffers(row, createResult.blocks)
         if (folderResult.invalidStructurePlan) {

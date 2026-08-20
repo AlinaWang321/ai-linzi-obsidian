@@ -153,7 +153,10 @@ export function parseArtifactMarkdown(markdown: string, fallbackTitle = 'AIéœ–å­
       const rows: string[][] = []
       while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
         const cells = tableCells(lines[index])
-        rows.push([...cells, ...Array(Math.max(0, headers.length - cells.length)).fill('')].slice(0, headers.length))
+        rows.push([
+          ...cells,
+          ...Array<string>(Math.max(0, headers.length - cells.length)).fill(''),
+        ].slice(0, headers.length))
         index += 1
       }
       if (headers.length > 0) blocks.push({ type: 'table', headers, rows: rows.slice(0, 80) })

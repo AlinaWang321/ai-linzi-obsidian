@@ -43,14 +43,14 @@ const FILE_BLOCK_RE =
   /<<<Skill文件\s+path=([^>\n]{1,160})>>>\r?\n?([\s\S]*?)\r?\n?<<<Skill文件结束>>>/giu
 const TEXT_FILE_EXTENSIONS = new Set([
   'md', 'txt', 'json', 'yaml', 'yml', 'toml', 'csv', 'html', 'htm', 'css', 'svg',
-  'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'py', 'ps1', 'sh',
+  'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'py',
 ])
 
 function unquoteYamlScalar(value: string): string {
   const trimmed = value.trim()
   if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
     try {
-      const parsed = JSON.parse(trimmed)
+      const parsed: unknown = JSON.parse(trimmed)
       return typeof parsed === 'string' ? parsed.trim() : ''
     } catch {
       return ''
@@ -68,6 +68,7 @@ export function isPortableSkillName(value: string): boolean {
 
 export function normalizeSkillBundlePath(value: string): string | null {
   const normalized = value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  // eslint-disable-next-line no-control-regex -- 文件名安全校验必须显式拒绝控制字符。
   if (!normalized || normalized.length > 160 || /[\u0000-\u001f:*?"<>|]/.test(normalized)) return null
   const parts = normalized.split('/')
   if (parts.some((part) => !part || part === '.' || part === '..' || part.startsWith('.'))) return null
@@ -170,4 +171,13 @@ export function extractCreateLocalSkillBlocks(text: string): CreateLocalSkillExt
     .replace(/\n{3,}/g, '\n\n')
     .trim()
   return { cleanText, blocks }
+}
+
+/** 把本机可信模板或 ZIP 导入结果复用成同一张全文确认卡，不绕过创建审批。 */
+export function formatCreateLocalSkillBlock(block: CreateLocalSkillBlock): string {
+  const files = block.files
+    .map((file) => `<<<Skill文件 path=${file.path}>>>\n${file.content}\n<<<Skill文件结束>>>`)
+    .join('\n')
+  return `已准备好 Skill《${block.name}》。下面是完整文件，确认后才会新建。\n\n` +
+    `<<<新建Skill name=${block.name}>>>\n${files}\n<<<新建Skill结束>>>`
 }

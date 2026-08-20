@@ -3503,3 +3503,50 @@ button.ai-linzi-vault-source-link:focus-visible {
   border-radius: 99px;
   pointer-events: none;
 }
+
+/* Skill Studio 与可恢复追问（0.7.67） */
+.ai-linzi-skill-studio-modal {
+  width: min(720px, 92vw);
+}
+.ai-linzi-skill-studio-modal .modal-content {
+  max-height: 72vh;
+  overflow-y: auto;
+}
+.ai-linzi-skill-studio-modal textarea {
+  min-height: 84px;
+  width: min(420px, 100%);
+  resize: vertical;
+}
+.ai-linzi-skill-studio-intro,
+.ai-linzi-skill-studio-meta,
+.ai-linzi-vault-question-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+.ai-linzi-skill-permissions {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+.ai-linzi-skill-permissions ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.ai-linzi-vault-question-card {
+  margin-top: 8px;
+  padding: 9px 11px;
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+.ai-linzi-vault-question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 8px 0 4px;
+}
+.ai-linzi-hidden-file-input {
+  display: none;
+}

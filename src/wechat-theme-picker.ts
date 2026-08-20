@@ -78,15 +78,17 @@ class WechatThemePickerModal extends Modal {
     })
     const actions = this.contentEl.createDiv({ cls: 'ai-linzi-wtheme-actions' })
     actions.createEl('button', { text: '取消' }).addEventListener('click', () => this.close())
-    actions.createEl('button', { text: '就用这个排版', cls: 'mod-cta' }).addEventListener('click', async () => {
-      this.submitted = true
-      const theme = getWechatTheme(this.selectedId)
-      if (this.plugin.settings.wechatThemeId !== theme.id) {
-        this.plugin.settings.wechatThemeId = theme.id
-        await this.plugin.saveSettings()
-      }
-      this.close()
-      this.resolve(theme)
+    actions.createEl('button', { text: '就用这个排版', cls: 'mod-cta' }).addEventListener('click', () => {
+      void (async () => {
+        this.submitted = true
+        const theme = getWechatTheme(this.selectedId)
+        if (this.plugin.settings.wechatThemeId !== theme.id) {
+          this.plugin.settings.wechatThemeId = theme.id
+          await this.plugin.saveSettings()
+        }
+        this.close()
+        this.resolve(theme)
+      })()
     })
   }
 
