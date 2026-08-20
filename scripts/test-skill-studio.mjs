@@ -140,7 +140,7 @@ const removeFromParent = (item) => {
   const parent = files.get(parentPath(item.path))
   if (parent?.children) parent.children = parent.children.filter((child) => child !== item)
 }
-for (const path of ['05_System', '05_System/Skills']) {
+for (const path of ['05_System', '05_System/Skills', 'system', 'system/skills']) {
   const folder = new atomic.TFolder(path)
   files.set(path, folder)
   addToParent(folder)
@@ -193,6 +193,14 @@ failPath = ''
 const created = await atomic.createLocalSkillBundleAtomically(app, '05_System/Skills', demoBlock)
 assert.equal(created.files.length, 2)
 assert.ok(files.has('05_System/Skills/demo-skill/references/template.md'))
+const customRootBlock = { ...demoBlock, name: 'custom-root-skill' }
+const customRootCreated = await atomic.createLocalSkillBundleAtomically(
+  app,
+  'system/skills',
+  customRootBlock,
+)
+assert.equal(customRootCreated.root, 'system/skills/custom-root-skill')
+assert.ok(files.has('system/skills/custom-root-skill/SKILL.md'))
 console.log('  ✓ Skill 文件夹原子创建与失败回滚')
 
 const studioUi = await importBundle({
@@ -224,6 +232,10 @@ assert.match(mainSource, /message\.skillCreatorResult && !manifest\.valid/)
 assert.match(mainSource, /private hasPendingSkillCreatorInterview\(\): boolean \{[\s\S]*?return message\.skillCreatorPending === true/)
 assert.doesNotMatch(mainSource, /hasPendingSkillCreatorInterview[\s\S]{0,600}continue[\s\S]{0,200}skillCreatorPending === true[\s\S]{0,100}continue/)
 assert.match(mainSource, /let localSkillMatch = skillCreatorTurn\s*\? \{ kind: 'none' as const \}\s*: await this\.localSkills\.resolve/)
+assert.match(
+  mainSource,
+  /const currentRoot = this\.localSkills\.root\(\)[\s\S]{0,180}currentRoot !== root[\s\S]{0,260}this\.renderMessages\(\)/,
+)
 assert.match(
   mainSource,
   /const skillCreatorTurn =\s*!pendingVaultQuestion\s*&&[\s\S]{0,220}isExplicitLocalSkillCreationIntent\(text\)/,

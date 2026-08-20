@@ -4756,6 +4756,18 @@ class ChatView extends ItemView {
         text: files.length === 1 ? '创建 SKILL.md' : `创建完整 Skill（${files.length} 个文件）`,
       })
       createBtn.onclick = () => {
+        // 确认卡出现后，用户仍可能去驾驶舱设置里修改“我的 Skills”目录。
+        // 不能沿用卡片渲染时捕获的旧目录，也不能在预览仍显示旧路径时静默改写到新目录：
+        // 先按当前设置重绘准确路径，再让用户重新确认一次。
+        const currentRoot = this.localSkills.root()
+        if (currentRoot !== root) {
+          new Notice(
+            `“我的 Skills”文件夹已改为 ${currentRoot}/，已刷新保存位置，请按新路径重新确认。`,
+            8000,
+          )
+          this.renderMessages()
+          return
+        }
         createBtn.disabled = true
         void (async () => {
           try {
