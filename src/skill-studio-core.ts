@@ -370,26 +370,68 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
   if (manifestIndex < 0) return { block, repairs: [] }
   try {
     const value = JSON.parse(block.files[manifestIndex].content) as Record<string, unknown>
+    const repairs: string[] = []
     const version = value.skillVersion
-    if (!version || typeof version !== 'object' || Array.isArray(version)) {
-      return { block, repairs: [] }
+    if (version && typeof version === 'object' && !Array.isArray(version)) {
+      const parts = ['major', 'minor', 'patch'].map((key) =>
+        (version as Record<string, unknown>)[key],
+      )
+      if (parts.every((part) => Number.isInteger(part) && Number(part) >= 0)) {
+        const normalizedVersion = parts.map(Number).join('.')
+        value.skillVersion = normalizedVersion
+        repairs.push(`已把 skillVersion 自动规范为 ${normalizedVersion}`)
+      }
     }
-    const parts = ['major', 'minor', 'patch'].map((key) =>
-      (version as Record<string, unknown>)[key],
-    )
-    if (!parts.every((part) => Number.isInteger(part) && Number(part) >= 0)) {
-      return { block, repairs: [] }
+
+    // 试运行输入只负责给“立即试运行”按钮填一句示例话术，不会扩大读取或
+    // 写入权限。模型偶尔会生成空数组；为此拒绝整个已完整生成的 Skill 包
+    // 对用户没有帮助，因此本机补一条固定、可见、可修改的点名调用示例。
+    const sampleInputs = value.sampleInputs
+    if (
+      sampleInputs === undefined ||
+      (Array.isArray(sampleInputs) && !sampleInputs.some(
+        (item) => typeof item === 'string' && Boolean(item.trim()),
+      ))
+    ) {
+      const sampleInput = `用 ${block.name} 处理当前打开的材料`
+      value.sampleInputs = [sampleInput]
+      repairs.push(`已补充试运行输入：${sampleInput}`)
     }
-    const normalizedVersion = parts.map(Number).join('.')
-    value.skillVersion = normalizedVersion
+
+    let skillContent = block.content
+    // 普通的“## 输出方式”说明段落不是机器可执行声明。只有标题下一行明确写了
+    // chat/create-note/update-current-note/create-artifact，才算已有输出路由；否则
+    // 仍要补上 AI霖子的确定性声明，避免 Skill 创建成功后静默退回聊天输出。
+    const hasExecutableOutput =
+      /^#{1,6}\s*(?:AI\s*霖子\s*)?输出方式\s*$\r?\n\s*`?(?:chat|create-note|update-current-note|create-artifact|新建笔记|创建笔记|更新当前笔记|修改当前笔记|生成成品|生成HTML看板|生成交互看板)`?\s*$/imu.test(
+        skillContent,
+      )
+    if (!hasExecutableOutput) {
+      const permissions = Array.isArray(value.permissions)
+        ? value.permissions.filter((item): item is string => typeof item === 'string')
+        : []
+      const output = /(?:html|dashboard|看板|交互成品)/iu.test(
+        `${block.description}\n${skillContent}`,
+      )
+        ? 'create-artifact'
+        : permissions.some((item) => /(?:write|create|update|sync|写入|创建|更新|同步)/iu.test(item))
+          ? 'create-note'
+          : 'chat'
+      skillContent = `${skillContent.trim()}\n\n## AI霖子输出方式\n${output}`
+      repairs.push(`已补充输出方式：${output}`)
+    }
+
+    if (repairs.length === 0) return { block, repairs }
     const files = block.files.map((file, index) =>
-      index === manifestIndex
+      file.path === 'SKILL.md'
+        ? { ...file, content: skillContent }
+        : index === manifestIndex
         ? { ...file, content: JSON.stringify(value, null, 2) }
         : file,
     )
     return {
-      block: { ...block, files },
-      repairs: [`已把 skillVersion 自动规范为 ${normalizedVersion}`],
+      block: { ...block, content: skillContent, files },
+      repairs,
     }
   } catch {
     return { block, repairs: [] }

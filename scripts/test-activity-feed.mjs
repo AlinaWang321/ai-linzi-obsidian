@@ -27,12 +27,22 @@ assert('渲染后滚到底部', main.includes('this.listEl.scrollTop = this.list
 assert('四个入口都委托给核心模块', ['this.activityFeed.begin(', 'this.activityFeed.step(', 'this.activityFeed.setCurrent(', 'this.activityFeed.end('].every((call) => main.includes(call)))
 
 console.log('第2组 三条通道全部接入')
-assert('Vault 循环开场登记活动流', main.includes('this.activityBegin(') && /activityBegin\(\s*input\.intent === 'auto'/.test(main))
+assert(
+  'Vault 循环开场登记活动流',
+  main.includes('this.activityBegin(') &&
+    main.includes("restrictedSkillActivity\n        ? '已锁定当前材料，正在按 Skill 处理…'") &&
+    main.includes("input.intent === 'auto'"),
+)
 assert('原生文件引擎步数进活动流', main.includes("'文件操作引擎启动，正在核对相关文件…'"))
 assert('原生通道逐工具动作(读取)', /activityStep\(`📄 读取 \$\{path\.split\('\/'\)\.at\(-1\) \?\? path\}`\)/.test(main))
 assert('搜索动作带关键词与命中数', /🔍 搜索「\$\{query\.slice\(0, 24\)\}」→ \$\{hitPaths\.length\} 个相关文件/.test(main))
 assert('查看文件夹动作', main.includes('📁 查看 ${folder}'))
-assert('旧循环轮数进活动流(第 N/12 轮)', /第 \$\{round \+ 1\}\/\$\{VAULT_AGENT_MAX_ROUNDS\} 轮 · 继续翻阅 Vault…/.test(main))
+assert(
+  '旧循环轮数进活动流(第 N/12 轮)',
+  /第 \$\{round \+ 1\}\/\$\{VAULT_AGENT_MAX_ROUNDS\} 轮 · \$\{continuationActivity\}/.test(main) &&
+    main.includes("? '继续处理当前材料…'") &&
+    main.includes(": '继续翻阅 Vault…'"),
+)
 assert('纠正原因对用户可见', main.includes('要求 AI 实际调用本机工具，不接受口头承诺'))
 assert('云端写入轮进活动流', main.includes('☁️ 判定为云端写入（任务清单 / 客户管理）'))
 assert('引擎切换进活动流', main.includes('🔁 AI 判定要动文件，切换文件操作引擎'))

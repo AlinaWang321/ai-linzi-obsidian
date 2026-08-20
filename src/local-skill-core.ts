@@ -197,6 +197,18 @@ export function localSkillOutputFromMarkdown(content: string): LocalSkillOutput 
   return normalizeOutput(match?.[1] ?? '')
 }
 
+/**
+ * Skill 作者明确把输入锁定为当前/指定文件，同时禁止扫描其他资料时，
+ * 插件必须把这条文字边界落实成工具权限，而不能只依赖模型自觉遵守。
+ */
+export function localSkillForbidsVaultExpansion(content: string): boolean {
+  const locksOneInput =
+    /(?:只|仅)(?:接受|读取|处理|使用).{0,48}(?:当前|明确打开|明确指定|用户指定).{0,36}(?:逐字稿|笔记|文件|文档|材料)/iu.test(content)
+  const forbidsExpansion =
+    /(?:不|不得|禁止).{0,24}(?:扫描|遍历|读取|搜索).{0,36}(?:其他|未指定|整个|全部|全库|知识库|文件夹)/iu.test(content)
+  return locksOneInput && forbidsExpansion
+}
+
 export function localSkillDisplayNameFromMarkdown(content: string): string {
   const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
   const heading = body.match(/^#\s+(.+?)\s*$/m)?.[1] ?? ''

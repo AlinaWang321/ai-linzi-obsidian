@@ -15,6 +15,7 @@ import {
   CUSTOMER_CONSULTATION_TRANSCRIPT_MAX,
   CUSTOMER_CONSULTATION_TRANSCRIPT_MIN,
   customerConsultationPngBase,
+  ensureConsultationBriefHeading,
   normalizeConsultationBriefMarkdown,
   type CustomerConsultationBriefInput,
 } from './customer-consultation-brief-core'
@@ -344,8 +345,11 @@ export async function runCustomerConsultationBrief(
       topic: input.topic || undefined,
       sessionInfo: input.sessionInfo || undefined,
     })
-    const markdown = normalizeConsultationBriefMarkdown(response)
-    if (!markdown.startsWith('# ')) throw new Error('咨询简报内容格式不完整，请稍后重试')
+    const markdown = ensureConsultationBriefHeading(
+      normalizeConsultationBriefMarkdown(response),
+      input,
+    )
+    if (!markdown) throw new Error('咨询简报内容格式不完整，请稍后重试')
     const png = await renderConsultationBriefPng(
       plugin,
       markdown,

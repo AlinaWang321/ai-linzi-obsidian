@@ -33,6 +33,36 @@ assert.equal(
   '2026.08.15_客户 A_客户咨询简报',
 )
 assert.equal(core.normalizeConsultationBriefMarkdown('```markdown\n# 客户 A · 咨询简报\n```'), '# 客户 A · 咨询简报')
+assert.equal(
+  core.normalizeConsultationBriefMarkdown('```markdown\n# 客户 A · 咨询简报\n\n## 核心诊断'),
+  '# 客户 A · 咨询简报\n\n## 核心诊断',
+  '缺少末尾围栏时也必须保留完整正文',
+)
+assert.equal(
+  core.normalizeConsultationBriefMarkdown('下面是为你生成的简报：\n\n# 客户 A · 咨询简报\n\n## 核心诊断'),
+  '# 客户 A · 咨询简报\n\n## 核心诊断',
+  '一级标题前的模型客套话不得进入客户成品',
+)
+assert.equal(
+  core.ensureConsultationBriefHeading('## 核心诊断\n\n正文', {
+    clientName: '客户 A',
+    coachName: 'Alina霖子',
+    topic: '商业定位',
+    sessionInfo: '2026-08-20',
+  }),
+  '# 客户 A · 咨询简报\n\n> 商业定位 · 2026-08-20 · 咨询师 Alina霖子\n\n## 核心诊断\n\n正文',
+  '正文结构完整但缺少一级标题时应使用已确认表单字段补齐',
+)
+assert.equal(
+  core.ensureConsultationBriefHeading('服务暂时不可用', {
+    clientName: '客户 A',
+    coachName: 'Alina霖子',
+    topic: '',
+    sessionInfo: '',
+  }),
+  '',
+  '错误句或无结构内容不得被包装成成功简报',
+)
 const action = runtime.extractConsultationBriefAction(
   `前四步完成\n${runtime.CONSULTATION_BRIEF_ACTION_MARKER}`,
 )

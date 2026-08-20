@@ -114,6 +114,17 @@ assert.match(prompt, /sampleInputs=/)
 assert.match(prompt, /SKILL\.md 必须链接该 manifest/)
 assert.match(prompt, /"skillVersion":"1\.0\.0"/)
 assert.match(prompt, /绝不能写成 \{"major":1,"minor":0,"patch":0\} 对象/)
+assert.equal(
+  localSkillCore.localSkillForbidsVaultExpansion(`
+    本 Skill 只接受一份由用户明确打开的咨询逐字稿作为输入。
+    不主动扫描其他文件，不读取未指定文件。
+  `),
+  true,
+)
+assert.equal(
+  localSkillCore.localSkillForbidsVaultExpansion('读取最近 7 天内修改的所有文档'),
+  false,
+)
 const broadScopePrompt = studioCore.buildSkillStudioPrompt({
   name: 'weekly-review',
   purpose: '做周复盘',
@@ -145,7 +156,67 @@ assert.equal(studioCore.skillBlockManifest(generatedWithObjectVersion).valid, fa
 const normalizedGenerated = studioCore.normalizeGeneratedSkillManifest(generatedWithObjectVersion)
 assert.equal(studioCore.skillBlockManifest(normalizedGenerated.block).valid, true)
 assert.deepEqual(normalizedGenerated.repairs, ['已把 skillVersion 自动规范为 1.2.3'])
-console.log('  ✓ 常见的对象版 skillVersion 会在本机确定性修正')
+const generatedWithoutSampleInput = {
+  ...consultation.block,
+  files: consultation.block.files.map((file) =>
+    file.path === 'references/ai-linzi-skill-manifest.json'
+      ? {
+          ...file,
+          content: JSON.stringify({
+            ...JSON.parse(file.content),
+            sampleInputs: [],
+          }),
+        }
+      : file,
+  ),
+}
+assert.equal(studioCore.skillBlockManifest(generatedWithoutSampleInput).valid, false)
+const normalizedSampleInput = studioCore.normalizeGeneratedSkillManifest(generatedWithoutSampleInput)
+assert.equal(studioCore.skillBlockManifest(normalizedSampleInput.block).valid, true)
+assert.deepEqual(
+  JSON.parse(
+    normalizedSampleInput.block.files.find(
+      (file) => file.path === 'references/ai-linzi-skill-manifest.json',
+    ).content,
+  ).sampleInputs,
+  ['用 consultation-client-workflow 处理当前打开的材料'],
+)
+assert.deepEqual(normalizedSampleInput.repairs, [
+  '已补充试运行输入：用 consultation-client-workflow 处理当前打开的材料',
+])
+const generatedWithoutOutput = {
+  ...generatedWithoutSampleInput,
+  content: generatedWithoutSampleInput.content.replace(
+    /\n## AI霖子输出方式\ncreate-note\s*$/u,
+    '',
+  ),
+}
+generatedWithoutOutput.files = generatedWithoutOutput.files.map((file) =>
+  file.path === 'SKILL.md'
+    ? { ...file, content: generatedWithoutOutput.content }
+    : file,
+)
+const normalizedOutput = studioCore.normalizeGeneratedSkillManifest(generatedWithoutOutput)
+assert.match(normalizedOutput.block.content, /## AI霖子输出方式\ncreate-note$/u)
+assert.ok(normalizedOutput.repairs.includes('已补充输出方式：create-note'))
+const generatedWithNarrativeOutput = {
+  ...generatedWithoutSampleInput,
+  content: generatedWithoutSampleInput.content.replace(
+    /\n## AI霖子输出方式\ncreate-note\s*$/u,
+    '\n## 输出方式\n默认先在对话中展示预览，确认后再保存。',
+  ),
+}
+generatedWithNarrativeOutput.files = generatedWithNarrativeOutput.files.map((file) =>
+  file.path === 'SKILL.md'
+    ? { ...file, content: generatedWithNarrativeOutput.content }
+    : file,
+)
+const normalizedNarrativeOutput = studioCore.normalizeGeneratedSkillManifest(
+  generatedWithNarrativeOutput,
+)
+assert.match(normalizedNarrativeOutput.block.content, /## AI霖子输出方式\ncreate-note$/u)
+assert.ok(normalizedNarrativeOutput.repairs.includes('已补充输出方式：create-note'))
+console.log('  ✓ 常见的对象版 skillVersion 与空试运行输入会在本机确定性修正')
 
 const pendingQuestion = {
   callId: 'call-1',
@@ -305,6 +376,19 @@ assert.doesNotMatch(mainSource, /hasPendingSkillCreatorInterview[\s\S]{0,600}con
 assert.match(
   mainSource,
   /let localSkillMatch = skillCreatorTurn \|\| consultationWorkflowTaskTurn\s*\? \{ kind: 'none' as const \}\s*: await this\.localSkills\.resolve/,
+)
+assert.match(mainSource, /localSkillForbidsVaultExpansion\(localSkill\.fullContent\)/)
+assert.match(
+  mainSource,
+  /uploadedSpreadsheetAttachments\.length === 0 &&\s*!localSkillCurrentOnly/,
+)
+assert.match(
+  mainSource,
+  /nativeEligible &&\s*round === 0[\s\S]{0,180}isVaultNativeTurnRequest\(lastText\)/,
+)
+assert.match(
+  mainSource,
+  /!nativeEligible && isVaultNativeTurnRequest\(lastText\)[\s\S]{0,260}pendingRetryReason = 'missing_tool_use'/,
 )
 assert.match(mainSource, /consultationWorkflowTaskOriginId: message\.id/)
 assert.match(mainSource, /consultationWorkflowTaskTurn \|\| localSkill\?\.name === CONSULTATION_WORKFLOW_SKILL_NAME/)

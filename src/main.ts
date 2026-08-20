@@ -163,6 +163,7 @@ import {
   LEGACY_LOCAL_SKILL_ROOT,
   formatLocalSkillList,
   isLocalSkillListIntent,
+  localSkillForbidsVaultExpansion,
   localSkillMenuTitle,
   normalizeLocalSkillRoot,
   type LocalSkillOutput,
@@ -3091,6 +3092,9 @@ class ChatView extends ItemView {
             entryTruncated: localSkill.entryTruncated,
           }
         : undefined
+      const localSkillCurrentOnly = Boolean(
+        localSkill && localSkillForbidsVaultExpansion(localSkill.fullContent),
+      )
       if (localSkill) {
         new Notice(
           automaticLocalSkill
@@ -3131,7 +3135,8 @@ class ChatView extends ItemView {
             // 额外开放整个 Vault 工具，避免“精确授权”被扩大成未选择文件的读取。
             vaultAccess:
               this.authorizedContentPaths.length === 0 &&
-              this.uploadedSpreadsheetAttachments.length === 0,
+              this.uploadedSpreadsheetAttachments.length === 0 &&
+              !localSkillCurrentOnly,
             vaultSearch: vaultSearch.context,
             noteEdit,
             noteImageIntent: singleIllustration,
@@ -3929,10 +3934,16 @@ class ChatView extends ItemView {
     // 「调没调工具」从文本猜测变成硬信号，空承诺在结构上不可能。任何一步失败
     // 都静默退回下方散文协议循环——行为与 0.7.48 完全一致，这就是回滚保险丝。
     // 0.7.53：登记活动流(只登记不渲染；第一条真实动作才落进对话区)。
+    const restrictedSkillActivity = Boolean(input.localSkill && !input.vaultAccess)
+    const continuationActivity = restrictedSkillActivity
+      ? '继续处理当前材料…'
+      : '继续翻阅 Vault…'
     this.activityBegin(
-      input.intent === 'auto'
-        ? '理解你的要求，需要时会自行查找知识库…'
-        : '正在查看 Vault，需要时会继续翻阅相关文件…',
+      restrictedSkillActivity
+        ? '已锁定当前材料，正在按 Skill 处理…'
+        : input.intent === 'auto'
+          ? '理解你的要求，需要时会自行查找知识库…'
+          : '正在查看 Vault，需要时会继续翻阅相关文件…',
     )
     let pendingNativeText: string | null = null
     // 0.7.54：引擎失败通常是网络/服务端原因，短时间内重试大概率同样失败。
@@ -4173,10 +4184,10 @@ class ChatView extends ItemView {
                           ? '改档案必须先读原文，已退回重做'
                           : '要求补齐缺失信息后再收尾'
             }`,
-            `第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮 · 继续翻阅 Vault…`,
+            `第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮 · ${continuationActivity}`,
           )
         } else {
-          this.activityCurrent(`第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮 · 继续翻阅 Vault…`)
+          this.activityCurrent(`第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮 · ${continuationActivity}`)
         }
       }
       const vaultAgentRequest = {
@@ -4339,10 +4350,27 @@ class ChatView extends ItemView {
         return { text: lastText, sources, localSkillRunIds }
       }
 
+      // “只读当前/指定文件”的 Skill 已被本机收窄为无 Vault 搜索权限。
+      // 模型若仍输出切换原生文件引擎的标记，不能把标记展示给用户，更不能
+      // 进入那个不携带 Skill 权限上下文的通道；要求它在现有材料内重做。
+      if (!nativeEligible && isVaultNativeTurnRequest(lastText)) {
+        if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+          throw new Error('Skill 仍试图扩大读取范围，已被本机停止。请在创建 Skill 时进一步缩小输入。')
+        }
+        pendingRetryReason = 'missing_tool_use'
+        continue
+      }
+
       // 0.7.52：模型自主切换文件操作引擎——词表判不准的最终解。round 0 的 auto
       // 判断轮（全推理）认定本句要动文件时输出标记，插件立即转入原生引擎；
       // 引擎失败则回到散文协议并强制工具纠正，绝不接受口头承诺。
-      if (round === 0 && intent === 'auto' && !nativeChannelFailed && isVaultNativeTurnRequest(lastText)) {
+      if (
+        nativeEligible &&
+        round === 0 &&
+        intent === 'auto' &&
+        !nativeChannelFailed &&
+        isVaultNativeTurnRequest(lastText)
+      ) {
         this.activityStep('🔁 AI 判定要动文件，切换文件操作引擎', '文件操作引擎启动…')
         // 模型自主切换标记的含义就是“最终目的需要动文件”。同步升级客户端
         // intent，确保引擎随后若只用文字追问/确认，会被结构化纠正为 ask_user
