@@ -177,6 +177,22 @@ assert.equal(artifactPlan.invalid, false)
 assert.equal(artifactPlan.plan?.operations[0].type, 'create_artifact')
 assert.equal(core.operationLabel(artifactPlan.plan.operations[0]), '生成 DOCX：$OUTPUT/文档/客户方案.docx')
 
+const outputAliasPlan = core.resolveVaultPlanOutputPaths({
+  title: '生成行动计划',
+  summary: '',
+  operations: [{
+    type: 'create_note',
+    path: '$OUTPUT/行动计划/七天计划.md',
+    content: '# 七天计划',
+  }],
+  notes: [],
+}, '04_Output/AI霖子输出')
+assert.equal(
+  outputAliasPlan.operations[0].path,
+  '04_Output/AI霖子输出/行动计划/七天计划.md',
+  'create-note 的 $OUTPUT 必须解析为用户当前输出目录',
+)
+
 for (const invalidArtifact of [
   { path: '$OUTPUT/文档/客户方案.pdf', format: 'docx' },
   { path: '../客户方案.docx', format: 'docx' },

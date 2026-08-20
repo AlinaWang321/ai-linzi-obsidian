@@ -9,6 +9,7 @@ import {
   ARTIFACT_FORMATS,
   ARTIFACT_MAX_CONTENT_CHARS,
   ARTIFACT_MAX_TITLE_CHARS,
+  resolveArtifactPath,
   type ArtifactFormat,
   type CreateArtifactOperation,
 } from './artifact-renderer-core'
@@ -72,6 +73,34 @@ export interface VaultOrganizePlan {
   summary: string
   operations: VaultOrganizeOperation[]
   notes: string[]
+}
+
+/**
+ * 把 Skill 协议中的 `$OUTPUT` 解析为用户在驾驶舱里设置的真实输出目录。
+ *
+ * 模型只看见可移植别名，确认卡、预检和最终执行必须看见同一条本机路径；
+ * 否则 create-note 会在 Vault 根目录误建一个字面量 `$OUTPUT` 文件夹。
+ */
+export function resolveVaultPlanOutputPaths(
+  plan: VaultOrganizePlan,
+  outputRoot: string,
+): VaultOrganizePlan {
+  return {
+    ...plan,
+    operations: plan.operations.map((operation) => {
+      if (operation.type === 'move') {
+        return {
+          ...operation,
+          from: resolveArtifactPath(operation.from, outputRoot),
+          to: resolveArtifactPath(operation.to, outputRoot),
+        }
+      }
+      return {
+        ...operation,
+        path: resolveArtifactPath(operation.path, outputRoot),
+      }
+    }),
+  }
 }
 
 /** 方案生成时锁定的本地文件版本；只保存在插件本机会话。 */

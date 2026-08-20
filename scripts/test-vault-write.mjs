@@ -215,6 +215,22 @@ assert.ok(files.get('02_Wiki/新客户') instanceof module.TFolder)
 assert.equal(files.get('02_Wiki/新客户/客户乙.md').content, '# 客户乙\n')
 await assert.rejects(agent.applyPlan(createPlan), /目标笔记已存在/)
 
+const outputAliasNotePlan = {
+  title: '新建七天行动计划',
+  summary: '',
+  operations: [{
+    type: 'create_note',
+    path: '$OUTPUT/行动计划/七天计划.md',
+    content: '# 七天计划',
+  }],
+  notes: [],
+}
+await agent.preflightPlan(outputAliasNotePlan)
+const outputAliasNoteRecord = await agent.applyPlan(outputAliasNotePlan)
+assert.deepEqual(outputAliasNoteRecord.createdNotes, ['AI霖子输出/行动计划/七天计划.md'])
+assert.equal(files.has('AI霖子输出/行动计划/七天计划.md'), true)
+assert.equal(files.has('$OUTPUT'), false, '不得在 Vault 根目录创建字面量 $OUTPUT 文件夹')
+
 const multiWritePlan = {
   title: '客户档案与行动清单变更集',
   summary: '',

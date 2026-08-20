@@ -142,6 +142,7 @@ import {
   isVaultTaskExpired,
   namespaceVaultToolCalls,
   operationLabel,
+  resolveVaultPlanOutputPaths,
   upgradeVaultIntent,
   vaultAutoAnswerRetryReason,
   vaultAnswerRetryReason,
@@ -5356,6 +5357,7 @@ class ChatView extends ItemView {
     plan: VaultOrganizePlan,
     message: WireMessage,
   ): void {
+    plan = resolveVaultPlanOutputPaths(plan, this.plugin.settings.outputFolder)
     const card = row.createDiv({ cls: 'ai-linzi-create-note-card ai-linzi-vault-plan-card' })
     const trashOperations = plan.operations.filter(
       (operation): operation is Extract<(typeof plan.operations)[number], { type: 'trash_note' }> =>

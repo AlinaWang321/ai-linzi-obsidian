@@ -13,6 +13,7 @@ import {
   normalizeFolderKey,
   applyRecentListFilter,
   isRecentListRequest,
+  resolveVaultPlanOutputPaths,
   VAULT_NOTE_WRITE_MAX_FILES,
   vaultPathsOverlap,
 } from './vault-agent-core'
@@ -127,7 +128,7 @@ export class LocalVaultAgent {
     private readonly app: App,
     private readonly search: LocalVaultSearch,
     private readonly localSkillsRoot: () => string,
-    private readonly outputRoot: () => string,
+    private readonly outputRoot: () => string = () => 'AI霖子输出',
   ) {}
 
   private protected(path: string): boolean {
@@ -156,6 +157,7 @@ export class LocalVaultAgent {
   }
 
   captureWriteSnapshots(plan: VaultOrganizePlan): VaultWriteSnapshot[] {
+    plan = resolveVaultPlanOutputPaths(plan, this.outputRoot())
     return plan.operations
       .filter((operation) =>
         operation.type === 'append_note' ||
@@ -223,6 +225,7 @@ export class LocalVaultAgent {
     plan: VaultOrganizePlan,
     skillContext?: ActiveLocalSkillContext,
   ): Promise<void> {
+    plan = resolveVaultPlanOutputPaths(plan, this.outputRoot())
     // 新建文件夹/移动/删除方案的全量路径校验（2026-08-17 客户反馈补上）：
     // 模型猜错路径时在这里一次列出全部问题打回重做，而不是等用户确认后才炸。
     const problems = collectOrganizePlanProblems(
@@ -686,6 +689,7 @@ export class LocalVaultAgent {
     plan: VaultOrganizePlan,
     writeSnapshots: VaultWriteSnapshot[] = [],
   ): Promise<VaultActionRecord> {
+    plan = resolveVaultPlanOutputPaths(plan, this.outputRoot())
     const trashOps = plan.operations.filter(
       (operation): operation is Extract<(typeof plan.operations)[number], { type: 'trash_note' }> =>
         operation.type === 'trash_note',
