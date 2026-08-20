@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>经营周报驾驶舱 · 参考稿</title>
+</head>
+<body>
+<style>
+/* ============================================================
+   AI霖子 · 经营周报驾驶舱 参考模板 v2
+   水·木·光品牌视觉系统 · 零外链 · 可离线 · 可打印
+   浅色为基准，dark 三态齐备（bare :root / prefers / [data-theme]）
+   ============================================================ */
+:root{
+  /* 水 · 结构 */
+  --navy:#293857; --ink-navy:#0B1730; --sea:#2E5A8F; --navy-light:#5C7BB0;
+  /* 木 · 正向 */
+  --jade:#3DB389; --jade-ink:#237A5C;
+  /* 光 · 点睛（金永远不做浅底文字） */
+  --gold:#F5C518; --gold-deep:#D4A50C;
+  /* 陶 · 风险 */
+  --clay:#B0532F; --clay-ink:#B0532F;
+  /* 漏斗单色阶（水家族 light→dark），文字色随阶反相 */
+  --fn1:#4B7CB4; --fn2:#3D6A9F; --fn3:#33588A; --fn4:#293857; --fn5:#1F2C46; --fn-ink:#FFFDFA;
+  /* 中性 */
+  --cream:#FAF6F0; --warm:#F1ECE3; --line:#E7DFD2; --line-soft:#F0E9DE;
+  --paper:#FFFDFA; --paper-sunk:#F6F1E8;
+  --ink:#1A1612; --ink-soft:#4A4036; --ink-mute:#8A7E74;
+  --shadow-card:0 1px 2px rgba(41,56,87,.05), 0 12px 28px rgba(41,56,87,.055);
+  --shadow-lift:0 2px 6px rgba(41,56,87,.07), 0 20px 44px rgba(41,56,87,.10);
+  --rail-ink:var(--ink-mute); --rail-on:var(--navy);
+  --sans:"PingFang SC","Hiragino Sans GB","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --num:"SF Pro Display","SF Pro Text",-apple-system,"Helvetica Neue","PingFang SC",sans-serif;
+  --serif:"Songti SC","Source Han Serif SC","STSong",Georgia,serif;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --navy:#EDE7DE; --ink-navy:#050D1C; --sea:#8FB4E8; --navy-light:#7E9BCB;
+    --jade:#6FD9B0; --jade-ink:#6FD9B0;
+    --gold:#F5C518; --gold-deep:#FCE38A;
+    --clay:#E08A5F; --clay-ink:#E08A5F;
+  --fn1:#C7DCF5; --fn2:#AEC8EA; --fn3:#94B2DC; --fn4:#7A9BCB; --fn5:#6285B8; --fn-ink:#0B1730;
+    --cream:#0B1730; --warm:#182842; --line:#26385A; --line-soft:#1C2C48;
+    --paper:#101D33; --paper-sunk:#0C1728;
+    --ink:#F5F1EA; --ink-soft:#CBD5E6; --ink-mute:#93A6C4;
+    --shadow-card:0 1px 2px rgba(0,0,0,.3), 0 12px 30px rgba(0,0,0,.32);
+    --shadow-lift:0 2px 6px rgba(0,0,0,.36), 0 22px 48px rgba(0,0,0,.42);
+    --rail-ink:#93A6C4; --rail-on:#F5F1EA;
+  }
+}
+:root[data-theme="dark"]{
+  --navy:#EDE7DE; --ink-navy:#050D1C; --sea:#8FB4E8; --navy-light:#7E9BCB;
+  --jade:#6FD9B0; --jade-ink:#6FD9B0;
+  --gold:#F5C518; --gold-deep:#FCE38A;
+  --clay:#E08A5F; --clay-ink:#E08A5F;
+  --fn1:#C7DCF5; --fn2:#AEC8EA; --fn3:#94B2DC; --fn4:#7A9BCB; --fn5:#6285B8; --fn-ink:#0B1730;
+  --cream:#0B1730; --warm:#182842; --line:#26385A; --line-soft:#1C2C48;
+  --paper:#101D33; --paper-sunk:#0C1728;
+  --ink:#F5F1EA; --ink-soft:#CBD5E6; --ink-mute:#93A6C4;
+  --shadow-card:0 1px 2px rgba(0,0,0,.3), 0 12px 30px rgba(0,0,0,.32);
+  --shadow-lift:0 2px 6px rgba(0,0,0,.36), 0 22px 48px rgba(0,0,0,.42);
+  --rail-ink:#93A6C4; --rail-on:#F5F1EA;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--cream); color:var(--ink);
+  font-family:var(--sans); line-height:1.7; -webkit-font-smoothing:antialiased;
+  /* 水波涟漪母题：两处极淡同心晕，只留呼吸感 */
+  background-image:
+    radial-gradient(ellipse 60% 40% at 78% -6%, rgba(46,90,143,.07), transparent 70%),
+    radial-gradient(ellipse 50% 34% at -8% 96%, rgba(61,179,137,.055), transparent 70%);
+  background-attachment:fixed;
+}
+h1,h2,h3,h4{margin:0; text-wrap:balance; line-height:1.32}
+p{margin:0}
+.num{font-family:var(--num); font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1}
+
+/* ---------- 骨架：左侧导航轨 + 内容流 ---------- */
+.shell{display:grid; grid-template-columns:186px minmax(0,1fr); gap:36px;
+  width:min(1180px,calc(100% - 56px)); margin:0 auto; padding:40px 0 84px}
+
+.rail{position:sticky; top:40px; align-self:start; display:flex; flex-direction:column; gap:2px}
+.rail-mark{display:flex; align-items:center; gap:9px; margin:0 0 18px 10px}
+.rail-drop{width:11px; height:11px; border-radius:50% 50% 50% 2px; transform:rotate(-45deg);
+  background:linear-gradient(150deg,var(--sea),var(--jade)); flex:0 0 auto}
+.rail-mark span{font-size:11.5px; letter-spacing:.16em; color:var(--ink-mute); text-transform:uppercase}
+.rail a{display:flex; align-items:baseline; gap:8px; padding:7px 10px; border-radius:9px;
+  color:var(--rail-ink); text-decoration:none; font-size:13.5px; border-left:2px solid transparent;
+  transition:color .16s,background .16s,border-color .16s}
+.rail a:hover{color:var(--rail-on); background:var(--warm)}
+.rail a.on{color:var(--rail-on); border-left-color:var(--gold-deep); background:var(--warm); font-weight:600}
+.rail a b{margin-left:auto; font-family:var(--num); font-size:11.5px; font-weight:600;
+  color:var(--ink-mute); font-variant-numeric:tabular-nums}
+.rail a.on b{color:var(--rail-on)}
+.rail-foot{margin:18px 0 0 12px; font-size:11px; color:var(--ink-mute); line-height:1.6}
+
+.flow{display:flex; flex-direction:column; gap:26px; min-width:0}
+section{scroll-margin-top:28px}
+.sec-head{display:flex; align-items:baseline; gap:12px; margin-bottom:13px; flex-wrap:wrap}
+.sec-head h2{font-size:15px; font-weight:700; color:var(--navy); letter-spacing:.01em}
+.sec-head .hint{font-size:12.5px; color:var(--ink-mute)}
+.sec-head .rule{flex:1; min-width:20px; height:1px; background:var(--line)}
+
+/* ---------- 驾驶舱头 ---------- */
+.cockpit{background:var(--paper); border:1px solid var(--line); border-radius:20px;
+  padding:32px 34px 26px; box-shadow:var(--shadow-card)}
+.eyebrow{display:flex; align-items:center; gap:10px; font-size:11.5px; letter-spacing:.15em;
+  color:var(--ink-mute); text-transform:uppercase; margin-bottom:12px}
+.eyebrow .dot{width:5px; height:5px; border-radius:50%; background:var(--gold)}
+.cockpit h1{font-size:31px; font-weight:800; color:var(--navy); letter-spacing:-.015em}
+.cockpit .range{margin-top:7px; font-size:13.5px; color:var(--ink-mute); font-family:var(--num)}
+.verdict{margin-top:22px; padding:15px 20px 15px 19px; border-left:3px solid var(--gold-deep);
+  background:linear-gradient(94deg, color-mix(in srgb, var(--gold) 12%, transparent), transparent 96%);
+  border-radius:0 13px 13px 0}
+.verdict p{font-family:var(--serif); font-size:18.5px; line-height:1.68; color:var(--ink-soft); font-style:italic}
+
+/* 覆盖率条：让统计口径变成图形，而不是脚注 */
+.coverage{margin-top:24px; padding-top:20px; border-top:1px solid var(--line-soft);
+  display:flex; align-items:center; gap:18px; flex-wrap:wrap}
+.cov-bar{flex:1 1 260px; min-width:200px; height:9px; border-radius:99px; overflow:hidden;
+  display:flex; gap:2px; background:var(--paper-sunk)}
+.cov-bar i{display:block; height:100%}
+.cov-read{background:linear-gradient(90deg,var(--sea),var(--jade))}
+.cov-skip{background:repeating-linear-gradient(135deg,var(--line) 0 4px,var(--paper-sunk) 4px 8px)}
+.cov-key{display:flex; gap:16px; flex-wrap:wrap; font-size:12.5px; color:var(--ink-mute)}
+.cov-key span{display:inline-flex; align-items:center; gap:6px}
+.cov-key i{width:9px; height:9px; border-radius:3px; flex:0 0 auto}
+.cov-key b{font-family:var(--num); color:var(--ink); font-weight:700; font-variant-numeric:tabular-nums}
+
+/* ---------- 今天：唯一可勾选区 ---------- */
+.today{background:var(--paper); border:1px solid var(--line); border-radius:20px; padding:26px 28px;
+  box-shadow:var(--shadow-card); border-top:3px solid var(--gold)}
+.today-top{display:flex; align-items:center; gap:20px; flex-wrap:wrap; margin-bottom:18px}
+.ring{position:relative; width:62px; height:62px; flex:0 0 auto}
+.ring svg{transform:rotate(-90deg)}
+.ring circle{fill:none; stroke-width:7; stroke-linecap:round}
+.ring .bg{stroke:var(--paper-sunk)}
+.ring .fg{stroke:var(--jade); transition:stroke-dashoffset .55s cubic-bezier(.4,0,.2,1)}
+.ring b{position:absolute; inset:0; display:grid; place-items:center; font-family:var(--num);
+  font-size:14px; font-weight:700; color:var(--navy); font-variant-numeric:tabular-nums}
+.today-top h2{font-size:19px; font-weight:800; color:var(--navy)}
+.today-top .meta{margin-top:3px; font-size:12.5px; color:var(--ink-mute)}
+.todo{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px}
+.todo li label{display:flex; align-items:flex-start; gap:11px; padding:10px 12px; border-radius:11px;
+  cursor:pointer; transition:background .15s}
+.todo li label:hover{background:var(--warm)}
+.todo input{appearance:none; -webkit-appearance:none; width:18px; height:18px; margin:3px 0 0;
+  flex:0 0 auto; border:1.5px solid var(--navy-light); border-radius:6px; background:var(--paper);
+  cursor:pointer; position:relative; transition:background .15s,border-color .15s}
+.todo input:checked{background:var(--jade); border-color:var(--jade)}
+.todo input:checked::after{content:""; position:absolute; left:5.5px; top:2px; width:4px; height:9px;
+  border:solid #fff; border-width:0 2px 2px 0; transform:rotate(42deg)}
+.todo input:focus-visible{outline:2px solid var(--sea); outline-offset:2px}
+.todo span{font-size:15px; color:var(--ink); line-height:1.55}
+.todo li.done span{text-decoration:line-through; color:var(--ink-mute)}
+.todo .tier{display:flex; align-items:center; gap:8px; margin:16px 0 4px; padding:0 12px;
+  font-size:11.5px; letter-spacing:.12em; color:var(--ink-mute); text-transform:uppercase}
+.todo .tier i{width:6px; height:6px; border-radius:50%; flex:0 0 auto}
+
+/* ---------- 漏斗 ---------- */
+.card{background:var(--paper); border:1px solid var(--line); border-radius:18px; padding:24px 26px;
+  box-shadow:var(--shadow-card)}
+.funnel{display:flex; flex-direction:column; gap:0}
+.stage{display:grid; grid-template-columns:88px minmax(0,1fr) 116px; align-items:center; gap:16px; padding:7px 0}
+.stage-name{font-size:13.5px; color:var(--ink-soft); text-align:right}
+.stage-track{height:30px; border-radius:8px; background:var(--paper-sunk); overflow:hidden; position:relative}
+.stage-fill{height:100%; border-radius:8px; display:flex; align-items:center; padding-left:12px;
+  transform-origin:left; animation:grow .7s cubic-bezier(.22,.9,.3,1) both}
+@keyframes grow{from{transform:scaleX(.03)}to{transform:scaleX(1)}}
+.stage-fill span{font-family:var(--num); font-size:14px; font-weight:700; color:var(--fn-ink);
+  font-variant-numeric:tabular-nums; white-space:nowrap}
+.stage-side{font-size:12.5px; color:var(--ink-mute)}
+.stage-side b{font-family:var(--num); color:var(--ink-soft); font-weight:600}
+.drop{display:grid; grid-template-columns:88px minmax(0,1fr) 116px; gap:16px; padding:1px 0}
+.drop-line{grid-column:2; display:flex; align-items:center; gap:9px; padding-left:12px;
+  font-size:12px; color:var(--ink-mute)}
+.drop-line::before{content:""; width:1px; height:15px; background:var(--line); flex:0 0 auto}
+.drop-line b{font-family:var(--num); font-weight:700; font-variant-numeric:tabular-nums}
+.drop-line.leak{color:var(--clay-ink); font-weight:600}
+.drop-line.leak::before{background:var(--clay); width:2px}
+.leak-tag{display:inline-flex; align-items:center; gap:5px; padding:1px 8px; border-radius:99px;
+  background:color-mix(in srgb, var(--clay) 15%, transparent); color:var(--clay-ink);
+  font-size:11px; font-weight:700; letter-spacing:.02em}
+.funnel-note{margin-top:16px; padding-top:14px; border-top:1px solid var(--line-soft);
+  font-size:13.5px; color:var(--ink-soft); line-height:1.65}
+.funnel-note b{color:var(--clay-ink)}
+
+/* ---------- 指标卡 ---------- */
+.tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(178px,1fr)); gap:12px}
+.tile{background:var(--paper); border:1px solid var(--line); border-radius:16px; padding:17px 19px 15px;
+  display:flex; flex-direction:column; gap:3px; transition:box-shadow .2s,transform .2s}
+.tile:hover{box-shadow:var(--shadow-lift); transform:translateY(-2px)}
+.tile-label{font-size:12.5px; color:var(--ink-mute)}
+.tile-row{display:flex; align-items:baseline; gap:9px; flex-wrap:wrap}
+.tile-num{font-family:var(--num); font-size:27px; font-weight:800; color:var(--navy);
+  line-height:1.15; font-variant-numeric:tabular-nums; letter-spacing:-.02em}
+.tile-unit{font-size:13px; color:var(--ink-mute); font-weight:500}
+.delta{display:inline-flex; align-items:center; gap:3px; font-family:var(--num); font-size:12.5px; font-weight:700}
+.delta.up{color:var(--jade-ink)}
+.delta.down{color:var(--clay-ink)}
+.delta.flat{color:var(--ink-mute)}
+.tile-note{margin-top:5px; font-size:11.5px; color:var(--ink-mute); line-height:1.5}
+.spark{margin-top:9px; height:26px; width:100%; display:block; overflow:visible}
+
+/* ---------- 七天节奏 ---------- */
+.week{display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:9px}
+.day{background:var(--paper); border:1px solid var(--line); border-radius:14px; padding:13px 12px 12px;
+  display:flex; flex-direction:column; gap:8px; min-width:0; transition:box-shadow .2s,transform .2s}
+.day:hover{box-shadow:var(--shadow-lift); transform:translateY(-2px)}
+.day-date{font-family:var(--num); font-size:12px; font-weight:700; color:var(--ink-mute);
+  letter-spacing:.02em; font-variant-numeric:tabular-nums}
+.day-bar{height:52px; display:flex; align-items:flex-end}
+.day-bar i{display:block; width:100%; border-radius:5px 5px 2px 2px;
+  background:linear-gradient(180deg,var(--sea),color-mix(in srgb,var(--sea) 55%, transparent));
+  animation:rise .6s cubic-bezier(.22,.9,.3,1) both}
+.day.peak .day-bar i{background:linear-gradient(180deg,var(--jade),color-mix(in srgb,var(--jade) 50%, transparent))}
+@keyframes rise{from{transform:scaleY(.04); transform-origin:bottom}to{transform:scaleY(1)}}
+.day-line{font-size:12.5px; color:var(--ink); line-height:1.45; font-weight:600}
+.day-out{font-size:11.5px; color:var(--ink-mute); line-height:1.45}
+.day-chip{align-self:flex-start; display:inline-flex; align-items:center; gap:4px; padding:1px 7px;
+  border-radius:99px; font-size:10.5px; font-weight:700; letter-spacing:.02em}
+.chip-win{background:color-mix(in srgb,var(--jade) 16%,transparent); color:var(--jade-ink)}
+.chip-ship{background:color-mix(in srgb,var(--sea) 14%,transparent); color:var(--sea)}
+.chip-risk{background:color-mix(in srgb,var(--clay) 15%,transparent); color:var(--clay-ink)}
+
+/* ---------- 昨日回执 + 主题 ---------- */
+.two{display:grid; grid-template-columns:1.15fr 1fr; gap:14px; align-items:start}
+.receipts{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:9px}
+.receipts li{display:flex; align-items:flex-start; gap:10px; font-size:14px; color:var(--ink-soft); line-height:1.55}
+.receipts .mk{flex:0 0 auto; width:17px; height:17px; border-radius:50%; display:grid; place-items:center;
+  margin-top:2px; font-size:10px; font-weight:800}
+.mk-done{background:color-mix(in srgb,var(--jade) 18%,transparent); color:var(--jade-ink)}
+.mk-open{background:var(--paper-sunk); color:var(--ink-mute); border:1px dashed var(--line)}
+.receipts li.open{color:var(--ink-mute)}
+.stack{display:flex; flex-direction:column; gap:14px}
+.mini-h{font-size:12.5px; font-weight:700; color:var(--navy); margin-bottom:9px}
+.plain{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px}
+.plain li{position:relative; padding-left:15px; font-size:13.5px; color:var(--ink-soft); line-height:1.6}
+.plain li::before{content:""; position:absolute; left:0; top:9px; width:5px; height:5px;
+  border-radius:50%; background:var(--navy-light)}
+.plain.no li::before{background:none; width:auto; height:auto; top:0; content:"×"; color:var(--ink-mute);
+  font-size:13px; line-height:1.6}
+.plain.no li{color:var(--ink-mute)}
+
+/* ---------- 决策 ---------- */
+.decide{display:grid; grid-template-columns:1.3fr 1fr; gap:14px; align-items:start}
+.act{list-style:none; margin:0; padding:0; counter-reset:a; display:flex; flex-direction:column; gap:10px}
+.act li{display:flex; gap:12px; align-items:flex-start}
+.act li::before{counter-increment:a; content:counter(a); flex:0 0 auto; width:21px; height:21px;
+  border-radius:7px; background:var(--navy); color:var(--cream); font-family:var(--num); font-size:11.5px;
+  font-weight:700; display:grid; place-items:center; margin-top:2px}
+.act li span{font-size:14px; color:var(--ink); line-height:1.6}
+
+/* ---------- 数据依据 ---------- */
+details.evidence{background:var(--paper); border:1px solid var(--line); border-radius:16px; overflow:hidden}
+details.evidence>summary{list-style:none; cursor:pointer; padding:15px 22px; display:flex;
+  align-items:center; gap:10px; font-size:13.5px; color:var(--ink-soft); font-weight:600}
+details.evidence>summary::-webkit-details-marker{display:none}
+details.evidence>summary::after{content:"展开"; margin-left:auto; font-size:12px; color:var(--ink-mute); font-weight:500}
+details.evidence[open]>summary::after{content:"收起"}
+details.evidence>summary::before{content:""; width:6px; height:6px; border-radius:50%; background:var(--navy-light)}
+details.evidence>summary:focus-visible{outline:2px solid var(--sea); outline-offset:-2px}
+.evi-body{padding:2px 22px 22px; border-top:1px solid var(--line-soft)}
+.table-wrap{overflow-x:auto; margin:12px 0 0}
+table{width:100%; border-collapse:collapse; font-size:13px}
+th,td{padding:8px 11px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line-soft)}
+th{color:var(--ink-mute); font-weight:600; font-size:11.5px; letter-spacing:.06em; text-transform:uppercase;
+  border-bottom:1px solid var(--line)}
+td{color:var(--ink-soft)}
+td.num-cell{font-family:var(--num); font-variant-numeric:tabular-nums}
+.warnbox{margin-top:16px; padding:12px 16px; border-radius:12px; border:1px solid var(--line);
+  background:var(--paper-sunk); font-size:13px; color:var(--ink-soft); line-height:1.6}
+.warnbox b{color:var(--clay-ink)}
+
+footer{margin-top:8px; text-align:center; font-size:11.5px; color:var(--ink-mute); letter-spacing:.03em}
+
+/* ---------- 响应式 ---------- */
+@media (max-width:960px){
+  .shell{grid-template-columns:1fr; gap:18px; width:calc(100% - 32px); padding:20px 0 60px}
+  .rail{position:sticky; top:0; z-index:5; flex-direction:row; gap:6px; overflow-x:auto;
+    padding:10px 0; margin:0 -16px; padding-inline:16px; background:var(--cream); border-bottom:1px solid var(--line)}
+  .rail-mark,.rail-foot{display:none}
+  .rail a{flex:0 0 auto; border-left:0; border-bottom:2px solid transparent; border-radius:99px; white-space:nowrap}
+  .rail a.on{border-left:0; border-bottom-color:var(--gold-deep)}
+  .week{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .two,.decide{grid-template-columns:1fr}
+  .cockpit{padding:24px 20px}
+  .cockpit h1{font-size:24px}
+  .stage{grid-template-columns:66px minmax(0,1fr); }
+  .stage-side{grid-column:2; padding-left:12px}
+  .drop{grid-template-columns:66px minmax(0,1fr)}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+@media print{
+  body{background:#fff; background-image:none}
+  .shell{display:block; width:100%; padding:0}
+  .rail{display:none}
+  .flow{gap:16px}
+  .card,.cockpit,.today,.tile,.day{box-shadow:none; break-inside:avoid}
+  details.evidence[open],details.evidence{break-inside:avoid}
+  details.evidence>summary::after{display:none}
+}
+</style>
+
+<div class="shell">
+
+  <nav class="rail" aria-label="看板分区">
+    <div class="rail-mark"><i class="rail-drop"></i><span>AI霖子</span></div>
+    <a href="#today" class="on">今天做什么 <b>0/3</b></a>
+    <a href="#funnel">漏在哪一步</a>
+    <a href="#tiles">本周数字</a>
+    <a href="#week">七天节奏</a>
+    <a href="#yesterday">昨天发生了什么</a>
+    <a href="#decide">下周决策</a>
+    <a href="#evidence">数据依据</a>
+    <p class="rail-foot">勾选只存在这台电脑的浏览器里，不上传。</p>
+  </nav>
+
+  <main class="flow">
+
+    <!-- ======== 驾驶舱头 ======== -->
+    <header class="cockpit">
+      <div class="eyebrow"><i class="dot"></i>经营周报 · 第 34 周</div>
+      <h1>本周经营复盘</h1>
+      <p class="range">2026.08.14 — 08.20 · 生成于 08.20 21:40</p>
+
+      <div class="verdict">
+        <p>这周最大的问题不是没做事，是做的事没有落到成交口。</p>
+      </div>
+
+      <div class="coverage">
+        <div class="cov-bar" role="img" aria-label="共扫描 148 份文档，完整读取 131 份，跳过 17 份">
+          <i class="cov-read" style="width:88.5%"></i>
+          <i class="cov-skip" style="width:11.5%"></i>
+        </div>
+        <div class="cov-key">
+          <span><i class="cov-read"></i>完整读取 <b class="num">131</b></span>
+          <span><i class="cov-skip"></i>跳过 <b class="num">17</b></span>
+          <span>共扫描 <b class="num">148</b> 份</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ======== 今天 ======== -->
+    <section id="today" class="today">
+      <div class="today-top">
+        <div class="ring">
+          <svg width="62" height="62" viewBox="0 0 62 62" aria-hidden="true">
+            <circle class="bg" cx="31" cy="31" r="26"></circle>
+            <circle class="fg" id="ring-fg" cx="31" cy="31" r="26"
+                    stroke-dasharray="163.4" stroke-dashoffset="163.4"></circle>
+          </svg>
+          <b id="ring-pct">0%</b>
+        </div>
+        <div>
+          <h2>今天做什么</h2>
+          <p class="meta" id="today-meta">3 件必须推进 · 2 件完成一项即可</p>
+        </div>
+      </div>
+
+      <ul class="todo" id="todo">
+        <li class="tier"><i style="background:var(--gold)"></i>今天必须推进</li>
+        <li><label><input type="checkbox" data-core="1"><span>给 34 个新线索排一次优先级，标出 A 类立刻约咨询</span></label></li>
+        <li><label><input type="checkbox" data-core="1"><span>定稿《贵人缘》续篇选题并写完开头 500 字</span></label></li>
+        <li><label><input type="checkbox" data-core="1"><span>拍板督导薪酬第三条口径</span></label></li>
+        <li class="tier"><i style="background:var(--sea)"></i>完成一项即可</li>
+        <li><label><input type="checkbox"><span>处理大滢 3 场测评逐字稿</span></label></li>
+        <li><label><input type="checkbox"><span>起草 9 月平台日历事件表</span></label></li>
+      </ul>
+    </section>
+
+    <!-- ======== 漏斗 ======== -->
+    <section id="funnel">
+      <div class="sec-head">
+        <h2>漏在哪一步</h2>
+        <span class="hint">内容 → 线索 → 咨询 → 成交，每一格是上一格的转化率</span>
+        <span class="rule"></span>
+      </div>
+      <div class="card">
+        <div class="funnel">
+          <div class="stage">
+            <div class="stage-name">内容产出</div>
+            <div class="stage-track"><div class="stage-fill" style="width:100%;background:var(--fn1)"><span>11 篇</span></div></div>
+            <div class="stage-side">上周 <b class="num">8</b> 篇</div>
+          </div>
+          <div class="drop"><div class="drop-line">每篇带来 <b>3.1</b> 个线索</div></div>
+
+          <div class="stage">
+            <div class="stage-name">有效线索</div>
+            <div class="stage-track"><div class="stage-fill" style="width:82%;background:var(--fn2);animation-delay:.06s"><span>34 人</span></div></div>
+            <div class="stage-side">上周 <b class="num">27</b> 人</div>
+          </div>
+          <div class="drop"><div class="drop-line leak">
+            <span>线索 → 咨询 <b>26%</b></span>
+            <span class="leak-tag">最大漏点 · 上周 41%</span>
+          </div></div>
+
+          <div class="stage">
+            <div class="stage-name">完成咨询</div>
+            <div class="stage-track"><div class="stage-fill" style="width:44%;background:var(--fn3);animation-delay:.12s"><span>9 场</span></div></div>
+            <div class="stage-side">上周 <b class="num">11</b> 场</div>
+          </div>
+          <div class="drop"><div class="drop-line">咨询 → 成交 <b>33%</b>（上周 18%）</div></div>
+
+          <div class="stage">
+            <div class="stage-name">成交</div>
+            <div class="stage-track"><div class="stage-fill" style="width:24%;background:var(--fn4);animation-delay:.18s"><span>3 单</span></div></div>
+            <div class="stage-side">上周 <b class="num">2</b> 单</div>
+          </div>
+          <div class="drop"><div class="drop-line">客单价 <b>42,867</b> 元</div></div>
+
+          <div class="stage">
+            <div class="stage-name">回款</div>
+            <div class="stage-track"><div class="stage-fill" style="width:18%;background:var(--fn5);animation-delay:.24s"><span>128,600 元</span></div></div>
+            <div class="stage-side">上周 <b class="num">96,000</b></div>
+          </div>
+        </div>
+
+        <p class="funnel-note">
+          咨询场次是唯一往下走的一格：线索多了 7 个，咨询反而少了 2 场。
+          <b>卡点在加微信后 48 小时内没有人主动约</b>——不是内容不够，是接不住。
+        </p>
+      </div>
+    </section>
+
+    <!-- ======== 指标 ======== -->
+    <section id="tiles">
+      <div class="sec-head"><h2>本周数字</h2><span class="hint">对比上周</span><span class="rule"></span></div>
+      <div class="tiles">
+
+        <div class="tile">
+          <span class="tile-label">新增线索</span>
+          <div class="tile-row">
+            <span class="tile-num">34</span><span class="tile-unit">人</span>
+            <span class="delta up">▲ 26%</span>
+          </div>
+          <svg class="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M0 20 L20 17 L40 21 L60 12 L80 15 L100 7 L120 4 L120 26 L0 26 Z"
+                  fill="var(--sea)" opacity=".14"></path>
+            <path d="M0 20 L20 17 L40 21 L60 12 L80 15 L100 7 L120 4"
+                  fill="none" stroke="var(--sea)" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"></path>
+            <circle cx="120" cy="4" r="3" fill="var(--sea)" stroke="var(--paper)" stroke-width="2"></circle>
+          </svg>
+          <span class="tile-note">公众号 21 · 视频号 13</span>
+        </div>
+
+        <div class="tile">
+          <span class="tile-label">完成咨询</span>
+          <div class="tile-row">
+            <span class="tile-num">9</span><span class="tile-unit">场</span>
+            <span class="delta down">▼ 2 场</span>
+          </div>
+          <svg class="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M0 8 L20 6 L40 11 L60 10 L80 16 L100 18 L120 17 L120 26 L0 26 Z"
+                  fill="var(--clay)" opacity=".12"></path>
+            <path d="M0 8 L20 6 L40 11 L60 10 L80 16 L100 18 L120 17"
+                  fill="none" stroke="var(--clay)" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"></path>
+            <circle cx="120" cy="17" r="3" fill="var(--clay)" stroke="var(--paper)" stroke-width="2"></circle>
+          </svg>
+          <span class="tile-note">测评 6 · 私教 3</span>
+        </div>
+
+        <div class="tile">
+          <span class="tile-label">成交</span>
+          <div class="tile-row">
+            <span class="tile-num">3</span><span class="tile-unit">单</span>
+            <span class="delta up">▲ 1 单</span>
+          </div>
+          <span class="tile-note">合伙人 2 · 教练班 1<br>均来自 6 月老线索</span>
+        </div>
+
+        <div class="tile">
+          <span class="tile-label">回款</span>
+          <div class="tile-row">
+            <span class="tile-num">128,600</span><span class="tile-unit">元</span>
+            <span class="delta up">▲ 34%</span>
+          </div>
+          <span class="tile-note">含 1 笔尾款</span>
+        </div>
+
+        <div class="tile">
+          <span class="tile-label">内容产出</span>
+          <div class="tile-row">
+            <span class="tile-num">11</span><span class="tile-unit">篇</span>
+            <span class="delta up">▲ 3 篇</span>
+          </div>
+          <span class="tile-note">公众号 3 · 小红书 5 · X 3</span>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ======== 七天 ======== -->
+    <section id="week">
+      <div class="sec-head"><h2>七天节奏</h2><span class="hint">柱高 = 当天新增线索</span><span class="rule"></span></div>
+      <div class="week">
+        <div class="day">
+          <span class="day-date">08.14 四</span>
+          <div class="day-bar"><i style="height:88%"></i></div>
+          <span class="day-line">公众号发文</span>
+          <span class="day-chip chip-win">21 线索</span>
+          <span class="day-out">《贵人缘》单篇，本周唯一跑通的引流口</span>
+        </div>
+        <div class="day">
+          <span class="day-date">08.15 五</span>
+          <div class="day-bar"><i style="height:30%;animation-delay:.05s"></i></div>
+          <span class="day-line">私教 2 场</span>
+          <span class="day-chip chip-win">1 单意向</span>
+          <span class="day-out">高客单方向确认</span>
+        </div>
+        <div class="day">
+          <span class="day-date">08.16 六</span>
+          <div class="day-bar"><i style="height:14%;animation-delay:.1s"></i></div>
+          <span class="day-line">插件 0.7.66</span>
+          <span class="day-chip chip-ship">发版</span>
+          <span class="day-out">空承诺修复</span>
+        </div>
+        <div class="day">
+          <span class="day-date">08.17 日</span>
+          <div class="day-bar"><i style="height:10%;animation-delay:.15s"></i></div>
+          <span class="day-line">CN 网站掉头</span>
+          <span class="day-chip chip-risk">返工</span>
+          <span class="day-out">导入链路重写</span>
+        </div>
+        <div class="day peak">
+          <span class="day-date">08.18 一</span>
+          <div class="day-bar"><i style="height:100%;animation-delay:.2s"></i></div>
+          <span class="day-line">打卡营充值</span>
+          <span class="day-chip chip-win">140 人</span>
+          <span class="day-out">当周最高</span>
+        </div>
+        <div class="day">
+          <span class="day-date">08.19 二</span>
+          <div class="day-bar"><i style="height:18%;animation-delay:.25s"></i></div>
+          <span class="day-line">Skill Studio</span>
+          <span class="day-chip chip-ship">0.7.67</span>
+          <span class="day-out">技能创建闭环</span>
+        </div>
+        <div class="day">
+          <span class="day-date">08.20 三</span>
+          <div class="day-bar"><i style="height:22%;animation-delay:.3s"></i></div>
+          <span class="day-line">经营看板</span>
+          <span class="day-chip chip-ship">0.7.68</span>
+          <span class="day-out">本页由它生成</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== 昨天 ======== -->
+    <section id="yesterday">
+      <div class="sec-head"><h2>昨天发生了什么</h2><span class="hint">08.19 · 已成事实，不可勾选</span><span class="rule"></span></div>
+      <div class="two">
+        <div class="card">
+          <p class="mini-h">昨日完成</p>
+          <ul class="receipts">
+            <li><i class="mk mk-done">✓</i><span>0.7.68 发版并完成真机核验</span></li>
+            <li><i class="mk mk-done">✓</i><span>三位学员的咨询逐字稿入 CRM</span></li>
+            <li class="open"><i class="mk mk-open">—</i><span>教练班督导薪酬 8 月初稿（未完成）</span></li>
+          </ul>
+          <p class="funnel-note">督导薪酬口径确认了两条，剩余一条需要拍板。</p>
+        </div>
+        <div class="stack">
+          <div class="card">
+            <p class="mini-h">昨日遗留</p>
+            <ul class="plain">
+              <li>大滢的 3 场测评逐字稿还没进档案</li>
+              <li>平台日历 9 月版没开工</li>
+            </ul>
+          </div>
+          <div class="card">
+            <p class="mini-h">反复出现的主题</p>
+            <ul class="plain">
+              <li>线索接不住：三天里有两天出现「加了微信没跟进」</li>
+              <li>工具占用了本该做销售的时间</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== 决策 ======== -->
+    <section id="decide">
+      <div class="sec-head"><h2>下周决策</h2><span class="hint">三做一不做</span><span class="rule"></span></div>
+      <div class="decide">
+        <div class="card">
+          <p class="mini-h">优先行动</p>
+          <ol class="act">
+            <li><span>建立 48 小时线索响应机制，指定唯一负责人</span></li>
+            <li><span>把《贵人缘》做成系列，锁定 3 篇选题</span></li>
+            <li><span>插件进入只修 bug 模式，停止加新功能两周</span></li>
+          </ol>
+        </div>
+        <div class="card">
+          <p class="mini-h">不做清单</p>
+          <ul class="plain no">
+            <li>不做新平台冷启动</li>
+            <li>不接新的免费咨询</li>
+          </ul>
+          <p class="funnel-note" style="margin-top:14px">
+            可复制动作：发文当天晚上 8 点集中回私信，转化明显更高。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======== 数据依据 ======== -->
+    <section id="evidence">
+      <details class="evidence">
+        <summary>数据依据 · 131 份读取、17 份跳过、2 项待补</summary>
+        <div class="evi-body">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>文件</th><th>目录</th><th>修改时间</th></tr></thead>
+              <tbody>
+                <tr><td>2026.08.20_经营周报.md</td><td>04_Output</td><td class="num-cell">08-20 21:12</td></tr>
+                <tr><td>No.301_月月.md</td><td>02_Wiki/学员档案</td><td class="num-cell">08-20 15:40</td></tr>
+                <tr><td>8月薪酬核算.md</td><td>04_Output</td><td class="num-cell">08-19 22:05</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="warnbox">
+            <b>口径提醒：</b>17 份为图片与二进制附件，本机未提取；视频号后台数据未导出，13 个线索为手工计数。
+            本页只统计「最近 7 天修改过」的文件，批量脚本改写会让文件被误算成本周动作。
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <footer>由 AI霖子生成 · 事实以文件原文为准，判断与假设已分开标注</footer>
+  </main>
+</div>
+
+<script>
+(function(){
+  var KEY = 'ai-linzi-board:' + document.title + ':' + location.pathname;
+
+  /* ---- 只有「今天」区的勾选算进度，历史回执不算 ---- */
+  var boxes = [].slice.call(document.querySelectorAll('#todo input[type=checkbox]'));
+  boxes.forEach(function(b,i){ b.dataset.idx = String(i); });
+
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e) { saved = {}; }
+  boxes.forEach(function(b){ if (saved[b.dataset.idx] === true) b.checked = true; });
+
+  var ringFg  = document.getElementById('ring-fg');
+  var ringPct = document.getElementById('ring-pct');
+  var meta    = document.getElementById('today-meta');
+  var railTop = document.querySelector('.rail a[href="#today"] b');
+  var CIRC    = 2 * Math.PI * 26;
+
+  function paint(){
+    var total = boxes.length;
+    var done  = boxes.filter(function(b){ return b.checked; }).length;
+    var core  = boxes.filter(function(b){ return b.dataset.core; });
+    var coreDone = core.filter(function(b){ return b.checked; }).length;
+    var pct = total ? Math.round(done / total * 100) : 0;
+
+    if (ringFg)  ringFg.setAttribute('stroke-dashoffset', String(CIRC * (1 - pct/100)));
+    if (ringPct) ringPct.textContent = pct + '%';
+    if (railTop) railTop.textContent = coreDone + '/' + core.length;
+    if (meta) {
+      meta.textContent = coreDone === core.length
+        ? '必须推进的 ' + core.length + ' 件已经全部完成'
+        : (core.length - coreDone) + ' 件必须推进 · ' + (total - core.length) + ' 件完成一项即可';
+    }
+    boxes.forEach(function(b){
+      var li = b.closest('li'); if (li) li.classList.toggle('done', b.checked);
+    });
+  }
+
+  boxes.forEach(function(b){
+    b.addEventListener('change', function(){
+      var out = {};
+      boxes.forEach(function(x){ out[x.dataset.idx] = x.checked; });
+      try { localStorage.setItem(KEY, JSON.stringify(out)); } catch(e) {}
+      paint();
+    });
+  });
+  paint();
+
+  /* ---- 左轨跟随滚动 ---- */
+  var links = [].slice.call(document.querySelectorAll('.rail a'));
+  var secs  = links.map(function(a){ return document.querySelector(a.getAttribute('href')); });
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (!en.isIntersecting) return;
+        links.forEach(function(a,i){ a.classList.toggle('on', secs[i] === en.target); });
+      });
+    }, { rootMargin: '-12% 0px -70% 0px', threshold: 0 });
+    secs.forEach(function(s){ if (s) io.observe(s); });
+  }
+})();
+</script>
+</body>
+</html>
