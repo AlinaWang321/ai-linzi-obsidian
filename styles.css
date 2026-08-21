@@ -410,9 +410,9 @@
 .ai-linzi-root .ai-linzi-empty-starters button.ai-linzi-starter-btn {
   display: flex;
   width: 100%;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 9px 12px;
   border: 1px solid var(--alz-warm-line);
   border-radius: 10px;
   background: var(--alz-cream);
@@ -444,26 +444,15 @@
   height: 13px;
 }
 
-.ai-linzi-starter-text {
-  display: flex;
+.ai-linzi-starter-label {
   min-width: 0;
   flex: 1;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.ai-linzi-starter-label {
   color: var(--alz-navy);
   font-size: var(--font-ui-small);
   font-weight: 600;
   line-height: 1.45;
 }
 
-.ai-linzi-starter-hint {
-  color: var(--alz-ink-mute);
-  font-size: var(--font-ui-smaller);
-  line-height: 1.45;
-}
 
 .ai-linzi-empty-link.is-quiet {
   margin-top: 18px;

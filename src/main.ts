@@ -6520,9 +6520,9 @@ class ChatView extends ItemView {
           })
           const mark = btn.createDiv({ cls: 'ai-linzi-starter-icon' })
           setIcon(mark, icon)
-          const textCol = btn.createDiv({ cls: 'ai-linzi-starter-text' })
-          textCol.createSpan({ text: label, cls: 'ai-linzi-starter-label' })
-          textCol.createSpan({ text: hint, cls: 'ai-linzi-starter-hint' })
+          // 只留一行大字。说明文字仍保留在 title 与 aria-label 里——
+          // 「只填输入框 / 选中才执行」这个承诺不能丢，只是不再占视觉。
+          btn.createSpan({ text: label, cls: 'ai-linzi-starter-label' })
           btn.onclick = onPick
         }
         const fillInput = (text: string) => {
