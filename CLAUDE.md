@@ -41,3 +41,11 @@ v0.7.21 起用户界面统一使用“我的 Skills”，旧的“本地 Skills�
 
 v0.7.29 起，同一对话里已经实际调用过的本地 Skill 可在“继续、处理最新一份、写入客户档案”等明确续跑语句中按已锁定的 `SKILL.md` 路径继续；只保存入口路径，不保存 Skill 正文，也不得把路径上传云端。确认新建/更新一篇客户档案后，插件可以提示“查看 CRM 同步差异”，但不能自动同步：再次点击后只读取这一篇档案，按客户编号→微信号→称呼匹配，重名或回收站占号必须停止；完整展示字段差异并二次确认后才调用 `/api/plugin/v1/customers/sync`。来源逐字稿不得上传，完整客户档案正文由用户在确认窗单独选择；同步成功前不得显示成功。
 v0.7.22 起所有读取当前笔记的耗时技能必须在启动时锁定来源文件和正文；用户随后切换、浏览或打开其他笔记不得改变正在执行的任务。只有仍停留在“是否使用当前笔记”授权弹窗的选题雷达会在弹窗打开时锁定文件、确认后再读取该锁定文件；文件已被实际移除时必须中止并提示，不能回退到新的当前笔记。
+
+改面板 CSS 前必须先看这两条铁律，它们只有在真机 Obsidian 里才会暴露，本地渲染台和单元测试都抓不到，各自已配守卫测试（`scripts/test-button-feedback.mjs` 第 3.5、3.6 组，改坏必报错）。第一条：面板内自定义按钮的选择器权重必须达到 (0,3,1)，写成 `.ai-linzi-root <祖先类> button.ai-linzi-x`，不能只写单类或省略 `button` 元素选择器。原因是 Obsidian 与各家主题普遍带 `button { padding; border-radius; background }` 一类规则，深色主题常写成 `.theme-dark button`（0,1,1）甚至更高；0.7.71 实测单类写法下发送键的 `border-radius` 被主题改成 5px、`padding` 改成 4px 10px，圆形发送键在真机上根本不是圆的，深色主题下三处按钮的透明底也被全部刷回灰底。官方市场检查禁用 important 声明，选择器权重是唯一可用的杠杆；`@container` 不改变权重，其内部规则同样要写足。第二条：权重只能覆盖你显式声明过的属性。主题的 `button` 规则里还有 `height`、`white-space`、`line-height`、`font-family`，凡是我们没写的那几条，权重再高也拦不住——0.7.71 第二轮真机报障就是起手式卡被主题的固定 30px 高度压扁、第二行说明文字溢出卡片并被下一张卡遮住。因此所有由内容撑高的按钮必须集中声明一条共享 reset：`height: auto; min-height: 0; max-height: none; white-space: normal; line-height: <具体值>; font-family: inherit`。
+
+侧边栏面板的响应式断点必须用 `@container` 而不是 `@media`。Obsidian 的侧边栏是宽窗口里的一根窄栏，`@media (max-width: …)` 判定的是窗口宽度，320px 宽的面板会拿到 1400px 视口的样式，窄屏规则永远不命中。`.ai-linzi-root` 已声明 `container-type: inline-size; container-name: ai-linzi-panel`，新增断点一律写 `@container ai-linzi-panel (max-width: …)`。收窄时只允许隐藏可见文字，`aria-label` 与 `title` 必须始终保留，不得出现一排没有说明的图标。
+
+新增任何第三方依赖前，必须先扫描其 dist 产物是否内联了动态 `<script>` 创建或 `eval`/`new Function` 类 polyfill——官方市场审核的 CODE OBFUSCATION 区按发布产物里的字面量计数，2026-08 的下架事故就是 `docx` 依赖链带进 4 处动态 `<script>` 所致。`npm run check:marketplace` 已内置两道产物闸：构建产物 `main.js` 的动态 `<script>` 字面量必须为 0；动态代码生成锁定基线 4 处（全部来自第三方，本仓库源码硬禁 eval 与 new Function），只许降不许升，涨了必须定位来源而不是默默放大基线。
+
+抬 `LATEST_PLUGIN_VERSION` 时，先在 webapp 仓库 grep 全库的旧版本号字面量找齐所有钉子——该常量目前在 `scripts/test-plugin-v1-contract.mts` 与 `scripts/test-plugin-vault-agent.mts` 两处都有写死断言（刻意如此，逼开发者两处刻意改），只改一处会让 CI 红叉。推送前按 `.github/workflows/ci.yml` 在本地跑完整四步：`npx tsc --noEmit`、`npm run lint -- --max-warnings=0`、`npm run test:plugin-api`、`npm run test:stability`，不要只跑自己记得住的那几个测试。
