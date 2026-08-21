@@ -1,4 +1,8 @@
 import type { CreateLocalSkillBlock } from './create-local-skill'
+import {
+  buildLocalSkillDescriptor,
+  matchLocalSkillInvocation,
+} from './local-skill-core'
 
 export type SkillStudioOutput =
   | 'chat'
@@ -24,6 +28,72 @@ export interface SkillStudioDraft {
   output: SkillStudioOutput
   sampleInput: string
   version: string
+}
+
+export type SkillInvocationPreview = {
+  kind: 'automatic' | 'explicit' | 'missing'
+  input: string
+}
+
+/** 「立即试运行」与创建前自检必须使用同一句输入，避免预览绿但按钮填入另一句话。 */
+export function skillTestInput(block: CreateLocalSkillBlock, sampleInput: string): string {
+  return sampleInput.trim() || `用 ${block.name} Skill 处理当前笔记`
+}
+
+/** 用生产匹配器检查一条测试输入到底能否调起这一个待创建 Skill。 */
+export function previewSkillInvocation(
+  block: CreateLocalSkillBlock,
+  sampleInput: string,
+): SkillInvocationPreview {
+  const entry = block.files.find((file) => file.path.toLocaleLowerCase() === 'skill.md')
+  const content = entry?.content || block.content
+  const descriptor = buildLocalSkillDescriptor(
+    `05_System/Skills/${block.name}/SKILL.md`,
+    { name: block.name, description: block.description },
+    content,
+  )
+  const input = skillTestInput(block, sampleInput)
+  if (!descriptor) return { kind: 'missing', input }
+  const match = matchLocalSkillInvocation(input, [descriptor], { allowAutomatic: true })
+  if (match.kind !== 'matched') return { kind: 'missing', input }
+  return { kind: match.automatic === true ? 'automatic' : 'explicit', input }
+}
+
+export function skillInvocationPreviewText(preview: SkillInvocationPreview): string {
+  if (preview.kind === 'automatic') return `✅ 自动命中：${preview.input}`
+  if (preview.kind === 'explicit') {
+    return `⚠️ 显式命中：${preview.input}（靠“用/调用 + 名称”，不会被自然说法自动触发）`
+  }
+  return `❌ 完全不命中：${preview.input}（点“立即试运行”也调不起这个 Skill）`
+}
+
+/** Studio 尚未生成完整包时，用当前表单构造最小 SKILL.md，再走同一个生产匹配器。 */
+export function previewSkillStudioDraftInvocation(draft: SkillStudioDraft): SkillInvocationPreview {
+  const name = draft.name.trim() || 'preview-skill'
+  const triggerLines = draft.triggers
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => `- ${item}`)
+    .join('\n')
+  const content = [
+    '---',
+    `name: ${name}`,
+    `description: ${draft.purpose.trim() || '待填写用途'}`,
+    '---',
+    `# ${name}`,
+    '',
+    '## AI霖子自动调用',
+    triggerLines,
+  ].join('\n')
+  return previewSkillInvocation(
+    {
+      name,
+      description: draft.purpose.trim() || '待填写用途',
+      content,
+      files: [{ path: 'SKILL.md', content }],
+    },
+    draft.sampleInput,
+  )
 }
 
 const CREATE_SKILL_INTENT =

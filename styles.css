@@ -4044,6 +4044,12 @@ button.ai-linzi-vault-source-link:focus-visible {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
 }
+.ai-linzi-skill-studio-modal .ai-linzi-skill-invocation-preview {
+  margin: -4px 0 12px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
 .ai-linzi-skill-permissions {
   margin: 10px 0;
   padding: 10px 12px;

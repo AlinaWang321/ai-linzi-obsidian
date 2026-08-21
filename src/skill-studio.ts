@@ -9,6 +9,9 @@ import {
 import {
   OFFICIAL_SKILL_TEMPLATES,
   buildSkillStudioPrompt,
+  previewSkillInvocation,
+  previewSkillStudioDraftInvocation,
+  skillInvocationPreviewText,
   type SkillStudioDraft,
   type SkillStudioOutput,
 } from './skill-studio-core'
@@ -111,6 +114,15 @@ export class SkillStudioModal extends Modal {
 
     const template = OFFICIAL_SKILL_TEMPLATES.find((item) => item.id === this.templateId)
     if (template) {
+      let templateSampleInput = template.sampleInput
+      let templatePreviewEl: HTMLDivElement | undefined
+      const refreshTemplatePreview = () => {
+        templatePreviewEl?.setText(
+          skillInvocationPreviewText(
+            previewSkillInvocation(template.block, templateSampleInput || template.sampleInput),
+          ),
+        )
+      }
       this.contentEl.createEl('h3', { text: template.label })
       this.contentEl.createDiv({ text: template.description, cls: 'ai-linzi-skill-studio-intro' })
       const permissionCard = this.contentEl.createDiv({ cls: 'ai-linzi-skill-permissions' })
@@ -123,20 +135,31 @@ export class SkillStudioModal extends Modal {
         .setDesc('安装后可以直接用这句话测试，也可以换成意思相近的自然说法。')
         .addText((input) => input
           .setValue(template.sampleInput)
-          .onChange((value) => (this.draft.sampleInput = value.trim())))
-      if (!this.draft.sampleInput) this.draft.sampleInput = template.sampleInput
+          .onChange((value) => {
+            templateSampleInput = value.trim()
+            refreshTemplatePreview()
+          }))
+      templatePreviewEl = this.contentEl.createDiv({ cls: 'ai-linzi-skill-invocation-preview' })
+      refreshTemplatePreview()
       new Setting(this.contentEl)
         .addButton((button) => button
           .setButtonText('查看详情并安装')
           .setCta()
           .onClick(() => {
             this.close()
-            this.options.onOfferBundle(template.block, this.draft.sampleInput || template.sampleInput)
+            this.options.onOfferBundle(template.block, templateSampleInput || template.sampleInput)
           }))
         .addButton((button) => button
           .setButtonText('导入 Skill ZIP')
           .onClick(() => this.pickZip()))
       return
+    }
+
+    let draftPreviewEl: HTMLDivElement | undefined
+    const refreshDraftPreview = () => {
+      draftPreviewEl?.setText(
+        skillInvocationPreviewText(previewSkillStudioDraftInvocation(this.draft)),
+      )
     }
 
     new Setting(this.contentEl)
@@ -145,7 +168,10 @@ export class SkillStudioModal extends Modal {
       .addText((input) => input
         .setPlaceholder('client-follow-up')
         .setValue(this.draft.name)
-        .onChange((value) => (this.draft.name = value.trim())))
+        .onChange((value) => {
+          this.draft.name = value.trim()
+          refreshDraftPreview()
+        }))
     new Setting(this.contentEl)
       .setName('这套 Skill 解决什么问题')
       .addTextArea((input) => input
@@ -172,6 +198,7 @@ export class SkillStudioModal extends Modal {
         .setValue(this.draft.triggers.join(','))
         .onChange((value) => {
           this.draft.triggers = value.split(/[，,\n]/).map((item) => item.trim()).filter(Boolean)
+          refreshDraftPreview()
         }))
     new Setting(this.contentEl)
       .setName('输出方式')
@@ -194,7 +221,12 @@ export class SkillStudioModal extends Modal {
       .addText((input) => input
         .setPlaceholder('例如：把当前咨询记录生成客户简报')
         .setValue(this.draft.sampleInput)
-        .onChange((value) => (this.draft.sampleInput = value.trim())))
+        .onChange((value) => {
+          this.draft.sampleInput = value.trim()
+          refreshDraftPreview()
+        }))
+    draftPreviewEl = this.contentEl.createDiv({ cls: 'ai-linzi-skill-invocation-preview' })
+    refreshDraftPreview()
 
     const permissions = this.contentEl.createDiv({ cls: 'ai-linzi-skill-permissions' })
     permissions.createEl('strong', { text: '本版默认权限' })

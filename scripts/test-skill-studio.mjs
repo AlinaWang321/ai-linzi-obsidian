@@ -97,6 +97,53 @@ const weeklySampleMatch = localSkillCore.matchLocalSkillInvocation(
 )
 assert.equal(weeklySampleMatch.kind, 'matched')
 assert.equal(weeklySampleMatch.automatic, true, '经营周报推荐示例必须逐字命中自动触发短语')
+assert.equal(
+  studioCore.previewSkillInvocation(weeklyDashboard.block, weeklyDashboard.sampleInput).kind,
+  'automatic',
+)
+assert.equal(
+  studioCore.previewSkillInvocation(consultation.block, consultation.sampleInput).kind,
+  'explicit',
+  '咨询闭环示例不是自动短语，但“用 + 名称”应如实显示为显式命中',
+)
+assert.equal(
+  studioCore.previewSkillInvocation(consultation.block, '请分析一下今天的材料').kind,
+  'missing',
+)
+assert.match(
+  studioCore.skillInvocationPreviewText({ kind: 'missing', input: '测试句' }),
+  /点“立即试运行”也调不起这个 Skill/,
+)
+const previewDraft = {
+  name: 'client-follow-up',
+  purpose: '整理客户跟进',
+  input: '当前笔记',
+  steps: '提炼事实',
+  triggers: ['生成客户跟进行动清单'],
+  output: 'create-note',
+  sampleInput: '生成客户跟进行动清单',
+  version: '1.0.0',
+}
+assert.equal(studioCore.previewSkillStudioDraftInvocation(previewDraft).kind, 'automatic')
+assert.equal(
+  studioCore.previewSkillStudioDraftInvocation({
+    ...previewDraft,
+    sampleInput: '用 client-follow-up Skill 处理当前笔记',
+  }).kind,
+  'explicit',
+)
+assert.equal(
+  studioCore.previewSkillStudioDraftInvocation({
+    ...previewDraft,
+    sampleInput: '整理一下今天的材料',
+  }).kind,
+  'missing',
+)
+assert.equal(
+  studioCore.previewSkillStudioDraftInvocation({ ...previewDraft, sampleInput: '' }).kind,
+  'explicit',
+  '空示例应与确认卡一致，检查最终会填入的默认点名句',
+)
 assert.match(weeklyDashboard.block.content, /read_recent_documents/)
 assert.match(weeklyDashboard.block.content, /\$OUTPUT\/经营周报/)
 assert.match(weeklyDashboard.block.content, /固定文件快照/)
@@ -469,6 +516,10 @@ assert.doesNotMatch(studioSource, /archive\[`\$\{block\.name\}\/INSTALL\.md`\]/)
 assert.match(studioSource, /自动识别的调用说法/)
 assert.match(studioSource, /创建后测试示例/)
 assert.doesNotMatch(studioSource, /\.setName\('课堂试运行输入'\)/)
+assert.match(studioSource, /refreshTemplatePreview\(\)/)
+assert.match(studioSource, /refreshDraftPreview\(\)/)
+assert.match(studioSource, /previewSkillInvocation\(template\.block, templateSampleInput \|\| template\.sampleInput\)/)
+assert.match(studioSource, /previewSkillStudioDraftInvocation\(this\.draft\)/)
 // 「Skill Creator 产出的非法包不得给创建按钮」这条守卫，现由
 // scripts/test-create-local-skill-card.mjs 第 3 组**真跑分支**验证
 // （断言非法包时按钮总数为 0）。这里保留源码断言作为搬迁后的位置守卫，

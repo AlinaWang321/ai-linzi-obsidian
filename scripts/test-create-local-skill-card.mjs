@@ -59,6 +59,17 @@ const STUBS = {
     export function skillBlockManifest(block) {
       return globalThis.__stub.skillBlockManifest(block)
     }
+    export function skillTestInput(block, input) {
+      return String(input || '').trim() || \`用 \${block.name} Skill 处理当前笔记\`
+    }
+    export function previewSkillInvocation(block, input) {
+      return globalThis.__stub.previewSkillInvocation(block, input)
+    }
+    export function skillInvocationPreviewText(preview) {
+      if (preview.kind === 'automatic') return \`✅ 自动命中：\${preview.input}\`
+      if (preview.kind === 'explicit') return \`⚠️ 显式命中：\${preview.input}（靠“用/调用 + 名称”，不会被自然说法自动触发）\`
+      return \`❌ 完全不命中：\${preview.input}（点“立即试运行”也调不起这个 Skill）\`
+    }
   `,
   './create-local-skill-vault': `
     export function createLocalSkillBundleAtomically(app, root, block) {
@@ -107,11 +118,18 @@ function setup(over = {}) {
     opened: [],
     created: [],
     exported: [],
+    previews: [],
   }
   globalThis.__stub = {
     normalizeGeneratedSkillManifest: over.normalizeGeneratedSkillManifest
       ?? ((block) => ({ block, repairs: [] })),
     skillBlockManifest: over.skillBlockManifest ?? (() => VALID_MANIFEST),
+    previewSkillInvocation:
+      over.previewSkillInvocation
+      ?? ((block, input) => {
+        calls.previews.push({ name: block.name, input })
+        return { kind: 'explicit', input }
+      }),
     createLocalSkillBundleAtomically:
       over.createLocalSkillBundleAtomically
       ?? (async (_app, root, block) => {
@@ -157,6 +175,10 @@ console.log('第1组 待创建形态：标题、保存位置、权限清单、�
   assert.ok(byText(row, '🧩 待创建 AI 工作流:demo-skill'), '缺标题')
   assert.ok(byText(row, '保存位置:05_System/Skills/demo-skill/（版本 1.0.0 · 共 2 个文件）'), '缺保存位置行')
   assert.equal(byCls(row, 'ai-linzi-skill-permissions').length, 1, '缺权限清单')
+  assert.ok(
+    byText(row, '⚠️ 显式命中：用 demo-skill Skill 处理当前笔记（靠“用/调用 + 名称”，不会被自然说法自动触发）'),
+    '确认卡必须展示与“立即试运行”相同输入的真实匹配状态',
+  )
   assert.equal(all(row).filter((e) => e.tag === 'details').length, 2, '每个文件应有一个折叠预览')
   assert.ok(byText(row, '创建完整 Skill（2 个文件）'), '多文件应显示完整 Skill 按钮')
 }
@@ -329,6 +351,19 @@ console.log('第11组 多个 block 各自独立成卡')
   renderCreateLocalSkillOffers(host, row, [BLOCK, { ...BLOCK, name: 'second-skill' }], {})
   assert.equal(byCls(row, 'ai-linzi-create-note-card').length, 2)
   assert.ok(byText(row, '🧩 待创建 AI 工作流:second-skill'))
+}
+
+console.log('第12组 匹配自检三态都按真实结果展示')
+for (const [kind, prefix] of [
+  ['automatic', '✅ 自动命中：'],
+  ['explicit', '⚠️ 显式命中：'],
+  ['missing', '❌ 完全不命中：'],
+]) {
+  const { host, row } = setup({
+    previewSkillInvocation: (_block, input) => ({ kind, input }),
+  })
+  renderCreateLocalSkillOffers(host, row, [BLOCK], { skillStudioTestInput: '测试这一句' })
+  assert.ok(all(row).some((el) => el.text.startsWith(prefix)), `缺少 ${kind} 状态`)
 }
 
 console.log('create local skill card behavior tests: ok')

@@ -16,7 +16,13 @@
 import { App, normalizePath } from 'obsidian'
 import type { CreateLocalSkillBlock } from './create-local-skill'
 import { createLocalSkillBundleAtomically } from './create-local-skill-vault'
-import { normalizeGeneratedSkillManifest, skillBlockManifest } from './skill-studio-core'
+import {
+  normalizeGeneratedSkillManifest,
+  previewSkillInvocation,
+  skillBlockManifest,
+  skillInvocationPreviewText,
+  skillTestInput,
+} from './skill-studio-core'
 
 /** 只取本卡片需要的字段，避免把 WireMessage 整个类型拖进来。 */
 export interface CreateLocalSkillCardMessage {
@@ -89,6 +95,12 @@ export function renderCreateLocalSkillOffers(
       text: `保存位置:${skillRoot}/（版本 ${manifest.version} · 共 ${files.length} 个文件）`,
       cls: 'ai-linzi-create-note-preview',
     })
+    const testInput = skillTestInput(block, message.skillStudioTestInput ?? '')
+    const invocationPreview = previewSkillInvocation(block, testInput)
+    card.createDiv({
+      text: skillInvocationPreviewText(invocationPreview),
+      cls: `ai-linzi-create-note-preview ai-linzi-skill-invocation-preview is-${invocationPreview.kind}`,
+    })
     const permissionCard = card.createDiv({ cls: 'ai-linzi-skill-permissions' })
     permissionCard.createEl('strong', { text: '权限清单' })
     const permissions = permissionCard.createEl('ul')
@@ -119,9 +131,7 @@ export function renderCreateLocalSkillOffers(
         void host.app.workspace.openLinkText(message.createdLocalSkill?.entry ?? filePath, '', false)
       const test = actionsRow.createEl('button', { text: '立即试运行' })
       test.onclick = () => {
-        host.fillInput(
-          message.skillStudioTestInput?.trim() || `用 ${block.name} Skill 处理当前笔记`,
-        )
+        host.fillInput(testInput)
       }
       const share = actionsRow.createEl('button', { text: '导出分享 ZIP' })
       share.onclick = () => {
