@@ -56,6 +56,34 @@ export function activityEndHeader(
 }
 
 /**
+ * 解析一条「已完成」的活动流消息（0.7.71 折叠用）。
+ *
+ * 只做展示层解析，不参与 ActivityFeed 的动作记录、去重与本机历史：消息正文
+ * 仍然整条原样入库，折叠只发生在渲染时，用户展开后能看到全部步骤（可审计）。
+ *
+ * 返回 null 表示这条不是完成态活动流（进行中的 ⚙️ 帧、技能进度条、普通回复），
+ * 调用方应按原样渲染。
+ */
+export function parseFinishedActivityFeed(
+  text: string,
+): { header: string; lines: string[] } | null {
+  const raw = text.split('\n')
+  const header = raw[0]?.trim() ?? ''
+  const isFinished =
+    header.startsWith('✅ AI霖子工作台') || header.startsWith('⚠️ AI霖子工作台已停止')
+  if (!isFinished) return null
+  const lines = raw
+    .slice(1)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+    .map((line) => line.slice(2).trim())
+    .filter((line) => line.length > 0)
+  // 没有明细就没有可折叠的东西，交回原样渲染，避免出现点不开的空折叠。
+  if (lines.length === 0) return null
+  return { header, lines }
+}
+
+/**
  * 活动流控制器。四条不变量（全部由 scripts/test-activity-feed-core.mjs 真跑验证）：
  * 1. begin 只登记不渲染 —— 纯问答回合绝不出现状态条；
  * 2. current 只在已落卡时重绘 —— 「轮次开始」这类非动作提示不得单独把卡片带出来；

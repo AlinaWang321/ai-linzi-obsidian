@@ -98,4 +98,68 @@ console.log(
 assert(!styles.includes('!important'), 'CSS 不得使用 !important')
 assert(!styles.includes(':has('), 'CSS 不得使用高开销的 :has 选择器')
 
+/*
+ * 构建产物扫描（0.7.71 新增）——补上 2026-08 下架事故真正的漏洞。
+ *
+ * 2026-08-16 官方目录对 0.7.33 判 Failed，唯一 Error 是 CODE OBFUSCATION：
+ * `Found 4 dynamic <script> element creations`。那 4 处字符在 src/ 里一个都没有，
+ * 它们来自 docx@9.7.1 dist 内联的 IE 时代 polyfill，打包后才进入 main.js。
+ *
+ * 上面的 createElement 检查只遍历 src/*.ts（0.7.55 从 8 个文件扩到全量，
+ * 扩的是「源码覆盖面」而不是「扫描对象」），因此对同类问题始终是绿的。
+ * 这里直接按官方扫描器的口径数发布产物里的字面量。
+ */
+const bundleUrl = new URL('../main.js', import.meta.url)
+let bundle = null
+try {
+  bundle = await readFile(bundleUrl, 'utf8')
+} catch {
+  bundle = null
+}
+if (bundle === null) {
+  console.log('  ⚠️ 未找到 main.js，跳过构建产物扫描（发布前必须先 npm run build 再跑本检查）')
+} else {
+  const dynamicScriptHits =
+    bundle.match(/createElement\(\s*(['"`])script\1\s*\)/g) ?? []
+  assert(
+    dynamicScriptHits.length === 0,
+    `构建产物 main.js 含 ${dynamicScriptHits.length} 处动态 <script> 创建，` +
+      '官方审核会判 CODE OBFUSCATION。检查最近新增的第三方依赖 dist 是否内联了 polyfill，' +
+      '按 esbuild.config.mjs 里 stripDynamicScriptPolyfills 的做法处理。',
+  )
+  console.log(`  已扫描构建产物 main.js（${Math.round(bundle.length / 1024)} KB）：动态 <script> 字面量 0 处`)
+
+  /*
+   * 动态代码生成基线（0.7.71 新增）。
+   *
+   * 官方审核的 CODE OBFUSCATION 区目前明确按动态 <script> 字面量计数（上面那条），
+   * 但 eval / new Function 属于同一风险面，随时可能被纳入扫描。
+   *
+   * 当前 4 处**全部来自第三方依赖**，本仓库 src/ 下为 0：
+   *   · pdfjs-dist 的 PostScript 函数编译器（isEvalSupported 分支里 new Function）
+   *   · pdfjs / fflate 的 `try { new Function('') }` CSP 特性探测
+   *   · docx → jszip → setimmediate polyfill 的 new Function(''+fn)
+   *     （与 2026-08 下架事故同一条依赖链）
+   *
+   * 这里**锁住基线而不是清零**：清零需要替换 pdfjs/docx，属于独立车次。
+   * 但数量只许降不许升——涨了说明新依赖又带进了动态代码，必须当场发现。
+   */
+  const EVAL_BASELINE = 4
+  const evalHits = bundle.match(/\beval\(|new Function\(/g) ?? []
+  assert(
+    evalHits.length <= EVAL_BASELINE,
+    `构建产物动态代码生成从 ${EVAL_BASELINE} 处涨到 ${evalHits.length} 处。` +
+      '新增的第三方依赖很可能带进了 eval/new Function，与官方 CODE OBFUSCATION 审核同一风险面。' +
+      '请定位来源；确属不可避免时再调整基线，不要默默放大。',
+  )
+  const srcEval = sourceEntries.filter((entry) => /\beval\(|new Function\(/.test(entry.text))
+  assert(
+    srcEval.length === 0,
+    `本仓库源码不得使用 eval / new Function（违规文件：${srcEval.map((e) => e.name).join(', ')}）`,
+  )
+  console.log(
+    `  动态代码生成：产物 ${evalHits.length} 处（基线 ${EVAL_BASELINE}，全部来自第三方依赖），本仓库源码 0 处`,
+  )
+}
+
 console.log('Obsidian 官方市场兼容检查通过')

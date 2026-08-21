@@ -23,8 +23,49 @@ for (const marker of expectedOrder) {
 }
 assert.match(skillList, /name: '客户咨询简报:选择逐字稿 → 客户版 PNG 长图'/)
 assert.match(skillList, /name: '销售复盘:选择逐字稿 → 销售诊断'/)
-assert.match(main, /text: 'CEO驾驶舱'/)
-assert.match(main, /cockpitBtn\.onclick = \(\) => void this\.plugin\.activateCockpit\(\)/)
+// 0.7.71：内容看板与 CEO驾驶舱 从底部常驻按钮收进 composer 的「工作台」菜单。
+// 断言从「按钮存在」改为「入口存在且接线正确」，与承载形态解耦。
+assert.match(main, /private buildWorkbenchMenu\(menu: Menu\): void/)
+const workbench = main.slice(
+  main.indexOf('private buildWorkbenchMenu'),
+  main.indexOf('private async showLocalSkillsMenu'),
+)
+assert.match(workbench, /setTitle\('内容看板'\)[\s\S]{0,120}activateContentDashboard\(\)/)
+assert.match(workbench, /setTitle\('CEO驾驶舱'\)[\s\S]{0,120}activateCockpit\(\)/)
+// 「技能」菜单必须同时容纳官方技能、我的 Skills 和创建 Skill，一个都不能在改版中丢。
+const skillMenu = main.slice(
+  main.indexOf('private buildSkillMenu'),
+  main.indexOf('private buildWorkbenchMenu'),
+)
+assert.match(skillMenu, /this\.buildOfficialSkillMenu\(menu\)/)
+assert.match(skillMenu, /setTitle\('我的 Skills'\)/)
+assert.match(skillMenu, /setTitle\('创建 Skill'\)/)
+
+// 官方技能菜单是独立一支：只列 SKILL_ACTIONS，不含 Skill 管理项。
+const officialMenu = main.slice(
+  main.indexOf('private buildOfficialSkillMenu'),
+  main.indexOf('private buildSkillMenu'),
+)
+assert.match(officialMenu, /for \(const c of SKILL_ACTIONS\)/)
+assert.doesNotMatch(officialMenu, /setTitle\('我的 Skills'\)/)
+assert.doesNotMatch(officialMenu, /setTitle\('创建 Skill'\)/)
+assert.doesNotMatch(officialMenu, /addSeparator/)
+
+// `/` 面板的「官方技能…」必须只展开官方技能。它上一级已经单列了
+// 「我的 Skills」和「创建 Skill」，二级菜单再列一遍就是重复（Codex 首轮审核发现）。
+const slashPanel = main.slice(
+  main.indexOf('private openSlashMenu'),
+  main.indexOf('private showMenuAtInput'),
+)
+assert.match(slashPanel, /setTitle\('官方技能…'\)/)
+assert.match(slashPanel, /this\.buildOfficialSkillMenu\(skillMenu\)/)
+assert.doesNotMatch(
+  slashPanel,
+  /this\.buildSkillMenu\(/,
+  '/ 面板的官方技能项不得调用完整 buildSkillMenu，否则二级菜单与上一级重复',
+)
+assert.match(slashPanel, /setTitle\('我的 Skills'\)/, '/ 面板本身仍应单列我的 Skills')
+assert.match(slashPanel, /setTitle\('创建 Skill'\)/, '/ 面板本身仍应单列创建 Skill')
 assert.doesNotMatch(main, /const kbBtn = actionsRow\.createEl/)
 const messageActionSection = main.slice(
   main.indexOf('// 只显示本轮真正需要的动作'),
