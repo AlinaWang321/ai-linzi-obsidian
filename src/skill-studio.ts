@@ -347,8 +347,8 @@ export class SkillStudioModal extends Modal {
       new Notice('请先写清用途、输入范围和关键步骤')
       return
     }
-    if (!/^\d+\.\d+\.\d+$/.test(this.draft.version)) {
-      new Notice('版本请使用 1.0.0 这样的三段格式')
+    if (!/^\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(this.draft.version)) {
+      new Notice('版本请使用 1.0.0 这样的三段格式，且每段不超过 9 位')
       return
     }
     const prompt = buildSkillStudioPrompt(this.draft)

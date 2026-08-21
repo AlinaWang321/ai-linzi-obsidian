@@ -78,7 +78,8 @@ export interface AppliedSkillRestore {
 }
 
 /** 12 个可更新文本 + 最多 100 个只读保留文件；快照前先限资源，避免导入 Skill 卡死 Obsidian。 */
-export const SKILL_UPDATE_MAX_TREE_FILES = 112
+export const SKILL_UPDATE_MAX_PRESERVED_FILES = 100
+export const SKILL_UPDATE_MAX_TREE_FILES = CREATE_LOCAL_SKILL_MAX_FILES + SKILL_UPDATE_MAX_PRESERVED_FILES
 export const SKILL_UPDATE_MAX_SINGLE_FILE_BYTES = 50 * 1024 * 1024
 export const SKILL_UPDATE_MAX_TREE_BYTES = 100 * 1024 * 1024
 
@@ -189,6 +190,9 @@ export async function buildSkillUpdateSource(
     files.reduce((sum, file) => sum + file.content.length, 0) > CREATE_LOCAL_SKILL_MAX_TOTAL_CHARS
   ) {
     throw new Error('这个 Skill 的可更新文本超过安全上限，请先手工拆分后再更新。')
+  }
+  if (preservedBinaryFiles.length > SKILL_UPDATE_MAX_PRESERVED_FILES) {
+    throw new Error(`这个 Skill 的只读保留文件超过 ${SKILL_UPDATE_MAX_PRESERVED_FILES} 个，不能自动更新。`)
   }
   return { name: skillName, currentVersion, files, preservedBinaryFiles }
 }

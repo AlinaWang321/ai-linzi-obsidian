@@ -197,6 +197,20 @@ function createTransaction(host) {
   console.log('  ✓ 更新模型只接收可更新文本，脚本和二进制只传指纹')
 }
 
+{
+  const host = new FakeHost()
+  host.files.delete('references/legacy.md')
+  host.files.delete('assets/avatar.png')
+  for (let index = 0; index < 101; index++) {
+    host.putBinary(`scripts/preserved-${index}.bin`, Uint8Array.from([index % 256]).buffer)
+  }
+  await assert.rejects(
+    tx.buildSkillUpdateSource(host, 'Skills/weekly-review', 'weekly-review'),
+    /只读保留文件超过 100 个/u,
+  )
+  console.log('  ✓ 101 个只读保留文件在本机失败关闭，不把必失败请求送到服务端')
+}
+
 async function snapshotState(host) {
   return (await host.captureFormalFiles())
     .map((file) => [file.path, file.mtime, [...new Uint8Array(file.bytes)]])

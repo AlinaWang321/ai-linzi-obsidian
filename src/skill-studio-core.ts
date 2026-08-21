@@ -567,7 +567,9 @@ export function skillBlockManifest(block: CreateLocalSkillBlock): {
       : []
     const problems: string[] = []
     if (value.schemaVersion !== 1) problems.push('schemaVersion 必须为 1')
-    if (!/^\d+\.\d+\.\d+$/.test(version)) problems.push('skillVersion 必须是三段版本号')
+    if (!/^\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(version)) {
+      problems.push('skillVersion 必须是三段版本号，且每段不超过 9 位')
+    }
     if (value.createdWith !== 'AI霖子 Skill Studio') problems.push('createdWith 声明不正确')
     if (permissions.length === 0) problems.push('权限清单不能为空')
     if (sampleInputs.length === 0) problems.push('至少需要一条试运行输入')

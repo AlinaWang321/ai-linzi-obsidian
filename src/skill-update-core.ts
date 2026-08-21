@@ -88,7 +88,9 @@ export const SKILL_VERSION_HISTORY_KEEP = 5
 export const SKILL_UPDATE_MAX_DELETE_FILES = 12
 export const SKILL_UPDATE_MAX_AFFECTED_FILES = 20
 
-const SEMVER_RE = /^\d+\.\d+\.\d+$/u
+// 每段最多 9 位，保证 Number 比较与历史快照路径都保持有界；第三方 Skill
+// 不能用超长数字制造 Infinity/NaN 后绕过升降级判断。
+const SEMVER_RE = /^\d{1,9}\.\d{1,9}\.\d{1,9}$/u
 const UPDATE_BLOCK_RE =
   /<<<更新Skill\s+name=([^>\s]{1,100})\s+base=([^>\s]{1,40})>>>\r?\n?([\s\S]*?)\r?\n?<<<更新Skill结束>>>/giu
 const UPDATE_REASON_RE =
