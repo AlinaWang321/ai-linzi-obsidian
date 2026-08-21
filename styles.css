@@ -374,6 +374,15 @@
   text-align: center;
 }
 
+.ai-linzi-conversation-title-modal {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.ai-linzi-conversation-title-input {
+  width: 100%;
+  margin: 6px 0 14px;
+}
+
 @media (max-width: 520px) {
   .ai-linzi-history-row {
     align-items: stretch;

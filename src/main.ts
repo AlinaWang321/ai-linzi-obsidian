@@ -73,6 +73,16 @@ import {
   truncateTitle,
 } from './history-entry-core'
 import {
+  conversationTitleStateAt,
+  conversationTitleStatesEqual,
+  effectiveConversationTitle,
+  explicitConversationTitleState,
+  mergeConversationTitleStates,
+  normalizeConversationTitleOverride,
+  type ConversationTitleState,
+} from './conversation-title-core'
+import { requestConversationTitle } from './conversation-title-modal'
+import {
   AI_LINZI_AVATAR_DATA_URI,
   AI_LINZI_COCKPIT_ICON_ID,
   AI_LINZI_COCKPIT_ICON_SVG,
@@ -615,6 +625,11 @@ interface SavedConvo {
   id: string
   mode: 'chat' | 'interview'
   title: string
+  /** 手工标题覆盖；null 表示用户明确清空并回退自动标题。 */
+  titleOverride?: string | null
+  titleUpdatedAt?: number
+  /** 本机已保存、尚未被云端插件会话确认的标题变化。 */
+  titleSyncPending?: boolean
   updatedAt: number
   messages: WireMessage[]
 }
@@ -662,6 +677,7 @@ interface CloudSessionSummary {
   sessionId: string
   preview: string
   title: string | null
+  titleUpdatedAt?: string | null
   lastActivity: string
   messageCount: number
 }
@@ -670,9 +686,59 @@ interface ChatHistoryEntry {
   kind: 'cloud' | 'local'
   id: string
   title: string
+  /** 清空自定义标题时回落的首条用户问题。 */
+  automaticTitle: string
+  titleOverride?: string | null
+  titleUpdatedAt?: number
   updatedAt: number
   mode: 'chat' | 'interview'
   convo?: SavedConvo
+}
+
+function savedConversationTitleState(convo: SavedConvo | undefined): ConversationTitleState | undefined {
+  if (!convo) return undefined
+  return explicitConversationTitleState({
+    ...(Object.prototype.hasOwnProperty.call(convo, 'titleOverride')
+      ? { titleOverride: convo.titleOverride }
+      : {}),
+    titleUpdatedAt: convo.titleUpdatedAt,
+    titleSyncPending: convo.titleSyncPending,
+  })
+}
+
+function cloudConversationTitleState(session: CloudSessionSummary): ConversationTitleState | undefined {
+  const exact = session.titleUpdatedAt ? Date.parse(session.titleUpdatedAt) : Number.NaN
+  if (Number.isFinite(exact) && exact > 0) {
+    return conversationTitleStateAt(session.title, exact, false)
+  }
+  // 0.7.74 服务端部署前没有 titleUpdatedAt；已有云端自定义标题仍要保住，
+  // 只在这个向后兼容分支借 lastActivity 排一次优先级。
+  if (session.title) {
+    const fallback = Date.parse(session.lastActivity)
+    return conversationTitleStateAt(session.title, Number.isFinite(fallback) ? fallback : 1, false)
+  }
+  return undefined
+}
+
+function applyConversationTitleState(
+  convo: SavedConvo,
+  state: ConversationTitleState | undefined,
+): SavedConvo {
+  const explicit = explicitConversationTitleState(state)
+  if (!explicit) {
+    const { titleOverride: _titleOverride, titleUpdatedAt: _titleUpdatedAt, titleSyncPending: _pending, ...legacy } = convo
+    return {
+      ...legacy,
+      title: deriveConversationTitle(convo.messages, { fallback: convo.title || '对话' }),
+    }
+  }
+  return {
+    ...convo,
+    title: effectiveConversationTitle(convo.messages, explicit, convo.title || '对话'),
+    titleOverride: explicit.titleOverride ?? null,
+    titleUpdatedAt: explicit.titleUpdatedAt,
+    titleSyncPending: explicit.titleSyncPending === true,
+  }
 }
 
 class ConfirmActionModal extends Modal {
@@ -865,6 +931,10 @@ class ChatHistoryModal extends Modal {
     private entries: ChatHistoryEntry[],
     private readonly currentSessionId: string,
     private readonly onOpenEntry: (entry: ChatHistoryEntry) => Promise<void>,
+    private readonly onRenameEntry: (
+      entry: ChatHistoryEntry,
+      titleOverride: string | null,
+    ) => Promise<ChatHistoryEntry>,
     private readonly onDeleteEntry: (entry: ChatHistoryEntry) => Promise<void>,
     private readonly onClearAll: () => Promise<void>,
   ) {
@@ -900,13 +970,20 @@ class ChatHistoryModal extends Modal {
       const row = list.createDiv({ cls: 'ai-linzi-history-row' })
       const summary = row.createDiv({ cls: 'ai-linzi-history-summary' })
       const titleRow = summary.createDiv({ cls: 'ai-linzi-history-title-row' })
-      // 优先用本机会话正文**重新推导**标题：0.7.71 之前存下的旧记录，
+      // 没有手工标题时，优先用本机会话正文**重新推导**标题：0.7.71 之前存下的旧记录，
       // 标题在保存时就被 slice(0, 24) 生切过，字符串里已经没有「被截过」这个信息，
       // 只能回到正文重推才能恢复成带省略号的形态。没有本机副本时退回已存标题。
-      const derived = entry.convo?.messages
-        ? deriveConversationTitle(entry.convo.messages, { fallback: '' })
-        : ''
-      const baseTitle = derived || entry.title || '未命名对话'
+      const entryTitleState = explicitConversationTitleState({
+        ...(Object.prototype.hasOwnProperty.call(entry, 'titleOverride')
+          ? { titleOverride: entry.titleOverride }
+          : {}),
+        titleUpdatedAt: entry.titleUpdatedAt,
+      })
+      const baseTitle = effectiveConversationTitle(
+        entry.convo?.messages,
+        entryTitleState,
+        entry.automaticTitle || entry.title || '未命名对话',
+      )
       const fullTitle = `${entry.mode === 'interview' ? '✍️ ' : ''}${baseTitle}`
       titleRow.createSpan({
         text: truncateTitle(fullTitle),
@@ -966,6 +1043,20 @@ class ChatHistoryModal extends Modal {
         } catch (error) {
           new Notice(`恢复对话失败:${error instanceof Error ? error.message : String(error)}`)
           openButton.disabled = false
+        }
+      }
+      const renameButton = actions.createEl('button', { text: '改名' })
+      renameButton.onclick = async () => {
+        const nextTitle = await requestConversationTitle(this.app, baseTitle)
+        if (nextTitle === undefined) return
+        renameButton.disabled = true
+        try {
+          const updated = await this.onRenameEntry(entry, nextTitle)
+          this.entries = this.entries.map((item) => item.id === entry.id ? updated : item)
+          this.renderHistory()
+        } catch (error) {
+          new Notice(`修改对话标题失败:${error instanceof Error ? error.message : String(error)}`)
+          renameButton.disabled = false
         }
       }
       const deleteButton = actions.createEl('button', {
@@ -1512,18 +1603,34 @@ export default class AiLinziPlugin extends Plugin {
   // ── 会话与短期配图任务持久化（统一使用 Obsidian 插件数据 API） ──
 
   async loadConvos(): Promise<SavedConvo[]> {
-    return this.savedConversations.map((convo) => ({
+    return this.savedConversations.map((convo) => applyConversationTitleState({
       ...convo,
       id: normalizePluginSessionId(convo.id),
-    }))
+    }, savedConversationTitleState(convo)))
   }
 
   async saveConvo(convo: SavedConvo): Promise<void> {
-    const list = (await this.loadConvos()).filter((c) => c.id !== convo.id)
-    list.unshift(convo)
+    const normalized = applyConversationTitleState({
+      ...convo,
+      id: normalizePluginSessionId(convo.id),
+    }, savedConversationTitleState(convo))
+    const list = (await this.loadConvos()).filter((c) => c.id !== normalized.id)
+    list.unshift(normalized)
     list.sort((a, b) => b.updatedAt - a.updatedAt)
     this.savedConversations = list.slice(0, MAX_SAVED_CONVOS)
     await this.saveSettings()
+  }
+
+  async saveConvoTitle(
+    sessionId: string,
+    state: ConversationTitleState,
+  ): Promise<SavedConvo | null> {
+    const targetId = normalizePluginSessionId(sessionId)
+    const existing = (await this.loadConvos()).find((convo) => convo.id === targetId)
+    if (!existing) return null
+    const updated = applyConversationTitleState(existing, state)
+    await this.saveConvo(updated)
+    return updated
   }
 
   async deleteAllConvos(): Promise<void> {
@@ -1687,7 +1794,31 @@ export default class AiLinziPlugin extends Plugin {
     return Array.isArray(data.sessions) ? (data.sessions as CloudSessionSummary[]) : []
   }
 
-  async loadCloudConvo(sessionId?: string): Promise<SavedConvo | null> {
+  async renameCloudConvo(
+    sessionId: string,
+    titleOverride: string | null,
+  ): Promise<ConversationTitleState> {
+    const normalized = normalizePluginSessionId(sessionId)
+    const data = await this.api('/api/plugin/v1/chat/sessions', {
+      method: 'PATCH',
+      body: JSON.stringify({ sessionId: normalized, title: titleOverride ?? '' }),
+    })
+    const updatedAt = typeof data.titleUpdatedAt === 'string'
+      ? Date.parse(data.titleUpdatedAt)
+      : Number.NaN
+    if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
+      throw new Error('服务器没有返回有效的标题更新时间')
+    }
+    const savedTitle = typeof data.title === 'string'
+      ? normalizeConversationTitleOverride(data.title)
+      : null
+    return conversationTitleStateAt(savedTitle, updatedAt, false)
+  }
+
+  async loadCloudConvo(
+    sessionId?: string,
+    titleState?: ConversationTitleState,
+  ): Promise<SavedConvo | null> {
     const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''
     const data = await this.api(`/api/plugin/v1/chat/history${query}`)
     const id = typeof data.sessionId === 'string' ? data.sessionId : ''
@@ -1706,13 +1837,13 @@ export default class AiLinziPlugin extends Plugin {
     const lastCreatedAt = typeof rawCreatedAt === 'string' || typeof rawCreatedAt === 'number'
       ? String(rawCreatedAt)
       : ''
-    return {
+    return applyConversationTitleState({
       id,
       mode: 'chat',
       title: deriveConversationTitle(messages, { fallback: '云端对话' }),
       updatedAt: Number.isFinite(Date.parse(lastCreatedAt)) ? Date.parse(lastCreatedAt) : Date.now(),
       messages,
-    }
+    }, titleState)
   }
 
   async deleteAllCloudConvos(): Promise<void> {
@@ -1970,6 +2101,9 @@ class ChatView extends ItemView {
   private plugin: AiLinziPlugin
   private messages: WireMessage[] = []
   private sessionId = newPluginSessionId()
+  private titleOverride: string | null | undefined
+  private titleUpdatedAt: number | undefined
+  private titleSyncPending = false
   private localSkills: LocalSkillRegistry
   private skillUpdateHost: ObsidianSkillUpdateHost
   private skillUpdateTransaction: SkillUpdateTransaction
@@ -2071,12 +2205,13 @@ class ChatView extends ItemView {
     // 避免高频键与「设置」相邻造成误击(交接文档 §6 P0-A 只规定了这三个入口,未定顺序)。
     addTopBtn('plus', '新对话', () => {
       void this.persistNow() // 旧对话先落盘
-      this.messages = []
-      this.sessionId = newPluginSessionId()
       this.activeImageMessageId = ''
       this.clearAuthorizedContent()
       if (this.mode === 'interview') this.exitInterviewMode()
-      this.renderMessages()
+      else {
+        this.resetConversationIdentity()
+        this.renderMessages()
+      }
     })
     addTopBtn('history', '历史', () => void this.showHistoryMenu())
     addTopBtn('settings', '设置', () => this.plugin.openPluginSettings())
@@ -2432,17 +2567,63 @@ class ChatView extends ItemView {
     }).open()
   }
 
+  private currentConversationTitleState(): ConversationTitleState | undefined {
+    return explicitConversationTitleState({
+      titleOverride: this.titleOverride,
+      titleUpdatedAt: this.titleUpdatedAt,
+      titleSyncPending: this.titleSyncPending,
+    })
+  }
+
+  private applyActiveConversationTitleState(state: ConversationTitleState | undefined): void {
+    const explicit = explicitConversationTitleState(state)
+    this.titleOverride = explicit?.titleOverride
+    this.titleUpdatedAt = explicit?.titleUpdatedAt
+    this.titleSyncPending = explicit?.titleSyncPending === true
+  }
+
+  private resetConversationIdentity(): void {
+    this.messages = []
+    this.sessionId = newPluginSessionId()
+    this.applyActiveConversationTitleState(undefined)
+  }
+
+  /** 本机先保存的标题在会话首次成功进云端后补同步；失败保留 pending，绝不丢本机标题。 */
+  private async syncCurrentConversationTitleIfNeeded(): Promise<boolean> {
+    const current = this.currentConversationTitleState()
+    if (!current?.titleSyncPending || current.titleUpdatedAt === undefined) return true
+    try {
+      const synced = await this.plugin.renameCloudConvo(
+        this.sessionId,
+        current.titleOverride ?? null,
+      )
+      this.applyActiveConversationTitleState(synced)
+      await this.persistNow()
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** 每轮对话后自动保存;消息为空不存 */
   private async persistNow(): Promise<void> {
     if (this.messages.length === 0) return
     // 标题统一由 deriveConversationTitle 生成：截断与补省略号必须在同一处发生，
     // 否则存下来的字符串丢掉「被截过」这个信息，渲染层再补省略号也来不及
     // （0.7.71 真机报障：「从 Skill Studio 安装「consul」）。
-    const title = deriveConversationTitle(this.messages, { fallback: '对话' })
+    const titleState = this.currentConversationTitleState()
+    const title = effectiveConversationTitle(this.messages, titleState, '对话')
     await this.plugin.saveConvo({
       id: this.sessionId,
       mode: this.mode,
       title,
+      ...(titleState
+        ? {
+            titleOverride: titleState.titleOverride ?? null,
+            titleUpdatedAt: titleState.titleUpdatedAt,
+            titleSyncPending: titleState.titleSyncPending === true,
+          }
+        : {}),
       updatedAt: Date.now(),
       messages: this.messages,
     })
@@ -2472,7 +2653,7 @@ class ChatView extends ItemView {
 
   private async restoreLatest(): Promise<void> {
     if (this.messages.length > 0) return
-    const [latestLocal] = await this.plugin.loadConvos()
+    let [latestLocal] = await this.plugin.loadConvos()
     try {
       const [latestCloudSummary] = await this.plugin.loadCloudSessions()
       const cloudTime = latestCloudSummary ? Date.parse(latestCloudSummary.lastActivity) : 0
@@ -2486,9 +2667,32 @@ class ChatView extends ItemView {
       const localHasVaultSources = Boolean(
         latestLocal?.messages.some((message) => (message.vaultSources?.length ?? 0) > 0),
       )
+      const latestCloudTitleState = latestCloudSummary
+        ? cloudConversationTitleState(latestCloudSummary)
+        : undefined
+      let mergedTitleState = sameSession
+        ? mergeConversationTitleStates(savedConversationTitleState(latestLocal), latestCloudTitleState)
+        : latestCloudTitleState
+      if (sameSession && latestLocal?.titleSyncPending && mergedTitleState?.titleSyncPending) {
+        try {
+          mergedTitleState = await this.plugin.renameCloudConvo(
+            latestLocal.id,
+            mergedTitleState.titleOverride ?? null,
+          )
+        } catch {
+          // 离线时保留本机 pending；恢复对话不能因标题同步失败被拦住。
+        }
+      }
+      if (
+        sameSession && latestLocal &&
+        !conversationTitleStatesEqual(savedConversationTitleState(latestLocal), mergedTitleState)
+      ) {
+        latestLocal = applyConversationTitleState(latestLocal, mergedTitleState)
+        await this.plugin.saveConvo(latestLocal)
+      }
       const preserveRicherLocalCopy = sameSession && (localHasImageCards || localHasVaultSources)
       if (latestCloudSummary && (!latestLocal || (cloudTime > latestLocal.updatedAt && !preserveRicherLocalCopy))) {
-        const cloud = await this.plugin.loadCloudConvo(latestCloudSummary.sessionId)
+        const cloud = await this.plugin.loadCloudConvo(latestCloudSummary.sessionId, mergedTitleState)
         if (cloud?.messages.length) {
           this.loadConvo(cloud)
           return
@@ -2504,6 +2708,7 @@ class ChatView extends ItemView {
     this.clearAuthorizedContent()
     this.messages = c.messages
     this.sessionId = normalizePluginSessionId(c.id)
+    this.applyActiveConversationTitleState(savedConversationTitleState(c))
     if (c.mode === 'interview' && this.mode !== 'interview') {
       this.mode = 'interview'
       this.interviewBar.show()
@@ -2527,25 +2732,58 @@ class ChatView extends ItemView {
     }
     const cloudIds = new Set(cloudSessions.map((session) => session.sessionId))
     const localById = new Map(localConvos.map((convo) => [convo.id, convo]))
-    const items: ChatHistoryEntry[] = cloudSessions.map((session) => {
-      const local = localById.get(session.sessionId)
-      return {
+    const items: ChatHistoryEntry[] = []
+    for (const session of cloudSessions) {
+      let local = localById.get(session.sessionId)
+      const localTitleState = savedConversationTitleState(local)
+      const cloudTitleState = cloudConversationTitleState(session)
+      let mergedTitleState = mergeConversationTitleStates(localTitleState, cloudTitleState)
+      if (local?.titleSyncPending && mergedTitleState?.titleSyncPending) {
+        try {
+          mergedTitleState = await this.plugin.renameCloudConvo(
+            session.sessionId,
+            mergedTitleState.titleOverride ?? null,
+          )
+        } catch {
+          // 历史仍可离线打开；pending 会留在本机，下次成功对话后再同步。
+        }
+      }
+      if (local && !conversationTitleStatesEqual(localTitleState, mergedTitleState)) {
+        local = applyConversationTitleState(local, mergedTitleState)
+        await this.plugin.saveConvo(local)
+        localById.set(local.id, local)
+      }
+      const explicit = explicitConversationTitleState(mergedTitleState)
+      const automaticTitle = local?.messages
+        ? deriveConversationTitle(local.messages, { fallback: session.preview || '云端对话' })
+        : session.preview || '云端对话'
+      items.push({
         kind: 'cloud' as const,
         id: session.sessionId,
-        title: session.title || session.preview || '云端对话',
+        title: effectiveConversationTitle(local?.messages, explicit, automaticTitle),
+        automaticTitle,
+        ...(explicit
+          ? { titleOverride: explicit.titleOverride ?? null, titleUpdatedAt: explicit.titleUpdatedAt }
+          : {}),
         updatedAt: Math.max(Date.parse(session.lastActivity) || 0, local?.updatedAt ?? 0),
         mode: local?.mode ?? 'chat',
         // 云端保存标准文字历史；本地副本还包含待确认图片卡片，打开时应优先保留它。
         convo: local,
-      }
-    })
+      })
+    }
     for (const convo of localConvos) {
       if (cloudIds.has(convo.id)) continue
+      const explicit = savedConversationTitleState(convo)
+      const automaticTitle = deriveConversationTitle(convo.messages, { fallback: convo.title })
       items.push({
         kind: 'local',
         id: convo.id,
         convo,
-        title: convo.title,
+        title: effectiveConversationTitle(convo.messages, explicit, convo.title),
+        automaticTitle,
+        ...(explicit
+          ? { titleOverride: explicit.titleOverride ?? null, titleUpdatedAt: explicit.titleUpdatedAt }
+          : {}),
         updatedAt: convo.updatedAt,
         mode: convo.mode,
       })
@@ -2560,9 +2798,60 @@ class ChatView extends ItemView {
           this.loadConvo(item.convo)
           return
         }
-        const convo = await this.plugin.loadCloudConvo(item.id)
+        const convo = await this.plugin.loadCloudConvo(item.id, explicitConversationTitleState({
+          ...(Object.prototype.hasOwnProperty.call(item, 'titleOverride')
+            ? { titleOverride: item.titleOverride }
+            : {}),
+          titleUpdatedAt: item.titleUpdatedAt,
+        }))
         if (!convo) throw new Error('云端没有找到这条对话')
         this.loadConvo(convo)
+      },
+      async (item, nextTitle) => {
+        let nextState = conversationTitleStateAt(
+          nextTitle,
+          Date.now(),
+          item.kind === 'local',
+        )
+        let local = item.convo
+          ? await this.plugin.saveConvoTitle(item.id, nextState)
+          : null
+        if (item.kind === 'cloud') {
+          try {
+            nextState = await this.plugin.renameCloudConvo(item.id, nextTitle)
+          } catch (error) {
+            if (!local) {
+              const fallback = await this.plugin.loadCloudConvo(item.id, nextState)
+              if (fallback) {
+                await this.plugin.saveConvo(fallback)
+                local = await this.plugin.saveConvoTitle(item.id, {
+                  ...nextState,
+                  titleSyncPending: true,
+                })
+              }
+            }
+            if (!local) throw error
+            nextState = { ...nextState, titleSyncPending: true }
+            local = await this.plugin.saveConvoTitle(item.id, nextState)
+            new Notice('标题已保存在本机；云端同步暂时失败，下一次成功对话后会自动重试。', 8000)
+          }
+          if (!nextState.titleSyncPending && local) {
+            local = await this.plugin.saveConvoTitle(item.id, nextState)
+          }
+        }
+        if (item.id === this.sessionId) this.applyActiveConversationTitleState(nextState)
+        const explicit = explicitConversationTitleState(nextState)
+        return {
+          ...item,
+          title: effectiveConversationTitle(
+            local?.messages,
+            explicit,
+            item.automaticTitle || '未命名对话',
+          ),
+          titleOverride: explicit?.titleOverride ?? null,
+          titleUpdatedAt: explicit?.titleUpdatedAt,
+          convo: local ?? item.convo,
+        }
       },
       async (item) => {
         await this.plugin.deleteCloudConvo(item.id)
@@ -2570,8 +2859,7 @@ class ChatView extends ItemView {
         if (item.id === this.sessionId) {
           if (this.mode === 'interview') this.exitInterviewMode()
           else {
-            this.messages = []
-            this.sessionId = newPluginSessionId()
+            this.resetConversationIdentity()
             this.renderMessages()
           }
         }
@@ -2581,8 +2869,7 @@ class ChatView extends ItemView {
         await Promise.all([this.plugin.deleteAllCloudConvos(), this.plugin.deleteAllConvos()])
         if (this.mode === 'interview') this.exitInterviewMode()
         else {
-          this.messages = []
-          this.sessionId = newPluginSessionId()
+          this.resetConversationIdentity()
           this.renderMessages()
         }
         new Notice('插件产生的云端及本机历史已清空；网页版和微信端对话未受影响')
@@ -4019,6 +4306,7 @@ class ChatView extends ItemView {
         if (origin) origin.consultationWorkflowTaskCompletedAt = consultationWorkflowTaskCreatedAt
       }
       await this.persistNow()
+      await this.syncCurrentConversationTitleIfNeeded()
       if (consultationBriefAction.requested && !answer.startsWith('⚠️')) {
         this.renderMessages()
         const source = consultationWorkflowSourcePath
@@ -4415,8 +4703,7 @@ class ChatView extends ItemView {
   enterInterviewMode() {
     this.clearAuthorizedContent()
     this.mode = 'interview'
-    this.messages = []
-    this.sessionId = newPluginSessionId()
+    this.resetConversationIdentity()
     this.interviewBar.show()
     this.inputEl.placeholder = INTERVIEW_INPUT_PLACEHOLDER
     this.renderMessages()
@@ -4426,8 +4713,7 @@ class ChatView extends ItemView {
   exitInterviewMode() {
     this.clearAuthorizedContent()
     this.mode = 'chat'
-    this.messages = []
-    this.sessionId = newPluginSessionId()
+    this.resetConversationIdentity()
     this.interviewBar.hide()
     this.inputEl.placeholder = CHAT_INPUT_PLACEHOLDER
     this.renderMessages()
