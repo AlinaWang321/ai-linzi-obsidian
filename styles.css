@@ -42,16 +42,23 @@
 /*
  * ⚠️ 选择器权重铁律（0.7.71 真机 + 计算样式实测得出，别退回单类写法）
  *
- * 面板里所有自定义按钮的规则一律写成 `.ai-linzi-root button.ai-linzi-x`
- * （权重 0,2,1），**不能**写成 `.ai-linzi-x`（0,1,0）或 `.ai-linzi-root .ai-linzi-x`（0,2,0）。
+ * 面板里所有自定义按钮的规则一律写成
+ * `.ai-linzi-root <祖先类> button.ai-linzi-x`，**权重必须达到 (0,3,1)**。
+ * 不能写成 `.ai-linzi-x`（0,1,0）、`.ai-linzi-root .ai-linzi-x`（0,2,0），
+ * 也不能只写到 `.ai-linzi-root button.ai-linzi-x`（0,2,1）。
  *
  * 原因：Obsidian 与各家主题普遍带 `button { padding; border-radius; background }`
  * 一类规则，深色主题还常写成 `.theme-dark button`（0,1,1）甚至更高。
  * 0.7.71 首轮实测：单类写法下 padding 被改成 4px 10px、border-radius 被改成 5px，
  * 发送键因此根本不是圆的，深色下背景也被刷回灰底。
  *
- * 市场检查禁用「important 声明」，所以权重是唯一的杠杆；插件 CSS 在主题之后加载，
- * 同权重时我们胜出，(0,2,1) 足以覆盖上述所有情形。
+ * 为什么停在 (0,3,1) 而不是 (0,2,1)：主题里 `.theme-dark .workspace-leaf button`
+ * 这类两类一元素的写法就是 (0,2,1)，与我们同权重——同权重要靠加载顺序定胜负，
+ * 而用户切换主题时 Obsidian 会重新注入主题样式，顺序并不稳定。多加一层真实祖先类
+ * 提到 (0,3,1)，胜负与加载顺序无关。
+ *
+ * 市场检查禁用「important 声明」，所以选择器权重是唯一的杠杆。
+ * 本规则由 scripts/test-button-feedback.mjs 第 3.5 组强制（低于 0,3,1 直接报错）。
  *
  * ⚠️ 第二条同样重要（0.7.71 第二轮真机踩到）：**权重只能覆盖你声明过的属性**。
  * 主题的 `button { height: 30px; white-space: nowrap; line-height: 1 }` 里凡是我们
