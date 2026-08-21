@@ -158,6 +158,49 @@ assert.equal(
   core.matchLocalSkillInvocation('调用不存在的技能', [consultation, weekly]).kind,
   'missing',
 )
+assert.equal(
+  core.matchLocalSkillInvocation('/不存在的技能', [consultation, weekly]).kind,
+  'missing',
+)
+for (const explanatory of [
+  '这个 Skill 为什么这样设计？',
+  'weekly-business-dashboard 是做什么的？',
+  '咨询简报这个技能有哪些步骤？',
+  '调用 API 获取客户列表',
+  '使用这个模板生成结果',
+  '按照这个 Skill 的说明回答问题',
+]) {
+  assert.equal(
+    core.matchLocalSkillInvocation(explanatory, [consultation, weekly, dashboard], {
+      allowAutomatic: true,
+    }).kind,
+    'none',
+    `解释或普通工具用法不能被 Skill 失败路由劫持：${explanatory}`,
+  )
+}
+for (const explicitMissing of [
+  '调用 nonexistent Skill 处理当前笔记',
+  '请使用一个不存在的技能处理当前笔记',
+]) {
+  assert.equal(
+    core.matchLocalSkillInvocation(explicitMissing, [consultation, weekly]).kind,
+    'missing',
+    `明确调用不存在的 Skill 必须失败关闭：${explicitMissing}`,
+  )
+}
+for (const normalizedInvocation of [
+  '使用 WEEKLY-REVIEW Skill 运行',
+  '使用 weekly review skill 运行',
+  '使用 ＷＥＥＫＬＹ－ＲＥＶＩＥＷ Ｓｋｉｌｌ 运行',
+]) {
+  assert.equal(
+    core.matchLocalSkillInvocation(normalizedInvocation, [portable]).kind,
+    'matched',
+    `显式名称应兼容大小写、空格/连字符与全角半角：${normalizedInvocation}`,
+  )
+}
+assert.match(core.formatMissingLocalSkillError([consultation, weekly]), /当前可用：咨询简报、每周经营复盘/)
+assert.match(core.formatMissingLocalSkillError([], '我的/Skills'), /我的\/Skills\//)
 assert.equal(core.isLocalSkillListIntent('我有哪些本地技能？'), true)
 assert.equal(core.isLocalSkillListIntent('我的 Skills'), true)
 assert.equal(core.isLocalSkillListIntent('查看我的技能'), true)

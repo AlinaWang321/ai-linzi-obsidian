@@ -567,6 +567,7 @@ export function isLocalSkillListIntent(message: string): boolean {
 function invocationContext(message: string): {
   normalized: string
   explicit: boolean
+  missingIntent: boolean
   slash: boolean
   mentionsSkillWord: boolean
 } {
@@ -577,6 +578,11 @@ function invocationContext(message: string): {
       /(?:^|[\s，,。.!！?？:：]|请|帮我)(?:用|使用|调用|运行|执行|启用|按照|按)\s*/u.test(
         trimmed,
       ),
+    // “没有找到 Skill”只按 0.7.72 收窄口径失败关闭：slash，或六个明确
+    // 调用动词与 Skill/技能同时出现。“按/按照”仍可命中已存在的名称，但
+    // 名称没命中时不应劫持普通说明句。
+    missingIntent:
+      /(?:^|[\s，,。.!！?？:：]|请|帮我)(?:用|使用|调用|运行|执行|启用)\s*/u.test(trimmed),
     slash: /^\/[^\s/]+/u.test(trimmed),
     mentionsSkillWord: /(?:skill|技能)/iu.test(trimmed),
   }
@@ -629,7 +635,9 @@ export function matchLocalSkillInvocation(
     .sort((left, right) => right.score - left.score)
 
   if (candidates.length === 0) {
-    return context.slash || context.mentionsSkillWord ? { kind: 'missing' } : { kind: 'none' }
+    return context.slash || (context.missingIntent && context.mentionsSkillWord)
+      ? { kind: 'missing' }
+      : { kind: 'none' }
   }
   const topScore = candidates[0].score
   const top = candidates.filter((candidate) => candidate.score === topScore)
@@ -658,6 +666,18 @@ export function formatLocalSkillList(
     '',
     '调用示例：`用咨询简报技能处理当前笔记`。',
   ].join('\n')
+}
+
+export function formatMissingLocalSkillError(
+  skills: LocalSkillDescriptor[],
+  configuredRoot = LOCAL_SKILL_ROOT,
+): string {
+  const available = skills.slice(0, 8).map(localSkillMenuTitle)
+  const suffix = skills.length > available.length ? `等 ${skills.length} 个` : ''
+  return available.length > 0
+    ? `没有找到你点名的 Skill。当前可用：${available.join('、')}${suffix}。` +
+        '请改用“用/调用 + 完整 Skill 名称”重试。'
+    : `没有找到你点名的 Skill。“我的 Skills”文件夹 ${normalizeLocalSkillRoot(configuredRoot)}/ 目前为空。`
 }
 
 /** 菜单只展示可辨认的名字与文件夹，不把给模型看的长 description 铺满屏幕。 */

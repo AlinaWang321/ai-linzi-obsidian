@@ -573,13 +573,17 @@ assert.match(
   // 第 7 组真跑验证（断言 created.length === 0 且 rerendered === 1）。
   /const currentRoot = host\.skillsRoot\(\)[\s\S]{0,180}currentRoot !== root[\s\S]{0,260}host\.rerender\(\)/,
 )
+const runSendTurnSource =
+  /private async runSendTurn\([\s\S]*?\n  private async startLongDocumentTask/.exec(mainSource)?.[0] ?? ''
+assert.match(runSendTurnSource, /let skillCreatorTurn = false/)
 assert.match(
-  mainSource,
-  /const skillCreatorTurn =\s*!pendingVaultQuestion\s*&&[\s\S]{0,220}isExplicitLocalSkillCreationIntent\(text\)/,
+  runSendTurnSource,
+  /skillCreatorTurn =\s*!pendingVaultQuestion\s*&&[\s\S]{0,300}isExplicitLocalSkillCreationIntent\(text\)/,
+  '统一发送函数仍必须按待续问答与显式创建意图判定 Skill Creator 轮次',
 )
 assert.match(
-  mainSource,
-  /const explicitLocalSkillRun = isExplicitLocalSkillRunIntent\(text\)[\s\S]{0,500}const explicitInstalledLocalSkill = explicitLocalSkillMatch\?\.kind === 'matched'[\s\S]{0,350}options\.skillCreator === true[\s\S]{0,120}!explicitLocalSkillRun/,
+  runSendTurnSource,
+  /const explicitLocalSkillRun = forcedLocalSkill[\s\S]{0,100}isExplicitLocalSkillRunIntent\(text\)[\s\S]{0,520}const explicitInstalledLocalSkill = explicitLocalSkillMatch\?\.kind === 'matched'[\s\S]{0,380}options\.skillCreator === true[\s\S]{0,140}!explicitLocalSkillRun/,
   '显式运行已安装 Skill 时必须退出历史 Skill Creator 访谈状态',
 )
 assert.match(

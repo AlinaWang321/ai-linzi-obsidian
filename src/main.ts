@@ -97,6 +97,10 @@ import {
   type CreateLocalSkillBlock,
 } from './create-local-skill'
 import { renderCreateLocalSkillOffers } from './create-local-skill-card'
+import {
+  renderLocalSkillChoiceCard,
+  type LocalSkillChoiceState,
+} from './local-skill-choice-card'
 import { exportSkillBundle, SkillStudioModal } from './skill-studio'
 import {
   isExplicitLocalSkillCreationIntent,
@@ -187,6 +191,7 @@ import {
 import {
   LEGACY_LOCAL_SKILL_ROOT,
   formatLocalSkillList,
+  formatMissingLocalSkillError,
   isLocalSkillListIntent,
   localSkillForbidsVaultExpansion,
   localSkillQuestionNamesInputFile,
@@ -484,6 +489,8 @@ interface WireMessage {
   localSkillRunIds?: string[]
   /** 本轮实际调用的本地 Skill 入口；只用于同一对话续跑，不上传到服务端。 */
   localSkillPath?: string
+  /** 显式调用命中多个 Skill 时的本机选择卡；候选只保存入口路径与展示名。 */
+  localSkillChoice?: LocalSkillChoiceState
   /** 咨询闭环首次锁定的逐字稿；只保存本机 Vault 路径，不上传。 */
   consultationWorkflowSourcePath?: string
   /** 经营周报本轮文件指纹；只存路径/mtime/size，确认成品后才升级为增量基线。 */
@@ -508,6 +515,21 @@ interface WireMessage {
   skillCreatorResult?: boolean
   /** 对话确认后已落盘的 Skill；只保存本机相对路径。 */
   createdLocalSkill?: { root: string; entry: string }
+}
+
+interface SendOptions {
+  skillCreator?: boolean
+  skillStudioTestInput?: string
+  /** 咨询闭环第 4 步是云端任务写入，不得再次按 create-note Skill 跑 Vault 整理。 */
+  consultationWorkflowTaskOriginId?: string
+  consultationWorkflowSourcePath?: string
+}
+
+interface SendTurnOptions extends SendOptions {
+  /** 多候选卡点击后按精确入口恢复，禁止再次按显示名猜测。 */
+  forcedLocalSkillPath?: string
+  /** 仅用于让失败回到原选择卡重试，不创建第二条用户消息。 */
+  localSkillChoiceOfferId?: string
 }
 
 interface VaultMessageSource {
@@ -3167,9 +3189,9 @@ class ChatView extends ItemView {
 
   /** 本地候选图片元数据绝不传给主对话；云端只收到标准 UIMessage。 */
   private messagesForApi(): WireMessage[] {
-    // 技能进度状态条是本机 UI，不属于对话上下文；发给 API 前整条剥离。
+    // 技能进度状态条与多候选卡都是本机 UI，不属于对话上下文；发给 API 前整条剥离。
     return this.messages
-      .filter((message) => !message.localSkillStatus)
+      .filter((message) => !message.localSkillStatus && !message.localSkillChoice)
       .map(({ id, role, parts }) => ({ id, role, parts }))
   }
 
@@ -3320,56 +3342,107 @@ class ChatView extends ItemView {
     throw new Error(data.reason ?? '事实记忆没有保存成功，请稍后再试')
   }
 
-  private async send(
-    options: {
-      skillCreator?: boolean
-      skillStudioTestInput?: string
-      /** 咨询闭环第 4 步是云端任务写入，不得再次按 create-note Skill 跑 Vault 整理。 */
-      consultationWorkflowTaskOriginId?: string
-      consultationWorkflowSourcePath?: string
-    } = {},
-  ) {
+  private async send(options: SendOptions = {}) {
     const text = this.inputEl.value.trim()
     if (!text || this.sending) return
-    const pendingVaultQuestion = this.recentPendingVaultQuestion()
-    const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
-    const explicitLocalSkillRun = isExplicitLocalSkillRunIntent(text)
-    // 先在本机确认“调用 + 已安装 Skill 名称”是否真实存在。只靠创建意图词表
-    // 分流仍可能被历史 Skill Creator 访谈状态劫持；已解析到本地 Skill 时，
-    // 运行意图拥有确定性优先级。
-    const explicitLocalSkillMatch = explicitLocalSkillRun
-      ? await this.localSkills.resolve(text, { allowAutomatic: false })
-      : undefined
-    const explicitInstalledLocalSkill = explicitLocalSkillMatch?.kind === 'matched'
-    // 原生 ask_user 的回答必须先续接同一个文件任务。回答正文可能恰好描述
-    // “课后让学员创建 Skill”等业务内容，不能因此被重新分流到 Skill Creator。
-    // 若用户确实想放弃原任务创建 Skill，应新开对话，避免隐式丢失待续状态。
-    const skillCreatorTurn =
-      !pendingVaultQuestion &&
-      (
-        options.skillCreator === true ||
-        (
-          !explicitLocalSkillRun &&
-          !explicitInstalledLocalSkill &&
-          (pendingSkillCreatorInterview || isExplicitLocalSkillCreationIntent(text))
-        )
-      )
-    const consultationWorkflowTaskTurn = Boolean(options.consultationWorkflowTaskOriginId)
-
     const imageAttachments = this.chatImageAttachments.slice()
-    this.messages.push({
+    const userMessage: WireMessage = {
       id: uid(),
       role: 'user',
       parts: [{ type: 'text', text }],
       imageAttachmentNames:
         imageAttachments.length > 0 ? imageAttachments.map((image) => image.name) : undefined,
-    })
+    }
+    this.messages.push(userMessage)
     this.inputEl.value = ''
+    await this.runSendTurn(text, userMessage.id, imageAttachments, options)
+  }
+
+  /**
+   * 多候选卡从已经存在的用户消息继续：按候选保存的精确路径重新核验入口，
+   * 不调用 send()、不再追加用户消息，也不把显示名填回输入框做第二次猜测。
+   */
+  private async resumeLocalSkillChoice(message: WireMessage, path: string): Promise<void> {
+    const state = message.localSkillChoice
+    if (!state || state.completedPath || this.sending) return
+    const candidate = state.candidates.find((item) => item.path === path)
+    if (!candidate) return
+    state.requestedPath = path
+    state.error = undefined
+    try {
+      const request = this.messages.find((item) => item.id === state.requestMessageId)
+      if (!request || request.role !== 'user') throw new Error('找不到这张选择卡对应的原始请求')
+      if ((request.imageAttachmentNames?.length ?? 0) > 0) {
+        throw new Error('原请求包含未持久化的图片，请重新附上图片并用完整 Skill 名称发送')
+      }
+      const text = request.parts.map((part) => part.text).join('').trim()
+      if (!text) throw new Error('原始请求为空，无法继续')
+      if (this.sending) throw new Error('另一条消息正在处理中，请稍后再选择')
+      await this.runSendTurn(text, request.id, [], {
+        forcedLocalSkillPath: path,
+        localSkillChoiceOfferId: message.id,
+      })
+      state.completedPath = path
+      state.requestedPath = undefined
+      state.error = undefined
+      await this.persistNow()
+      this.renderMessages()
+    } catch (error) {
+      state.requestedPath = undefined
+      state.error = error instanceof Error ? error.message : String(error)
+      await this.persistNow()
+      this.renderMessages()
+      new Notice(`无法继续所选 Skill：${state.error}`, 8000)
+      throw error
+    }
+  }
+
+  private async runSendTurn(
+    text: string,
+    userMessageId: string,
+    imageAttachments: LocalImageReference[],
+    options: SendTurnOptions = {},
+  ): Promise<void> {
+    if (this.sending) return
     this.sending = true
     this.sendBtn.disabled = true
     this.renderMessages(true)
 
+    let skillCreatorTurn = false
+    let consultationWorkflowTaskTurn = false
     try {
+      const pendingVaultQuestion = this.recentPendingVaultQuestion()
+      const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
+      const forcedLocalSkill = options.forcedLocalSkillPath
+        ? await this.localSkills.resolvePath(options.forcedLocalSkillPath)
+        : undefined
+      if (options.forcedLocalSkillPath && !forcedLocalSkill) {
+        throw new Error(`所选 Skill 已被移动或删除：${options.forcedLocalSkillPath}`)
+      }
+      const explicitLocalSkillRun = forcedLocalSkill
+        ? true
+        : isExplicitLocalSkillRunIntent(text)
+      // 先在本机确认“调用 + 已安装 Skill 名称”是否真实存在。多候选卡恢复时
+      // 已按精确路径重新 resolvePath，本轮不再按显示名做第二次匹配。
+      const explicitLocalSkillMatch = forcedLocalSkill
+        ? { kind: 'matched' as const, skill: forcedLocalSkill }
+        : explicitLocalSkillRun
+          ? await this.localSkills.resolve(text, { allowAutomatic: false })
+          : undefined
+      const explicitInstalledLocalSkill = explicitLocalSkillMatch?.kind === 'matched'
+      // 原生 ask_user 的回答必须先续接同一个文件任务。回答正文可能恰好描述
+      // “课后让学员创建 Skill”等业务内容，不能因此被重新分流到 Skill Creator。
+      skillCreatorTurn =
+        !pendingVaultQuestion &&
+        (
+          options.skillCreator === true ||
+          (
+            !explicitLocalSkillRun &&
+            !explicitInstalledLocalSkill &&
+            (pendingSkillCreatorInterview || isExplicitLocalSkillCreationIntent(text))
+          )
+        )
+      consultationWorkflowTaskTurn = Boolean(options.consultationWorkflowTaskOriginId)
       if (this.mode === 'interview') {
         const answer = await this.sendInterview()
         this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: answer }] })
@@ -3448,17 +3521,32 @@ class ChatView extends ItemView {
         if (continuedSkill) localSkillMatch = { kind: 'matched', skill: continuedSkill }
       }
       if (localSkillMatch.kind === 'missing') {
-        throw new Error(
-          `没有找到你点名的 Skill。可以说「查看我的 Skills」，` +
-            `或检查文件是否在 ${this.localSkills.root()}/。`,
-        )
+        const skills = await this.localSkills.list()
+        throw new Error(formatMissingLocalSkillError(skills, this.localSkills.root()))
       }
       if (localSkillMatch.kind === 'ambiguous') {
-        throw new Error(
-          `有多个 Skill 同时匹配：${localSkillMatch.skills
-            .map((skill) => skill.displayName)
-            .join('、')}。请说出完整技能名后重试。`,
-        )
+        if (imageAttachments.length > 0) {
+          throw new Error('这条请求同时带了图片且匹配到多个 Skill。请保留图片，补充完整 Skill 名称后重新发送。')
+        }
+        const candidates = [...new Map(
+          localSkillMatch.skills.map((skill) => [skill.path, {
+            path: skill.path,
+            name: skill.name,
+            displayName: skill.displayName,
+            folderName: skill.folderName,
+          }]),
+        ).values()]
+        this.messages.push({
+          id: uid(),
+          role: 'assistant',
+          parts: [{
+            type: 'text',
+            text: '这句话同时匹配到多个 Skill。请选择一个，我会从刚才那条请求继续。',
+          }],
+          localSkillChoice: { requestMessageId: userMessageId, candidates },
+        })
+        await this.persistNow()
+        return
       }
       const localSkill =
         localSkillMatch.kind === 'matched' ? localSkillMatch.skill : undefined
@@ -3842,9 +3930,9 @@ class ChatView extends ItemView {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      new Notice(`AI霖子:${msg}`, 6000)
+      if (!options.localSkillChoiceOfferId) new Notice(`AI霖子:${msg}`, 6000)
       // 失败的那条用户消息保留在输入历史里,方便重试
-      if (!this.longDocumentTask) {
+      if (!this.longDocumentTask && !options.localSkillChoiceOfferId) {
         this.messages.push({
           id: uid(),
           role: 'assistant',
@@ -3858,6 +3946,7 @@ class ChatView extends ItemView {
         )
         if (origin) origin.consultationWorkflowTaskRequestedAt = undefined
       }
+      if (options.localSkillChoiceOfferId) throw e
     } finally {
       this.sending = false
       this.sendBtn.disabled = false
@@ -6559,6 +6648,12 @@ class ChatView extends ItemView {
         const cleanText = folderResult.cleanText
         const patch = parseNotePatch(cleanText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
+        if (m.localSkillChoice) {
+          renderLocalSkillChoiceCard({
+            isBusy: () => this.sending,
+            choose: async (_message, path) => this.resumeLocalSkillChoice(m, path),
+          }, row, m)
+        }
         if (m.vaultQuestion) this.renderVaultQuestionOffer(row, m)
         if ((m.vaultSources?.length ?? 0) > 0) this.renderVaultSources(row, m.vaultSources ?? [])
         if ((m.localSkillRunIds?.length ?? 0) > 0) this.renderLocalSkillRunOffer(row, m)
