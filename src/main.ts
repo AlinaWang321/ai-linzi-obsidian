@@ -65,6 +65,7 @@ import {
   fileToReferenceDataUrl,
 } from './actions'
 import { ActivityFeed, parseFinishedActivityFeed } from './activity-feed-core'
+import { shouldOpenSlashMenu } from './slash-menu-core'
 import {
   AI_LINZI_AVATAR_DATA_URI,
   AI_LINZI_RIBBON_ICON_ID,
@@ -2004,6 +2005,11 @@ class ChatView extends ItemView {
       if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey) && !ev.isComposing) {
         ev.preventDefault()
         void this.send()
+        return
+      }
+      if (this.shouldOpenSlashMenu(ev)) {
+        ev.preventDefault()
+        this.openSlashMenu()
       }
     })
     this.registerAttachmentDropAndPaste(footer)
@@ -2083,6 +2089,77 @@ class ChatView extends ItemView {
     }
     const rect = btn.getBoundingClientRect()
     menu.showAtPosition({ x: rect.left, y: rect.bottom })
+  }
+
+  /** 触发判定在 slash-menu-core.ts（纯模块，可真跑单测）；这里只取当前 DOM 状态。 */
+  private shouldOpenSlashMenu(ev: KeyboardEvent): boolean {
+    return shouldOpenSlashMenu(
+      {
+        key: ev.key,
+        isComposing: ev.isComposing,
+        keyCode: ev.keyCode,
+        metaKey: ev.metaKey,
+        ctrlKey: ev.ctrlKey,
+        altKey: ev.altKey,
+      },
+      {
+        value: this.inputEl.value,
+        selectionStart: this.inputEl.selectionStart,
+        selectionEnd: this.inputEl.selectionEnd,
+        interviewMode: this.mode === 'interview',
+      },
+    )
+  }
+
+  /**
+   * `/` 面板：只做两件事——打开已有菜单，或把话填进输入框。
+   * 绝不自动发送、绝不直接执行技能、绝不产生任何积分消耗。
+   * 用 Obsidian 原生 Menu，上下键 / Enter / Escape / 鼠标选择全部由它提供。
+   */
+  private openSlashMenu(): void {
+    const menu = new Menu()
+    menu.addItem((item) =>
+      item
+        .setTitle('官方技能…')
+        .setIcon('sparkles')
+        .onClick(() => {
+          const skillMenu = new Menu()
+          this.buildSkillMenu(skillMenu)
+          this.showMenuAtInput(skillMenu)
+        }),
+    )
+    menu.addItem((item) =>
+      item
+        .setTitle('我的 Skills')
+        .setIcon('folder-open')
+        .onClick((evt) => void this.showLocalSkillsMenu(evt as MouseEvent)),
+    )
+    menu.addItem((item) =>
+      item
+        .setTitle('创建 Skill')
+        .setIcon('wand-sparkles')
+        .onClick(() => this.openSkillStudio()),
+    )
+    menu.addSeparator()
+    menu.addItem((item) =>
+      item
+        .setTitle('内容看板')
+        .setIcon('layout-dashboard')
+        .onClick(() => void this.plugin.activateContentDashboard()),
+    )
+    menu.addItem((item) =>
+      item
+        .setTitle('CEO驾驶舱')
+        .setIcon('gauge')
+        .onClick(() => void this.plugin.activateCockpit()),
+    )
+    this.showMenuAtInput(menu)
+  }
+
+  /** 把菜单锚在输入框左上角：`/` 是键盘触发的，没有鼠标坐标可用。 */
+  private showMenuAtInput(menu: Menu): void {
+    const rect = this.inputEl.getBoundingClientRect()
+    menu.showAtPosition({ x: rect.left, y: rect.top })
   }
 
   /** 「技能」菜单:官方技能 + 我的 Skills + 创建 Skill。菜单项保留完整名称。 */
