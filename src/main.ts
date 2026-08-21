@@ -881,11 +881,13 @@ class ChatHistoryModal extends Modal {
       const facts = historyEntryFacts(entry.convo?.messages)
       if (facts) {
         meta.createSpan({ text: `${facts.messageCount} 条`, cls: 'ai-linzi-history-count' })
-        if (facts.touchedFiles) {
+        if (facts.ranVaultPlan) {
+          // 口径只到「整理方案」：vaultActionId 仅由 applyVaultPlan 写入，
+          // 新建笔记/建文件夹/局部改写都不写，标成「动过文件」会过度声称。
           meta.createSpan({
-            text: '动过文件',
+            text: '执行过整理方案',
             cls: 'ai-linzi-history-tag is-write',
-            attr: { title: '这次对话确认执行过 Vault 整理或写入' },
+            attr: { title: '这次对话确认执行过 Vault 整理方案（移动 / 重命名）' },
           })
         }
         if (facts.madeImages) {

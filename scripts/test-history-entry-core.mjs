@@ -13,33 +13,45 @@ const { historyEntryFacts, relativeTime, truncateTitle } = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`
 )
 
-console.log('第1组 条数只算正文往返，不算过程记录')
+console.log('第1组 条数只算正文往返，过程记录不计入')
 {
   const msgs = [
     { role: 'user' },
     { role: 'assistant' },
-    { role: 'assistant', localSkillStatus: true }, // 活动流也是 assistant
+    { role: 'assistant', localSkillStatus: true }, // 活动流也是 assistant，但属过程记录
     { role: 'user' },
   ]
   const facts = historyEntryFacts(msgs)
-  // localSkillStatus 仍是 assistant 角色，当前口径按角色计数；
-  // 这条断言把现状钉住，将来若要排除过程记录，改实现时会被这里拦下。
-  assert.equal(facts.messageCount, 4)
-  assert.equal(facts.touchedFiles, false)
+  // 4 条消息里有 1 条是活动流 → 正文往返 3 条。
+  // 若把过程记录也算进去，一次简单提问会被显示成十几条。
+  assert.equal(facts.messageCount, 3, '活动流/技能进度条不得计入正文条数')
+  assert.equal(facts.ranVaultPlan, false)
   assert.equal(facts.madeImages, false)
 }
 
-console.log('第2组 动过文件 / 生成过图片')
+console.log('第1.5组 只有过程记录、没有正文往返 → 返回 null')
 {
-  assert.equal(historyEntryFacts([{ role: 'assistant', vaultActionId: 'act-1' }]).touchedFiles, true)
+  assert.equal(
+    historyEntryFacts([{ role: 'assistant', localSkillStatus: true }]),
+    null,
+    '只剩过程记录时没有可展示的条数，不显示比显示 0 条诚实',
+  )
+}
+
+console.log('第2组 执行过整理方案 / 生成过图片')
+{
+  assert.equal(historyEntryFacts([{ role: 'assistant', vaultActionId: 'act-1' }]).ranVaultPlan, true)
   assert.equal(historyEntryFacts([{ role: 'assistant', aiImageResult: {} }]).madeImages, true)
   assert.equal(historyEntryFacts([{ role: 'assistant', imageResult: {} }]).madeImages, true)
   // 只是提到「移动文件」但没真执行 → 不能打标
   assert.equal(
-    historyEntryFacts([{ role: 'assistant' }, { role: 'user' }]).touchedFiles,
+    historyEntryFacts([{ role: 'assistant' }, { role: 'user' }]).ranVaultPlan,
     false,
-    '没有 vaultActionId 就是没真动过文件，不许凭正文猜',
+    '没有 vaultActionId 就是没执行过整理方案，不许凭正文猜',
   )
+  // 口径边界：vaultActionId 只由 applyVaultPlan 写入。新建笔记等写入动作不写它，
+  // 因此这个标记只能声称「执行过整理方案」，不能泛化成「动过文件」。
+  // 需要覆盖全部写入动作要另建统一追踪，属独立车次。
 }
 
 console.log('第3组 没有本机副本时返回 null（云端对话不显示假数据）')
