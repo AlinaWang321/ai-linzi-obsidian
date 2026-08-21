@@ -16,7 +16,9 @@ const bundled = await build({
 const {
   ActivityFeed,
   activityFeedText,
+  activityEndHeader,
   escapeActivityLine,
+  parseFinishedActivityFeed,
   ACTIVITY_FEED_VISIBLE_LINES,
 } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`)
 
@@ -175,6 +177,52 @@ console.log('第8组 生命周期边界：begin 之前/end 之后的调用必须
   feed.step('结束后又来一条')
   feed.end('ok')
   assert.equal(frames.length, after, 'end 之后的调用不得再渲染')
+}
+
+console.log('第9组 完成态折叠解析（0.7.71）：真跑解析，不是在源码里找字符串')
+{
+  // 折叠只发生在渲染层：解析的输入就是 ActivityFeed 真正产出的完成态文本，
+  // 因此这里先用真实控制器跑一轮，再把它渲染出的最后一帧喂给解析器。
+  const { frames, host, tick } = makeHost()
+  const feed = new ActivityFeed(host)
+  feed.begin('开始')
+  feed.step('🔍 搜索「客户档案」→ 3 个相关文件')
+  feed.step('📄 读取 客户甲.md')
+  feed.step('📁 查看 02_Wiki')
+  tick(8000)
+  feed.end('ok')
+  const finalText = frames[frames.length - 1].text
+  const parsed = parseFinishedActivityFeed(finalText)
+  assert.ok(parsed, '完成态必须能被解析出来')
+  assert.match(parsed.header, /^✅ AI霖子工作台（3 步 · \d+ 秒）$/)
+  assert.equal(parsed.lines.length, 3, '三步动作一条都不能在折叠中丢失')
+  assert.equal(parsed.lines[1], '📄 读取 客户甲.md')
+  assert.match(parsed.lines[2], /02\\_Wiki/, '转义后的原文原样保留，展开后可审计')
+
+  // 进行中的帧绝不折叠：工作中必须保持展开与动效。
+  const workingFrame = frames.find((f) => f.text.startsWith('⚙️'))
+  assert.ok(workingFrame, '应当存在进行中的帧')
+  assert.equal(parseFinishedActivityFeed(workingFrame.text), null, '⚙️ 进行中不得被折叠')
+
+  // 失败态同样要能折叠，且摘要里保留失败原因。
+  const err = makeHost()
+  const errFeed = new ActivityFeed(err.host)
+  errFeed.begin('开始')
+  errFeed.step('📄 读取 a.md')
+  errFeed.end('error', '网络中断')
+  const errParsed = parseFinishedActivityFeed(err.frames.at(-1).text)
+  assert.ok(errParsed, '失败态也要可折叠')
+  assert.match(errParsed.header, /^⚠️ AI霖子工作台已停止：网络中断$/)
+  assert.equal(errParsed.lines.length, 1)
+
+  // 非活动流的消息一律原样渲染，不能被误折叠。
+  assert.equal(parseFinishedActivityFeed('普通的一条 AI 回复'), null)
+  assert.equal(parseFinishedActivityFeed('⚠️ 出错了'), null, '普通报错不是活动流')
+  assert.equal(
+    parseFinishedActivityFeed(activityEndHeader({ lines: [] }, 'ok', 3)),
+    null,
+    '零明细不得渲染成点不开的空折叠',
+  )
 }
 
 console.log('activity feed core behavior tests: ok')

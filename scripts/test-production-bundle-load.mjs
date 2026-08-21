@@ -53,6 +53,10 @@ const obsidianMock = new Proxy({
   parseYaml: () => ({}),
   requestUrl: async () => ({}),
   setIcon: () => undefined,
+  // 0.7.71：ribbon 与标签页改用自注册的 Q 版头像图标。桩里缺这个函数时，
+  // 下面的 Proxy 会回落成 EmptyComponent 类，被当函数调用直接抛
+  // 「Class constructor cannot be invoked without 'new'」——本测试即为此存在。
+  addIcon: () => undefined,
 }, {
   get(target, key) {
     return key in target ? target[key] : EmptyComponent

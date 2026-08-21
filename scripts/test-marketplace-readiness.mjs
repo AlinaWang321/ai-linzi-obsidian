@@ -98,4 +98,36 @@ console.log(
 assert(!styles.includes('!important'), 'CSS 不得使用 !important')
 assert(!styles.includes(':has('), 'CSS 不得使用高开销的 :has 选择器')
 
+/*
+ * 构建产物扫描（0.7.71 新增）——补上 2026-08 下架事故真正的漏洞。
+ *
+ * 2026-08-16 官方目录对 0.7.33 判 Failed，唯一 Error 是 CODE OBFUSCATION：
+ * `Found 4 dynamic <script> element creations`。那 4 处字符在 src/ 里一个都没有，
+ * 它们来自 docx@9.7.1 dist 内联的 IE 时代 polyfill，打包后才进入 main.js。
+ *
+ * 上面的 createElement 检查只遍历 src/*.ts（0.7.55 从 8 个文件扩到全量，
+ * 扩的是「源码覆盖面」而不是「扫描对象」），因此对同类问题始终是绿的。
+ * 这里直接按官方扫描器的口径数发布产物里的字面量。
+ */
+const bundleUrl = new URL('../main.js', import.meta.url)
+let bundle = null
+try {
+  bundle = await readFile(bundleUrl, 'utf8')
+} catch {
+  bundle = null
+}
+if (bundle === null) {
+  console.log('  ⚠️ 未找到 main.js，跳过构建产物扫描（发布前必须先 npm run build 再跑本检查）')
+} else {
+  const dynamicScriptHits =
+    bundle.match(/createElement\(\s*(['"`])script\1\s*\)/g) ?? []
+  assert(
+    dynamicScriptHits.length === 0,
+    `构建产物 main.js 含 ${dynamicScriptHits.length} 处动态 <script> 创建，` +
+      '官方审核会判 CODE OBFUSCATION。检查最近新增的第三方依赖 dist 是否内联了 polyfill，' +
+      '按 esbuild.config.mjs 里 stripDynamicScriptPolyfills 的做法处理。',
+  )
+  console.log(`  已扫描构建产物 main.js（${Math.round(bundle.length / 1024)} KB）：动态 <script> 字面量 0 处`)
+}
+
 console.log('Obsidian 官方市场兼容检查通过')

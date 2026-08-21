@@ -10,6 +10,7 @@
 import {
   App,
   FileSystemAdapter,
+  addIcon,
   ItemView,
   MarkdownRenderer,
   MarkdownView,
@@ -24,6 +25,7 @@ import {
   WorkspaceLeaf,
   normalizePath,
   requestUrl,
+  setIcon,
 } from 'obsidian'
 import { copyWechatFormatted, sendToWechatDraft } from './publish'
 import { WECHAT_THEMES, getWechatTheme } from './wechat-themes'
@@ -62,7 +64,12 @@ import {
   imageMediaTypeFromDataUrl,
   fileToReferenceDataUrl,
 } from './actions'
-import { ActivityFeed } from './activity-feed-core'
+import { ActivityFeed, parseFinishedActivityFeed } from './activity-feed-core'
+import {
+  AI_LINZI_AVATAR_DATA_URI,
+  AI_LINZI_RIBBON_ICON_ID,
+  AI_LINZI_RIBBON_ICON_SVG,
+} from './brand-assets'
 import { dropSummary, planDroppedFiles, type DropCandidate } from './chat-drop-core'
 import { extractCreateNoteBlocks, type CreateNoteBlock } from './create-note'
 import {
@@ -1103,7 +1110,9 @@ export default class AiLinziPlugin extends Plugin {
     this.registerView(VIEW_TYPE_CONTENT_DASHBOARD, (leaf) => new ContentDashboardView(leaf, this))
     this.registerView(VIEW_TYPE_COCKPIT, (leaf) => new CockpitView(leaf, this))
 
-    this.addRibbonIcon('sparkles', 'AI霖子对话', () => this.activateChatView())
+    // 侧边栏入口用官方 Q 版卡通头像（0.7.71）：addIcon 注册后 ribbon 与视图图标共用。
+    addIcon(AI_LINZI_RIBBON_ICON_ID, AI_LINZI_RIBBON_ICON_SVG)
+    this.addRibbonIcon(AI_LINZI_RIBBON_ICON_ID, 'AI霖子对话', () => this.activateChatView())
     this.addRibbonIcon('layout-dashboard', 'AI霖子内容发布看板', () => this.activateContentDashboard())
     this.addRibbonIcon('gauge', '一人公司驾驶舱', () => this.activateCockpit())
 
@@ -1893,6 +1902,8 @@ class ChatView extends ItemView {
   private sendBtn!: HTMLButtonElement
   private authorizedContentBtn!: HTMLButtonElement
   private authorizedContentStatusEl!: HTMLElement
+  /** composer 上的「技能」按钮，供二级菜单在键盘唤起时定位（0.7.71）。 */
+  private skillMenuBtn?: HTMLElement
 
   constructor(leaf: WorkspaceLeaf, plugin: AiLinziPlugin) {
     super(leaf)
@@ -1910,7 +1921,8 @@ class ChatView extends ItemView {
     return 'AI霖子'
   }
   getIcon() {
-    return 'sparkles'
+    // 标签页图标与 ribbon 共用同一枚 Q 版头像（0.7.71）。
+    return AI_LINZI_RIBBON_ICON_ID
   }
 
   async onOpen() {
@@ -1919,14 +1931,35 @@ class ChatView extends ItemView {
     root.addClass('ai-linzi-root')
     installButtonPressFeedback(root)
 
-    // 顶栏:历史 + 新对话
+    // 顶栏(0.7.71):品牌头 + 图标操作区。
+    // 图标钮一律是真 <button> + setIcon,原生键盘可达(Tab/Enter/Space)、
+    // 沿用 installButtonPressFeedback 的按压反馈;aria-label 与 title 同文案,
+    // 窄面板下只是隐去文字 label,不退化成无说明的纯图标。
     const topbar = root.createDiv({ cls: 'ai-linzi-topbar' })
-    topbar.createSpan({ text: 'AI霖子 · 你的 24 小时商业教练', cls: 'ai-linzi-title' })
+    const brand = topbar.createDiv({ cls: 'ai-linzi-brand' })
+    const brandMark = brand.createDiv({ cls: 'ai-linzi-brand-mark' })
+    // 官方 Q 版卡通头像（内联 data URI，插件不加载任何远程资源）。
+    brandMark.createEl('img', {
+      cls: 'ai-linzi-brand-avatar',
+      attr: { src: AI_LINZI_AVATAR_DATA_URI, alt: 'AI霖子', draggable: 'false' },
+    })
+    const brandText = brand.createDiv({ cls: 'ai-linzi-brand-text' })
+    brandText.createSpan({ text: 'AI霖子', cls: 'ai-linzi-brand-name' })
+    brandText.createSpan({ text: '24 小时商业教练', cls: 'ai-linzi-brand-sub' })
     const btns = topbar.createDiv({ cls: 'ai-linzi-topbar-btns' })
-    const histBtn = btns.createEl('button', { text: '历史', cls: 'ai-linzi-newchat' })
-    histBtn.onclick = () => void this.showHistoryMenu()
-    const newBtn = btns.createEl('button', { text: '新对话', cls: 'ai-linzi-newchat' })
-    newBtn.onclick = () => {
+    const addTopBtn = (icon: string, label: string, onClick: () => void): HTMLButtonElement => {
+      const btn = btns.createEl('button', {
+        cls: 'ai-linzi-icon-btn',
+        attr: { 'aria-label': label, title: label, type: 'button' },
+      })
+      setIcon(btn, icon)
+      btn.createSpan({ text: label, cls: 'ai-linzi-icon-btn-label' })
+      btn.onclick = onClick
+      return btn
+    }
+    // 顺序为「新对话 → 历史 → 设置」:新对话是最高频动作放最左,设置最低频放最右,
+    // 避免高频键与「设置」相邻造成误击(交接文档 §6 P0-A 只规定了这三个入口,未定顺序)。
+    addTopBtn('plus', '新对话', () => {
       void this.persistNow() // 旧对话先落盘
       this.messages = []
       this.sessionId = newPluginSessionId()
@@ -1934,7 +1967,9 @@ class ChatView extends ItemView {
       this.clearAuthorizedContent()
       if (this.mode === 'interview') this.exitInterviewMode()
       this.renderMessages()
-    }
+    })
+    addTopBtn('history', '历史', () => void this.showHistoryMenu())
+    addTopBtn('settings', '设置', () => this.plugin.openPluginSettings())
 
     // 访谈写作模式条(默认隐藏)
     this.interviewBar = root.createDiv({ cls: 'ai-linzi-interview-bar' })
@@ -1948,52 +1983,16 @@ class ChatView extends ItemView {
 
     this.listEl = root.createDiv({ cls: 'ai-linzi-messages' })
 
-    // 底部输入区
-    const footer = root.createDiv({ cls: 'ai-linzi-footer' })
-
-    // 动作按钮行：只放导航类入口。保存笔记、更新笔记和沉淀知识都由用户
-    // 直接在对话中说明，真正写入时再显示针对性的确认卡，避免常驻按钮混淆。
-    const actionsRow = footer.createDiv({ cls: 'ai-linzi-actions' })
-    const skillBtn = actionsRow.createEl('button', { text: '调用技能', cls: 'ai-linzi-action-btn' })
-    skillBtn.onclick = (evt: MouseEvent) => {
-      const menu = new Menu()
-      for (const c of SKILL_ACTIONS) {
-        if (c.id === 'feed-knowledge') continue
-        menu.addItem((item) =>
-          item
-            .setTitle(c.name)
-            .setIcon('sparkles')
-            .onClick(() => void c.fn(this.plugin)),
-        )
-      }
-      menu.showAtMouseEvent(evt)
-    }
-    const dashboardBtn = actionsRow.createEl('button', { text: '内容看板', cls: 'ai-linzi-action-btn' })
-    dashboardBtn.onclick = () => void this.plugin.activateContentDashboard()
-    const cockpitBtn = actionsRow.createEl('button', {
-      text: 'CEO驾驶舱',
-      cls: 'ai-linzi-action-btn',
-      attr: { title: '打开一人公司驾驶舱' },
-    })
-    cockpitBtn.onclick = () => void this.plugin.activateCockpit()
-    const localSkillsBtn = actionsRow.createEl('button', {
-      text: '我的 Skills',
-      cls: 'ai-linzi-action-btn',
-      attr: { title: `查看保存在 ${this.localSkills.root()}/ 中的自建 Skill` },
-    })
-    localSkillsBtn.onclick = (event: MouseEvent) => void this.showLocalSkillsMenu(event)
-    const skillStudioBtn = actionsRow.createEl('button', {
-      text: '创建 Skill',
-      cls: 'ai-linzi-action-btn ai-linzi-skill-studio-btn',
-      attr: { title: '打开 Skill Studio：官方模板、定制创建、试运行与导入分享' },
-    })
-    skillStudioBtn.onclick = () => this.openSkillStudio()
+    // 底部输入区(0.7.71):上下文标签 → 输入框 → 控制条,合成同一张 composer 卡片。
+    // footer 本身就是卡片,也仍然是 registerAttachmentDropAndPaste 的宿主元素,
+    // 因此拖拽有效区自动覆盖整张卡(含标签区与控制条),绑定点未变。
+    const footer = root.createDiv({ cls: 'ai-linzi-footer ai-linzi-composer' })
 
     this.authorizedContentStatusEl = footer.createDiv({
       cls: 'ai-linzi-authorized-content-status',
     })
     // 初始必须显式隐藏:📎 按钮此时未创建,refreshAuthorizedContentUi 会因守卫早退,
-    // 不隐藏就会在输入框上方留一个空的蓝框(0.6.32 Alina 实测反馈)
+    // 不隐藏就会在输入框上方留一个空框(0.6.32 Alina 实测反馈)
     this.authorizedContentStatusEl.toggle(false)
     this.refreshAuthorizedContentUi()
 
@@ -2009,28 +2008,123 @@ class ChatView extends ItemView {
     })
     this.registerAttachmentDropAndPaste(footer)
 
-    const sendRow = footer.createDiv({ cls: 'ai-linzi-send-row' })
-    const sendMeta = sendRow.createDiv({ cls: 'ai-linzi-send-meta' })
-    this.authorizedContentBtn = sendMeta.createEl('button', {
+    // 控制条:两个菜单入口在左,附件与发送在右。五个常驻按钮收进两个菜单,
+    // 菜单项保留完整中文名称,不出现没有说明的图标。
+    const bar = footer.createDiv({ cls: 'ai-linzi-composer-bar' })
+    const addBarMenuBtn = (
+      icon: string,
+      label: string,
+      hint: string,
+      build: (menu: Menu) => void,
+    ): HTMLButtonElement => {
+      const btn = bar.createEl('button', {
+        cls: 'ai-linzi-composer-menu-btn',
+        attr: { 'aria-label': hint, title: hint, 'aria-haspopup': 'menu', type: 'button' },
+      })
+      const iconEl = btn.createSpan({ cls: 'ai-linzi-composer-menu-icon' })
+      setIcon(iconEl, icon)
+      btn.createSpan({ text: label, cls: 'ai-linzi-composer-menu-label' })
+      btn.createSpan({ text: '⌄', cls: 'ai-linzi-composer-menu-caret' })
+      btn.onclick = (evt: MouseEvent) => {
+        const menu = new Menu()
+        build(menu)
+        this.showMenuForButton(menu, btn, evt)
+      }
+      return btn
+    }
+    this.skillMenuBtn = addBarMenuBtn(
+      'sparkles',
+      '技能',
+      '技能：调用技能、我的 Skills、创建 Skill',
+      (menu) => this.buildSkillMenu(menu),
+    )
+    addBarMenuBtn('layout-dashboard', '工作台', '工作台：内容看板、CEO驾驶舱', (menu) =>
+      this.buildWorkbenchMenu(menu),
+    )
+
+    const tools = bar.createDiv({ cls: 'ai-linzi-composer-tools' })
+    this.authorizedContentBtn = tools.createEl('button', {
       text: '📎',
       cls: 'ai-linzi-attachment-btn',
       attr: {
         title: '添加文件或图片（Pro）',
         'aria-label': '添加文件或图片',
+        type: 'button',
       },
     })
     this.authorizedContentBtn.onclick = (event) => void this.openAttachmentMenu(event)
-    sendMeta.createSpan({ text: CHAT_SEND_SHORTCUT_HINT, cls: 'ai-linzi-send-hint' })
-    this.sendBtn = sendRow.createEl('button', {
-      text: '发送',
+    // 发送键改为圆形箭头钮:快捷键说明从常驻一行改为 title/aria-label,
+    // 底部少占一行;文案常量未变,读屏仍能听到完整快捷键。
+    this.sendBtn = tools.createEl('button', {
       cls: 'ai-linzi-send',
-      attr: { title: CHAT_SEND_SHORTCUT_HINT, 'aria-label': `发送消息，${CHAT_SEND_SHORTCUT_HINT}` },
+      attr: {
+        title: CHAT_SEND_SHORTCUT_HINT,
+        'aria-label': `发送消息，${CHAT_SEND_SHORTCUT_HINT}`,
+        type: 'button',
+      },
     })
+    setIcon(this.sendBtn, 'arrow-up')
     this.sendBtn.onclick = () => void this.send()
 
     this.renderMessages()
     // 恢复最近一次会话(升级/重启后不丢)
     void this.restoreLatest()
+  }
+
+  /**
+   * 菜单定位(0.7.71):鼠标点击沿用 showAtMouseEvent;键盘激活(Enter/Space)时
+   * MouseEvent.detail 为 0、坐标是 (0,0),必须改用按钮位置定位,否则菜单会弹到
+   * 屏幕左上角——纯图标化之后这是键盘用户唯一的入口,不能坏。
+   */
+  private showMenuForButton(menu: Menu, btn: HTMLElement, event: MouseEvent): void {
+    if (event.detail > 0) {
+      menu.showAtMouseEvent(event)
+      return
+    }
+    const rect = btn.getBoundingClientRect()
+    menu.showAtPosition({ x: rect.left, y: rect.bottom })
+  }
+
+  /** 「技能」菜单:官方技能 + 我的 Skills + 创建 Skill。菜单项保留完整名称。 */
+  private buildSkillMenu(menu: Menu): void {
+    for (const c of SKILL_ACTIONS) {
+      if (c.id === 'feed-knowledge') continue
+      menu.addItem((item) =>
+        item
+          .setTitle(c.name)
+          .setIcon('sparkles')
+          .onClick(() => void c.fn(this.plugin)),
+      )
+    }
+    menu.addSeparator()
+    menu.addItem((item) =>
+      item
+        .setTitle('我的 Skills')
+        .setIcon('folder-open')
+        .onClick((evt) => void this.showLocalSkillsMenu(evt as MouseEvent)),
+    )
+    menu.addItem((item) =>
+      item
+        .setTitle('创建 Skill')
+        .setIcon('wand-sparkles')
+        .onClick(() => this.openSkillStudio()),
+    )
+  }
+
+  /** 「工作台」菜单:内容看板 + CEO驾驶舱。都是打开已有视图,不产生调用与积分。 */
+  private buildWorkbenchMenu(menu: Menu): void {
+    menu.addItem((item) =>
+      item
+        .setTitle('内容看板')
+        .setIcon('layout-dashboard')
+        .onClick(() => void this.plugin.activateContentDashboard()),
+    )
+    menu.addItem((item) =>
+      item
+        .setTitle('CEO驾驶舱')
+        .setIcon('gauge')
+        .onClick(() => void this.plugin.activateCockpit()),
+    )
   }
 
   private async showLocalSkillsMenu(event: MouseEvent): Promise<void> {
@@ -2060,7 +2154,9 @@ class ChatView extends ItemView {
           }),
       )
     }
-    menu.showAtMouseEvent(event)
+    // 本菜单可能由「技能」菜单里的一项二次唤起,此时事件坐标是 (0,0);
+    // 统一走 showMenuForButton,坐标无效时锚到 composer 上的技能按钮。
+    this.showMenuForButton(menu, this.skillMenuBtn ?? this.inputEl, event)
   }
 
   private openSkillStudio(): void {
@@ -6198,15 +6294,55 @@ class ChatView extends ItemView {
     }
   }
 
+  /**
+   * 完成态活动流的折叠渲染（0.7.71）。
+   * 摘要行是真 <button>（沿用按压反馈与键盘可达），aria-expanded 随状态变化；
+   * 明细区默认 hidden，展开后逐行显示，用户随时可以审计每一步做了什么。
+   */
+  private renderCollapsedActivityFeed(
+    row: HTMLElement,
+    body: HTMLElement,
+    feed: { header: string; lines: string[] },
+  ): void {
+    row.addClass('ai-linzi-status-done')
+    const toggle = body.createEl('button', {
+      cls: 'ai-linzi-activity-toggle',
+      attr: { 'aria-expanded': 'false', type: 'button' },
+    })
+    toggle.createSpan({ text: feed.header, cls: 'ai-linzi-activity-summary' })
+    const moreEl = toggle.createSpan({
+      text: `展开 ${feed.lines.length} 步`,
+      cls: 'ai-linzi-activity-more',
+    })
+    const detail = body.createDiv({ cls: 'ai-linzi-activity-detail' })
+    for (const line of feed.lines) {
+      detail.createDiv({ text: line, cls: 'ai-linzi-activity-line' })
+    }
+    detail.hide()
+    toggle.onclick = () => {
+      const open = toggle.getAttribute('aria-expanded') === 'true'
+      toggle.setAttribute('aria-expanded', open ? 'false' : 'true')
+      detail.toggle(!open)
+      moreEl.setText(open ? `展开 ${feed.lines.length} 步` : '收起')
+    }
+  }
+
   private renderMessages(thinking = false) {
     this.listEl.empty()
     if (this.messages.length === 0) {
       // 空状态排版规范(2026-07-30 Alina 反馈):标题下所有文字进同一个 body 容器,
       // 同字号、同行宽、同对齐;不允许再出现两套字号/宽度。
-      const empty = this.listEl.createDiv({ cls: 'ai-linzi-empty' })
-      empty.createDiv({ text: '👋 我是 AI霖子', cls: 'ai-linzi-empty-title' })
+      // 0.7.71 分两态:未连接仍是完整三步引导(功能门禁,不能为简洁删),
+      // 已连接收成一句价值主张 + 3 个起手式 + 降权的网页版入口。
+      const connected = Boolean(this.plugin.getApiToken())
+      const empty = this.listEl.createDiv({
+        cls: connected ? 'ai-linzi-empty is-ready' : 'ai-linzi-empty',
+      })
+      if (!connected) {
+        empty.createDiv({ text: '👋 我是 AI霖子', cls: 'ai-linzi-empty-title' })
+      }
       const body = empty.createDiv({ cls: 'ai-linzi-empty-body' })
-      if (!this.plugin.getApiToken()) {
+      if (!connected) {
         // 未连接:主动给三步引导,不让用户发了消息撞报错才发现没配密钥
         body.createDiv({
           text: '第一次使用,先完成连接(约 1 分钟):',
@@ -6223,18 +6359,44 @@ class ChatView extends ItemView {
         btn.onclick = () => this.plugin.openPluginSettings()
       } else {
         body.createDiv({
-          text: '开着某篇笔记问我,我可以结合它给你商业判断、内容建议和下一步行动。',
-          cls: 'ai-linzi-empty-sub',
+          text: '从一篇笔记开始,或者直接问我。',
+          cls: 'ai-linzi-empty-lede',
         })
-        // 已连接:给新手三个一分钟能跑通的起手式(文案与真实 UI 控件名严格一致)
+        // 起手式只做两件事之一:把话填进输入框,或打开已有菜单。
+        // 绝不自动发送、绝不直接调用技能、绝不产生任何积分消耗(0.7.71 硬约束)。
         const starters = body.createDiv({ cls: 'ai-linzi-empty-starters' })
-        starters.createDiv({ text: '3 个小技巧:' })
-        const ul = starters.createEl('ul')
-        ul.createEl('li', { text: '直接说“总结当前笔记”或“润色这篇文章”,我会只读取当前这一篇' })
-        ul.createEl('li', { text: '点「调用技能」→ 选题雷达,把素材笔记变成 10 个选题' })
-        ul.createEl('li', { text: '直接说“把当前笔记存入 AI霖子知识库”，沉淀长期定位和方法论' })
+        const addStarter = (
+          label: string,
+          hint: string,
+          onPick: (evt: MouseEvent) => void,
+        ) => {
+          const btn = starters.createEl('button', {
+            cls: 'ai-linzi-starter-btn',
+            attr: { title: hint, 'aria-label': `${label}：${hint}`, type: 'button' },
+          })
+          btn.createSpan({ text: label, cls: 'ai-linzi-starter-label' })
+          btn.createSpan({ text: hint, cls: 'ai-linzi-starter-hint' })
+          btn.onclick = onPick
+        }
+        const fillInput = (text: string) => {
+          this.inputEl.value = text
+          this.inputEl.focus()
+        }
+        addStarter('处理当前笔记', '填进输入框，你改完再发', () =>
+          fillInput('总结当前这篇笔记的要点'),
+        )
+        addStarter('在知识库里找资料', '填进输入框，你改完再发', () =>
+          fillInput('在我的知识库里找找跟这篇笔记相关的资料'),
+        )
+        addStarter('用一个技能', '打开「技能」菜单', (evt) => {
+          const menu = new Menu()
+          this.buildSkillMenu(menu)
+          this.showMenuForButton(menu, this.skillMenuBtn ?? this.inputEl, evt)
+        })
       }
-      const link = body.createDiv({ cls: 'ai-linzi-empty-link' })
+      const link = body.createDiv({
+        cls: connected ? 'ai-linzi-empty-link is-quiet' : 'ai-linzi-empty-link',
+      })
       link.createSpan({ text: '进入网页版 ' })
       link.createEl('a', { text: 'chat.alinalinzi.com', href: 'https://chat.alinalinzi.com' })
       link.createSpan({ text: ' 可注册账号、查看和充值积分' })
@@ -6264,6 +6426,13 @@ class ChatView extends ItemView {
         // 活动流/技能状态条：区别于正文气泡的紧凑样式；进行中(⚙️开头)带持续动效。
         row.addClass('ai-linzi-status-row')
         if (text.startsWith('⚙️')) row.addClass('ai-linzi-status-working')
+        // 完成态折叠(0.7.71)：默认只留一行摘要，明细收进可展开区。
+        // 消息正文仍整条保存，展开即可看到全部步骤——不是用 CSS 把内容藏死。
+        const finished = parseFinishedActivityFeed(text)
+        if (finished) {
+          this.renderCollapsedActivityFeed(row, body, finished)
+          continue
+        }
       }
       if (m.role === 'assistant') {
         let previousUserText = ''
