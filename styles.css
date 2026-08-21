@@ -2895,14 +2895,29 @@ button.ai-linzi-vault-source-link:focus-visible {
   color: var(--text-muted);
   line-height: 1.6;
 }
+/* 确认卡的动作行（0.7.71 修）：原来只有 margin-top，按钮之间没有任何间距。
+   createEl 不产生空白文本节点，所以 inline-block 的按钮会严丝合缝贴在一起
+   （Alina 截图报障：打开 SKILL.md / 立即试运行 / 导出分享 ZIP 连成一条）。
+   本类被新建笔记、新建文件夹、Vault 方案、Skill 安装四处确认卡共用，
+   子元素只有 button 和 span，改 flex 安全；窄面板靠 wrap 换行。 */
 .ai-linzi-create-note-actions {
-  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
 }
 .ai-linzi-create-note-actions button {
+  flex: 0 0 auto;
   cursor: pointer;
 }
 .ai-linzi-create-note-done {
   font-size: 13px;
+  line-height: 1.5;
+}
+/* 状态说明（✅ 已创建 / 本次不允许安装…）独占一行，不跟按钮挤在一起。 */
+.ai-linzi-create-note-actions > .ai-linzi-create-note-done {
+  flex: 1 1 100%;
 }
 
 /* ═══════════ 一人公司驾驶舱(v0.6.35) ═══════════
