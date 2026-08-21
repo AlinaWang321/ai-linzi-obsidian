@@ -284,11 +284,14 @@
 
 .ai-linzi-history-title-row {
   display: flex;
+  min-width: 0; /* 不写 min-width:0，flex 子项不会收缩，省略号永远不生效 */
   align-items: center;
   gap: 7px;
 }
 
 .ai-linzi-history-title {
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   color: var(--text-normal);
   font-size: var(--font-ui-small);
@@ -306,10 +309,40 @@
   font-size: var(--font-ui-smaller);
 }
 
+/* 元信息行（0.7.71）：相对时间 · 条数 · 真实发生过的动作标记。
+   标记只在本机副本里确有对应记录时才渲染，不编造。 */
 .ai-linzi-history-time {
-  margin-top: 3px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 4px;
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
+}
+
+.ai-linzi-history-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-linzi-history-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+}
+
+/* 「动过文件」用品牌黄——这是这一行里最值得先看见的信息。 */
+.ai-linzi-history-tag.is-write {
+  background: var(--alz-yellow-soft, rgba(245, 197, 24, 0.24));
+  color: var(--alz-navy, #293857);
+}
+
+.theme-dark .ai-linzi-history-tag.is-write {
+  background: rgba(245, 197, 24, 0.2);
+  color: #e2c35a;
 }
 
 .ai-linzi-history-actions {

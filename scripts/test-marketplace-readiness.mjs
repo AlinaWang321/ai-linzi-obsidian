@@ -128,6 +128,38 @@ if (bundle === null) {
       '按 esbuild.config.mjs 里 stripDynamicScriptPolyfills 的做法处理。',
   )
   console.log(`  已扫描构建产物 main.js（${Math.round(bundle.length / 1024)} KB）：动态 <script> 字面量 0 处`)
+
+  /*
+   * 动态代码生成基线（0.7.71 新增）。
+   *
+   * 官方审核的 CODE OBFUSCATION 区目前明确按动态 <script> 字面量计数（上面那条），
+   * 但 eval / new Function 属于同一风险面，随时可能被纳入扫描。
+   *
+   * 当前 4 处**全部来自第三方依赖**，本仓库 src/ 下为 0：
+   *   · pdfjs-dist 的 PostScript 函数编译器（isEvalSupported 分支里 new Function）
+   *   · pdfjs / fflate 的 `try { new Function('') }` CSP 特性探测
+   *   · docx → jszip → setimmediate polyfill 的 new Function(''+fn)
+   *     （与 2026-08 下架事故同一条依赖链）
+   *
+   * 这里**锁住基线而不是清零**：清零需要替换 pdfjs/docx，属于独立车次。
+   * 但数量只许降不许升——涨了说明新依赖又带进了动态代码，必须当场发现。
+   */
+  const EVAL_BASELINE = 4
+  const evalHits = bundle.match(/\beval\(|new Function\(/g) ?? []
+  assert(
+    evalHits.length <= EVAL_BASELINE,
+    `构建产物动态代码生成从 ${EVAL_BASELINE} 处涨到 ${evalHits.length} 处。` +
+      '新增的第三方依赖很可能带进了 eval/new Function，与官方 CODE OBFUSCATION 审核同一风险面。' +
+      '请定位来源；确属不可避免时再调整基线，不要默默放大。',
+  )
+  const srcEval = sourceEntries.filter((entry) => /\beval\(|new Function\(/.test(entry.text))
+  assert(
+    srcEval.length === 0,
+    `本仓库源码不得使用 eval / new Function（违规文件：${srcEval.map((e) => e.name).join(', ')}）`,
+  )
+  console.log(
+    `  动态代码生成：产物 ${evalHits.length} 处（基线 ${EVAL_BASELINE}，全部来自第三方依赖），本仓库源码 0 处`,
+  )
 }
 
 console.log('Obsidian 官方市场兼容检查通过')

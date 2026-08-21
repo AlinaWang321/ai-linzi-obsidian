@@ -66,6 +66,7 @@ import {
 } from './actions'
 import { ActivityFeed, parseFinishedActivityFeed } from './activity-feed-core'
 import { shouldOpenSlashMenu } from './slash-menu-core'
+import { historyEntryFacts, relativeTime, truncateTitle } from './history-entry-core'
 import {
   AI_LINZI_AVATAR_DATA_URI,
   AI_LINZI_RIBBON_ICON_ID,
@@ -847,23 +848,54 @@ class ChatHistoryModal extends Modal {
       const row = list.createDiv({ cls: 'ai-linzi-history-row' })
       const summary = row.createDiv({ cls: 'ai-linzi-history-summary' })
       const titleRow = summary.createDiv({ cls: 'ai-linzi-history-title-row' })
+      const fullTitle = `${entry.mode === 'interview' ? '✍️ ' : ''}${entry.title || '未命名对话'}`
       titleRow.createSpan({
-        text: `${entry.mode === 'interview' ? '✍️ ' : ''}${entry.title.slice(0, 60) || '未命名对话'}`,
+        // 数据层就补好省略号：flex 行里 CSS 的 text-overflow 未必生效，
+        // 原来的 slice(0,60) 会把标题生切一半（0.7.71 真机报障）。
+        text: truncateTitle(fullTitle, 40),
         cls: 'ai-linzi-history-title',
+        attr: { title: fullTitle },
       })
       if (entry.id === this.currentSessionId) {
         titleRow.createSpan({ text: '当前', cls: 'ai-linzi-history-current' })
       }
-      const timestamp =
+
+      // 元信息行：相对时间 + 条数 + 真实发生过的动作标记。
+      // 绝对时间移到 title 里，需要查「到底哪天」时悬停即可。
+      const meta = summary.createDiv({ cls: 'ai-linzi-history-time' })
+      const absolute =
         Number.isFinite(entry.updatedAt) && entry.updatedAt > 0
           ? new Date(entry.updatedAt).toLocaleString('zh-CN', {
+              year: 'numeric',
               month: 'numeric',
               day: 'numeric',
               hour: '2-digit',
               minute: '2-digit',
             })
           : '时间未知'
-      summary.createDiv({ text: timestamp, cls: 'ai-linzi-history-time' })
+      meta.createSpan({
+        text: relativeTime(entry.updatedAt, Date.now()),
+        attr: { title: absolute },
+      })
+      // facts 只来自本机副本；纯云端对话读不到就不显示，绝不编造条数。
+      const facts = historyEntryFacts(entry.convo?.messages)
+      if (facts) {
+        meta.createSpan({ text: `${facts.messageCount} 条`, cls: 'ai-linzi-history-count' })
+        if (facts.touchedFiles) {
+          meta.createSpan({
+            text: '动过文件',
+            cls: 'ai-linzi-history-tag is-write',
+            attr: { title: '这次对话确认执行过 Vault 整理或写入' },
+          })
+        }
+        if (facts.madeImages) {
+          meta.createSpan({
+            text: '出过图',
+            cls: 'ai-linzi-history-tag',
+            attr: { title: '这次对话生成过图片' },
+          })
+        }
+      }
 
       const actions = row.createDiv({ cls: 'ai-linzi-history-actions' })
       const openButton = actions.createEl('button', { text: '打开' })
