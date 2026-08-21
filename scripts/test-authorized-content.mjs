@@ -9,7 +9,11 @@ assert.match(main, /private uploadedSpreadsheetAttachments:/)
 assert.match(main, /private chatImageAttachments: LocalImageReference\[\] = \[\]/)
 assert.match(main, /requireProAccess\('多笔记与文件夹授权'\)/)
 assert.match(main, /requireProAccess\('主对话图片附件'\)/)
-assert.match(main, /authorizedContent = await this\.authorizedContentContext\(noteContext\?\.path\)/)
+assert.match(
+  main,
+  /authorizedContent = localSkillCurrentOnly\s*\?\s*undefined\s*:\s*await this\.authorizedContentContext\(noteContext\?\.path\)/,
+  '单文件受限 Skill 不能顺带发送附件栏里的其他资料',
+)
 assert.match(main, /vaultAccess:[\s\S]{0,160}this\.authorizedContentPaths\.length === 0[\s\S]{0,100}this\.uploadedSpreadsheetAttachments\.length === 0/)
 const modelRouting = main.match(/const modelDecidesVaultUse =[\s\S]*?const useVaultAgent/)?.[0] ?? ''
 assert.doesNotMatch(modelRouting, /authorizedContentPaths/, '精确授权资料仍应能让 Luna 输出只新建的成品方案')

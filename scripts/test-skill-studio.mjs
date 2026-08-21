@@ -138,6 +138,46 @@ assert.equal(
   localSkillCore.localSkillForbidsVaultExpansion('读取最近 7 天内修改的所有文档'),
   false,
 )
+const scopedInputFiles = [
+  '01_Raw/销售逐字稿/20260813193042-顾晓菲英语老师1v1商业咨询-逐字稿文本-1.txt',
+  '01_Raw/销售逐字稿/20260817150019-沈立冬家庭教育咨询师1v1商业咨询-逐字稿文本-1.md',
+  '04_Output/AI霖子输出/销售复盘/2026.08.19_谈单复盘_沈立冬.md',
+]
+const scopedBindings = {
+  rawRoot: '01_Raw',
+  wikiRoot: '02_Wiki',
+  outputRoot: '04_Output/AI霖子输出',
+}
+assert.deepEqual(
+  localSkillCore.resolveLocalSkillScopedInput(
+    '用 jingyancuiqu Skill 处理 Raw//销售逐字稿/沈立冬的咨询逐字稿',
+    scopedInputFiles,
+    scopedBindings,
+  ),
+  {
+    status: 'locked',
+    path: '01_Raw/销售逐字稿/20260817150019-沈立冬家庭教育咨询师1v1商业咨询-逐字稿文本-1.md',
+  },
+)
+assert.equal(
+  localSkillCore.resolveLocalSkillScopedInput(
+    '处理 Raw/销售逐字稿/20260813193042-顾晓菲英语老师1v1商业咨询-逐字稿文本-1.txt',
+    scopedInputFiles,
+    scopedBindings,
+  ).status,
+  'locked',
+)
+assert.equal(
+  localSkillCore.resolveLocalSkillScopedInput(
+    '用经验萃取处理 Raw/销售逐字稿 里的咨询逐字稿',
+    scopedInputFiles,
+    scopedBindings,
+  ).status,
+  'ambiguous',
+)
+assert.equal(localSkillCore.localSkillQuestionNamesInputFile('处理 Raw//销售逐字稿/沈立冬的咨询逐字稿'), true)
+assert.equal(localSkillCore.localSkillQuestionNamesInputFile(`处理下面粘贴的正文：${'正文'.repeat(500)}`), false)
+console.log('  ✓ 受限 Skill 只按路径元数据唯一锁定一份文件，不扩大正文读取范围')
 const broadScopePrompt = studioCore.buildSkillStudioPrompt({
   name: 'weekly-review',
   purpose: '做周复盘',
@@ -149,6 +189,9 @@ const broadScopePrompt = studioCore.buildSkillStudioPrompt({
   version: '1.0.0',
 })
 assert.match(broadScopePrompt, /仅在用户明确要求时搜索 Vault/)
+assert.match(prompt, /原始素材用 \$RAW\//)
+assert.match(prompt, /知识库用 \$WIKI\//)
+assert.match(prompt, /AI 产出用 \$OUTPUT\//)
 console.log('  ✓ 创建意图与 Skill Studio 结构化提示词')
 
 const generatedWithObjectVersion = {
@@ -420,6 +463,8 @@ assert.match(
   mainSource,
   /uploadedSpreadsheetAttachments\.length === 0 &&\s*!localSkillCurrentOnly/,
 )
+assert.match(mainSource, /scopedLocalSkillInputContext\(text, localSkill\.name\)/)
+assert.match(mainSource, /localSkillCurrentOnly\s*\?\s*undefined\s*:\s*await this\.authorizedContentContext/)
 assert.match(
   mainSource,
   /nativeEligible &&\s*round === 0[\s\S]{0,180}isVaultNativeTurnRequest\(lastText\)/,

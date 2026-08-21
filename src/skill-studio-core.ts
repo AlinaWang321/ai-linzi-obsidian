@@ -365,7 +365,7 @@ export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
 1. SKILL.md 必须把何时使用、输入、步骤、输出、事实边界和验收标准写清楚；复杂规范拆到 references/，且 SKILL.md 必须用相对链接指向每个会用到的 reference。
 2. 自动触发必须使用上面给出的完整动作短语，不要只写名词。
 3. 同时生成 references/ai-linzi-skill-manifest.json，内容必须是合法 JSON，包含 schemaVersion=1、"skillVersion":${JSON.stringify(draft.version)}、createdWith="AI霖子 Skill Studio"、permissions=${JSON.stringify(permissions)}、programs=[]、sampleInputs=${JSON.stringify([draft.sampleInput || `用 ${draft.name} 处理一份测试材料`])}。skillVersion 必须是上面这种带双引号的 JSON 字符串，绝不能写成 {"major":1,"minor":0,"patch":0} 对象。SKILL.md 必须链接该 manifest，并在正文重复“读取范围不扩大、写入先预览再确认、不覆盖”的关键边界，不能只把安全规则放在 manifest。
-4. 本版禁止生成 scripts；材料不足时先通过对话说明缺什么，不得猜测。create-artifact 只用于 HTML/DOCX/PDF/PPTX 成品，路径必须使用 $OUTPUT/ 开头并由用户确认。
+4. 本版禁止生成 scripts；材料不足时先通过对话说明缺什么，不得猜测。所有 Vault 路径必须可移植：原始素材用 $RAW/，知识库用 $WIKI/，AI 产出用 $OUTPUT/；不要把 raw/wiki/output 或 01_Raw/02_Wiki/04_Output 写成固定字面目录。create-artifact 只用于 HTML/DOCX/PDF/PPTX 成品，路径必须使用 $OUTPUT/ 开头并由用户确认。
 5. 只输出一个 <<<新建Skill>>> 文件夹协议，等待我确认，不要改动任何现有文件。`
 }
 

@@ -118,7 +118,7 @@ import {
   splitLongDocument,
   type LongDocumentChunk,
 } from './long-document'
-import { extractXlsxText, LOCAL_SEARCH_FILE_LIMITS } from './local-document-text'
+import { extractXlsxText, isLocalSearchExtension, LOCAL_SEARCH_FILE_LIMITS } from './local-document-text'
 import { LocalVaultSearch } from './vault-search'
 import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
@@ -148,11 +148,12 @@ import {
   isStructuredNoteWriteIntent,
   isVaultMutationExplicitlyDenied,
   isVaultAgentToolAllowed,
+  isProtectedVaultPath,
   isVaultTaskContinuation,
   isVaultTaskExpired,
   namespaceVaultToolCalls,
   operationLabel,
-  resolveVaultPlanOutputPaths,
+  resolveVaultPlanPaths,
   upgradeVaultIntent,
   vaultAutoAnswerRetryReason,
   vaultAnswerRetryReason,
@@ -176,6 +177,8 @@ import {
   formatLocalSkillList,
   isLocalSkillListIntent,
   localSkillForbidsVaultExpansion,
+  localSkillQuestionNamesInputFile,
+  resolveLocalSkillScopedInput,
   localSkillMenuTitle,
   normalizeLocalSkillRoot,
   type LocalSkillOutput,
@@ -1025,6 +1028,8 @@ export default class AiLinziPlugin extends Plugin {
     () => this.settings.localSkillsFolder,
     () => this.settings.outputFolder,
     () => this.weeklyBusinessDashboardCache,
+    () => this.settings.cockpitSourcesFolder,
+    () => this.settings.cockpitKnowledgeFolder,
   )
   private localSkillExecutorPromise: Promise<LocalSkillExecutor> | null = null
   private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
@@ -2823,6 +2828,63 @@ class ChatView extends ItemView {
     return items.length > 0 ? { items } : undefined
   }
 
+  /**
+   * 受限 Skill 的“单文件定位权限”：只查看 Vault 路径/文件名元数据，唯一命中后
+   * 才读取这一份正文。它不会建立全文索引、不会扫描同目录正文，也不会把其他候选
+   * 内容交给模型；同名或不明确时直接停下让用户补充准确路径。
+   */
+  private async scopedLocalSkillInputContext(
+    question: string,
+    skillName: string,
+  ): Promise<{ filename: string; text: string; path: string } | undefined> {
+    if (!localSkillQuestionNamesInputFile(question)) return undefined
+    const files = this.app.vault
+      .getFiles()
+      .filter(
+        (file) =>
+          isLocalSearchExtension(file.extension) &&
+          !isProtectedVaultPath(file.path, this.plugin.settings.localSkillsFolder),
+      )
+    const resolution = resolveLocalSkillScopedInput(
+      question,
+      files.map((file) => file.path),
+      {
+        rawRoot: this.plugin.settings.cockpitSourcesFolder,
+        wikiRoot: this.plugin.settings.cockpitKnowledgeFolder,
+        outputRoot: this.plugin.settings.outputFolder,
+      },
+      [skillName],
+    )
+    if (resolution.status === 'ambiguous') {
+      throw new Error(
+        `Skill《${skillName}》只允许读取一份文件，但你的说法匹配到多份：` +
+          `${resolution.paths.join('、')}。请补充完整 Vault 路径后重试。`,
+      )
+    }
+    if (resolution.status === 'missing') {
+      if (localSkillQuestionNamesInputFile(question)) {
+        throw new Error(
+          `Skill《${skillName}》只允许读取你点名的一份文件，但没有唯一找到它。` +
+            '请复制准确的 Vault 路径（例如 Raw/文件夹/文件名.md），或先打开目标笔记后再说“处理当前笔记”。',
+        )
+      }
+      return undefined
+    }
+    const file = this.app.vault.getAbstractFileByPath(resolution.path)
+    if (!(file instanceof TFile)) {
+      throw new Error(`已锁定的文件刚刚被移动或删除：${resolution.path}`)
+    }
+    let maxChars = 20_000
+    try {
+      const capabilities = await this.plugin.getCapabilities()
+      if (capabilities.tier === 'pro' || capabilities.tier === 'business') maxChars = 120_000
+    } catch {
+      // 能力接口临时不可用时使用 Starter 的单文件保守上限；服务端仍会做最终校验。
+    }
+    const result = await readLocalDocumentText(this.app, file, maxChars, 'skill')
+    return { filename: file.name, text: result.text.trim(), path: file.path }
+  }
+
   /** 本地候选图片元数据绝不传给主对话；云端只收到标准 UIMessage。 */
   private messagesForApi(): WireMessage[] {
     // 技能进度状态条是本机 UI，不属于对话上下文；发给 API 前整条剥离。
@@ -3122,6 +3184,9 @@ class ChatView extends ItemView {
         localSkillMatch.kind === 'matched' ? localSkillMatch.skill : undefined
       const automaticLocalSkill =
         localSkillMatch.kind === 'matched' && localSkillMatch.automatic === true
+      const localSkillCurrentOnly = Boolean(
+        localSkill && localSkillForbidsVaultExpansion(localSkill.fullContent),
+      )
       const illustrationEdit = isArticleIllustrationEditIntent(text)
       const singleIllustrationIntent = isSingleArticleIllustrationIntent(text)
       const recentCurrentNotePath = this.recentCurrentNotePath()
@@ -3135,7 +3200,7 @@ class ChatView extends ItemView {
         continuingCurrentNote ||
         singleIllustrationIntent ||
         localSkill?.output === 'update-current-note'
-      const noteContext = currentNoteRequested
+      let noteContext = currentNoteRequested
         ? await this.currentNoteContext(continuingCurrentNote ? recentCurrentNotePath : undefined)
         : undefined
       if (currentNoteRequested && !noteContext) {
@@ -3146,7 +3211,17 @@ class ChatView extends ItemView {
           `Skill《${localSkill.name}》需要修改当前笔记。请先打开目标笔记后重试。`,
         )
       }
-      if (noteContext) new Notice(`本轮只读取当前笔记：${noteContext.filename}`, 3500)
+      let scopedSkillInputPath: string | undefined
+      if (localSkill && localSkillCurrentOnly && !noteContext) {
+        noteContext = await this.scopedLocalSkillInputContext(text, localSkill.name)
+        scopedSkillInputPath = noteContext?.path
+        if (noteContext) {
+          new Notice(`已按你写出的路径锁定这一份文件：${noteContext.filename}`, 4500)
+        }
+      }
+      if (noteContext && !scopedSkillInputPath) {
+        new Notice(`本轮只读取当前笔记：${noteContext.filename}`, 3500)
+      }
       let consultationWorkflowSourcePath = consultationWorkflowTaskTurn
         ? options.consultationWorkflowSourcePath ?? this.recentConsultationWorkflowSourcePath()
         : localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME
@@ -3191,7 +3266,11 @@ class ChatView extends ItemView {
         await this.persistNow()
         return
       }
-      const authorizedContent = await this.authorizedContentContext(noteContext?.path)
+      // 受限 Skill 的权限合同是“恰好一份输入”。即使附件栏里还保留着上一轮资料，
+      // 本轮也不能顺带发送；附件不清空，下一次普通对话仍可继续使用。
+      const authorizedContent = localSkillCurrentOnly
+        ? undefined
+        : await this.authorizedContentContext(noteContext?.path)
       // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
       // 图片修改会在 AI 回复下方显示专用入口，先预览候选图再由用户确认替换。
       const singleIllustration = Boolean(noteContext && singleIllustrationIntent)
@@ -3239,9 +3318,6 @@ class ChatView extends ItemView {
             entryTruncated: localSkill.entryTruncated,
           }
         : undefined
-      const localSkillCurrentOnly = Boolean(
-        localSkill && localSkillForbidsVaultExpansion(localSkill.fullContent),
-      )
       if (localSkill) {
         new Notice(
           automaticLocalSkill
@@ -3280,6 +3356,7 @@ class ChatView extends ItemView {
             authorizedContent,
             localSkill: localSkillRequest,
             localSkillContext: localSkill ? this.localSkills.context(localSkill) : undefined,
+            scopedSkillInputPath,
             // 已由用户精确勾选的整篇资料可以直接用于回答或生成成品，但这一轮不再
             // 额外开放整个 Vault 工具，避免“精确授权”被扩大成未选择文件的读取。
             vaultAccess:
@@ -3940,6 +4017,8 @@ class ChatView extends ItemView {
         }
       | undefined
     localSkillContext: ActiveLocalSkillContext | undefined
+    /** 受限 Skill 根据用户文字唯一锁定的输入路径；只用于本机活动流，不进历史。 */
+    scopedSkillInputPath?: string
     vaultAccess: boolean
     vaultSearch:
       | {
@@ -4251,6 +4330,12 @@ class ChatView extends ItemView {
           ? '理解你的要求，需要时会自行查找知识库…'
           : '正在查看 Vault，需要时会继续翻阅相关文件…',
     )
+    if (input.scopedSkillInputPath) {
+      this.activityStep(
+        `🔒 已按你写出的路径锁定 ${input.scopedSkillInputPath.split('/').at(-1) ?? input.scopedSkillInputPath}`,
+        '已锁定这一份文件，正在按 Skill 处理…',
+      )
+    }
     let pendingNativeText: string | null = null
     // 0.7.54：引擎失败通常是网络/服务端原因，短时间内重试大概率同样失败。
     // 记住失败，标记路径不再把同一个引擎整轮重跑一遍（白等一次超时+白扣积分）。
@@ -5565,7 +5650,11 @@ class ChatView extends ItemView {
     plan: VaultOrganizePlan,
     message: WireMessage,
   ): void {
-    plan = resolveVaultPlanOutputPaths(plan, this.plugin.settings.outputFolder)
+    plan = resolveVaultPlanPaths(plan, {
+      outputRoot: this.plugin.settings.outputFolder,
+      rawRoot: this.plugin.settings.cockpitSourcesFolder,
+      wikiRoot: this.plugin.settings.cockpitKnowledgeFolder,
+    })
     const card = row.createDiv({ cls: 'ai-linzi-create-note-card ai-linzi-vault-plan-card' })
     const trashOperations = plan.operations.filter(
       (operation): operation is Extract<(typeof plan.operations)[number], { type: 'trash_note' }> =>

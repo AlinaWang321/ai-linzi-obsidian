@@ -193,6 +193,25 @@ assert.equal(
   'create-note 的 $OUTPUT 必须解析为用户当前输出目录',
 )
 
+const portableAliasPlan = core.resolveVaultPlanPaths({
+  title: '萃取经验',
+  summary: '',
+  operations: [
+    { type: 'move', from: '$RAW/销售逐字稿/客户甲.md', to: '$WIKI/客户档案/客户甲.md' },
+    { type: 'create_note', path: 'wiki/知识萃取/客户甲.md', content: '# 客户甲' },
+    { type: 'create_note', path: 'output/经验萃取/客户甲.md', content: '# 输出' },
+  ],
+  notes: [],
+}, {
+  rawRoot: '01_Raw',
+  wikiRoot: '02_Wiki',
+  outputRoot: '04_Output/AI霖子输出',
+})
+assert.equal(portableAliasPlan.operations[0].from, '01_Raw/销售逐字稿/客户甲.md')
+assert.equal(portableAliasPlan.operations[0].to, '02_Wiki/客户档案/客户甲.md')
+assert.equal(portableAliasPlan.operations[1].path, '02_Wiki/知识萃取/客户甲.md')
+assert.equal(portableAliasPlan.operations[2].path, '04_Output/AI霖子输出/经验萃取/客户甲.md')
+
 for (const invalidArtifact of [
   { path: '$OUTPUT/文档/客户方案.pdf', format: 'docx' },
   { path: '../客户方案.docx', format: 'docx' },

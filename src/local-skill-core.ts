@@ -209,6 +209,211 @@ export function localSkillForbidsVaultExpansion(content: string): boolean {
   return locksOneInput && forbidsExpansion
 }
 
+export interface LocalSkillScopedInputBindings {
+  rawRoot: string
+  wikiRoot: string
+  outputRoot: string
+}
+
+export type LocalSkillScopedInputResolution =
+  | { status: 'locked'; path: string }
+  | { status: 'ambiguous'; paths: string[] }
+  | { status: 'missing' }
+
+export function localSkillQuestionNamesInputFile(question: string): boolean {
+  const normalized = question.normalize('NFKC').replace(/[\\／]+/g, '/').replace(/\/{2,}/g, '/')
+  if (normalized.length > 800) return false
+  return (
+    /\$?(?:raw|wiki|output)\s*\//iu.test(normalized) ||
+    /(?:原始素材|知识库|输出)(?:文件夹)?\s*\//u.test(normalized) ||
+    /(?:路径|文件名|文件|文档|笔记|稿子|逐字稿)/u.test(normalized) ||
+    /\.(?:md|txt|pdf|docx|html?|pptx|xlsx)(?:\s|$|[，。！？、；：)）])/iu.test(normalized)
+  )
+}
+
+function comparablePath(value: string): string {
+  return value
+    .normalize('NFKC')
+    .replace(/[\\／]+/g, '/')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+    .trim()
+    .toLocaleLowerCase()
+}
+
+function comparableLoose(value: string): string {
+  return comparablePath(value).replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+function withoutExtension(value: string): string {
+  return value.replace(/\.[\p{L}\p{N}]{1,8}$/u, '')
+}
+
+function rootAliasVariants(
+  path: string,
+  bindings: LocalSkillScopedInputBindings,
+): string[] {
+  const normalized = comparablePath(path)
+  const roots: Array<[string, string[]]> = [
+    [bindings.rawRoot, ['$raw', 'raw', '原始素材']],
+    [bindings.wikiRoot, ['$wiki', 'wiki', '知识库']],
+    [bindings.outputRoot, ['$output', 'output', '输出']],
+  ]
+  const variants = [normalized]
+  for (const [configuredRoot, aliases] of roots) {
+    const root = comparablePath(configuredRoot)
+    if (!root || (normalized !== root && !normalized.startsWith(`${root}/`))) continue
+    const rest = normalized === root ? '' : normalized.slice(root.length + 1)
+    variants.push(...aliases.map((alias) => rest ? `${alias}/${rest}` : alias))
+  }
+  return [...new Set(variants.filter(Boolean))]
+}
+
+const SCOPED_INPUT_GENERIC_TERMS = [
+  '朋友圈知识卡片',
+  '经验萃取',
+  '商业咨询',
+  '咨询逐字稿',
+  '销售逐字稿',
+  '逐字稿文本',
+  '逐字稿',
+  '当前打开',
+  '明确指定',
+  '用户指定',
+  '请帮我',
+  '帮我',
+  '处理',
+  '读取',
+  '整理',
+  '使用',
+  '调用',
+  '生成',
+  '这一个',
+  '这一份',
+  '这份',
+  '一份',
+  '一个',
+  '当前',
+  '咨询',
+  '记录',
+  '原稿',
+  '稿子',
+  '文件',
+  '文档',
+  '材料',
+  '笔记',
+  'skill',
+  '技能',
+  'raw',
+  'wiki',
+  'output',
+  '的',
+].sort((left, right) => right.length - left.length)
+
+function distinctiveScopedInputTokens(value: string): string[] {
+  const chunks = value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .split(/[^\p{L}\p{N}]+/gu)
+    .filter(Boolean)
+  const tokens: string[] = []
+  for (const chunk of chunks) {
+    let cleaned = chunk
+    for (const term of SCOPED_INPUT_GENERIC_TERMS) cleaned = cleaned.split(term).join(' ')
+    tokens.push(...cleaned.split(/\s+/).map(comparableLoose).filter((item) => item.length >= 2))
+  }
+  return [...new Set(tokens)].sort((left, right) => right.length - left.length)
+}
+
+/**
+ * “只处理用户明确指定的一份文件”的 Skill 仍需要一种比全库搜索更窄的定位能力。
+ * 这里全程只比较 Vault 文件路径/文件名元数据，不读任何正文：
+ * - 完整路径或完整文件名优先；
+ * - `Raw/Wiki/Output` 与 `$RAW/$WIKI/$OUTPUT` 按驾驶舱设置解析；
+ * - 用户给出文件夹 + 唯一姓名/日期等特征时，只在该文件夹内锁定唯一候选；
+ * - 同名或不唯一时绝不猜测，把候选交还给用户选择。
+ */
+export function resolveLocalSkillScopedInput(
+  question: string,
+  filePaths: string[],
+  bindings: LocalSkillScopedInputBindings,
+  ignoredTerms: string[] = [],
+): LocalSkillScopedInputResolution {
+  const comparableQuestion = comparablePath(question)
+  const files = [...new Set(filePaths.map((path) => comparablePath(path)).filter(Boolean))]
+    .map((normalized) => ({
+      path: filePaths.find((path) => comparablePath(path) === normalized) ?? normalized,
+      normalized,
+      basename: normalized.split('/').at(-1) ?? normalized,
+      parent: normalized.split('/').slice(0, -1).join('/'),
+    }))
+  if (!comparableQuestion || files.length === 0) return { status: 'missing' }
+
+  const exactMatches = files
+    .map((file) => {
+      const aliases = [...rootAliasVariants(file.normalized, bindings), file.basename]
+        .flatMap((alias) => [alias, withoutExtension(alias)])
+        .filter((alias) => alias.length >= 3 && comparableQuestion.includes(alias))
+      return { file, score: aliases.reduce((max, alias) => Math.max(max, alias.length), 0) }
+    })
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score)
+  if (exactMatches.length > 0) {
+    const best = exactMatches[0].score
+    const top = exactMatches.filter((item) => item.score === best)
+    if (top.length === 1) return { status: 'locked', path: top[0].file.path }
+    return { status: 'ambiguous', paths: top.map((item) => item.file.path).slice(0, 8) }
+  }
+
+  const parentMatches = files
+    .flatMap((file) => rootAliasVariants(file.parent, bindings).map((alias) => ({ alias, parent: file.parent })))
+    .filter((item) => item.alias.length >= 2 && comparableQuestion.includes(item.alias))
+    .sort((left, right) => right.alias.length - left.alias.length)
+  const longestParentAlias = parentMatches[0]?.alias.length ?? 0
+  const matchedParents = new Set(
+    parentMatches
+      .filter((item) => item.alias.length === longestParentAlias)
+      .map((item) => item.parent),
+  )
+  const narrowed = matchedParents.size > 0
+    ? files.filter((file) => matchedParents.has(file.parent))
+    : files
+
+  const tail = parentMatches[0]
+    ? comparableQuestion.slice(comparableQuestion.indexOf(parentMatches[0].alias) + parentMatches[0].alias.length)
+    : comparableQuestion
+  const tokens = [...new Set([
+    ...distinctiveScopedInputTokens(tail),
+    ...distinctiveScopedInputTokens(comparableQuestion),
+  ])].filter(
+    (token) => !ignoredTerms.some((term) => token === comparableLoose(term)),
+  )
+  const fuzzyMatches = narrowed
+    .map((file) => {
+      const basename = comparableLoose(withoutExtension(file.basename))
+      const matchedTokens = tokens.filter((token) => basename.includes(token))
+      return {
+        file,
+        score: matchedTokens.reduce((sum, token) => sum + token.length * token.length, 0),
+        longest: matchedTokens[0]?.length ?? 0,
+      }
+    })
+    .filter((item) => item.longest >= 2)
+    .sort((left, right) => right.score - left.score || right.longest - left.longest)
+  if (fuzzyMatches.length > 0) {
+    const top = fuzzyMatches.filter(
+      (item) => item.score === fuzzyMatches[0].score && item.longest === fuzzyMatches[0].longest,
+    )
+    if (top.length === 1) return { status: 'locked', path: top[0].file.path }
+    return { status: 'ambiguous', paths: top.map((item) => item.file.path).slice(0, 8) }
+  }
+
+  if (narrowed.length > 1 && matchedParents.size > 0) {
+    return { status: 'ambiguous', paths: narrowed.map((file) => file.path).slice(0, 8) }
+  }
+  return { status: 'missing' }
+}
+
 export function localSkillDisplayNameFromMarkdown(content: string): string {
   const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
   const heading = body.match(/^#\s+(.+?)\s*$/m)?.[1] ?? ''

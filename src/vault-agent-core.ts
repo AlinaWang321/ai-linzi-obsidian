@@ -9,7 +9,6 @@ import {
   ARTIFACT_FORMATS,
   ARTIFACT_MAX_CONTENT_CHARS,
   ARTIFACT_MAX_TITLE_CHARS,
-  resolveArtifactPath,
   type ArtifactFormat,
   type CreateArtifactOperation,
 } from './artifact-renderer-core'
@@ -75,15 +74,47 @@ export interface VaultOrganizePlan {
   notes: string[]
 }
 
+export interface VaultPlanPathBindings {
+  outputRoot: string
+  rawRoot?: string
+  wikiRoot?: string
+}
+
+function normalizedBindingRoot(value: string | undefined, fallback: string): string {
+  return value?.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') || fallback
+}
+
 /**
- * 把 Skill 协议中的 `$OUTPUT` 解析为用户在驾驶舱里设置的真实输出目录。
+ * 把 Skill 协议中的可移植路径解析为用户驾驶舱里的真实目录。
  *
- * 模型只看见可移植别名，确认卡、预检和最终执行必须看见同一条本机路径；
- * 否则 create-note 会在 Vault 根目录误建一个字面量 `$OUTPUT` 文件夹。
+ * `$RAW/$WIKI/$OUTPUT` 是推荐写法；早期 Skill Studio 已生成过 `raw/wiki/output`
+ * 字面量，为保护这些既有 Skill 与用户设置，也把它们作为兼容别名。别名只在路径
+ * 第一段完整匹配时生效，不会改写普通文件名中的同名文字。
  */
-export function resolveVaultPlanOutputPaths(
+export function resolveVaultBoundPath(
+  path: string,
+  bindings: VaultPlanPathBindings,
+): string {
+  const normalized = path.trim().replace(/\\/g, '/').replace(/\/{2,}/g, '/')
+  const roots = [
+    { aliases: ['$OUTPUT', 'output'], root: normalizedBindingRoot(bindings.outputRoot, 'AI霖子输出') },
+    { aliases: ['$RAW', 'raw'], root: normalizedBindingRoot(bindings.rawRoot, '01_Raw') },
+    { aliases: ['$WIKI', 'wiki'], root: normalizedBindingRoot(bindings.wikiRoot, '02_Wiki') },
+  ]
+  for (const { aliases, root } of roots) {
+    for (const alias of aliases) {
+      if (normalized.toLocaleLowerCase() === alias.toLocaleLowerCase()) return root
+      if (normalized.toLocaleLowerCase().startsWith(`${alias.toLocaleLowerCase()}/`)) {
+        return `${root}/${normalized.slice(alias.length + 1)}`
+      }
+    }
+  }
+  return normalized
+}
+
+export function resolveVaultPlanPaths(
   plan: VaultOrganizePlan,
-  outputRoot: string,
+  bindings: VaultPlanPathBindings,
 ): VaultOrganizePlan {
   return {
     ...plan,
@@ -91,16 +122,24 @@ export function resolveVaultPlanOutputPaths(
       if (operation.type === 'move') {
         return {
           ...operation,
-          from: resolveArtifactPath(operation.from, outputRoot),
-          to: resolveArtifactPath(operation.to, outputRoot),
+          from: resolveVaultBoundPath(operation.from, bindings),
+          to: resolveVaultBoundPath(operation.to, bindings),
         }
       }
       return {
         ...operation,
-        path: resolveArtifactPath(operation.path, outputRoot),
+        path: resolveVaultBoundPath(operation.path, bindings),
       }
     }),
   }
+}
+
+/** 兼容旧调用方与第三方测试；新代码应传完整驾驶舱绑定。 */
+export function resolveVaultPlanOutputPaths(
+  plan: VaultOrganizePlan,
+  outputRoot: string,
+): VaultOrganizePlan {
+  return resolveVaultPlanPaths(plan, { outputRoot })
 }
 
 /** 方案生成时锁定的本地文件版本；只保存在插件本机会话。 */
