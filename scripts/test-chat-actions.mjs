@@ -37,9 +37,35 @@ const skillMenu = main.slice(
   main.indexOf('private buildSkillMenu'),
   main.indexOf('private buildWorkbenchMenu'),
 )
-assert.match(skillMenu, /for \(const c of SKILL_ACTIONS\)/)
+assert.match(skillMenu, /this\.buildOfficialSkillMenu\(menu\)/)
 assert.match(skillMenu, /setTitle\('我的 Skills'\)/)
 assert.match(skillMenu, /setTitle\('创建 Skill'\)/)
+
+// 官方技能菜单是独立一支：只列 SKILL_ACTIONS，不含 Skill 管理项。
+const officialMenu = main.slice(
+  main.indexOf('private buildOfficialSkillMenu'),
+  main.indexOf('private buildSkillMenu'),
+)
+assert.match(officialMenu, /for \(const c of SKILL_ACTIONS\)/)
+assert.doesNotMatch(officialMenu, /setTitle\('我的 Skills'\)/)
+assert.doesNotMatch(officialMenu, /setTitle\('创建 Skill'\)/)
+assert.doesNotMatch(officialMenu, /addSeparator/)
+
+// `/` 面板的「官方技能…」必须只展开官方技能。它上一级已经单列了
+// 「我的 Skills」和「创建 Skill」，二级菜单再列一遍就是重复（Codex 首轮审核发现）。
+const slashPanel = main.slice(
+  main.indexOf('private openSlashMenu'),
+  main.indexOf('private showMenuAtInput'),
+)
+assert.match(slashPanel, /setTitle\('官方技能…'\)/)
+assert.match(slashPanel, /this\.buildOfficialSkillMenu\(skillMenu\)/)
+assert.doesNotMatch(
+  slashPanel,
+  /this\.buildSkillMenu\(/,
+  '/ 面板的官方技能项不得调用完整 buildSkillMenu，否则二级菜单与上一级重复',
+)
+assert.match(slashPanel, /setTitle\('我的 Skills'\)/, '/ 面板本身仍应单列我的 Skills')
+assert.match(slashPanel, /setTitle\('创建 Skill'\)/, '/ 面板本身仍应单列创建 Skill')
 assert.doesNotMatch(main, /const kbBtn = actionsRow\.createEl/)
 const messageActionSection = main.slice(
   main.indexOf('// 只显示本轮真正需要的动作'),

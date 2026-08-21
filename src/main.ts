@@ -2123,8 +2123,10 @@ class ChatView extends ItemView {
         .setTitle('官方技能…')
         .setIcon('sparkles')
         .onClick(() => {
+          // 只列官方技能：本菜单上一级已经有「我的 Skills」和「创建 Skill」，
+          // 这里再调 buildSkillMenu 会把那两项重复一遍。
           const skillMenu = new Menu()
-          this.buildSkillMenu(skillMenu)
+          this.buildOfficialSkillMenu(skillMenu)
           this.showMenuAtInput(skillMenu)
         }),
     )
@@ -2162,8 +2164,11 @@ class ChatView extends ItemView {
     menu.showAtPosition({ x: rect.left, y: rect.top })
   }
 
-  /** 「技能」菜单:官方技能 + 我的 Skills + 创建 Skill。菜单项保留完整名称。 */
-  private buildSkillMenu(menu: Menu): void {
+  /**
+   * 只列官方技能。`/` 面板的「官方技能…」用这一支——它上一级已经单独列了
+   * 「我的 Skills」和「创建 Skill」，二级菜单再列一遍就是重复（0.7.71 审核发现）。
+   */
+  private buildOfficialSkillMenu(menu: Menu): void {
     for (const c of SKILL_ACTIONS) {
       if (c.id === 'feed-knowledge') continue
       menu.addItem((item) =>
@@ -2173,6 +2178,11 @@ class ChatView extends ItemView {
           .onClick(() => void c.fn(this.plugin)),
       )
     }
+  }
+
+  /** 「技能」菜单:官方技能 + 我的 Skills + 创建 Skill。菜单项保留完整名称。 */
+  private buildSkillMenu(menu: Menu): void {
+    this.buildOfficialSkillMenu(menu)
     menu.addSeparator()
     menu.addItem((item) =>
       item
