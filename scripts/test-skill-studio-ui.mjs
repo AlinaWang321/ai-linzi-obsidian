@@ -145,4 +145,42 @@ console.log('[test-skill-studio-ui] 自建 Skill 的名称、触发短语和测�
   assert.match(preview(modal).text, /^⚠️ 显式命中：用 client-follow-up Skill 处理当前笔记/)
 }
 
+console.log('[test-skill-studio-ui] 更新模式锁定精确入口并展示事务安全边界')
+{
+  globalThis.__ui.settings = []
+  const calls = []
+  const installed = {
+    name: 'weekly-review',
+    displayName: '周复盘',
+    description: '每周复盘',
+    path: '05_System/Skills/weekly-review/SKILL.md',
+  }
+  const modal = new SkillStudioModal({}, {
+    onCreateWithAi: () => {},
+    onOfferBundle: () => {},
+    listInstalledSkills: async () => [installed],
+    onUpdateWithAi: (skill, instruction) => calls.push({ skill, instruction }),
+  })
+  modal.templateId = 'update'
+  modal.onOpen()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.ok(setting('选择要更新的 Skill'), '更新模式必须列出已安装 Skill')
+  assert.equal(
+    setting('选择要更新的 Skill').controls[0].options[installed.path],
+    '周复盘 · weekly-review',
+  )
+  setting('这次想修改什么').controls[0].trigger('增加候选文件选择步骤')
+  const submit = [...globalThis.__ui.settings]
+    .flatMap((item) => item.controls)
+    .find((control) => control.text === '让 AI 生成更新确认卡')
+  assert.ok(submit)
+  submit.click()
+  assert.deepEqual(calls, [{ skill: installed, instruction: '增加候选文件选择步骤' }])
+  assert.equal(modal.closed, true)
+  const copy = all(modal.contentEl).map((el) => el.text).join('\n')
+  assert.match(copy, /删除文件还要单独确认/)
+  assert.match(copy, /失败自动回滚/)
+  assert.match(copy, /不会自动执行脚本/)
+}
+
 console.log('skill studio UI behavior tests: ok')

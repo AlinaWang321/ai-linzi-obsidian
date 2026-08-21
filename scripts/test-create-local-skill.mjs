@@ -124,3 +124,9 @@ description: 测试
 }
 
 console.log('[test-create-local-skill] 全部通过')
+
+// 创建与更新共同组成 Skill Studio 的本地写入边界；主门禁从这里串起更新协议、
+// 事务失败注入和真实 DOM 确认卡测试，避免新增测试只在开发者手工运行时生效。
+await import('./test-skill-update-core.mjs')
+await import('./test-skill-update-transaction.mjs')
+await import('./test-skill-update-card.mjs')

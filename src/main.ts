@@ -102,6 +102,19 @@ import {
 } from './create-local-skill'
 import { renderCreateLocalSkillOffers } from './create-local-skill-card'
 import {
+  extractSkillUpdateProposals,
+  type SkillUpdateSource,
+} from './skill-update-core'
+import {
+  renderSkillUpdateOffer,
+  type SkillUpdateOfferState,
+} from './skill-update-card'
+import {
+  SkillUpdateTransaction,
+  buildSkillUpdateSource,
+} from './skill-update-transaction'
+import { ObsidianSkillUpdateHost } from './skill-update-vault'
+import {
   renderLocalSkillChoiceCard,
   type LocalSkillChoiceState,
 } from './local-skill-choice-card'
@@ -519,11 +532,17 @@ interface WireMessage {
   skillCreatorResult?: boolean
   /** 对话确认后已落盘的 Skill；只保存本机相对路径。 */
   createdLocalSkill?: { root: string; entry: string }
+  /** 已通过本机预检的 Skill 更新卡；完整预览与指纹只保存在插件本机历史。 */
+  skillUpdateOffer?: SkillUpdateOfferState
+  /** 更新访谈尚未完成时锁定的精确 Skill 入口；不上传服务器。 */
+  skillUpdatePendingPath?: string
 }
 
 interface SendOptions {
   skillCreator?: boolean
   skillStudioTestInput?: string
+  /** Skill Studio 选择的精确入口；更新访谈跨轮继续使用这个路径，不按显示名重猜。 */
+  skillUpdatePath?: string
   /** 咨询闭环第 4 步是云端任务写入，不得再次按 create-note Skill 跑 Vault 整理。 */
   consultationWorkflowTaskOriginId?: string
   consultationWorkflowSourcePath?: string
@@ -535,6 +554,10 @@ interface SendTurnOptions extends SendOptions {
   /** 仅用于让失败回到原选择卡重试，不创建第二条用户消息。 */
   localSkillChoiceOfferId?: string
 }
+
+type SkillCreatorRequest =
+  | { mode: 'create'; source?: 'studio' | 'chat' }
+  | { mode: 'update'; source: 'studio' | 'chat'; target: SkillUpdateSource }
 
 interface VaultMessageSource {
   sourceId: string
@@ -1948,6 +1971,8 @@ class ChatView extends ItemView {
   private messages: WireMessage[] = []
   private sessionId = newPluginSessionId()
   private localSkills: LocalSkillRegistry
+  private skillUpdateHost: ObsidianSkillUpdateHost
+  private skillUpdateTransaction: SkillUpdateTransaction
   /** 普通主对话下一轮要识别的图片；压缩数据只驻留当前进程，发送后立即释放。 */
   private chatImageAttachments: LocalImageReference[] = []
   private activeImageMessageId = ''
@@ -1991,6 +2016,8 @@ class ChatView extends ItemView {
       plugin.app,
       () => plugin.settings.localSkillsFolder,
     )
+    this.skillUpdateHost = new ObsidianSkillUpdateHost(plugin.app)
+    this.skillUpdateTransaction = new SkillUpdateTransaction(this.skillUpdateHost)
   }
 
   getViewType() {
@@ -2395,6 +2422,12 @@ class ChatView extends ItemView {
         })
         void this.persistNow()
         this.renderMessages()
+      },
+      listInstalledSkills: () => this.localSkills.list(),
+      onUpdateWithAi: (skill, instruction) => {
+        this.inputEl.value = `更新 Skill「${skill.name}」：${instruction}`
+        this.inputEl.focus()
+        void this.send({ skillUpdatePath: skill.path })
       },
     }).open()
   }
@@ -3317,6 +3350,15 @@ class ChatView extends ItemView {
     return false
   }
 
+  private recentPendingSkillUpdatePath(): string | undefined {
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      const message = this.messages[index]
+      if (message.role !== 'assistant' || message.localSkillStatus) continue
+      return message.skillUpdatePendingPath
+    }
+    return undefined
+  }
+
   /** 取得上一条可直接写入 Markdown 的 AI 正文；所有本机协议块都先剥离。 */
   private lastAssistantContentForReplace(): string | undefined {
     for (let index = this.messages.length - 2; index >= 0; index--) {
@@ -3419,10 +3461,32 @@ class ChatView extends ItemView {
     this.renderMessages(true)
 
     let skillCreatorTurn = false
+    let skillUpdaterTurn = false
+    let skillUpdateTargetPath: string | undefined
     let consultationWorkflowTaskTurn = false
     try {
       const pendingVaultQuestion = this.recentPendingVaultQuestion()
       const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
+      skillUpdateTargetPath = options.skillUpdatePath ?? this.recentPendingSkillUpdatePath()
+      const skillUpdateTarget = skillUpdateTargetPath
+        ? await this.localSkills.resolvePath(skillUpdateTargetPath)
+        : undefined
+      if (skillUpdateTargetPath && !skillUpdateTarget) {
+        throw new Error(`要更新的 Skill 已被移动或删除：${skillUpdateTargetPath}`)
+      }
+      skillUpdaterTurn = Boolean(skillUpdateTarget)
+      const skillUpdateRoot = skillUpdateTarget
+        ? skillUpdateTarget.path.replace(/\/SKILL\.md$/u, '')
+        : undefined
+      if (skillUpdateTarget && skillUpdateRoot === skillUpdateTarget.path) {
+        throw new Error('旧版单文件 Skill 暂不支持自动覆盖更新；请先导出并改为文件夹形式。')
+      }
+      const skillUpdateSource = skillUpdateTarget && skillUpdateRoot
+        ? await buildSkillUpdateSource(this.skillUpdateHost, skillUpdateRoot, skillUpdateTarget.name)
+        : undefined
+      if (skillUpdaterTurn && imageAttachments.length > 0) {
+        throw new Error('更新 Skill 时不会顺带发送聊天附件。请先移除附件，再从 Skill Studio 重试。')
+      }
       const forcedLocalSkill = options.forcedLocalSkillPath
         ? await this.localSkills.resolvePath(options.forcedLocalSkillPath)
         : undefined
@@ -3444,6 +3508,7 @@ class ChatView extends ItemView {
       // “课后让学员创建 Skill”等业务内容，不能因此被重新分流到 Skill Creator。
       skillCreatorTurn =
         !pendingVaultQuestion &&
+        !skillUpdaterTurn &&
         (
           options.skillCreator === true ||
           (
@@ -3514,7 +3579,7 @@ class ChatView extends ItemView {
       // Skill Studio 的专用创建提示里固定包含“AI霖子 Skill Creator”。如果仍交给
       // 本地 Skill 名称解析器，它会把 Skill Creator 误认成用户点名调用的 Skill，
       // 并在真正请求创建接口前以“没有找到你点名的 Skill”中断。
-      let localSkillMatch = skillCreatorTurn || consultationWorkflowTaskTurn
+      let localSkillMatch = skillCreatorTurn || skillUpdaterTurn || consultationWorkflowTaskTurn
         ? { kind: 'none' as const }
         : explicitInstalledLocalSkill
           ? explicitLocalSkillMatch
@@ -3574,10 +3639,14 @@ class ChatView extends ItemView {
         Boolean(recentCurrentNotePath) &&
         shouldUseCurrentNote(text, true)
       const currentNoteRequested =
-        explicitCurrentNote ||
-        continuingCurrentNote ||
-        singleIllustrationIntent ||
-        localSkill?.output === 'update-current-note'
+        !skillCreatorTurn &&
+        !skillUpdaterTurn &&
+        (
+          explicitCurrentNote ||
+          continuingCurrentNote ||
+          singleIllustrationIntent ||
+          localSkill?.output === 'update-current-note'
+        )
       let noteContext = currentNoteRequested
         ? await this.currentNoteContext(continuingCurrentNote ? recentCurrentNotePath : undefined)
         : undefined
@@ -3607,7 +3676,7 @@ class ChatView extends ItemView {
           : undefined
       // Skill Studio 的生成提示会把“不覆盖同名文件”写进安全边界；这不是要求
       // 覆盖当前笔记。专用 Skill Creator 回合必须跳过正文替换快捷通道。
-      if (!skillCreatorTurn && isFullCurrentNoteReplaceIntent(text)) {
+      if (!skillCreatorTurn && !skillUpdaterTurn && isFullCurrentNoteReplaceIntent(text)) {
         if (!noteContext) throw new Error('没有读取到要覆盖的当前笔记')
         const replacement = this.lastAssistantContentForReplace()
         if (!replacement) {
@@ -3646,7 +3715,7 @@ class ChatView extends ItemView {
       }
       // 受限 Skill 的权限合同是“恰好一份输入”。即使附件栏里还保留着上一轮资料，
       // 本轮也不能顺带发送；附件不清空，下一次普通对话仍可继续使用。
-      const authorizedContent = localSkillCurrentOnly
+      const authorizedContent = localSkillCurrentOnly || skillUpdaterTurn
         ? undefined
         : await this.authorizedContentContext(noteContext?.path)
       // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
@@ -3678,7 +3747,8 @@ class ChatView extends ItemView {
         !singleIllustration &&
         !illustrationEdit &&
         imageAttachments.length === 0 &&
-        !skillCreatorTurn
+        !skillCreatorTurn &&
+        !skillUpdaterTurn
       const useVaultAgent = modelDecidesVaultUse
       // 没有手动搜索开关，也没有关键词预扫描。普通闲聊会在首轮直接回答；只有
       // Luna 判断本轮确实依赖本地资料时，才进入后续本机工具循环。
@@ -3696,6 +3766,11 @@ class ChatView extends ItemView {
             entryTruncated: localSkill.entryTruncated,
           }
         : undefined
+      const skillCreatorRequest: SkillCreatorRequest | undefined = skillCreatorTurn
+        ? { mode: 'create', source: options.skillCreator ? 'studio' : 'chat' }
+        : skillUpdaterTurn && skillUpdateSource
+          ? { mode: 'update', source: 'studio', target: skillUpdateSource }
+          : undefined
       if (localSkill) {
         new Notice(
           automaticLocalSkill
@@ -3705,6 +3780,7 @@ class ChatView extends ItemView {
         )
       }
       let answer: string
+      let skillUpdateOffer: SkillUpdateOfferState | undefined
       let localSkillRunIds: string[] | undefined
       let successfulCloudWriteTools: string[] | undefined
       let weeklyBusinessScan: WeeklyBusinessScanState | undefined
@@ -3810,7 +3886,7 @@ class ChatView extends ItemView {
             noteEdit,
             singleIllustration,
             undefined,
-            skillCreatorTurn,
+            skillCreatorRequest,
           )
         } catch {
           streamed = null
@@ -3837,11 +3913,37 @@ class ChatView extends ItemView {
               noteEdit,
               noteImageIntent: singleIllustration,
               localSkill: localSkillRequest,
-              skillCreator: skillCreatorTurn ? { mode: 'create', source: options.skillCreator ? 'studio' : 'chat' } : undefined,
+              skillCreator: skillCreatorRequest,
             },
           })
           answer = typeof data.text === 'string' ? data.text : '(空响应)'
         }
+      }
+      const skillUpdateExtraction = extractSkillUpdateProposals(answer)
+      if (skillUpdateExtraction.invalidBlocks > 0) {
+        throw new Error('AI 返回的 Skill 更新包格式不完整或没有通过本机安全校验，请重新生成。')
+      }
+      if (skillUpdateExtraction.proposals.length > 0) {
+        if (!skillUpdaterTurn || !skillUpdateTarget || !skillUpdateRoot) {
+          throw new Error('普通对话不能直接发起 Skill 覆盖更新；请从 Skill Studio 选择目标。')
+        }
+        const proposal = skillUpdateExtraction.proposals[0]
+        if (proposal.name !== skillUpdateTarget.name) {
+          throw new Error(`更新包目标是 ${proposal.name}，但本机锁定的是 ${skillUpdateTarget.name}，已取消。`)
+        }
+        const prepared = await this.skillUpdateTransaction.prepare(
+          skillUpdateRoot,
+          skillUpdateTarget.path,
+          proposal,
+        )
+        skillUpdateOffer = {
+          proposal,
+          prepared,
+          versions: await this.skillUpdateTransaction.listVersions(skillUpdateRoot),
+        }
+        answer = skillUpdateExtraction.cleanText || '已生成完整更新预览。确认前不会修改任何 Skill 文件。'
+      } else if (skillUpdaterTurn) {
+        answer = skillUpdateExtraction.cleanText
       }
       // 模型偶尔会同时返回旧「新建笔记」块和新的 Vault 变更集。两者内容相同，
       // 同时渲染会让用户看到两个创建按钮；保留已通过预检、支持版本锁与回滚的
@@ -3875,6 +3977,9 @@ class ChatView extends ItemView {
       const skillCreatorPending = skillCreatorTurn &&
         !answer.startsWith('⚠️') &&
         extractCreateLocalSkillBlocks(answer).blocks.length === 0
+      const skillUpdatePendingPath = skillUpdaterTurn && !skillUpdateOffer && !answer.startsWith('⚠️')
+        ? skillUpdateTarget?.path
+        : undefined
       const pendingVaultPlan = extractVaultOrganizePlan(visibleAnswer).plan
       const consultationWorkflowTaskCreatedAt =
         (consultationWorkflowTaskTurn || localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME) &&
@@ -3898,6 +4003,8 @@ class ChatView extends ItemView {
         skillStudioTestInput: skillCreatorTurn ? options.skillStudioTestInput : undefined,
         skillCreatorPending,
         skillCreatorResult: skillCreatorTurn || undefined,
+        skillUpdateOffer,
+        skillUpdatePendingPath,
       })
       if (consultationWorkflowTaskTurn && !consultationWorkflowTaskCreatedAt) {
         const origin = this.messages.find(
@@ -3948,6 +4055,7 @@ class ChatView extends ItemView {
           role: 'assistant',
           parts: [{ type: 'text', text: `⚠️ ${msg}` }],
           skillCreatorPending: skillCreatorTurn || undefined,
+          skillUpdatePendingPath: skillUpdaterTurn ? skillUpdateTargetPath : undefined,
         })
       }
       if (options.consultationWorkflowTaskOriginId) {
@@ -5679,7 +5787,7 @@ class ChatView extends ItemView {
       /** v0.7.35+：云端任务/CRM 工具执行轮标记。 */
       cloudToolsTurn?: boolean
     },
-    skillCreator = false,
+    skillCreator?: SkillCreatorRequest,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
@@ -5707,7 +5815,7 @@ class ChatView extends ItemView {
         noteImageIntent,
         localSkill,
         vaultAgent,
-        skillCreator: skillCreator ? { mode: 'create' } : undefined,
+        skillCreator,
       }),
     })
     if (!res.ok) {
@@ -5794,6 +5902,24 @@ class ChatView extends ItemView {
       },
       row,
       blocks,
+      message,
+    )
+  }
+
+  private renderSkillUpdateOffer(row: HTMLElement, message: WireMessage): void {
+    renderSkillUpdateOffer(
+      {
+        skillsRoot: () => this.localSkills.root(),
+        applyUpdate: (prepared, proposal) => this.skillUpdateTransaction.apply(prepared, proposal),
+        listVersions: (skillRoot) => this.skillUpdateTransaction.listVersions(skillRoot),
+        prepareRestore: (skillRoot, skillName, snapshotId) =>
+          this.skillUpdateTransaction.prepareRestore(skillRoot, skillName, snapshotId),
+        restore: (prepared) => this.skillUpdateTransaction.restore(prepared),
+        persist: () => this.persistNow(),
+        rerender: () => this.renderMessages(),
+        notify: (text, timeoutMs) => new Notice(text, timeoutMs),
+      },
+      row,
       message,
     )
   }
@@ -6664,6 +6790,7 @@ class ChatView extends ItemView {
             choose: async (_message, path) => this.resumeLocalSkillChoice(m, path),
           }, row, m)
         }
+        if (m.skillUpdateOffer) this.renderSkillUpdateOffer(row, m)
         if (m.vaultQuestion) this.renderVaultQuestionOffer(row, m)
         if ((m.vaultSources?.length ?? 0) > 0) this.renderVaultSources(row, m.vaultSources ?? [])
         if ((m.localSkillRunIds?.length ?? 0) > 0) this.renderLocalSkillRunOffer(row, m)

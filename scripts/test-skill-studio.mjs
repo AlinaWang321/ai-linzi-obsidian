@@ -512,6 +512,10 @@ const cardSource = await (await import('node:fs/promises')).readFile(
   'src/create-local-skill-card.ts',
   'utf8',
 )
+const updateCardSource = await (await import('node:fs/promises')).readFile(
+  'src/skill-update-card.ts',
+  'utf8',
+)
 assert.doesNotMatch(studioSource, /archive\[`\$\{block\.name\}\/INSTALL\.md`\]/)
 assert.match(studioSource, /自动识别的调用说法/)
 assert.match(studioSource, /创建后测试示例/)
@@ -534,7 +538,7 @@ assert.match(mainSource, /private hasPendingSkillCreatorInterview\(\): boolean \
 assert.doesNotMatch(mainSource, /hasPendingSkillCreatorInterview[\s\S]{0,600}continue[\s\S]{0,200}skillCreatorPending === true[\s\S]{0,100}continue/)
 assert.match(
   mainSource,
-  /let localSkillMatch = skillCreatorTurn \|\| consultationWorkflowTaskTurn\s*\? \{ kind: 'none' as const \}[\s\S]{0,180}explicitInstalledLocalSkill[\s\S]{0,120}explicitLocalSkillMatch[\s\S]{0,120}this\.localSkills\.resolve/,
+  /let localSkillMatch = skillCreatorTurn \|\| skillUpdaterTurn \|\| consultationWorkflowTaskTurn\s*\? \{ kind: 'none' as const \}[\s\S]{0,180}explicitInstalledLocalSkill[\s\S]{0,120}explicitLocalSkillMatch[\s\S]{0,120}this\.localSkills\.resolve/,
 )
 assert.match(mainSource, /localSkillForbidsVaultExpansion\(localSkill\.fullContent\)/)
 assert.match(
@@ -542,7 +546,7 @@ assert.match(
   /uploadedSpreadsheetAttachments\.length === 0 &&\s*!localSkillCurrentOnly/,
 )
 assert.match(mainSource, /scopedLocalSkillInputContext\(text, localSkill\.name\)/)
-assert.match(mainSource, /localSkillCurrentOnly\s*\?\s*undefined\s*:\s*await this\.authorizedContentContext/)
+assert.match(mainSource, /localSkillCurrentOnly \|\| skillUpdaterTurn\s*\? undefined\s*:\s*await this\.authorizedContentContext/)
 assert.match(
   mainSource,
   /nativeEligible &&\s*round === 0[\s\S]{0,180}isVaultNativeTurnRequest\(lastText\)/,
@@ -558,7 +562,7 @@ assert.match(mainSource, /if \(round === 0 && input\.forceCloudToolsTurn\)/)
 assert.match(mainSource, /successfulWriteTools\.includes\('addTask'\)/)
 assert.match(
   mainSource,
-  /if \(!skillCreatorTurn && isFullCurrentNoteReplaceIntent\(text\)\)/,
+  /if \(!skillCreatorTurn && !skillUpdaterTurn && isFullCurrentNoteReplaceIntent\(text\)\)/,
   'Skill Studio 提示里的“不覆盖”不能误触发当前笔记整篇替换',
 )
 assert.match(
@@ -578,7 +582,7 @@ const runSendTurnSource =
 assert.match(runSendTurnSource, /let skillCreatorTurn = false/)
 assert.match(
   runSendTurnSource,
-  /skillCreatorTurn =\s*!pendingVaultQuestion\s*&&[\s\S]{0,300}isExplicitLocalSkillCreationIntent\(text\)/,
+  /skillCreatorTurn =\s*!pendingVaultQuestion\s*&&\s*!skillUpdaterTurn\s*&&[\s\S]{0,300}isExplicitLocalSkillCreationIntent\(text\)/,
   '统一发送函数仍必须按待续问答与显式创建意图判定 Skill Creator 轮次',
 )
 assert.match(
@@ -591,6 +595,19 @@ assert.match(
   /explicitInstalledLocalSkill\s*\? explicitLocalSkillMatch\s*: await this\.localSkills\.resolve\(text, \{ allowAutomatic: true \}\)/,
   '已在本机解析到的 Skill 运行意图必须复用同一匹配结果',
 )
+assert.match(studioSource, /addOption\('update', '更新已经安装的 Skill'\)/)
+assert.match(studioSource, /onUpdateWithAi\(skill, this\.updateInstruction\)/)
+assert.match(runSendTurnSource, /skillUpdateTargetPath = options\.skillUpdatePath \?\? this\.recentPendingSkillUpdatePath\(\)/)
+assert.match(runSendTurnSource, /buildSkillUpdateSource\(this\.skillUpdateHost, skillUpdateRoot, skillUpdateTarget\.name\)/)
+assert.match(runSendTurnSource, /skillUpdaterTurn && imageAttachments\.length > 0/)
+assert.match(runSendTurnSource, /skillCreator: skillCreatorRequest/)
+assert.match(runSendTurnSource, /extractSkillUpdateProposals\(answer\)/)
+assert.match(runSendTurnSource, /this\.skillUpdateTransaction\.prepare\([\s\S]{0,180}skillUpdateTarget\.path/)
+assert.match(runSendTurnSource, /skillUpdatePendingPath = skillUpdaterTurn && !skillUpdateOffer/)
+assert.match(mainSource, /\.filter\(\(message\) => !message\.localSkillStatus && !message\.localSkillChoice\)[\s\S]{0,120}\.map\(\(\{ id, role, parts \}\)/)
+assert.match(updateCardSource, /单独确认删除/)
+assert.match(updateCardSource, /prepared\.skillRoot !== `\$\{currentRoot\}\/\$\{proposal\.name\}`/)
+assert.match(updateCardSource, /prepareRestore[\s\S]{0,500}确认恢复到/)
 assert.match(mainSource, /input\.localSkill\?\.output === 'create-note'[\s\S]{0,220}extractCreateNoteBlocks\(lastText\)\.blocks\.length > 0[\s\S]{0,80}!plan\.plan/)
 assert.match(mainSource, /answerPlan\.plan && extractCreateNoteBlocks\(answer\)\.blocks\.length > 0/)
 assert.match(mainSource, /Boolean\(input\.resumeQuestion\)[\s\S]{0,280}vaultWriteFlowRetryReason/)
@@ -620,6 +637,7 @@ assert.match(
 )
 console.log('  ✓ Skill Creator 完成后不会被历史待访谈状态劫持')
 console.log('  ✓ Skill Creator 专用提示不会被误判为本地 Skill 调用')
+console.log('  ✓ Skill 更新专用源、精确目标、确认卡与续问状态已接入且不上传本机元数据')
 console.log('  ✓ create-note Skill 强制进入预览确认流程')
 console.log('  ✓ create-note 兼容协议是安全循环的合法终态')
 

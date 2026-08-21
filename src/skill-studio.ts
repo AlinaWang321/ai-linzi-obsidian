@@ -15,10 +15,13 @@ import {
   type SkillStudioDraft,
   type SkillStudioOutput,
 } from './skill-studio-core'
+import type { LocalSkillDescriptor } from './local-skill-core'
 
 export interface SkillStudioOptions {
   onCreateWithAi: (prompt: string, sampleInput: string) => void
   onOfferBundle: (block: CreateLocalSkillBlock, sampleInput: string) => void
+  listInstalledSkills?: () => Promise<LocalSkillDescriptor[]>
+  onUpdateWithAi?: (skill: LocalSkillDescriptor, instruction: string) => void
 }
 
 function defaultDraft(): SkillStudioDraft {
@@ -77,6 +80,10 @@ export function portableBundleFromZip(data: Uint8Array): CreateLocalSkillBlock {
 export class SkillStudioModal extends Modal {
   private draft = defaultDraft()
   private templateId = 'custom'
+  private installedSkills: LocalSkillDescriptor[] = []
+  private loadingInstalledSkills = false
+  private selectedUpdatePath = ''
+  private updateInstruction = ''
 
   constructor(
     app: App,
@@ -89,6 +96,21 @@ export class SkillStudioModal extends Modal {
     this.modalEl.addClass('ai-linzi-skill-studio-modal')
     this.setTitle('AI霖子 Skill Studio')
     this.render()
+    if (this.options.listInstalledSkills) void this.loadInstalledSkills()
+  }
+
+  private async loadInstalledSkills(): Promise<void> {
+    this.loadingInstalledSkills = true
+    if (this.templateId === 'update') this.render()
+    try {
+      this.installedSkills = await this.options.listInstalledSkills!()
+      if (!this.selectedUpdatePath) this.selectedUpdatePath = this.installedSkills[0]?.path ?? ''
+    } catch (error) {
+      new Notice(`读取“我的 Skills”失败：${error instanceof Error ? error.message : String(error)}`, 8000)
+    } finally {
+      this.loadingInstalledSkills = false
+      if (this.templateId === 'update') this.render()
+    }
   }
 
   private render(): void {
@@ -103,6 +125,7 @@ export class SkillStudioModal extends Modal {
       .setDesc('安装官方模板本身不消耗积分；安装后运行 Skill 会正常使用 AI 并消耗账户积分。自己创建 Skill 时也会调用 AI 生成内容。')
       .addDropdown((dropdown) => {
         dropdown.addOption('custom', '让 AI 帮我创建新 Skill')
+        if (this.options.onUpdateWithAi) dropdown.addOption('update', '更新已经安装的 Skill')
         for (const template of OFFICIAL_SKILL_TEMPLATES) {
           dropdown.addOption(template.id, `直接安装 · ${template.label}`)
         }
@@ -111,6 +134,11 @@ export class SkillStudioModal extends Modal {
           this.render()
         })
       })
+
+    if (this.templateId === 'update') {
+      this.renderUpdateForm()
+      return
+    }
 
     const template = OFFICIAL_SKILL_TEMPLATES.find((item) => item.id === this.templateId)
     if (template) {
@@ -243,6 +271,71 @@ export class SkillStudioModal extends Modal {
       .addButton((button) => button
         .setButtonText('导入 Skill ZIP')
         .onClick(() => this.pickZip()))
+  }
+
+  private renderUpdateForm(): void {
+    this.contentEl.createEl('h3', { text: '安全更新已有 Skill' })
+    this.contentEl.createDiv({
+      text: 'AI 只会生成更新提案。你会先看到每个文件的修改前后全文；删除文件还要单独确认。确认时若原文件已有变化，整次更新会自动取消。',
+      cls: 'ai-linzi-skill-studio-intro',
+    })
+    if (this.loadingInstalledSkills) {
+      this.contentEl.createDiv({ text: '正在读取“我的 Skills”…', cls: 'ai-linzi-skill-studio-intro' })
+      return
+    }
+    if (this.installedSkills.length === 0) {
+      this.contentEl.createDiv({
+        text: '“我的 Skills”中还没有可选的 Skill。请先创建或安装一个文件夹形式的 Skill。',
+        cls: 'ai-linzi-skill-studio-intro',
+      })
+      return
+    }
+    new Setting(this.contentEl)
+      .setName('选择要更新的 Skill')
+      .setDesc('旧版单文件 Skill 或没有 AI霖子版本清单的 Skill 会在预检时停止，不会覆盖。')
+      .addDropdown((dropdown) => {
+        for (const skill of this.installedSkills) {
+          dropdown.addOption(skill.path, `${skill.displayName} · ${skill.name}`)
+        }
+        dropdown.setValue(this.selectedUpdatePath || this.installedSkills[0].path).onChange((value) => {
+          this.selectedUpdatePath = value
+        })
+      })
+    new Setting(this.contentEl)
+      .setName('这次想修改什么')
+      .setDesc('写清要增加、删去或改正的步骤。AI 不会新建或改写 scripts。')
+      .addTextArea((input) => input
+        .setPlaceholder('例如：增加“先让用户选择候选文件”的步骤，并修正输出模板')
+        .setValue(this.updateInstruction)
+        .onChange((value) => (this.updateInstruction = value.trim())))
+    const permissions = this.contentEl.createDiv({ cls: 'ai-linzi-skill-permissions' })
+    permissions.createEl('strong', { text: '本次更新边界' })
+    const list = permissions.createEl('ul')
+    list.createEl('li', { text: '只把所选 Skill 的可更新文本交给主对话模型；脚本和二进制只传路径、大小与哈希' })
+    list.createEl('li', { text: '写入前生成完整本机快照；失败自动回滚；成功后最多保留 5 个历史版本' })
+    list.createEl('li', { text: '不会访问 Skills 目录以外的文件，不会自动执行脚本' })
+    new Setting(this.contentEl).addButton((button) => button
+      .setButtonText('让 AI 生成更新确认卡')
+      .setCta()
+      .onClick(() => this.submitUpdate()))
+  }
+
+  private submitUpdate(): void {
+    const skill = this.installedSkills.find((item) => item.path === this.selectedUpdatePath)
+    if (!skill) {
+      new Notice('请先选择要更新的 Skill')
+      return
+    }
+    if (!this.updateInstruction) {
+      new Notice('请先写清这次想修改什么')
+      return
+    }
+    if (!this.options.onUpdateWithAi) {
+      new Notice('当前版本暂不支持更新 Skill')
+      return
+    }
+    this.close()
+    this.options.onUpdateWithAi(skill, this.updateInstruction)
   }
 
   private submitCustom(): void {
