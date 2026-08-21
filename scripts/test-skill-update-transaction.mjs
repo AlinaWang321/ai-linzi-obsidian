@@ -92,6 +92,9 @@ class FakeHost {
     this.removedSnapshots = []
     this.writeAttempts = 0
     this.failWriteAt = 0
+    this.failWriteHook = undefined
+    this.captureAttempts = 0
+    this.failCaptureAt = 0
     this.failSnapshot = false
     this.putText('SKILL.md', skillMd())
     this.putText('references/ai-linzi-skill-manifest.json', manifest('1.0.0'))
@@ -113,6 +116,11 @@ class FakeHost {
   }
 
   async captureFormalFiles() {
+    this.captureAttempts += 1
+    if (this.failCaptureAt === this.captureAttempts) {
+      this.failCaptureAt = 0
+      throw new Error('模拟写后校验读取失败')
+    }
     return [...this.files.values()].map(copyFile)
   }
 
@@ -120,6 +128,9 @@ class FakeHost {
     this.writeAttempts += 1
     if (this.failWriteAt === this.writeAttempts) {
       this.failWriteAt = 0
+      const hook = this.failWriteHook
+      this.failWriteHook = undefined
+      hook?.(this)
       throw new Error('模拟磁盘写入失败')
     }
   }
@@ -271,6 +282,48 @@ async function snapshotState(host) {
   const host = new FakeHost()
   const transaction = createTransaction(host)
   const prepared = await transaction.prepare('Skills/weekly-review', 'Skills/weekly-review/SKILL.md', proposal())
+  const beforeContent = new Map((await host.captureFormalFiles()).map((file) => [file.path, [...new Uint8Array(file.bytes)]]))
+  host.failWriteAt = 4
+  await assert.rejects(transaction.apply(prepared, proposal()), /已恢复原版本.*模拟磁盘写入失败/u)
+  const afterContent = new Map((await host.captureFormalFiles()).map((file) => [file.path, [...new Uint8Array(file.bytes)]]))
+  assert.deepEqual(afterContent, beforeContent)
+  assert.equal(host.snapshots.size, 1)
+  console.log('  ✓ 删除步骤失败也会完整回滚，不留下前三个已写入文件')
+}
+
+{
+  const host = new FakeHost()
+  const transaction = createTransaction(host)
+  const prepared = await transaction.prepare('Skills/weekly-review', 'Skills/weekly-review/SKILL.md', proposal())
+  const beforeContent = new Map((await host.captureFormalFiles()).map((file) => [file.path, [...new Uint8Array(file.bytes)]]))
+  host.failCaptureAt = host.captureAttempts + 2
+  await assert.rejects(transaction.apply(prepared, proposal()), /已恢复原版本.*模拟写后校验读取失败/u)
+  const afterContent = new Map((await host.captureFormalFiles()).map((file) => [file.path, [...new Uint8Array(file.bytes)]]))
+  assert.deepEqual(afterContent, beforeContent)
+  assert.equal(host.text('references/legacy.md'), '# 旧参考')
+  assert.equal(host.text('references/new.md'), undefined)
+  console.log('  ✓ 删除完成后的校验失败仍按快照恢复整棵正式树')
+}
+
+{
+  const host = new FakeHost()
+  const transaction = createTransaction(host)
+  const prepared = await transaction.prepare('Skills/weekly-review', 'Skills/weekly-review/SKILL.md', proposal())
+  host.failWriteAt = 2
+  host.failWriteHook = (liveHost) => liveHost.putText('SKILL.md', skillMd(' 用户现场'))
+  await assert.rejects(
+    transaction.apply(prepared, proposal()),
+    /回滚时发现 SKILL\.md 被同时编辑，已保留现场/u,
+  )
+  assert.equal(host.text('SKILL.md'), skillMd(' 用户现场'))
+  assert.equal(host.snapshots.size, 1, '发现并发编辑时仍保留更新前安全快照供手工恢复')
+  console.log('  ✓ 回滚时遇到用户并发编辑会保留现场，绝不拿旧快照覆盖用户新内容')
+}
+
+{
+  const host = new FakeHost()
+  const transaction = createTransaction(host)
+  const prepared = await transaction.prepare('Skills/weekly-review', 'Skills/weekly-review/SKILL.md', proposal())
   for (let index = 0; index < 5; index++) {
     const id = `old-${index}`
     host.snapshots.set(id, {
@@ -311,6 +364,28 @@ async function snapshotState(host) {
   assert.equal(host.text('references/new.md'), undefined)
   assert.ok(host.snapshots.has(restored.safetySnapshotId), '恢复前的新状态必须另存安全快照')
   console.log('  ✓ 历史恢复前再次快照，并完整恢复增删与二进制')
+}
+
+{
+  const host = new FakeHost()
+  const transaction = createTransaction(host)
+  const prepared = await transaction.prepare('Skills/weekly-review', 'Skills/weekly-review/SKILL.md', proposal())
+  const applied = await transaction.apply(prepared, proposal())
+  const beforeRestore = new Map((await host.captureFormalFiles()).map((file) => [file.path, [...new Uint8Array(file.bytes)]]))
+  const restorePrepared = await transaction.prepareRestore(
+    'Skills/weekly-review',
+    'weekly-review',
+    applied.snapshotId,
+  )
+  host.failWriteAt = host.writeAttempts + 2
+  await assert.rejects(
+    transaction.restore(restorePrepared),
+    /恢复历史版本失败，已回到恢复前状态.*模拟磁盘写入失败/u,
+  )
+  const afterRestore = new Map((await host.captureFormalFiles()).map((file) => [file.path, [...new Uint8Array(file.bytes)]]))
+  assert.deepEqual(afterRestore, beforeRestore)
+  assert.ok(host.snapshots.size >= 2, '恢复失败前也必须先保存当前版本的安全快照')
+  console.log('  ✓ 历史恢复中途失败会回到恢复前完整状态')
 }
 
 {
