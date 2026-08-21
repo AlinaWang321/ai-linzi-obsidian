@@ -10,6 +10,7 @@
  */
 import { ItemView, Modal, Notice, TFile, WorkspaceLeaf, normalizePath } from 'obsidian'
 import type AiLinziPlugin from './main'
+import { AI_LINZI_COCKPIT_ICON_ID } from './brand-assets'
 import { boardLane, deriveContentRecord, isDashboardContentPath, type ContentRecord } from './content-state'
 
 export const VIEW_TYPE_COCKPIT = 'ai-linzi-cockpit'
@@ -358,7 +359,7 @@ export class CockpitView extends ItemView {
   }
 
   getIcon() {
-    return 'gauge'
+    return AI_LINZI_COCKPIT_ICON_ID
   }
 
   async onOpen() {

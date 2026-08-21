@@ -1,6 +1,7 @@
 import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian'
 import type AiLinziPlugin from './main'
 import { chooseComputerAiImageReferences, imageMediaTypeFromDataUrl, runDistribute, runTopicRadar, runWechatWriter } from './actions'
+import { AI_LINZI_CONTENT_DASHBOARD_ICON_ID } from './brand-assets'
 import {
   aggregateContentRecords,
   consecutivePublishDays,
@@ -392,7 +393,7 @@ export class ContentDashboardView extends ItemView {
   }
 
   getIcon() {
-    return 'layout-dashboard'
+    return AI_LINZI_CONTENT_DASHBOARD_ICON_ID
   }
 
   async onOpen() {

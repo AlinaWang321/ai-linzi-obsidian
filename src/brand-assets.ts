@@ -1,5 +1,5 @@
 /**
- * AI霖子品牌形象资产（0.7.71）。
+ * AI霖子品牌形象资产（0.7.72）。
  *
  * 官方 Q 版卡通头像，96×96 内联为 data URI —— 插件不允许加载远程资源，
  * 也不能依赖 Vault 里的文件（用户的库里没有这张图）。源图见
@@ -21,3 +21,26 @@ export const AI_LINZI_RIBBON_ICON_SVG =
   '<defs><clipPath id="ai-linzi-avatar-clip"><circle cx="50" cy="50" r="50"/></clipPath></defs>' +
   '<image href="' + AI_LINZI_AVATAR_DATA_URI + '" x="0" y="0" width="100" height="100" ' +
   'preserveAspectRatio="xMidYMid slice" clip-path="url(#ai-linzi-avatar-clip)"/>'
+
+/**
+ * 工作台入口使用独立图形，但共用 AI霖子 Q 版的奶油、深蓝、明黄与青绿色板。
+ * addIcon 只接收 SVG 内部元素；颜色同时写成属性与 inline style，避免 Obsidian
+ * 的 Lucide `.svg-icon` 主题规则把品牌色统一覆盖成 currentColor。
+ */
+export const AI_LINZI_CONTENT_DASHBOARD_ICON_ID = 'ai-linzi-content-dashboard-brand'
+export const AI_LINZI_CONTENT_DASHBOARD_ICON_SVG =
+  '<rect x="8" y="8" width="84" height="84" rx="23" fill="#faf6f0" stroke="#293857" stroke-width="6" style="fill:#faf6f0;stroke:#293857;stroke-width:6"/>' +
+  '<rect x="22" y="22" width="56" height="13" rx="6.5" fill="#f5c518" style="fill:#f5c518;stroke:none"/>' +
+  '<rect x="22" y="44" width="34" height="34" rx="8" fill="#293857" style="fill:#293857;stroke:none"/>' +
+  '<rect x="64" y="44" width="14" height="14" rx="5" fill="#3db389" style="fill:#3db389;stroke:none"/>' +
+  '<rect x="64" y="64" width="14" height="14" rx="5" fill="#5c7bb0" style="fill:#5c7bb0;stroke:none"/>'
+
+export const AI_LINZI_COCKPIT_ICON_ID = 'ai-linzi-cockpit-brand'
+export const AI_LINZI_COCKPIT_ICON_SVG =
+  '<circle cx="50" cy="50" r="42" fill="#faf6f0" stroke="#293857" stroke-width="6" style="fill:#faf6f0;stroke:#293857;stroke-width:6"/>' +
+  '<path d="M22 68A31 31 0 0 1 78 68" fill="none" stroke="#293857" stroke-width="9" stroke-linecap="round" style="fill:none;stroke:#293857;stroke-width:9"/>' +
+  '<circle cx="26" cy="56" r="5" fill="#3db389" style="fill:#3db389;stroke:none"/>' +
+  '<circle cx="50" cy="39" r="5" fill="#f5c518" style="fill:#f5c518;stroke:none"/>' +
+  '<circle cx="74" cy="56" r="5" fill="#5c7bb0" style="fill:#5c7bb0;stroke:none"/>' +
+  '<path d="M45 69L70 42L56 74Z" fill="#1e7a5c" style="fill:#1e7a5c;stroke:none"/>' +
+  '<circle cx="50" cy="68" r="9" fill="#f5c518" stroke="#293857" stroke-width="4" style="fill:#f5c518;stroke:#293857;stroke-width:4"/>'

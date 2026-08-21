@@ -74,6 +74,10 @@ import {
 } from './history-entry-core'
 import {
   AI_LINZI_AVATAR_DATA_URI,
+  AI_LINZI_COCKPIT_ICON_ID,
+  AI_LINZI_COCKPIT_ICON_SVG,
+  AI_LINZI_CONTENT_DASHBOARD_ICON_ID,
+  AI_LINZI_CONTENT_DASHBOARD_ICON_SVG,
   AI_LINZI_RIBBON_ICON_ID,
   AI_LINZI_RIBBON_ICON_SVG,
 } from './brand-assets'
@@ -1178,11 +1182,17 @@ export default class AiLinziPlugin extends Plugin {
     this.registerView(VIEW_TYPE_CONTENT_DASHBOARD, (leaf) => new ContentDashboardView(leaf, this))
     this.registerView(VIEW_TYPE_COCKPIT, (leaf) => new CockpitView(leaf, this))
 
-    // 侧边栏入口用官方 Q 版卡通头像（0.7.71）：addIcon 注册后 ribbon 与视图图标共用。
+    // 三个入口共用 AI霖子 Q 版色板，但保持头像/内容看板/经营驾驶舱各自可辨认。
     addIcon(AI_LINZI_RIBBON_ICON_ID, AI_LINZI_RIBBON_ICON_SVG)
+    addIcon(AI_LINZI_CONTENT_DASHBOARD_ICON_ID, AI_LINZI_CONTENT_DASHBOARD_ICON_SVG)
+    addIcon(AI_LINZI_COCKPIT_ICON_ID, AI_LINZI_COCKPIT_ICON_SVG)
     this.addRibbonIcon(AI_LINZI_RIBBON_ICON_ID, 'AI霖子对话', () => this.activateChatView())
-    this.addRibbonIcon('layout-dashboard', 'AI霖子内容发布看板', () => this.activateContentDashboard())
-    this.addRibbonIcon('gauge', '一人公司驾驶舱', () => this.activateCockpit())
+    this.addRibbonIcon(
+      AI_LINZI_CONTENT_DASHBOARD_ICON_ID,
+      'AI霖子内容发布看板',
+      () => this.activateContentDashboard(),
+    )
+    this.addRibbonIcon(AI_LINZI_COCKPIT_ICON_ID, '一人公司驾驶舱', () => this.activateCockpit())
 
     this.addCommand({
       id: 'open-chat',
@@ -2263,13 +2273,13 @@ class ChatView extends ItemView {
     menu.addItem((item) =>
       item
         .setTitle('内容看板')
-        .setIcon('layout-dashboard')
+        .setIcon(AI_LINZI_CONTENT_DASHBOARD_ICON_ID)
         .onClick(() => void this.plugin.activateContentDashboard()),
     )
     menu.addItem((item) =>
       item
         .setTitle('CEO驾驶舱')
-        .setIcon('gauge')
+        .setIcon(AI_LINZI_COCKPIT_ICON_ID)
         .onClick(() => void this.plugin.activateCockpit()),
     )
     this.showMenuAtInput(menu)
@@ -2320,13 +2330,13 @@ class ChatView extends ItemView {
     menu.addItem((item) =>
       item
         .setTitle('内容看板')
-        .setIcon('layout-dashboard')
+        .setIcon(AI_LINZI_CONTENT_DASHBOARD_ICON_ID)
         .onClick(() => void this.plugin.activateContentDashboard()),
     )
     menu.addItem((item) =>
       item
         .setTitle('CEO驾驶舱')
-        .setIcon('gauge')
+        .setIcon(AI_LINZI_COCKPIT_ICON_ID)
         .onClick(() => void this.plugin.activateCockpit()),
     )
   }

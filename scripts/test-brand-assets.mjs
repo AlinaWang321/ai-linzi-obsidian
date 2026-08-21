@@ -1,4 +1,4 @@
-// 品牌形象资产检查（0.7.71）：真的把 data URI 解码回二进制来验，不是找字符串。
+// 品牌形象资产检查（0.7.72）：真的把 data URI 解码回二进制来验，不是找字符串。
 //
 // 为什么需要这个文件：头像是内联在源码里的 base64，换图时最容易出的三种事故——
 //   1. 贴错格式（比如贴了 SVG 或 WebP 的 base64，却仍写 image/png）
@@ -17,6 +17,10 @@ const bundled = await build({
 })
 const {
   AI_LINZI_AVATAR_DATA_URI,
+  AI_LINZI_COCKPIT_ICON_ID,
+  AI_LINZI_COCKPIT_ICON_SVG,
+  AI_LINZI_CONTENT_DASHBOARD_ICON_ID,
+  AI_LINZI_CONTENT_DASHBOARD_ICON_SVG,
   AI_LINZI_RIBBON_ICON_ID,
   AI_LINZI_RIBBON_ICON_SVG,
 } = await import(
@@ -68,5 +72,21 @@ assert.ok(
 )
 assert.doesNotMatch(AI_LINZI_RIBBON_ICON_SVG, /<svg/i, 'addIcon 接收的是 svg 的内容，不能再套一层 <svg>')
 assert.doesNotMatch(AI_LINZI_RIBBON_ICON_SVG, /https?:\/\//, '插件不得加载任何远程资源')
+
+console.log('第5组 工作台品牌图标')
+assert.equal(AI_LINZI_CONTENT_DASHBOARD_ICON_ID, 'ai-linzi-content-dashboard-brand')
+assert.equal(AI_LINZI_COCKPIT_ICON_ID, 'ai-linzi-cockpit-brand')
+assert.notEqual(AI_LINZI_CONTENT_DASHBOARD_ICON_SVG, AI_LINZI_COCKPIT_ICON_SVG)
+for (const [label, icon] of [
+  ['内容看板', AI_LINZI_CONTENT_DASHBOARD_ICON_SVG],
+  ['一人公司驾驶舱', AI_LINZI_COCKPIT_ICON_SVG],
+]) {
+  assert.match(icon, /#faf6f0/i, `${label}缺少 AI霖子奶油色`)
+  assert.match(icon, /#293857/i, `${label}缺少 AI霖子深蓝色`)
+  assert.match(icon, /#f5c518/i, `${label}缺少 AI霖子明黄色`)
+  assert.match(icon, /#3db389|#1e7a5c/i, `${label}缺少 AI霖子青绿色`)
+  assert.match(icon, /style="[^"]*fill:/i, `${label}必须用 inline style 抵抗 Obsidian 的 currentColor 覆盖`)
+  assert.doesNotMatch(icon, /<svg|<image|data:image|<script|https?:\/\//i, `${label}必须是 addIcon 可直接解析的离线 SVG 内部元素`)
+}
 
 console.log('brand assets tests: ok')

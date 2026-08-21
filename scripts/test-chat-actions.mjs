@@ -32,6 +32,9 @@ const workbench = main.slice(
 )
 assert.match(workbench, /setTitle\('内容看板'\)[\s\S]{0,120}activateContentDashboard\(\)/)
 assert.match(workbench, /setTitle\('CEO驾驶舱'\)[\s\S]{0,120}activateCockpit\(\)/)
+assert.match(workbench, /setTitle\('内容看板'\)[\s\S]{0,100}setIcon\(AI_LINZI_CONTENT_DASHBOARD_ICON_ID\)/)
+assert.match(workbench, /setTitle\('CEO驾驶舱'\)[\s\S]{0,100}setIcon\(AI_LINZI_COCKPIT_ICON_ID\)/)
+assert.doesNotMatch(workbench, /setIcon\('layout-dashboard'\)|setIcon\('gauge'\)/)
 // 「技能」菜单必须同时容纳官方技能、我的 Skills 和创建 Skill，一个都不能在改版中丢。
 const skillMenu = main.slice(
   main.indexOf('private buildSkillMenu'),
