@@ -85,6 +85,18 @@ assert.equal(
 const weeklyDashboard = studioCore.OFFICIAL_SKILL_TEMPLATES.find(
   (item) => item.id === 'weekly-business-dashboard',
 )
+const weeklyDescriptor = localSkillCore.buildLocalSkillDescriptor(
+  '05_System/Skills/weekly-business-dashboard/SKILL.md',
+  { name: weeklyDashboard.block.name },
+  weeklyDashboard.block.content,
+)
+const weeklySampleMatch = localSkillCore.matchLocalSkillInvocation(
+  weeklyDashboard.sampleInput,
+  [weeklyDescriptor],
+  { allowAutomatic: true },
+)
+assert.equal(weeklySampleMatch.kind, 'matched')
+assert.equal(weeklySampleMatch.automatic, true, '经营周报推荐示例必须逐字命中自动触发短语')
 assert.match(weeklyDashboard.block.content, /read_recent_documents/)
 assert.match(weeklyDashboard.block.content, /\$OUTPUT\/经营周报/)
 assert.match(weeklyDashboard.block.content, /固定文件快照/)

@@ -222,7 +222,7 @@ create-note`,
     id: 'weekly-business-dashboard',
     label: '经营周报交互看板',
     description: '批量读取最近 7 天改动的文档，突出昨日进展和今日待办，生成可交互 HTML 经营看板',
-    sampleInput: '生成本周经营周报交互看板',
+    sampleInput: '生成本周经营周报看板',
     permissions: [
       '首次读取最近 7 天内改动的可读文档正文，后续只读取新增或改动正文',
       '本机只保存文件路径、修改时间、大小和上一份看板路径，不保存正文索引',

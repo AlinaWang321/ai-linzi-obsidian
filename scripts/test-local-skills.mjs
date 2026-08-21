@@ -108,6 +108,34 @@ assert.equal(
   '没有显式开启自动触发时保持旧的安全边界',
 )
 
+const structuredTriggers = core.localSkillAutoTriggersFromMarkdown(`
+## AI霖子自动调用
+说明：下面只有列表项是可执行短语
+例如：生成一份演示周报
+- 生成本周经营周报看板
+* 做最近七天经营复盘看板
+\`\`\`
+- 代码围栏里的假触发词
+\`\`\`
+`)
+assert.deepEqual(
+  structuredTriggers,
+  ['生成本周经营周报看板', '做最近七天经营复盘看板'],
+  '存在列表项时只认列表项，说明文字、示例和代码围栏不得进入自动触发',
+)
+assert.deepEqual(
+  core.localSkillAutoTriggersFromMarkdown(`
+## AI霖子自动调用
+说明：
+例如：生成一份演示周报
+> 引用里的假触发词
+生成旧版客户行动清单
+整理旧版咨询跟进事项
+`),
+  ['生成旧版客户行动清单', '整理旧版咨询跟进事项'],
+  '没有列表项的旧 Skill 保持兼容，但结构行和提示行必须过滤',
+)
+
 assert.equal(
   core.matchLocalSkillInvocation('用咨询简报技能处理当前笔记', [consultation, weekly]).skill
     .name,

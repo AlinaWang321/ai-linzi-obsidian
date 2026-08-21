@@ -436,11 +436,35 @@ function markdownSection(content: string, title: RegExp): string {
 export function localSkillAutoTriggersFromMarkdown(content: string): string[] {
   const section = markdownSection(content, /^(?:AI\s*霖子\s*)?自动(?:调用|触发)$/iu)
   if (!section) return []
-  return [...new Set(section
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^\s*[-*+]\s+/, '').replace(/^`|`$/g, '').trim())
-    .filter((line) => line.length >= 4 && line.length <= 80))]
-    .slice(0, 12)
+  const visibleLines: string[] = []
+  let fenced = false
+  for (const rawLine of section.split(/\r?\n/)) {
+    if (/^\s*(?:```|~~~)/u.test(rawLine)) {
+      fenced = !fenced
+      continue
+    }
+    if (!fenced) visibleLines.push(rawLine)
+  }
+  const clean = (value: string) => value.replace(/^`|`$/g, '').trim()
+  const validLength = (value: string) => value.length >= 4 && value.length <= 80
+  // 新格式只认 Markdown 列表项。只要存在一个合法列表项，说明作者已经采用
+  // 结构化写法；说明文字和示例行绝不能再混进自动触发短语。
+  const listed = visibleLines
+    .map((line) => /^\s*[-*+]\s+(.+?)\s*$/u.exec(line)?.[1] ?? '')
+    .map(clean)
+    .filter(validLength)
+  if (listed.length > 0) return [...new Set(listed)].slice(0, 12)
+
+  // 兼容 0.7.28 以前没有项目符号的旧 Skill。回退时仍过滤明显的 Markdown
+  // 结构行、标签和“说明/示例”提示，避免把整句教程当成可执行触发词。
+  const legacy = visibleLines
+    .map((line) => line.trim())
+    .filter((line) => !/^#{1,6}\s|^>/u.test(line))
+    .filter((line) => !/[:：]\s*$/u.test(line))
+    .filter((line) => !/^(?:说明|示例|例如|比如|提示)(?:[:：\s]|$)/u.test(line))
+    .map(clean)
+    .filter(validLength)
+  return [...new Set(legacy)].slice(0, 12)
 }
 
 export function localSkillTemplatePathFromMarkdown(content: string): string | undefined {
