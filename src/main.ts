@@ -356,7 +356,8 @@ const OFFICIAL_SERVER_URL = 'https://chat.alinalinzi.com'
 
 const VIEW_TYPE_CHAT = 'ai-linzi-chat'
 const CHAT_SEND_SHORTCUT_HINT = 'Enter 换行 · Mac / Windows：Control + Enter 发送'
-const CHAT_INPUT_PLACEHOLDER = '问 AI霖子任何事…'
+// 0.7.71：placeholder 兼作 `/` 面板的发现入口——快捷键不写出来就没人会用。
+const CHAT_INPUT_PLACEHOLDER = '问 AI霖子任何事，输入 / 调用技能'
 const INTERVIEW_INPUT_PLACEHOLDER = '先告诉 AI 你想写什么方向（一句话），它会开始采访你…'
 
 const CAPABILITIES_CACHE_TTL_MS = 5 * 60 * 1000
@@ -368,6 +369,8 @@ type MembershipTier = 'starter' | 'pro' | 'business'
 
 interface PluginCapabilities {
   studentNo?: string
+  /** 服务端一直在返回，0.7.71 之前插件没声明所以取不到；顶栏账号行用它。 */
+  balance?: number
   apiVersion?: string
   tier?: MembershipTier
   features?: {
@@ -1905,6 +1908,8 @@ class ChatView extends ItemView {
   private authorizedContentStatusEl!: HTMLElement
   /** composer 上的「技能」按钮，供二级菜单在键盘唤起时定位（0.7.71）。 */
   private skillMenuBtn?: HTMLElement
+  /** 顶栏副标题位：未连接时是标语，连上后换成「编号 · 积分」（0.7.71）。 */
+  private brandSubEl?: HTMLElement
 
   constructor(leaf: WorkspaceLeaf, plugin: AiLinziPlugin) {
     super(leaf)
@@ -1946,7 +1951,11 @@ class ChatView extends ItemView {
     })
     const brandText = brand.createDiv({ cls: 'ai-linzi-brand-text' })
     brandText.createSpan({ text: 'AI霖子', cls: 'ai-linzi-brand-name' })
-    brandText.createSpan({ text: '24 小时商业教练', cls: 'ai-linzi-brand-sub' })
+    // 副标题位在连上之后换成账号行（编号 · 积分）。未连接或读取失败时保留标语，
+    // 不留空行也不显示假数字。
+    this.brandSubEl = brandText.createDiv({ cls: 'ai-linzi-brand-sub' })
+    this.brandSubEl.createSpan({ text: '24 小时商业教练' })
+    void this.refreshAccountLine()
     const btns = topbar.createDiv({ cls: 'ai-linzi-topbar-btns' })
     const addTopBtn = (icon: string, label: string, onClick: () => void): HTMLButtonElement => {
       const btn = btns.createEl('button', {
@@ -2089,6 +2098,51 @@ class ChatView extends ItemView {
     }
     const rect = btn.getBoundingClientRect()
     menu.showAtPosition({ x: rect.left, y: rect.bottom })
+  }
+
+  /**
+   * 顶栏账号行（0.7.71）：编号 + 积分，积分可点击去网页版充值。
+   *
+   * 数据来自已有的 `/api/plugin/v1/capabilities`（服务端一直在返回 balance），
+   * 走 getCapabilities 的既有缓存，**不新增任何接口，也不产生积分消耗**。
+   * 读不到就保留标语——绝不显示 0 或「--」这类会被误读成真实余额的占位。
+   */
+  private async refreshAccountLine(force = false): Promise<void> {
+    const host = this.brandSubEl
+    if (!host) return
+    if (!this.plugin.getApiToken()) return
+    let caps: PluginCapabilities
+    try {
+      caps = await this.plugin.getCapabilities(force)
+    } catch {
+      return // 网络抖动不该把标语擦成空白
+    }
+    if (!this.brandSubEl) return // 面板可能已经关掉
+    const studentNo = caps.studentNo?.trim()
+    if (typeof caps.balance !== 'number' && !studentNo) return
+    host.empty()
+    if (studentNo) {
+      host.createSpan({ text: studentNo, cls: 'ai-linzi-brand-no' })
+    }
+    if (typeof caps.balance === 'number') {
+      if (studentNo) host.createSpan({ text: ' · ', cls: 'ai-linzi-brand-dot' })
+      const credits = host.createEl('button', {
+        cls: 'ai-linzi-brand-credits',
+        attr: {
+          type: 'button',
+          title: '点击到网页版查看和充值积分',
+          'aria-label': `剩余 ${caps.balance} 积分，点击到网页版充值`,
+        },
+      })
+      credits.createSpan({ text: `${caps.balance.toLocaleString('zh-CN')} 积分` })
+      credits.onclick = () => this.openCreditsPage()
+    }
+  }
+
+  /** 到网页版充值页。用系统浏览器打开，插件内不嵌任何支付界面。 */
+  private openCreditsPage(): void {
+    const base = this.plugin.settings.serverUrl.replace(/\/+$/, '')
+    window.open(`${base}/credits`, '_blank')
   }
 
   /** 触发判定在 slash-menu-core.ts（纯模块，可真跑单测）；这里只取当前 DOM 状态。 */
@@ -3765,6 +3819,8 @@ class ChatView extends ItemView {
       this.sending = false
       this.sendBtn.disabled = false
       this.renderMessages()
+      // 这一轮已经扣过费，顶栏积分要跟着变；capabilities 是一次轻量读取，不产生消耗。
+      void this.refreshAccountLine(true)
     }
   }
 
@@ -6453,6 +6509,7 @@ class ChatView extends ItemView {
         // 绝不自动发送、绝不直接调用技能、绝不产生任何积分消耗(0.7.71 硬约束)。
         const starters = body.createDiv({ cls: 'ai-linzi-empty-starters' })
         const addStarter = (
+          icon: string,
           label: string,
           hint: string,
           onPick: (evt: MouseEvent) => void,
@@ -6461,21 +6518,24 @@ class ChatView extends ItemView {
             cls: 'ai-linzi-starter-btn',
             attr: { title: hint, 'aria-label': `${label}：${hint}`, type: 'button' },
           })
-          btn.createSpan({ text: label, cls: 'ai-linzi-starter-label' })
-          btn.createSpan({ text: hint, cls: 'ai-linzi-starter-hint' })
+          const mark = btn.createDiv({ cls: 'ai-linzi-starter-icon' })
+          setIcon(mark, icon)
+          const textCol = btn.createDiv({ cls: 'ai-linzi-starter-text' })
+          textCol.createSpan({ text: label, cls: 'ai-linzi-starter-label' })
+          textCol.createSpan({ text: hint, cls: 'ai-linzi-starter-hint' })
           btn.onclick = onPick
         }
         const fillInput = (text: string) => {
           this.inputEl.value = text
           this.inputEl.focus()
         }
-        addStarter('处理当前笔记', '填进输入框，你改完再发', () =>
+        addStarter('file-text', '处理当前笔记', '填进输入框，你改完再发', () =>
           fillInput('总结当前这篇笔记的要点'),
         )
-        addStarter('在知识库里找资料', '填进输入框，你改完再发', () =>
+        addStarter('search', '在知识库里找资料', '填进输入框，你改完再发', () =>
           fillInput('在我的知识库里找找跟这篇笔记相关的资料'),
         )
-        addStarter('用一个技能', '打开「技能」菜单', (evt) => {
+        addStarter('sparkles', '用一个技能', '打开「技能」菜单，选中才执行', (evt) => {
           const menu = new Menu()
           this.buildSkillMenu(menu)
           this.showMenuForButton(menu, this.skillMenuBtn ?? this.inputEl, evt)
@@ -6484,9 +6544,10 @@ class ChatView extends ItemView {
       const link = body.createDiv({
         cls: connected ? 'ai-linzi-empty-link is-quiet' : 'ai-linzi-empty-link',
       })
-      link.createSpan({ text: '进入网页版 ' })
+      // 文案压短到能在一行放下：原来的长句在 320px 面板里会把「分」字孤零零挤到第二行。
+      link.createSpan({ text: '网页版 ' })
       link.createEl('a', { text: 'chat.alinalinzi.com', href: 'https://chat.alinalinzi.com' })
-      link.createSpan({ text: ' 可注册账号、查看和充值积分' })
+      link.createSpan({ text: ' · 注册与充值积分' })
       return
     }
     let latestFolderOfferIndex = -1

@@ -11,7 +11,48 @@
    */
   container-type: inline-size;
   container-name: ai-linzi-panel;
+
+  /*
+   * AI霖子网页端品牌色（水·木·光），与 webapp/app/globals.css 同源。
+   * 只用在承载品牌识别的少数元素上（起手式卡、品牌头），面板其余部分仍走
+   * Obsidian 主题变量，避免跟用户自己的主题打架。
+   */
+  --alz-cream: #faf6f0;
+  --alz-warm: #f1ece3;
+  --alz-warm-line: #e7dfd2;
+  --alz-navy: #293857;
+  --alz-navy-light: #5c7bb0;
+  --alz-yellow: #f5c518;
+  --alz-yellow-soft: #fce38a;
+  --alz-ink-mute: #8a7e74;
 }
+
+/* 深色主题下 navy 几乎看不见、cream 会发白，整组换成透明蓝调叠层。 */
+.theme-dark .ai-linzi-root {
+  --alz-cream: rgba(92, 123, 176, 0.08);
+  --alz-warm: rgba(92, 123, 176, 0.16);
+  --alz-warm-line: rgba(92, 123, 176, 0.3);
+  --alz-navy: #a6b6d4;
+  --alz-navy-light: #7d97c6;
+  --alz-yellow: #f5c518;
+  --alz-yellow-soft: rgba(245, 197, 24, 0.24);
+  --alz-ink-mute: var(--text-faint);
+}
+
+/*
+ * ⚠️ 选择器权重铁律（0.7.71 真机 + 计算样式实测得出，别退回单类写法）
+ *
+ * 面板里所有自定义按钮的规则一律写成 `.ai-linzi-root button.ai-linzi-x`
+ * （权重 0,2,1），**不能**写成 `.ai-linzi-x`（0,1,0）或 `.ai-linzi-root .ai-linzi-x`（0,2,0）。
+ *
+ * 原因：Obsidian 与各家主题普遍带 `button { padding; border-radius; background }`
+ * 一类规则，深色主题还常写成 `.theme-dark button`（0,1,1）甚至更高。
+ * 0.7.71 首轮实测：单类写法下 padding 被改成 4px 10px、border-radius 被改成 5px，
+ * 发送键因此根本不是圆的，深色下背景也被刷回灰底。
+ *
+ * 市场检查禁用「important 声明」，所以权重是唯一的杠杆；插件 CSS 在主题之后加载，
+ * 同权重时我们胜出，(0,2,1) 足以覆盖上述所有情形。
+ */
 
 /* ── 顶栏：品牌头 + 图标操作区（0.7.71） ───────────────────────────────
    全部选择器限定在对话面板专属类内，不影响内容看板 / 驾驶舱 / 小红书卡片 /
@@ -68,7 +109,11 @@
   white-space: nowrap;
 }
 
+/* 副标题位：连上之后是「编号 · 积分」，积分可点击去网页版充值。 */
 .ai-linzi-brand-sub {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
   overflow: hidden;
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
@@ -76,9 +121,38 @@
   white-space: nowrap;
 }
 
+.ai-linzi-brand-no {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-linzi-brand-dot {
+  padding: 0 1px;
+  color: var(--text-faint);
+}
+
+.ai-linzi-root .ai-linzi-brand-sub button.ai-linzi-brand-credits {
+  min-height: 0;
+  padding: 0 3px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--alz-navy-light);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+.ai-linzi-root .ai-linzi-brand-sub button.ai-linzi-brand-credits:hover {
+  background: var(--alz-yellow-soft);
+  color: var(--alz-navy);
+}
+
 /* 图标钮：真 <button>，保留 Obsidian 焦点环与全局按压反馈。
    默认「图标 + 小字」，只有面板窄到放不下时才收成纯图标（见文末断点）。 */
-.ai-linzi-icon-btn {
+.ai-linzi-root .ai-linzi-topbar-btns button.ai-linzi-icon-btn {
   display: inline-flex;
   min-width: 0;
   align-items: center;
@@ -93,7 +167,7 @@
   cursor: pointer;
 }
 
-.ai-linzi-icon-btn:hover {
+.ai-linzi-root .ai-linzi-topbar-btns button.ai-linzi-icon-btn:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
@@ -293,8 +367,14 @@
 }
 
 .ai-linzi-empty.is-ready .ai-linzi-empty-body {
-  max-width: 320px;
+  max-width: 360px;
   text-align: center;
+}
+
+/* 网页版一行：宽面板放得下就一行，窄面板允许换行但用 balance 分两行，
+   不出现「分」字被孤零零挤到第二行的情况。 */
+.ai-linzi-empty-link.is-quiet {
+  text-wrap: balance;
 }
 
 /* 起手式按钮：点击只做两件事之一——把话填进输入框，或打开已有菜单。
@@ -306,41 +386,65 @@
   margin-top: 0;
 }
 
-/* 起手式：不画框、不铺底，只用一条发丝分隔线 + hover 才出现的淡底。
-   Ailu 观感「清爽」的关键不是配色，是几乎不用填充块——这里照此办理。 */
-.ai-linzi-starter-btn {
+/* 起手式（0.7.71 v2）：按网页端品牌视觉重做——奶油底 + 暖线框 + 海军蓝标题，
+   图标放在品牌黄的圆底里。说明文字改为在标题下方另起一行，
+   右对齐在 320px 面板里会把两列挤成一团。 */
+.ai-linzi-root .ai-linzi-empty-starters button.ai-linzi-starter-btn {
   display: flex;
   width: 100%;
-  align-items: baseline;
-  gap: 8px;
-  padding: 8px 8px;
-  border: none;
-  border-top: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  background: transparent;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--alz-warm-line);
+  border-radius: 10px;
+  background: var(--alz-cream);
   box-shadow: none;
   cursor: pointer;
   text-align: left;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
-.ai-linzi-starter-btn:first-child {
-  border-top: none;
+.ai-linzi-root .ai-linzi-empty-starters button.ai-linzi-starter-btn:hover {
+  border-color: var(--alz-navy-light);
+  background: var(--alz-warm);
 }
 
-.ai-linzi-starter-btn:hover {
-  background: var(--background-modifier-hover);
+.ai-linzi-starter-icon {
+  display: flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--alz-yellow-soft);
+  color: var(--alz-navy);
+}
+
+.ai-linzi-starter-icon .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.ai-linzi-starter-text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .ai-linzi-starter-label {
-  flex: 1;
-  color: var(--text-normal);
+  color: var(--alz-navy);
   font-size: var(--font-ui-small);
+  font-weight: 600;
+  line-height: 1.45;
 }
 
 .ai-linzi-starter-hint {
-  flex: 0 0 auto;
-  color: var(--text-faint);
+  color: var(--alz-ink-mute);
   font-size: var(--font-ui-smaller);
+  line-height: 1.45;
 }
 
 .ai-linzi-empty-link.is-quiet {
@@ -483,7 +587,7 @@
 }
 
 /* 菜单入口：无边框文字 + ⌄，视觉重量让给输入框，但仍是真 <button>。 */
-.ai-linzi-composer-menu-btn {
+.ai-linzi-root .ai-linzi-composer-bar button.ai-linzi-composer-menu-btn {
   display: inline-flex;
   min-width: 0;
   align-items: center;
@@ -498,7 +602,7 @@
   cursor: pointer;
 }
 
-.ai-linzi-composer-menu-btn:hover {
+.ai-linzi-root .ai-linzi-composer-bar button.ai-linzi-composer-menu-btn:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
@@ -562,7 +666,7 @@
 }
 
 /* 「更换 / 清除」压成纯文字链接：320px 下原来的按钮尺寸会把这一行撑成三行。 */
-.ai-linzi-authorized-content-status button {
+.ai-linzi-root .ai-linzi-composer .ai-linzi-authorized-content-status button {
   min-width: 0;
   min-height: 0;
   flex: 0 0 auto;
@@ -579,7 +683,7 @@
   cursor: pointer;
 }
 
-.ai-linzi-authorized-content-status button:hover {
+.ai-linzi-root .ai-linzi-composer .ai-linzi-authorized-content-status button:hover {
   color: var(--text-normal);
   background: transparent;
 }
@@ -931,7 +1035,7 @@
 
 /* 发送键：圆形图标钮（0.7.71）。快捷键说明移到 title/aria-label，
    底部不再常驻一行文字——320px 下那行原本会折成两行。 */
-.ai-linzi-send {
+.ai-linzi-root .ai-linzi-composer-tools button.ai-linzi-send {
   display: inline-flex;
   width: 26px;
   height: 26px;
@@ -952,11 +1056,11 @@
   height: 15px;
 }
 
-.ai-linzi-send:hover:not(:disabled) {
+.ai-linzi-root .ai-linzi-composer-tools button.ai-linzi-send:hover:not(:disabled) {
   background: var(--interactive-accent-hover);
 }
 
-.ai-linzi-attachment-btn {
+.ai-linzi-root .ai-linzi-composer-tools button.ai-linzi-attachment-btn {
   display: inline-flex;
   min-width: 26px;
   height: 26px;
@@ -973,16 +1077,16 @@
   cursor: pointer;
 }
 
-.ai-linzi-attachment-btn:hover {
+.ai-linzi-root .ai-linzi-composer-tools button.ai-linzi-attachment-btn:hover {
   background: var(--background-modifier-hover);
 }
 
-.ai-linzi-attachment-btn.is-active {
+.ai-linzi-root .ai-linzi-composer-tools button.ai-linzi-attachment-btn.is-active {
   color: var(--text-on-accent);
   background: var(--interactive-accent);
 }
 
-.ai-linzi-send:disabled {
+.ai-linzi-root .ai-linzi-composer-tools button.ai-linzi-send:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -3755,7 +3859,7 @@ button.ai-linzi-vault-source-link:focus-visible {
   animation: none;
 }
 
-.ai-linzi-activity-toggle {
+.ai-linzi-root .ai-linzi-status-row button.ai-linzi-activity-toggle {
   display: flex;
   width: 100%;
   align-items: baseline;
@@ -3771,7 +3875,7 @@ button.ai-linzi-vault-source-link:focus-visible {
   text-align: left;
 }
 
-.ai-linzi-activity-toggle:hover {
+.ai-linzi-root .ai-linzi-status-row button.ai-linzi-activity-toggle:hover {
   color: var(--text-normal);
 }
 
@@ -3813,7 +3917,9 @@ button.ai-linzi-vault-source-link:focus-visible {
     display: none;
   }
 
-  .ai-linzi-icon-btn {
+  /* @container 不改变权重：这条仍必须写足 (0,3,1)，否则主题的
+     `button { padding: 4px 10px }` 照样把窄面板的收窄 padding 盖掉。 */
+  .ai-linzi-root .ai-linzi-topbar-btns button.ai-linzi-icon-btn {
     padding: 4px 5px;
   }
 }

@@ -92,6 +92,51 @@ assert.match(
   }
 }
 
+// 第 3.5 组（0.7.71 真机实测得出）：面板内自定义按钮的选择器权重必须够高。
+//
+// Obsidian 与各家主题普遍带 `button { padding; border-radius; background }`，
+// 深色主题常写成 `.theme-dark button`（0,1,1）甚至更高。首轮实测：单类写法下
+// padding 被改成 4px 10px、border-radius 被改成 5px，发送键根本不是圆的，
+// 深色下三处按钮背景全被刷回灰底。市场检查禁用 !important，权重是唯一杠杆。
+{
+  const PANEL_BUTTONS = [
+    'ai-linzi-icon-btn',
+    'ai-linzi-composer-menu-btn',
+    'ai-linzi-attachment-btn',
+    'ai-linzi-send',
+    'ai-linzi-starter-btn',
+    'ai-linzi-activity-toggle',
+    'ai-linzi-brand-credits',
+  ]
+  for (const cls of PANEL_BUTTONS) {
+    // 抓出所有以该类结尾的选择器（含伪类/状态类），逐条数权重。
+    // JS 的 RegExp 不支持 (?m) 内联标志，多行只能靠 'm' flag（写成内联会直接抛
+    // Invalid group —— 这个错误只在真跑时才暴露，源码 grep 型测试永远看不见）。
+    // `(?![\w-])` 是必需的类名边界：没有它，`.ai-linzi-icon-btn` 会连
+    // `.ai-linzi-icon-btn-label` 一起匹配上（那是给文字 span 的规则，不需要提权）。
+    const selectors = [...styles.matchAll(new RegExp(`^([^{}\\n]*\\.${cls}(?![\\w-])[^{}\\n]*?)\\s*\\{`, 'gm'))]
+      .map((m) => m[1].trim())
+      .filter((sel) => !sel.startsWith('/*'))
+      // 只管「按钮自己是主语」的规则。给子元素上样式的（如 `.x .svg-icon`）
+      // 不会跟主题的 button 规则打架，不需要提权。
+      .filter((sel) => {
+        const tail = sel.slice(sel.lastIndexOf(`.${cls}`) + cls.length + 1)
+        return !/[\s>+~]/.test(tail)
+      })
+    assert.ok(selectors.length > 0, `styles.css 里找不到 .${cls} 的规则`)
+    for (const sel of selectors) {
+      const classCount = (sel.match(/\.[a-z][\w-]*/g) ?? []).length
+      const hasElement = /(^|\s)button[.:\s]/.test(sel) || /^button\./.test(sel)
+      assert.ok(
+        classCount >= 3 && hasElement,
+        `选择器权重不足，主题的 button 规则会盖掉它：「${sel}」\n` +
+          '    必须写成 `.ai-linzi-root <祖先类> button.ai-linzi-x`（权重 0,3,1），' +
+          '不能只写单类或省略 button 元素选择器。',
+      )
+    }
+  }
+}
+
 // 第 4 组：键盘唤起菜单时坐标为 (0,0)，必须改按按钮位置定位，否则菜单飞到屏幕左上角。
 assert.match(main, /private showMenuForButton\(menu: Menu, btn: HTMLElement, event: MouseEvent\)/)
 assert.match(main, /if \(event\.detail > 0\)/, '鼠标点击仍走 showAtMouseEvent')
