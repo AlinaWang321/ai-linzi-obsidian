@@ -52,7 +52,25 @@
  *
  * 市场检查禁用「important 声明」，所以权重是唯一的杠杆；插件 CSS 在主题之后加载，
  * 同权重时我们胜出，(0,2,1) 足以覆盖上述所有情形。
+ *
+ * ⚠️ 第二条同样重要（0.7.71 第二轮真机踩到）：**权重只能覆盖你声明过的属性**。
+ * 主题的 `button { height: 30px; white-space: nowrap; line-height: 1 }` 里凡是我们
+ * 没写的那几条，权重再高也拦不住——起手式卡因此被压成 30px 高，第二行说明文字
+ * 溢出卡片、被下一张卡盖住。所以内容撑高的按钮必须显式声明下面这一组。
  */
+.ai-linzi-root .ai-linzi-topbar-btns button.ai-linzi-icon-btn,
+.ai-linzi-root .ai-linzi-composer-bar button.ai-linzi-composer-menu-btn,
+.ai-linzi-root .ai-linzi-empty-starters button.ai-linzi-starter-btn,
+.ai-linzi-root .ai-linzi-status-row button.ai-linzi-activity-toggle,
+.ai-linzi-root .ai-linzi-brand-sub button.ai-linzi-brand-credits,
+.ai-linzi-root .ai-linzi-composer .ai-linzi-authorized-content-status button {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  font-family: inherit;
+  line-height: 1.45;
+  white-space: normal;
+}
 
 /* ── 顶栏：品牌头 + 图标操作区（0.7.71） ───────────────────────────────
    全部选择器限定在对话面板专属类内，不影响内容看板 / 驾驶舱 / 小红书卡片 /

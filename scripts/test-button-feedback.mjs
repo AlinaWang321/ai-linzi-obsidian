@@ -137,6 +137,39 @@ assert.match(
   }
 }
 
+// 第 3.6 组（0.7.71 第二轮真机踩到）：权重只能覆盖「声明过的属性」。
+//
+// 主题的 `button { height: 30px; white-space: nowrap; line-height: 1 }` 里凡是我们
+// 没写的那几条，选择器权重再高也拦不住。实测后果：起手式卡被压成 30px 高，
+// 第二行说明文字溢出卡片、被下一张卡盖住（Alina 截图报障）。
+// 因此内容撑高的按钮必须有一条共享 reset 显式声明这一组属性。
+{
+  const CONTENT_SIZED = [
+    'ai-linzi-icon-btn',
+    'ai-linzi-composer-menu-btn',
+    'ai-linzi-starter-btn',
+    'ai-linzi-activity-toggle',
+    'ai-linzi-brand-credits',
+    'ai-linzi-authorized-content-status',
+  ]
+  // 找到那条同时覆盖全部内容撑高按钮的规则块
+  const blocks = [...styles.matchAll(/(?:^|\n)((?:[^{}\n]*\n)*[^{}\n]*)\{([^{}]*)\}/g)]
+  const reset = blocks.find(([, sel, body]) =>
+    CONTENT_SIZED.every((cls) => sel.includes(cls)) && /height:\s*auto/.test(body),
+  )
+  assert.ok(
+    reset,
+    '缺少共享 reset：内容撑高的按钮必须集中声明 height/min-height/white-space/line-height，' +
+      '否则主题的 button 固定高度会把两行文字压出卡片外',
+  )
+  for (const prop of ['height: auto', 'min-height: 0', 'white-space: normal', 'line-height:']) {
+    assert.ok(
+      reset[2].includes(prop),
+      `共享 reset 缺少 ${prop} —— 主题一旦强制这项，卡片内容就会被裁掉`,
+    )
+  }
+}
+
 // 第 4 组：键盘唤起菜单时坐标为 (0,0)，必须改按按钮位置定位，否则菜单飞到屏幕左上角。
 assert.match(main, /private showMenuForButton\(menu: Menu, btn: HTMLElement, event: MouseEvent\)/)
 assert.match(main, /if \(event\.detail > 0\)/, '鼠标点击仍走 showAtMouseEvent')
