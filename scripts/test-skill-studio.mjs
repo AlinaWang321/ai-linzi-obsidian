@@ -447,11 +447,26 @@ console.log('  ✓ Skill ZIP 可往返导入，并拒绝隐藏路径')
 
 const mainSource = await (await import('node:fs/promises')).readFile('src/main.ts', 'utf8')
 const studioSource = await (await import('node:fs/promises')).readFile('src/skill-studio.ts', 'utf8')
+// 0.7.72 步 1：确认卡渲染已从 main.ts 抽到 create-local-skill-card.ts。
+// 断言随代码一起搬到新文件，强度不变。
+const cardSource = await (await import('node:fs/promises')).readFile(
+  'src/create-local-skill-card.ts',
+  'utf8',
+)
 assert.doesNotMatch(studioSource, /archive\[`\$\{block\.name\}\/INSTALL\.md`\]/)
 assert.match(studioSource, /自动识别的调用说法/)
 assert.match(studioSource, /创建后测试示例/)
 assert.doesNotMatch(studioSource, /\.setName\('课堂试运行输入'\)/)
-assert.match(mainSource, /message\.skillCreatorResult && !manifest\.valid/)
+// 「Skill Creator 产出的非法包不得给创建按钮」这条守卫，现由
+// scripts/test-create-local-skill-card.mjs 第 3 组**真跑分支**验证
+// （断言非法包时按钮总数为 0）。这里保留源码断言作为搬迁后的位置守卫，
+// 防止有人把这段判断整体删掉。
+assert.match(cardSource, /message\.skillCreatorResult && !manifest\.valid/)
+assert.doesNotMatch(
+  mainSource,
+  /message\.skillCreatorResult && !manifest\.valid/,
+  '确认卡渲染已抽出，main.ts 不应再持有这段判断（避免两处实现漂移）',
+)
 assert.match(mainSource, /private hasPendingSkillCreatorInterview\(\): boolean \{[\s\S]*?return message\.skillCreatorPending === true/)
 assert.doesNotMatch(mainSource, /hasPendingSkillCreatorInterview[\s\S]{0,600}continue[\s\S]{0,200}skillCreatorPending === true[\s\S]{0,100}continue/)
 assert.match(
@@ -489,8 +504,11 @@ assert.match(
   '官方经营周报必须由本机预读最近文档，不能等待模型自行决定是否扫描',
 )
 assert.match(
-  mainSource,
-  /const currentRoot = this\.localSkills\.root\(\)[\s\S]{0,180}currentRoot !== root[\s\S]{0,260}this\.renderMessages\(\)/,
+  cardSource,
+  // 同上：已随渲染一起搬到 create-local-skill-card.ts，宿主能力改为回调注入。
+  // 「目录中途变化必须中止写入并重绘」这条由 test-create-local-skill-card.mjs
+  // 第 7 组真跑验证（断言 created.length === 0 且 rerendered === 1）。
+  /const currentRoot = host\.skillsRoot\(\)[\s\S]{0,180}currentRoot !== root[\s\S]{0,260}host\.rerender\(\)/,
 )
 assert.match(
   mainSource,

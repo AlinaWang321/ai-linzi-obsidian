@@ -96,13 +96,11 @@ import {
   formatCreateLocalSkillBlock,
   type CreateLocalSkillBlock,
 } from './create-local-skill'
-import { createLocalSkillBundleAtomically } from './create-local-skill-vault'
+import { renderCreateLocalSkillOffers } from './create-local-skill-card'
 import { exportSkillBundle, SkillStudioModal } from './skill-studio'
 import {
   isExplicitLocalSkillCreationIntent,
   isExplicitLocalSkillRunIntent,
-  normalizeGeneratedSkillManifest,
-  skillBlockManifest,
 } from './skill-studio-core'
 import {
   extractVaultQuestion,
@@ -5669,121 +5667,36 @@ class ChatView extends ItemView {
    * - v0.7.28 起可新建 SKILL.md + references/scripts/assets 文本文件；
    * - 所有路径均被解析器限制在 Skill 自己的目录内，只新建、不覆盖。
    */
+  /**
+   * 「对话直接创建 Skill」确认卡。
+   * 渲染实现已抽到 src/create-local-skill-card.ts（0.7.72 步 1）；
+   * 这里只负责把 ChatView 的能力按 CreateLocalSkillCardHost 接口绑过去。
+   */
   private renderCreateLocalSkillOffers(
     row: HTMLElement,
     blocks: CreateLocalSkillBlock[],
     message: WireMessage,
   ) {
-    for (const rawBlock of blocks) {
-      const normalized = message.skillCreatorResult
-        ? normalizeGeneratedSkillManifest(rawBlock)
-        : { block: rawBlock, repairs: [] }
-      const block = normalized.block
-      const root = this.localSkills.root()
-      const skillRoot = normalizePath(`${root}/${block.name}`)
-      const files = block.files
-      const filePath = normalizePath(`${skillRoot}/SKILL.md`)
-      const card = row.createDiv({ cls: 'ai-linzi-create-note-card' })
-      card.createDiv({
-        text: `🧩 待创建 AI 工作流:${block.name}`,
-        cls: 'ai-linzi-create-note-title',
-      })
-      card.createDiv({ text: block.description, cls: 'ai-linzi-create-note-preview' })
-      const manifest = skillBlockManifest(block)
-      if (normalized.repairs.length > 0) {
-        card.createDiv({
-          text: `✅ 本机已自动修正：${normalized.repairs.join('；')}`,
-          cls: 'ai-linzi-create-note-preview',
-        })
-      }
-      card.createDiv({
-        text: `保存位置:${skillRoot}/（版本 ${manifest.version} · 共 ${files.length} 个文件）`,
-        cls: 'ai-linzi-create-note-preview',
-      })
-      const permissionCard = card.createDiv({ cls: 'ai-linzi-skill-permissions' })
-      permissionCard.createEl('strong', { text: '权限清单' })
-      const permissions = permissionCard.createEl('ul')
-      for (const permission of manifest.permissions) permissions.createEl('li', { text: permission })
-      if (message.skillCreatorResult && !manifest.valid) {
-        const invalid = card.createDiv({ cls: 'ai-linzi-create-note-preview' })
-        invalid.createEl('strong', { text: '⚠️ Skill 包未通过本机校验' })
-        const problems = invalid.createEl('ul')
-        for (const problem of manifest.problems) problems.createEl('li', { text: problem })
-      }
-      for (const file of files) {
-        const details = card.createEl('details')
-        details.createEl('summary', { text: `查看 ${file.path}` })
-        details.createEl('pre', { text: file.content, cls: 'ai-linzi-vault-write-preview' })
-      }
-      const actionsRow = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
-      if (message.skillCreatorResult && !manifest.valid) {
-        actionsRow.createSpan({
-          text: '本次不允许安装，请让 AI霖子重新生成完整 Skill 包。',
-          cls: 'ai-linzi-create-note-done',
-        })
-        continue
-      }
-      if (message.createdLocalSkill?.root === skillRoot) {
-        actionsRow.createSpan({ text: '✅ 已创建', cls: 'ai-linzi-create-note-done' })
-        const open = actionsRow.createEl('button', { text: '打开 SKILL.md' })
-        open.onclick = () => void this.app.workspace.openLinkText(message.createdLocalSkill?.entry ?? filePath, '', false)
-        const test = actionsRow.createEl('button', { text: '立即试运行' })
-        test.onclick = () => {
-          this.inputEl.value = message.skillStudioTestInput?.trim() || `用 ${block.name} Skill 处理当前笔记`
+    renderCreateLocalSkillOffers(
+      {
+        app: this.app,
+        skillsRoot: () => this.localSkills.root(),
+        outputFolder: () => this.plugin.settings.outputFolder,
+        fillInput: (text) => {
+          this.inputEl.value = text
           this.inputEl.focus()
-        }
-        const share = actionsRow.createEl('button', { text: '导出分享 ZIP' })
-        share.onclick = () => {
-          share.disabled = true
-          void (async () => {
-            try {
-              const file = await exportSkillBundle(
-                this.app,
-                this.plugin.settings.outputFolder,
-                block,
-              )
-              new Notice(`✅ 已导出可分享 Skill：${file.path}`, 7000)
-              share.disabled = false
-            } catch (error) {
-              share.disabled = false
-              new Notice(`导出失败：${error instanceof Error ? error.message : String(error)}`, 8000)
-            }
-          })()
-        }
-        continue
-      }
-      const createBtn = actionsRow.createEl('button', {
-        text: files.length === 1 ? '创建 SKILL.md' : `创建完整 Skill（${files.length} 个文件）`,
-      })
-      createBtn.onclick = () => {
-        // 确认卡出现后，用户仍可能去驾驶舱设置里修改“我的 Skills”目录。
-        // 不能沿用卡片渲染时捕获的旧目录，也不能在预览仍显示旧路径时静默改写到新目录：
-        // 先按当前设置重绘准确路径，再让用户重新确认一次。
-        const currentRoot = this.localSkills.root()
-        if (currentRoot !== root) {
-          new Notice(
-            `“我的 Skills”文件夹已改为 ${currentRoot}/，已刷新保存位置，请按新路径重新确认。`,
-            8000,
-          )
-          this.renderMessages()
-          return
-        }
-        createBtn.disabled = true
-        void (async () => {
-          try {
-            const created = await createLocalSkillBundleAtomically(this.app, root, block)
-            const entry = created.files.find((file) => file.path === filePath) ?? created.files[0]
-            message.createdLocalSkill = { root: created.root, entry: entry.path }
-            await this.persistNow()
-            this.renderMessages()
-            new Notice(`已创建到“我的 Skills”：${skillRoot}/`, 6000)
-          } catch (error) {
-            createBtn.disabled = false
-            new Notice(`创建失败:${(error as Error).message}`, 7000)
-          }
-        })()
-      }
-    }
+        },
+        persist: () => this.persistNow(),
+        rerender: () => this.renderMessages(),
+        notify: (text, timeoutMs) => {
+          new Notice(text, timeoutMs)
+        },
+        exportBundle: (app, outputFolder, block) => exportSkillBundle(app, outputFolder, block),
+      },
+      row,
+      blocks,
+      message,
+    )
   }
 
   /** 「对话直接创建笔记」确认卡(v0.6.34):点击才落盘;writeOutput 保证白名单文件夹/日期前缀/只新建不覆盖 */
