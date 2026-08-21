@@ -31,11 +31,18 @@ import {
   resolveArtifactPath,
   type CreateArtifactOperation,
 } from './artifact-renderer-core'
+import {
+  selectWeeklyBusinessRefresh,
+  type WeeklyBusinessDashboardCache,
+  type WeeklyBusinessFileFingerprint,
+  type WeeklyBusinessScanState,
+} from './weekly-business-cache'
 
 const TOOL_OUTPUT_MAX_CHARS = 20_000
 const RECENT_DOCUMENT_OUTPUT_MAX_CHARS = 180_000
 const RECENT_DOCUMENT_PAGE_MAX_CHARS = 70_000
 const RECENT_DOCUMENT_FILE_MAX_CHARS = 80_000
+const WEEKLY_DASHBOARD_BASELINE_MAX_CHARS = 60_000
 const READ_NOTE_MAX_CHARS = 16_000
 const LIST_FOLDER_MAX_ENTRIES = 160
 const LIST_FOLDER_SCAN_MAX_ENTRIES = 20_000
@@ -48,6 +55,12 @@ const SKILL_TEXT_EXTENSIONS = new Set([
 export interface VaultAgentExecution {
   results: VaultAgentToolResult[]
   sources: { sourceId: string; filename: string; path: string }[]
+  /**
+   * read_recent_documents 的本机指纹不能只从序列化后的工具输出反解。
+   * 正文页较大时 outputJson 会安全截断，snapshotId 也会一起被包进 preview，
+   * 这会让周报已经生成、增量基线却没有保存。这里直接从原始返回值带出。
+   */
+  weeklyBusinessScan?: WeeklyBusinessScanState
 }
 
 export interface VaultActionRecord {
@@ -121,15 +134,47 @@ export class LocalVaultAgent {
    */
   private readonly recentDocumentSnapshots = new Map<
     string,
-    { createdAt: number; sinceDays: number; paths: string[] }
+    {
+      createdAt: number
+      sinceDays: number
+      paths: string[]
+      scan: WeeklyBusinessScanState
+      mode: 'full' | 'incremental'
+      unchangedFiles: number
+      removedPaths: string[]
+      baselineArtifactPath?: string
+      baselineContent?: string
+    }
   >()
+  /**
+   * 周报确定性预载与对话消息之间再留一层本机接缝保险。
+   * 有些 Obsidian/WebView 运行路径会让大对象返回元数据没有跟随 Promise 结果保留下来；
+   * 这里仍引用同一次 read_recent_documents 已完成快照，不在确认时重新扫描。
+   */
+  private latestWeeklyBusinessScanState?: WeeklyBusinessScanState
 
   constructor(
     private readonly app: App,
     private readonly search: LocalVaultSearch,
     private readonly localSkillsRoot: () => string,
     private readonly outputRoot: () => string = () => 'AI霖子输出',
+    private readonly weeklyDashboardCache: () => WeeklyBusinessDashboardCache | null = () => null,
   ) {}
+
+  /** 只交出路径/mtime/size，供用户确认生成看板后建立下一次增量基线。 */
+  weeklyBusinessScanForSnapshot(snapshotId: string): WeeklyBusinessScanState | undefined {
+    const scan = this.recentDocumentSnapshots.get(snapshotId)?.scan
+    return scan
+      ? { ...scan, files: scan.files.map((file) => ({ ...file })) }
+      : undefined
+  }
+
+  latestWeeklyBusinessScan(): WeeklyBusinessScanState | undefined {
+    const scan = this.latestWeeklyBusinessScanState
+    return scan
+      ? { ...scan, files: scan.files.map((file) => ({ ...file })) }
+      : undefined
+  }
 
   private protected(path: string): boolean {
     return isProtectedVaultPath(path, this.localSkillsRoot())
@@ -328,9 +373,16 @@ export class LocalVaultAgent {
   ): Promise<VaultAgentExecution> {
     const results: VaultAgentToolResult[] = []
     const sources: VaultAgentExecution['sources'] = []
+    let weeklyBusinessScan: WeeklyBusinessScanState | undefined
     for (const call of calls) {
       try {
         const value = await this.executeReadCall(call, sources, skillContext)
+        if (call.name === 'read_recent_documents' && value && typeof value === 'object') {
+          const snapshotId = (value as Record<string, unknown>).snapshotId
+          if (typeof snapshotId === 'string') {
+            weeklyBusinessScan = this.weeklyBusinessScanForSnapshot(snapshotId)
+          }
+        }
         results.push({
           callId: call.id,
           name: call.name,
@@ -354,6 +406,7 @@ export class LocalVaultAgent {
     return {
       results,
       sources: [...new Map(sources.map((source) => [source.path, source])).values()],
+      weeklyBusinessScan,
     }
   }
 
@@ -529,7 +582,7 @@ export class LocalVaultAgent {
       let snapshotId = requestedSnapshotId
       let snapshot = snapshotId ? this.recentDocumentSnapshots.get(snapshotId) : undefined
       if (!snapshot || snapshot.sinceDays !== sinceDays) {
-        const paths = this.app.vault
+        const files: WeeklyBusinessFileFingerprint[] = this.app.vault
           .getFiles()
           .filter((file) =>
             file.stat.mtime >= cutoff &&
@@ -544,9 +597,75 @@ export class LocalVaultAgent {
               right.stat.mtime - left.stat.mtime ||
               left.path.localeCompare(right.path, 'zh-CN'),
           )
-          .map((file) => file.path)
+          .map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }))
+        const cache = this.weeklyDashboardCache()
+        const cacheArtifact = cache?.artifactPath
+          ? this.app.vault.getAbstractFileByPath(cache.artifactPath)
+          : null
+        const normalizedOutputRoot = normalizePath(this.outputRoot())
+        const baselineAvailable = Boolean(
+          cache &&
+          cacheArtifact instanceof TFile &&
+          cacheArtifact.extension.toLocaleLowerCase() === 'html' &&
+          (cacheArtifact.path === normalizedOutputRoot ||
+            cacheArtifact.path.startsWith(`${normalizedOutputRoot}/`)),
+        )
+        let selection = selectWeeklyBusinessRefresh(files, cache, {
+          baselineAvailable,
+          sinceDays,
+          now,
+        })
+        if (selection.removedPaths.join('\n').length > 60_000) {
+          selection = selectWeeklyBusinessRefresh(files, null, {
+            baselineAvailable: false,
+            sinceDays,
+            now,
+          })
+        }
+        let baselineContent: string | undefined
+        let baselineArtifactPath: string | undefined
+        if (selection.mode === 'incremental' && cache && cacheArtifact instanceof TFile) {
+          try {
+            const baseline = await this.search.readPathForRecentBatch(cache.artifactPath, {
+              offset: 0,
+              maxChars: WEEKLY_DASHBOARD_BASELINE_MAX_CHARS,
+            })
+            // 增量刷新必须有一份完整旧看板作真相基线。旧看板异常或正文过长时，
+            // 自动退回全量，不拿半份旧报告拼接出伪完整结果。
+            if (baseline.text.trim() && baseline.nextOffset === null) {
+              baselineContent = baseline.text
+              baselineArtifactPath = cache.artifactPath
+            } else {
+              selection = selectWeeklyBusinessRefresh(files, null, {
+                baselineAvailable: false,
+                sinceDays,
+                now,
+              })
+            }
+          } catch {
+            selection = selectWeeklyBusinessRefresh(files, null, {
+              baselineAvailable: false,
+              sinceDays,
+              now,
+            })
+          }
+        }
         snapshotId = `recent-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-        snapshot = { createdAt: now, sinceDays, paths }
+        snapshot = {
+          createdAt: now,
+          sinceDays,
+          paths: selection.readFiles.map((file) => file.path),
+          scan: { sinceDays, capturedAt: now, files },
+          mode: selection.mode,
+          unchangedFiles: selection.unchangedFiles,
+          removedPaths: selection.removedPaths,
+          baselineArtifactPath,
+          baselineContent,
+        }
+        this.latestWeeklyBusinessScanState = {
+          ...snapshot.scan,
+          files: snapshot.scan.files.map((file) => ({ ...file })),
+        }
         this.recentDocumentSnapshots.set(snapshotId, snapshot)
         while (this.recentDocumentSnapshots.size > 8) {
           const oldest = this.recentDocumentSnapshots.keys().next().value
@@ -555,6 +674,8 @@ export class LocalVaultAgent {
         }
       }
       const paths = snapshot.paths
+      const includeBaseline =
+        snapshot.mode === 'incremental' && offset === 0 && firstCharOffset === 0
 
       const documents: Array<{
         path: string
@@ -565,7 +686,7 @@ export class LocalVaultAgent {
         nextOffset: number | null
       }> = []
       const skipped: Array<{ path: string; reason: string }> = []
-      let usedChars = 0
+      let usedChars = includeBaseline ? (snapshot.baselineContent?.length ?? 0) + 500 : 0
       let index = offset
       let charOffset = firstCharOffset
       let nextCharOffset = 0
@@ -617,13 +738,32 @@ export class LocalVaultAgent {
         }
       }
       return {
-        mode: 'recent-documents',
+        mode: snapshot.mode === 'incremental'
+          ? 'recent-documents-incremental'
+          : 'recent-documents-full',
+        refreshMode: snapshot.mode,
         sinceDays,
         snapshotId,
         dateBasis: 'file-mtime',
         scopeWarning: '按文件修改时间统计；同步、git pull 或批量脚本改写可能影响本周口径。',
         excludedRoots: [skillRoot, outputRoot],
-        totalFiles: paths.length,
+        refreshInstruction: snapshot.mode === 'incremental'
+          ? '以上一次完整看板为基线，只合并本次新增/修改正文，并移除已删除或已移出七天窗口的来源；必须提交一份完整更新后的看板，不能只输出增量摘要。'
+          : '这是首次或缓存失效后的全量扫描；必须以本轮全部正文生成完整看板。',
+        ...(includeBaseline && snapshot.baselineContent && snapshot.baselineArtifactPath
+          ? {
+              baselineDashboard: {
+                path: snapshot.baselineArtifactPath,
+                content: snapshot.baselineContent,
+              },
+            }
+          : {}),
+        totalFiles: snapshot.scan.files.length,
+        changedFiles: snapshot.mode === 'incremental' ? paths.length : snapshot.scan.files.length,
+        unchangedFiles: snapshot.unchangedFiles,
+        ...(snapshot.mode === 'incremental' && offset === 0 && firstCharOffset === 0
+          ? { removedFiles: snapshot.removedPaths }
+          : {}),
         returnedFiles: documents.length,
         offset,
         nextOffset: index < paths.length ? index : null,

@@ -277,7 +277,7 @@ class CustomerConsultationBriefModal extends Modal {
 export async function runCustomerConsultationBrief(
   plugin: AiLinziPlugin,
   lockedSourceFile?: TFile,
-): Promise<void> {
+): Promise<string | undefined> {
   const source = lockedSourceFile
     ? await (async () => {
         try {
@@ -303,7 +303,7 @@ export async function runCustomerConsultationBrief(
         '客户咨询简报',
         CUSTOMER_CONSULTATION_TRANSCRIPT_MAX,
       )
-  if (!source) return
+  if (!source) return undefined
   const sourceFile = source.file
   const transcript = source.text
   // 全程状态条落在对话区，与销售复盘同款（2026-08-18 Alina 反馈：只有 toast 会被错过）。
@@ -316,7 +316,7 @@ export async function runCustomerConsultationBrief(
       `⚠️ 客户咨询简报已停止：《${sourceFile.basename}》只有 ${transcript.length} 字，至少需要 800 字。`,
       statusId,
     )
-    return
+    return sourceFile.path
   }
   if (transcript.length > CUSTOMER_CONSULTATION_TRANSCRIPT_MAX) {
     new Notice(`当前逐字稿有 ${transcript.length.toLocaleString()} 字，超过 100,000 字上限，请拆分后再生成`, 8000)
@@ -324,13 +324,13 @@ export async function runCustomerConsultationBrief(
       `⚠️ 客户咨询简报已停止：《${sourceFile.basename}》有 ${transcript.length.toLocaleString('zh-CN')} 字，超过 100,000 字上限，请拆分后再生成。`,
       statusId,
     )
-    return
+    return sourceFile.path
   }
 
   const input = await new CustomerConsultationBriefModal(plugin.app, sourceFile).result
   if (!input) {
     plugin.reportSkillStatus(`已取消本次客户咨询简报，《${sourceFile.basename}》未处理。`, statusId)
-    return
+    return sourceFile.path
   }
   plugin.reportSkillStatus(
     `🤖 正在生成客户咨询简报并渲染 PNG：《${sourceFile.basename}》…约 1-2 分钟，完成后会自动打开长图。`,
@@ -375,4 +375,5 @@ export async function runCustomerConsultationBrief(
   } finally {
     running.hide()
   }
+  return sourceFile.path
 }

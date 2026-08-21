@@ -122,6 +122,16 @@ import { extractXlsxText, LOCAL_SEARCH_FILE_LIMITS } from './local-document-text
 import { LocalVaultSearch } from './vault-search'
 import { LocalVaultAgent, type VaultActionRecord } from './vault-agent'
 import {
+  consultationWorkflowSourcePath as inferConsultationWorkflowSourcePath,
+  isConsultationTranscriptPath,
+} from './consultation-workflow-source'
+import {
+  storedWeeklyBusinessDashboardCache,
+  storedWeeklyBusinessScanState,
+  type WeeklyBusinessDashboardCache,
+  type WeeklyBusinessScanState,
+} from './weekly-business-cache'
+import {
   VAULT_AGENT_MAX_CALLS_PER_ROUND,
   VAULT_AGENT_MAX_ROUNDS,
   WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS,
@@ -224,7 +234,7 @@ export const SKILL_ACTIONS: {
     name: '客户咨询简报:选择逐字稿 → 客户版 PNG 长图',
     fn: async (p) => {
       const { runCustomerConsultationBrief } = await import('./customer-consultation-brief')
-      return runCustomerConsultationBrief(p)
+      await runCustomerConsultationBrief(p)
     },
   },
   { id: 'sales-review', name: '销售复盘:选择逐字稿 → 销售诊断', fn: runSalesReview },
@@ -458,6 +468,8 @@ interface WireMessage {
   localSkillPath?: string
   /** 咨询闭环首次锁定的逐字稿；只保存本机 Vault 路径，不上传。 */
   consultationWorkflowSourcePath?: string
+  /** 经营周报本轮文件指纹；只存路径/mtime/size，确认成品后才升级为增量基线。 */
+  weeklyBusinessScan?: WeeklyBusinessScanState
   /** 成功写入后识别到的本地客户档案；只存 Vault 路径，不存正文。 */
   customerCrmSyncPath?: string
   /** 用户二次确认后完成的 CRM 同步回执。 */
@@ -546,6 +558,7 @@ interface AiLinziPluginData extends LegacyAiLinziSettings {
   imageStyleContext?: unknown
   vaultActionHistory?: VaultActionRecord[]
   localSkillRunHistory?: LocalSkillRunRecord[]
+  weeklyBusinessDashboardCache?: unknown
 }
 
 const IMAGE_STYLE_CONTEXT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
@@ -1005,11 +1018,13 @@ function extractTextFromSSE(raw: string): { text: string; error?: string } {
 export default class AiLinziPlugin extends Plugin {
   settings: AiLinziSettings = DEFAULT_SETTINGS
   readonly vaultSearch = new LocalVaultSearch(this.app)
+  private weeklyBusinessDashboardCache: WeeklyBusinessDashboardCache | null = null
   readonly vaultAgent = new LocalVaultAgent(
     this.app,
     this.vaultSearch,
     () => this.settings.localSkillsFolder,
     () => this.settings.outputFolder,
+    () => this.weeklyBusinessDashboardCache,
   )
   private localSkillExecutorPromise: Promise<LocalSkillExecutor> | null = null
   private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
@@ -1189,6 +1204,7 @@ export default class AiLinziPlugin extends Plugin {
       imageStyleContext,
       vaultActionHistory,
       localSkillRunHistory,
+      weeklyBusinessDashboardCache,
       ...safeSettings
     } = raw
     this.savedConversations = Array.isArray(conversations) ? conversations : []
@@ -1200,6 +1216,9 @@ export default class AiLinziPlugin extends Plugin {
     this.localSkillRunHistory = Array.isArray(localSkillRunHistory)
       ? localSkillRunHistory.filter(isStoredLocalSkillRunRecord).slice(0, 50)
       : []
+    this.weeklyBusinessDashboardCache = storedWeeklyBusinessDashboardCache(
+      weeklyBusinessDashboardCache,
+    )
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
     let migrated =
       legacyVaultSearchExcludedFolders !== undefined ||
@@ -1601,7 +1620,29 @@ export default class AiLinziPlugin extends Plugin {
       imageStyleContext: this.imageStyleContext ?? undefined,
       vaultActionHistory: this.vaultActionHistory,
       localSkillRunHistory: this.localSkillRunHistory,
+      weeklyBusinessDashboardCache: this.weeklyBusinessDashboardCache ?? undefined,
     } satisfies AiLinziPluginData)
+  }
+
+  /** 用户确认生成完整看板后，才把本轮指纹提升为下一次增量刷新基线。 */
+  async commitWeeklyBusinessDashboardCache(
+    scan: WeeklyBusinessScanState,
+    artifactPath: string,
+  ): Promise<boolean> {
+    const validatedScan = storedWeeklyBusinessScanState(scan)
+    if (!validatedScan) return false
+    const artifact = this.app.vault.getAbstractFileByPath(artifactPath)
+    if (!(artifact instanceof TFile) || artifact.extension.toLocaleLowerCase() !== 'html') return false
+    this.weeklyBusinessDashboardCache = {
+      version: 1,
+      artifactPath: artifact.path,
+      updatedAt: Date.now(),
+      sinceDays: validatedScan.sinceDays,
+      capturedAt: validatedScan.capturedAt,
+      files: validatedScan.files.map((file) => ({ ...file })),
+    }
+    await this.saveSettings()
+    return true
   }
 
   async activateChatView() {
@@ -2858,8 +2899,24 @@ class ChatView extends ItemView {
 
   private recentConsultationWorkflowSourcePath(): string | undefined {
     for (let index = this.messages.length - 1; index >= 0; index--) {
-      const path = this.messages[index].consultationWorkflowSourcePath
-      if (path) return path
+      const message = this.messages[index]
+      const storedPath = message.consultationWorkflowSourcePath
+      if (storedPath) {
+        const stored = this.app.vault.getAbstractFileByPath(storedPath)
+        if (stored instanceof TFile && isConsultationTranscriptPath(stored.path)) return stored.path
+      }
+      const recovered = inferConsultationWorkflowSourcePath(message.vaultSources ?? [], {
+        localSkillsRoot: this.plugin.settings.localSkillsFolder,
+        outputRoot: this.plugin.settings.outputFolder,
+      })
+      if (recovered) {
+        const file = this.app.vault.getAbstractFileByPath(recovered)
+        if (file instanceof TFile) {
+          // 修复旧会话：0.7.69 以前只保存了 vaultSources，没有写专用锁定字段。
+          message.consultationWorkflowSourcePath = file.path
+          return file.path
+        }
+      }
     }
     return undefined
   }
@@ -3090,10 +3147,10 @@ class ChatView extends ItemView {
         )
       }
       if (noteContext) new Notice(`本轮只读取当前笔记：${noteContext.filename}`, 3500)
-      const consultationWorkflowSourcePath = consultationWorkflowTaskTurn
+      let consultationWorkflowSourcePath = consultationWorkflowTaskTurn
         ? options.consultationWorkflowSourcePath ?? this.recentConsultationWorkflowSourcePath()
         : localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME
-          ? noteContext?.path ?? this.recentConsultationWorkflowSourcePath()
+          ? noteContext?.path
           : undefined
       // Skill Studio 的生成提示会把“不覆盖同名文件”写进安全边界；这不是要求
       // 覆盖当前笔记。专用 Skill Creator 回合必须跳过正文替换快捷通道。
@@ -3196,6 +3253,7 @@ class ChatView extends ItemView {
       let answer: string
       let localSkillRunIds: string[] | undefined
       let successfulCloudWriteTools: string[] | undefined
+      let weeklyBusinessScan: WeeklyBusinessScanState | undefined
       let answerSources = [
         ...(noteContext
           ? [{
@@ -3213,6 +3271,7 @@ class ChatView extends ItemView {
           sources: VaultMessageSource[]
           localSkillRunIds?: string[]
           successfulCloudWriteTools?: string[]
+          weeklyBusinessScan?: WeeklyBusinessScanState
         }
         try {
           agentResult = await this.runVaultAgentLoop({
@@ -3260,11 +3319,29 @@ class ChatView extends ItemView {
         }
         localSkillRunIds = agentResult.localSkillRunIds
         successfulCloudWriteTools = agentResult.successfulCloudWriteTools
+        weeklyBusinessScan = agentResult.weeklyBusinessScan
+        if (!weeklyBusinessScan && localSkill?.name === WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME) {
+          // 大结果在 Obsidian/WebView 接缝丢掉附加元数据时，从同一次已完成快照
+          // 取回指纹；绝不在用户确认时重新扫描，避免把未读变化写进基线。
+          weeklyBusinessScan = this.plugin.vaultAgent.latestWeeklyBusinessScan()
+        }
         answerSources = [
           ...new Map(
             [...answerSources, ...agentResult.sources].map((source) => [source.path, source]),
           ).values(),
         ]
+        if (
+          (consultationWorkflowTaskTurn || localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME) &&
+          !consultationWorkflowSourcePath
+        ) {
+          consultationWorkflowSourcePath = inferConsultationWorkflowSourcePath(answerSources, {
+            localSkillsRoot: this.plugin.settings.localSkillsFolder,
+            outputRoot: this.plugin.settings.outputFolder,
+          })
+          if (!consultationWorkflowSourcePath && consultationWorkflowTaskTurn) {
+            consultationWorkflowSourcePath = this.recentConsultationWorkflowSourcePath()
+          }
+        }
       } else {
         // 普通对话继续优先流式；Vault 工具循环使用非流式 JSON，避免把内部协议闪给用户。
         let streamed: { kind: 'ok'; text: string } | { kind: 'bizError'; message: string } | null
@@ -3360,6 +3437,7 @@ class ChatView extends ItemView {
         localSkillRunIds,
         localSkillPath: localSkill?.path,
         consultationWorkflowSourcePath,
+        weeklyBusinessScan,
         consultationWorkflowTaskCreatedAt,
         vaultQuestion: vaultQuestion.question,
         skillStudioTestInput: skillCreatorTurn ? options.skillStudioTestInput : undefined,
@@ -3385,7 +3463,15 @@ class ChatView extends ItemView {
           ? this.app.vault.getAbstractFileByPath(consultationWorkflowSourcePath)
           : null
         const { runCustomerConsultationBrief } = await import('./customer-consultation-brief')
-        await runCustomerConsultationBrief(this.plugin, source instanceof TFile ? source : undefined)
+        const usedPath = await runCustomerConsultationBrief(
+          this.plugin,
+          source instanceof TFile ? source : undefined,
+        )
+        const latest = this.messages.at(-1)
+        if (usedPath && latest?.role === 'assistant' && !latest.consultationWorkflowSourcePath) {
+          latest.consultationWorkflowSourcePath = usedPath
+          await this.persistNow()
+        }
       }
       if (aiImageRequest.requests.length > 0 && !answer.startsWith('⚠️')) {
         await this.executeChatAiImageRequests(
@@ -3873,10 +3959,12 @@ class ChatView extends ItemView {
     sources: VaultMessageSource[]
     localSkillRunIds?: string[]
     successfulCloudWriteTools?: string[]
+    weeklyBusinessScan?: WeeklyBusinessScanState
   }> {
     let toolResults: VaultAgentToolResult[] = []
     const sources: VaultMessageSource[] = []
     const localSkillRunIds: string[] = []
+    let weeklyBusinessScan: WeeklyBusinessScanState | undefined
     const verifiedWritePaths = new Set<string>()
     let lastText = ''
     let pendingRetryReason: VaultAnswerRetryReason | undefined
@@ -4027,9 +4115,27 @@ class ChatView extends ItemView {
       preload.sources = [
         ...new Map(preload.sources.map((source) => [source.path, source])).values(),
       ]
+      // 正文页可能因 JSON 转义后超过工具输出上限而被 outputJson 包成 preview。
+      // 优先使用 LocalVaultAgent 从原始返回值带出的扫描指纹；下面的 JSON 解析
+      // 只保留为旧实现/极小页面的兼容兜底。
+      weeklyBusinessScan =
+        preload.weeklyBusinessScan ?? this.plugin.vaultAgent.latestWeeklyBusinessScan()
+      try {
+        const firstPage = JSON.parse(preload.results[0]?.output ?? '{}') as { snapshotId?: unknown }
+        if (!weeklyBusinessScan && typeof firstPage.snapshotId === 'string') {
+          weeklyBusinessScan = this.plugin.vaultAgent.weeklyBusinessScanForSnapshot(
+            firstPage.snapshotId,
+          )
+        }
+      } catch {
+        // 没有可提交的扫描指纹时仍可生成本次周报，只是不建立下一次增量基线。
+      }
       appendToolResults(preload.results)
       sources.push(...preload.sources)
       this.activityStep(`📚 已批量读取最近 7 天文档 → ${preload.sources.length} 份可读正文`)
+      if (weeklyBusinessScan) {
+        this.activityStep(`♻️ 已锁定增量基线 → ${weeklyBusinessScan.files.length} 份文件指纹`)
+      }
     }
     // 阶段 A：intent 只允许 auto → organize 单向升级；跨轮任务状态在会话上保存。
     if (this.pendingVaultTask && isVaultTaskExpired(this.pendingVaultTask, Date.now())) {
@@ -5057,7 +5163,7 @@ class ChatView extends ItemView {
       appendToolResults(executed.results)
       sources.push(...executed.sources)
     }
-    return { text: lastText, sources, localSkillRunIds }
+    return { text: lastText, sources, localSkillRunIds, weeklyBusinessScan }
   }
 
   /**
@@ -5657,6 +5763,9 @@ class ChatView extends ItemView {
           })
           taskBtn.onclick = () => {
             taskBtn.disabled = true
+            const sourcePath =
+              message.consultationWorkflowSourcePath ?? this.recentConsultationWorkflowSourcePath()
+            if (sourcePath) message.consultationWorkflowSourcePath = sourcePath
             message.consultationWorkflowTaskRequestedAt = Date.now()
             void (async () => {
               await this.persistNow()
@@ -5668,7 +5777,7 @@ class ChatView extends ItemView {
               this.inputEl.focus()
               await this.send({
                 consultationWorkflowTaskOriginId: message.id,
-                consultationWorkflowSourcePath: message.consultationWorkflowSourcePath,
+                consultationWorkflowSourcePath: sourcePath,
               })
             })()
           }
@@ -5778,6 +5887,43 @@ class ChatView extends ItemView {
           const applied = await this.plugin.applyVaultPlan(plan, message.vaultWriteSnapshots)
           message.vaultActionId = applied.id
           message.vaultExecuteError = undefined
+          const weeklyArtifact = applied.createdArtifacts?.find((path) => /\.html$/iu.test(path))
+          const weeklySkillMessage = message.localSkillPath
+            ?.split('/')
+            .includes(WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME) === true
+          const latestPendingWeeklyMessage = [...this.messages]
+            .reverse()
+            .find((item) =>
+              !item.vaultActionId &&
+              item.localSkillPath?.split('/').includes(WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME),
+            )
+          // 大正文结果不能影响本机指纹。正常情况下指纹已经随消息保存；若旧
+          // WebView 接缝没有带过来，只允许“最新一张尚未执行的周报卡”取回同
+          // 一次扫描快照，绝不让历史确认卡误用后来一次扫描。
+          const weeklyScan = message.weeklyBusinessScan ?? (
+            weeklySkillMessage && latestPendingWeeklyMessage?.id === message.id
+              ? this.plugin.vaultAgent.latestWeeklyBusinessScan()
+              : undefined
+          )
+          if (weeklyArtifact && weeklySkillMessage && weeklyScan) {
+            try {
+              const cached = await this.plugin.commitWeeklyBusinessDashboardCache(
+                weeklyScan,
+                weeklyArtifact,
+              )
+              if (cached) {
+                // 已升级为顶层单份基线后，从历史消息清掉大数组，避免每周重复占 data.json。
+                message.weeklyBusinessScan = undefined
+              } else {
+                new Notice('看板已生成；本机增量基线未通过校验，下次会安全地重新全量扫描。', 7000)
+              }
+            } catch (error) {
+              console.warn('[ai-linzi] weekly dashboard cache persist failed:', error)
+              new Notice('看板已生成；本机增量基线未保存，下次会自动安全地重新全量扫描。', 7000)
+            }
+          } else if (weeklyArtifact && weeklySkillMessage) {
+            new Notice('看板已生成；没有找到对应的本机扫描快照，下次会安全地重新全量扫描。', 7000)
+          }
           // 确认卡已执行 → 跨轮任务结清；下一句「继续」不再重新进入旧写入流程。
           this.pendingVaultTask = null
           const writtenPaths = [
@@ -5860,11 +6006,15 @@ class ChatView extends ItemView {
           const sourcePath =
             message.consultationWorkflowSourcePath ?? this.recentConsultationWorkflowSourcePath()
           const source = sourcePath ? this.app.vault.getAbstractFileByPath(sourcePath) : null
-          if (!(source instanceof TFile)) {
-            throw new Error('没有找到第 1 步锁定的原咨询材料，请重新打开原文后再生成简报')
-          }
           const { runCustomerConsultationBrief } = await import('./customer-consultation-brief')
-          await runCustomerConsultationBrief(this.plugin, source)
+          const usedPath = await runCustomerConsultationBrief(
+            this.plugin,
+            source instanceof TFile ? source : undefined,
+          )
+          if (usedPath && message.consultationWorkflowSourcePath !== usedPath) {
+            message.consultationWorkflowSourcePath = usedPath
+            await this.persistNow()
+          }
         } catch (error) {
           new Notice(`无法生成客户咨询简报：${error instanceof Error ? error.message : String(error)}`, 9000)
         } finally {
