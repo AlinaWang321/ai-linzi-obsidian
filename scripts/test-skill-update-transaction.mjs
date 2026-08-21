@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { webcrypto } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 
 globalThis.crypto ??= webcrypto
@@ -15,6 +16,31 @@ const source = bundled.outputFiles[0].text
 const tx = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 
 console.log('[test-skill-update-transaction]')
+
+assert.match(
+  tx.skillTreeResourceLimitError(
+    Array.from({ length: 113 }, (_, index) => ({ path: `assets/${index}.bin`, size: 1 })),
+  ),
+  /超过安全上限 112 个/,
+)
+assert.match(
+  tx.skillTreeResourceLimitError([{ path: 'assets/huge.bin', size: 50 * 1024 * 1024 + 1 }]),
+  /单文件 50 MB/,
+)
+assert.match(
+  tx.skillTreeResourceLimitError([
+    { path: 'assets/a.bin', size: 50 * 1024 * 1024 },
+    { path: 'assets/b.bin', size: 50 * 1024 * 1024 },
+    { path: 'assets/c.bin', size: 1 },
+  ]),
+  /整包快照安全上限/,
+)
+console.log('  ✓ 快照在读取二进制前限制文件数、单文件与整包体积')
+const vaultHostSource = await readFile(new URL('../src/skill-update-vault.ts', import.meta.url), 'utf8')
+assert.ok(
+  vaultHostSource.indexOf('skillTreeResourceLimitError(') < vaultHostSource.indexOf('vault.readBinary(file)'),
+  '真实 Vault Host 必须在读取任何二进制前完成资源限额检查',
+)
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()

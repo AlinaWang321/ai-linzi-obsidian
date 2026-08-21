@@ -5,7 +5,7 @@ import type {
   SkillUpdateTransactionHost,
   StoredSkillSnapshot,
 } from './skill-update-transaction'
-import { sha256Hex } from './skill-update-transaction'
+import { sha256Hex, skillTreeResourceLimitError } from './skill-update-transaction'
 
 const SNAPSHOT_ID_RE = /^\d{8}T\d{9}Z__\d+\.\d+\.\d+$/u
 
@@ -83,6 +83,10 @@ export class ObsidianSkillUpdateHost implements SkillUpdateTransactionHost {
       }
     }
     visit(root, '')
+    const resourceError = skillTreeResourceLimitError(
+      files.map((file) => ({ path: file.path.slice(root.path.length + 1), size: file.stat.size })),
+    )
+    if (resourceError) throw new Error(resourceError)
     const result: Array<Omit<SkillCapturedFile, 'sha256'>> = []
     for (const file of files.sort((left, right) => left.path.localeCompare(right.path))) {
       const relativePath = file.path.slice(root.path.length + 1)

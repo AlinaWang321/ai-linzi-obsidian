@@ -77,6 +77,33 @@ export interface AppliedSkillRestore {
   historyCleanupWarning?: string
 }
 
+/** 12 个可更新文本 + 最多 100 个只读保留文件；快照前先限资源，避免导入 Skill 卡死 Obsidian。 */
+export const SKILL_UPDATE_MAX_TREE_FILES = 112
+export const SKILL_UPDATE_MAX_SINGLE_FILE_BYTES = 50 * 1024 * 1024
+export const SKILL_UPDATE_MAX_TREE_BYTES = 100 * 1024 * 1024
+
+export function skillTreeResourceLimitError(
+  files: Array<{ path: string; size: number }>,
+): string | null {
+  if (files.length > SKILL_UPDATE_MAX_TREE_FILES) {
+    return `这个 Skill 有 ${files.length} 个文件，超过安全上限 ${SKILL_UPDATE_MAX_TREE_FILES} 个。`
+  }
+  let total = 0
+  for (const file of files) {
+    if (!Number.isSafeInteger(file.size) || file.size < 0) {
+      return `${file.path} 的文件大小无效。`
+    }
+    if (file.size > SKILL_UPDATE_MAX_SINGLE_FILE_BYTES) {
+      return `${file.path} 超过单文件 50 MB 的快照安全上限。`
+    }
+    total += file.size
+    if (total > SKILL_UPDATE_MAX_TREE_BYTES) {
+      return '这个 Skill 超过 100 MB 的整包快照安全上限。'
+    }
+  }
+  return null
+}
+
 const encoder = new TextEncoder()
 const fatalDecoder = new TextDecoder('utf-8', { fatal: true })
 
@@ -111,6 +138,8 @@ export async function captureSkillTree(
   skillRoot: string,
 ): Promise<SkillCapturedTree> {
   const rawFiles = await host.captureFormalFiles(skillRoot)
+  const resourceError = skillTreeResourceLimitError(rawFiles)
+  if (resourceError) throw new Error(resourceError)
   const seen = new Set<string>()
   const files: SkillCapturedFile[] = []
   for (const file of rawFiles) {
