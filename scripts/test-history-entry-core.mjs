@@ -9,7 +9,13 @@ const bundled = await build({
   format: 'esm',
   write: false,
 })
-const { historyEntryFacts, relativeTime, truncateTitle } = await import(
+const {
+  deriveConversationTitle,
+  historyEntryFacts,
+  relativeTime,
+  truncateTitle,
+  CONVERSATION_TITLE_MAX,
+} = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`
 )
 
@@ -94,6 +100,60 @@ console.log('第5组 标题截断')
   const emoji = truncateTitle('✍️🎯🚀🌟💡🔥📌🎨🧩⚡🍀', 5)
   assert.equal(Array.from(emoji).length, 5)
   assert.ok(!emoji.includes('�'), '不得产生替换字符')
+}
+
+console.log('第6组 标题统一推导（0.7.71 收尾修：保存前就被 slice(0,24) 生切）')
+{
+  const u = (text) => ({ role: 'user', parts: [{ text }] })
+  const a = (text) => ({ role: 'assistant', parts: [{ text }] })
+
+  // 真实报障标题：过去存进历史时被 slice(0, 24) 硬切成
+  // 「从 Skill Studio 安装「consul」——没有省略号，也无法在渲染层补救。
+  const real = '从 Skill Studio 安装「consultation-client-workflow」'
+  const title = deriveConversationTitle([u(real), a('好的')])
+  assert.ok(title.endsWith('…'), `真实长标题必须补省略号，实际：${title}`)
+  assert.equal(Array.from(title).length, CONVERSATION_TITLE_MAX)
+  assert.ok(
+    title.startsWith('从 Skill Studio 安装「consultation'),
+    `40 码点应当比旧的 24 码点显示更多内容，实际：${title}`,
+  )
+  assert.ok(
+    Array.from(real).length > 24,
+    '前提校验：这条标题确实超过旧上限，否则本用例证明不了什么',
+  )
+
+  // 短标题不动，不许平白加省略号
+  assert.equal(deriveConversationTitle([u('总结当前笔记')]), '总结当前笔记')
+
+  // 从「第一条用户正文」推导：助手先说话、或前面有空消息都不影响
+  assert.equal(deriveConversationTitle([a('我先说'), u('真正的问题')]), '真正的问题')
+  assert.equal(deriveConversationTitle([u('   '), u('第二条才有内容')]), '第二条才有内容')
+  assert.equal(deriveConversationTitle([u(''), u('非空')]), '非空')
+
+  // 多行提问只取第一段有内容的行：后续行是细节，塞进标题更难认
+  assert.equal(deriveConversationTitle([u('帮我看看这个\n\n背景是这样的：……')]), '帮我看看这个')
+  assert.equal(deriveConversationTitle([u('\n\n  换行开头的问题')]), '换行开头的问题')
+
+  // 过程记录不参与推导
+  assert.equal(
+    deriveConversationTitle([{ role: 'user', localSkillStatus: true, parts: [{ text: '状态条' }] }, u('真正的问题')]),
+    '真正的问题',
+  )
+
+  // 没有可用正文时用 fallback，且各调用点的 fallback 各自独立
+  assert.equal(deriveConversationTitle([], { fallback: '云端对话' }), '云端对话')
+  assert.equal(deriveConversationTitle(undefined, { fallback: '对话' }), '对话')
+  assert.equal(deriveConversationTitle([a('只有助手说话')], { fallback: '对话' }), '对话')
+  assert.equal(deriveConversationTitle([]), '未命名对话', '未传 fallback 时的默认值')
+
+  // parts 缺失 / 片段畸形不得抛异常
+  assert.equal(deriveConversationTitle([{ role: 'user' }], { fallback: 'X' }), 'X')
+  assert.equal(deriveConversationTitle([{ role: 'user', parts: [{}] }], { fallback: 'X' }), 'X')
+
+  // emoji 标题按码点切，不产生半个字符
+  const emoji = deriveConversationTitle([u('🎯'.repeat(60))])
+  assert.equal(Array.from(emoji).length, CONVERSATION_TITLE_MAX)
+  assert.ok(!emoji.includes('\uFFFD'), '不得产生替换字符')
 }
 
 console.log('history entry core behavior tests: ok')

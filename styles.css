@@ -334,7 +334,7 @@
   line-height: 1.5;
 }
 
-/* 「动过文件」用品牌黄——这是这一行里最值得先看见的信息。 */
+/* 「执行过整理方案」用品牌黄——这是这一行里最值得先看见的信息。 */
 .ai-linzi-history-tag.is-write {
   background: var(--alz-yellow-soft, rgba(245, 197, 24, 0.24));
   color: var(--alz-navy, #293857);

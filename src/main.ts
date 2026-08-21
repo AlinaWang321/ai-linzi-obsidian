@@ -66,7 +66,12 @@ import {
 } from './actions'
 import { ActivityFeed, parseFinishedActivityFeed } from './activity-feed-core'
 import { shouldOpenSlashMenu } from './slash-menu-core'
-import { historyEntryFacts, relativeTime, truncateTitle } from './history-entry-core'
+import {
+  deriveConversationTitle,
+  historyEntryFacts,
+  relativeTime,
+  truncateTitle,
+} from './history-entry-core'
 import {
   AI_LINZI_AVATAR_DATA_URI,
   AI_LINZI_RIBBON_ICON_ID,
@@ -848,11 +853,16 @@ class ChatHistoryModal extends Modal {
       const row = list.createDiv({ cls: 'ai-linzi-history-row' })
       const summary = row.createDiv({ cls: 'ai-linzi-history-summary' })
       const titleRow = summary.createDiv({ cls: 'ai-linzi-history-title-row' })
-      const fullTitle = `${entry.mode === 'interview' ? '✍️ ' : ''}${entry.title || '未命名对话'}`
+      // 优先用本机会话正文**重新推导**标题：0.7.71 之前存下的旧记录，
+      // 标题在保存时就被 slice(0, 24) 生切过，字符串里已经没有「被截过」这个信息，
+      // 只能回到正文重推才能恢复成带省略号的形态。没有本机副本时退回已存标题。
+      const derived = entry.convo?.messages
+        ? deriveConversationTitle(entry.convo.messages, { fallback: '' })
+        : ''
+      const baseTitle = derived || entry.title || '未命名对话'
+      const fullTitle = `${entry.mode === 'interview' ? '✍️ ' : ''}${baseTitle}`
       titleRow.createSpan({
-        // 数据层就补好省略号：flex 行里 CSS 的 text-overflow 未必生效，
-        // 原来的 slice(0,60) 会把标题生切一半（0.7.71 真机报障）。
-        text: truncateTitle(fullTitle, 40),
+        text: truncateTitle(fullTitle),
         cls: 'ai-linzi-history-title',
         attr: { title: fullTitle },
       })
@@ -1639,7 +1649,6 @@ export default class AiLinziPlugin extends Plugin {
         role: row.role === 'user' ? 'user' as const : 'assistant' as const,
         parts: [{ type: 'text' as const, text: typeof row.content === 'string' ? row.content : '' }],
       }))
-    const firstUser = messages.find((message) => message.role === 'user')
     const rawCreatedAt = rows.at(-1)?.createdAt
     const lastCreatedAt = typeof rawCreatedAt === 'string' || typeof rawCreatedAt === 'number'
       ? String(rawCreatedAt)
@@ -1647,7 +1656,7 @@ export default class AiLinziPlugin extends Plugin {
     return {
       id,
       mode: 'chat',
-      title: (firstUser?.parts.map((part) => part.text).join('') ?? '云端对话').slice(0, 24),
+      title: deriveConversationTitle(messages, { fallback: '云端对话' }),
       updatedAt: Number.isFinite(Date.parse(lastCreatedAt)) ? Date.parse(lastCreatedAt) : Date.now(),
       messages,
     }
@@ -2363,8 +2372,10 @@ class ChatView extends ItemView {
   /** 每轮对话后自动保存;消息为空不存 */
   private async persistNow(): Promise<void> {
     if (this.messages.length === 0) return
-    const firstUser = this.messages.find((m) => m.role === 'user')
-    const title = (firstUser?.parts.map((p) => p.text).join('') ?? '对话').slice(0, 24)
+    // 标题统一由 deriveConversationTitle 生成：截断与补省略号必须在同一处发生，
+    // 否则存下来的字符串丢掉「被截过」这个信息，渲染层再补省略号也来不及
+    // （0.7.71 真机报障：「从 Skill Studio 安装「consul」）。
+    const title = deriveConversationTitle(this.messages, { fallback: '对话' })
     await this.plugin.saveConvo({
       id: this.sessionId,
       mode: this.mode,

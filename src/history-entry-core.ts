@@ -25,6 +25,8 @@ export interface HistoryMessageLike {
   vaultActionId?: string
   aiImageResult?: unknown
   imageResult?: unknown
+  /** 正文片段；推导标题时用。 */
+  parts?: { text?: string }[]
 }
 
 export interface HistoryEntryFacts {
@@ -78,20 +80,60 @@ export function relativeTime(updatedAt: number, now: number): string {
   return new Date(updatedAt).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
 }
 
+/** 会话标题的统一长度上限（码点）。 */
+export const CONVERSATION_TITLE_MAX = 40
+
 /**
  * 标题截断：超长时补省略号。
  *
- * 原实现是 `title.slice(0, 60)` 硬切，配合 CSS 的 text-overflow 本应出省略号，
- * 但 flex 行里没写 min-width:0 时省略号不生效，用户看到的是被生切一半的标题
- * （Alina 截图：「从 Skill Studio 安装「consul」）。这里在数据层就补好，
- * 不依赖 CSS 是否恰好生效。
+ * 按码点切，避免把 emoji 或代理对切成半个字符。
+ * ⚠️ 只在**还持有完整原文**时调用才有意义——见 deriveConversationTitle 的说明。
  */
-export function truncateTitle(title: string, max = 40): string {
+export function truncateTitle(title: string, max = CONVERSATION_TITLE_MAX): string {
   const value = (title ?? '').trim()
   if (!value) return '未命名对话'
   if (max <= 1) return value.slice(0, max)
-  // Array.from 按码点切，避免把 emoji 或代理对切成半个字符。
   const chars = Array.from(value)
   if (chars.length <= max) return value
   return `${chars.slice(0, max - 1).join('')}…`
+}
+
+/**
+ * 从首条用户正文推导会话标题（0.7.71 收尾修）。
+ *
+ * **为什么必须统一到这一个函数**：此前有三处各自 `slice(0, 24)` 生成标题——
+ * 本机保存（persistNow）、云端会话转换、访谈提示。三处都是**先切掉再存**，
+ * 于是渲染层拿到的字符串里已经没有「它被截过」这个信息了，
+ * 再怎么在渲染层补省略号都没用，用户看到的永远是生切的
+ * 「从 Skill Studio 安装「consul」。
+ *
+ * 现在：保存 / 云端转换 / 展示全部走这里，截断与补省略号在同一处发生。
+ * 展示侧还应优先用本机会话正文**重新推导**，这样 0.7.71 之前存下的旧标题
+ * 也能恢复成带省略号的完整形态。
+ */
+export function deriveConversationTitle(
+  messages: HistoryMessageLike[] | undefined,
+  options: { fallback?: string; max?: number } = {},
+): string {
+  const fallback = options.fallback ?? '未命名对话'
+  const max = options.max ?? CONVERSATION_TITLE_MAX
+  if (!Array.isArray(messages)) return fallback
+  for (const message of messages) {
+    if (message.role !== 'user') continue
+    // 过程记录不会是 user 角色，但显式跳过更稳。
+    if (message.localSkillStatus) continue
+    const text = messageText(message).trim()
+    if (!text) continue
+    // 标题只取第一段有内容的行：多行提问的后续行是细节，塞进标题只会更难认。
+    const firstLine = text.split('\n').map((line) => line.trim()).find(Boolean) ?? text
+    return truncateTitle(firstLine, max)
+  }
+  return fallback
+}
+
+/** parts 可能缺失或含空片段，统一在这里取正文。 */
+function messageText(message: HistoryMessageLike): string {
+  const parts = message.parts
+  if (!Array.isArray(parts)) return ''
+  return parts.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('')
 }
