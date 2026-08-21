@@ -26,8 +26,13 @@ const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
 assert(manifest.id === 'ai-linzi', '插件 ID 必须保持 ai-linzi')
 assert(manifest.name === 'AI Linzi', '官方市场展示名必须使用 Basic Latin 字符')
 assert(/^\d+\.\d+\.\d+$/.test(manifest.version), '版本号必须是 x.y.z')
+assert(/^\d+\.\d+\.\d+$/.test(manifest.minAppVersion), 'minAppVersion 必须是 x.y.z')
 assert(manifest.version === pkg.version, 'manifest.json 与 package.json 版本必须一致')
 assert(versions[manifest.version] === manifest.minAppVersion, 'versions.json 必须登记当前版本')
+assert(
+  manifest.isDesktopOnly === true,
+  '插件使用电脑文件选择与本机文档解析能力，isDesktopOnly 必须保持 true',
+)
 assert(
   manifest.description.length <= 250 && manifest.description.endsWith('.'),
   '插件描述需不超过 250 字符并以句号结尾',
