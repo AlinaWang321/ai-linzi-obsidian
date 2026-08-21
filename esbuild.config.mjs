@@ -13,20 +13,52 @@ const root = path.dirname(fileURLToPath(import.meta.url))
 // 执行（Electron 永远不会），改写后特性探测直接落到 setTimeout 兜底，
 // 运行行为不变，而发布产物中不再包含动态 <script> 注入代码。
 // 背景：Obsidian 社区审核 2026-08-16 对 0.7.33 判 CODE OBFUSCATION Error。
-const stripDynamicScriptPolyfills = {
-  name: 'strip-dynamic-script-polyfills',
+const stripUnsafeThirdPartyRuntimeCode = {
+  name: 'strip-unsafe-third-party-runtime-code',
   setup(build) {
     build.onLoad(
       { filter: /node_modules[\\/]docx[\\/]dist[\\/]index\.(mjs|cjs)$/ },
       async (args) => {
         const { readFile } = await import('node:fs/promises')
         const source = await readFile(args.path, 'utf8')
+        const transformed = source
+          .replaceAll('createElement("script")', 'createElement("span")')
+          .replaceAll("createElement('script')", "createElement('span')")
+          // setImmediate 的字符串回调是浏览器早期兼容面；插件与依赖只传函数。
+          // 拒绝字符串回调比在用户 Vault 里动态编译任意文本更安全。
+          .replaceAll(
+            '"function" != typeof e && (e = new Function("" + e));',
+            '"function" != typeof e && (() => { throw new TypeError("setImmediate callback must be a function"); })();',
+          )
+        if (/createElement\(\s*(["'])script\1\s*\)|\b(?:eval|new Function)\(/u.test(transformed)) {
+          throw new Error(`docx 构建转换未清除动态脚本或动态代码：${args.path}`)
+        }
         return {
-          contents: source
-            .replaceAll('createElement("script")', 'createElement("span")')
-            .replaceAll("createElement('script')", "createElement('span')"),
+          contents: transformed,
           loader: 'js',
         }
+      },
+    )
+    build.onLoad(
+      { filter: /node_modules[\\/]pdfjs-dist[\\/]legacy[\\/]build[\\/]pdf(?:\.worker)?\.mjs$/ },
+      async (args) => {
+        const { readFile } = await import('node:fs/promises')
+        const source = await readFile(args.path, 'utf8')
+        const transformed = source
+          // Electron 不需要用动态代码探测 CSP；固定关闭后 PDF.js 自动使用解释器路径。
+          .replaceAll(
+            'function isEvalSupported() {\n  try {\n    new Function("");\n    return true;\n  } catch {\n    return false;\n  }\n}',
+            'function isEvalSupported() {\n  return false;\n}',
+          )
+          // PostScript 函数仍走 PDF.js 自带解释器，功能保留，只关闭运行时编译优化。
+          .replaceAll(
+            'return new Function("src", "srcOffset", "dest", "destOffset", compiled);',
+            'info("PostScript runtime compilation disabled; using interpreter.");',
+          )
+        if (/\b(?:eval|new Function)\(/u.test(transformed)) {
+          throw new Error(`PDF.js 构建转换未清除动态代码：${args.path}`)
+        }
+        return { contents: transformed, loader: 'js' }
       },
     )
   },
@@ -44,7 +76,7 @@ const ctx = await esbuild.context({
     immediate: path.join(root, 'shims/immediate.js'),
     setimmediate: path.join(root, 'shims/setimmediate.js'),
   },
-  plugins: [stripDynamicScriptPolyfills],
+  plugins: [stripUnsafeThirdPartyRuntimeCode],
   external: [
     'obsidian',
     'electron',

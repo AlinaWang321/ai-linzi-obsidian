@@ -8,6 +8,7 @@ import type {
 import { sha256Hex, skillTreeResourceLimitError } from './skill-update-transaction'
 
 const SNAPSHOT_ID_RE = /^\d{8}T\d{9}Z__\d+\.\d+\.\d+$/u
+const SNAPSHOT_METADATA_MAX_BYTES = 1024 * 1024
 
 function joinPath(...parts: string[]): string {
   return normalizePath(parts.filter(Boolean).join('/'))
@@ -185,7 +186,7 @@ export class ObsidianSkillUpdateHost implements SkillUpdateTransactionHost {
       if (!isSafeSnapshotId(snapshotId)) continue
       try {
         const metadataFile = this.app.vault.getFileByPath(joinPath(folder.path, 'metadata.json'))
-        if (!metadataFile) continue
+        if (!metadataFile || metadataFile.stat.size > SNAPSHOT_METADATA_MAX_BYTES) continue
         const raw = await this.app.vault.read(metadataFile)
         const metadata = parseMetadata(raw)
         if (metadata) result.push({ snapshotId, metadata })
@@ -201,17 +202,33 @@ export class ObsidianSkillUpdateHost implements SkillUpdateTransactionHost {
     const snapshotRoot = this.snapshotRoot(skillRoot, snapshotId)
     const metadataFile = this.app.vault.getFileByPath(joinPath(snapshotRoot, 'metadata.json'))
     if (!metadataFile) throw new Error('历史版本元数据不存在。')
+    if (metadataFile.stat.size > SNAPSHOT_METADATA_MAX_BYTES) {
+      throw new Error('历史版本元数据超过安全上限。')
+    }
     const raw = await this.app.vault.read(metadataFile)
     const metadata = parseMetadata(raw)
     if (!metadata) throw new Error('历史版本元数据无效。')
+    const metadataResourceError = skillTreeResourceLimitError(metadata.files)
+    if (metadataResourceError) throw new Error(`历史版本不可读取：${metadataResourceError}`)
     const expectedPaths = new Set(metadata.files.map((file) => file.path))
+    const expectedPathKeys = new Set(metadata.files.map((file) => file.path.toLocaleLowerCase()))
+    if (expectedPaths.size !== metadata.files.length || expectedPathKeys.size !== metadata.files.length) {
+      throw new Error('历史版本元数据包含重复路径。')
+    }
     const storedRootPath = joinPath(snapshotRoot, 'snapshot')
     const storedRoot = this.app.vault.getFolderByPath(storedRootPath)
     if (!(storedRoot instanceof TFolder)) throw new Error('历史版本文件夹不存在。')
     const actualFiles = this.listVaultFiles(storedRoot)
+    const actualResourceError = skillTreeResourceLimitError(
+      actualFiles.map((file) => ({
+        path: file.path.slice(storedRootPath.length + 1),
+        size: file.stat.size,
+      })),
+    )
+    if (actualResourceError) throw new Error(`历史版本不可读取：${actualResourceError}`)
     const relativeActual = actualFiles.map((file) => file.path.slice(storedRootPath.length + 1))
     if (
-      actualFiles.length !== expectedPaths.size ||
+      actualFiles.length !== metadata.files.length ||
       relativeActual.some((path) => !expectedPaths.has(path))
     ) {
       throw new Error('历史版本的实际文件与元数据清单不一致。')
@@ -222,6 +239,7 @@ export class ObsidianSkillUpdateHost implements SkillUpdateTransactionHost {
       if (!path) throw new Error('历史版本包含不安全路径。')
       const file = this.app.vault.getFileByPath(joinPath(storedRootPath, path))
       if (!file) throw new Error(`历史版本缺少文件：${path}`)
+      if (file.stat.size !== fingerprint.size) throw new Error(`历史版本文件大小不一致：${path}`)
       const bytes = await this.app.vault.readBinary(file)
       files.push({ ...fingerprint, bytes: cloneBytes(bytes) })
     }

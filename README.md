@@ -23,7 +23,7 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 - Turn a WeChat article into a publish-ready Xiaohongshu note with three title choices, 300–800 Chinese characters of copy, hashtags, and local 3:4 cards that mix the original images with surrounding text.
 - Review a local four-platform publishing matrix, five-stage creation pipeline, account growth, and per-post performance for WeChat, Xiaohongshu, Channels, and Douyin. Platform screenshots are analyzed only after an explicit selection and require confirmation before local metrics are saved.
 - Review local content activity and authorized account data in the one-person-company cockpit.
-- Create, test, import, and export portable personal Skills in **Skill Studio**. Start from five script-free official templates or a structured custom interview; every bundle shows its version, permission list, `SKILL.md`, and referenced files before installation. Existing Skills can progressively read referenced files and—when the user separately enables local execution—request per-step confirmation for Node.js, Python, FFmpeg, or FFprobe actions. Shell command strings are not accepted.
+- Create, test, import, export, and safely update portable personal Skills in **Skill Studio**. Every update shows the complete text changes and deletions before confirmation, rechecks the whole Skill, creates a verified binary snapshot, and can restore one of the latest five local versions. Existing Skills can progressively read referenced files and—when the user separately enables local execution—request per-step confirmation for Node.js, Python, FFmpeg, or FFprobe actions. Shell command strings are not accepted.
 
 ## Installation
 
@@ -40,6 +40,8 @@ AI Linzi is currently desktop-only and requires Obsidian 1.11.4 or later.
 
 Local search scans supported files in memory on the user's device. It does not create a cloud index or upload the whole Vault. For a normal chat request, the plugin sends only an explicitly requested still-open note, explicitly authorized documents, or a bounded set of locally matched excerpts. When the user asks to search their Vault, knowledge base, digital brain, or file repository, the service may request a bounded sequence of local search, folder listing, and document-read operations; the model never receives direct filesystem access.
 
+The only supported file read outside the Vault is an `.xlsx` workbook that the user explicitly selects or drops into the chat. It is converted to bounded worksheet text on-device; the original workbook is not uploaded, copied into the Vault, or stored in chat history.
+
 The plugin reads or writes Vault files only for user-triggered actions such as including a note, saving a generated result, creating or updating confirmed notes, creating a folder, inserting an image, or publishing a WeChat draft. Vault organization is plan-first and confirmation-gated: it can create folders, move, or rename without overwriting. A cross-file Markdown change set is limited to 12 exact paths, shows every complete addition, replacement, or local edit, locks each existing target version, and rolls back completed writes if a later operation fails. When the user explicitly asks to delete files, a delete-only plan lists every target (any file type, folders included, batched within one confirmation) and a separate confirmation moves them to the operating-system Trash/Recycle Bin or Obsidian `.trash`; folders containing protected paths are rejected as a whole, and the plugin never permanently deletes anything. Move/rename actions have a local undo log. Connection keys and WeChat AppSecrets use Obsidian SecretStorage and are not written to plugin settings or logs.
 
 Cloud features require an AI Linzi account and connection key. Some AI features require a paid entitlement or credits managed on the AI Linzi website. User-triggered requests connect to `https://chat.alinalinzi.com`; WeChat draft publishing also connects to the official WeChat API. The plugin does not include client-side telemetry, advertising SDKs, or an independent updater.
@@ -48,12 +50,14 @@ Local program execution is disabled by default. If enabled, every action is show
 
 Generated images and local conversation cards remain in the Vault or Obsidian-managed local plugin data. Cloud history contains text only and excludes local paths and image data. User-edited titles for Obsidian-plugin conversations are synced as account metadata so the same title can appear on another device; titles are not added to model prompts.
 
+Before an installed Skill is updated or restored, the plugin stores a full binary snapshot inside that Skill's visible `ai-linzi-versions` folder and verifies it before use. These snapshots are Vault files, remain under the user's own sync and backup policy, and are not uploaded by AI Linzi as cloud chat data. The plugin retains at most five snapshots after a successful operation.
+
 ## Security and implementation notes
 
 - The public repository is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration remain on the AI Linzi service.
 - Vault enumeration powers user-enabled local search and bounded read-tool results. Tool calls and local paths are excluded from cloud chat history.
 - Clipboard access occurs only after an explicit user copy action.
-- PDF.js is bundled for local extraction of text-based PDFs. It supplies the dynamic-code finding reported by automated static analysis; no remote script or CDN is used.
+- PDF.js is bundled for local extraction of text-based PDFs. Runtime code compilation is disabled during the production build, so PDF.js uses its built-in interpreter; the release scan requires zero dynamic `<script>`, `eval`, or `new Function` findings. No remote script or CDN is used.
 - Streaming chat uses `fetch` because Obsidian's `requestUrl` API buffers the complete response and does not expose the response stream.
 - The official release contains only `main.js`, `manifest.json`, and `styles.css`. GitHub Actions generates build-provenance attestations for these assets.
 

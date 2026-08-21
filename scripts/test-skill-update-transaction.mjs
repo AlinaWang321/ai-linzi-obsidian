@@ -41,6 +41,17 @@ assert.ok(
   vaultHostSource.indexOf('skillTreeResourceLimitError(') < vaultHostSource.indexOf('vault.readBinary(file)'),
   '真实 Vault Host 必须在读取任何二进制前完成资源限额检查',
 )
+const readSnapshotSource = vaultHostSource.slice(
+  vaultHostSource.indexOf('async readSnapshot('),
+  vaultHostSource.indexOf('async removeSnapshot('),
+)
+assert.ok(readSnapshotSource, '真实 Vault Host 必须实现历史快照读取')
+assert.ok(
+  readSnapshotSource.indexOf('skillTreeResourceLimitError(') < readSnapshotSource.indexOf('vault.readBinary(file)'),
+  '被手工改坏的历史快照也必须在读取二进制前完成资源限额检查',
+)
+assert.match(readSnapshotSource, /metadataFile\.stat\.size > SNAPSHOT_METADATA_MAX_BYTES/)
+assert.match(readSnapshotSource, /file\.stat\.size !== fingerprint\.size/)
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
