@@ -228,4 +228,23 @@ function setup(overrides = {}) {
   console.log('  ✓ 已更新卡不再重复提供应用按钮')
 }
 
+{
+  const { host, message, row } = setup()
+  message.skillUpdateOffer.applied = {
+    snapshotId: oldVersion.snapshotId,
+    previousVersion: '1.0.0',
+    nextVersion: '1.1.0',
+  }
+  message.skillUpdateOffer.restored = {
+    safetySnapshotId: 'safe',
+    restoredSnapshotId: oldVersion.snapshotId,
+    restoredVersion: '1.0.0',
+  }
+  renderSkillUpdateOffer(host, row, message)
+  assert.ok(byText(row, '✅ 已恢复到 1.0.0'))
+  assert.ok(!byText(row, '✅ 已更新到 1.1.0'), '恢复成功后不能继续显示已经失效的新版本')
+  assert.ok(!byText(row, '应用更新到 1.1.0'), '旧确认预览恢复后已经过期，不能直接重放')
+  console.log('  ✓ 恢复状态优先于旧更新回执，卡片不会谎报当前版本')
+}
+
 console.log('[test-skill-update-card] 全部通过')

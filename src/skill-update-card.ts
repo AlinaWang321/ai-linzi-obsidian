@@ -85,7 +85,12 @@ export function renderSkillUpdateOffer(
   let deleteConfirmed = deleteCount === 0
   let confirmDelete: HTMLButtonElement | undefined
 
-  if (offer.applied) {
+  if (offer.restored) {
+    actions.createSpan({
+      text: `✅ 已恢复到 ${offer.restored.restoredVersion}`,
+      cls: 'ai-linzi-create-note-done',
+    })
+  } else if (offer.applied) {
     actions.createSpan({
       text: `✅ 已更新到 ${offer.applied.nextVersion}`,
       cls: 'ai-linzi-create-note-done',
