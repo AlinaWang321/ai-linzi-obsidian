@@ -82,6 +82,7 @@ import {
   type ConversationTitleState,
 } from './conversation-title-core'
 import { requestConversationTitle } from './conversation-title-modal'
+import { boundedWait } from './bounded-wait'
 import {
   AI_LINZI_AVATAR_DATA_URI,
   AI_LINZI_COCKPIT_ICON_ID,
@@ -1801,7 +1802,7 @@ export default class AiLinziPlugin extends Plugin {
     const normalized = normalizePluginSessionId(sessionId)
     const data = await this.api('/api/plugin/v1/chat/sessions', {
       method: 'PATCH',
-      body: JSON.stringify({ sessionId: normalized, title: titleOverride ?? '' }),
+      body: { sessionId: normalized, title: titleOverride ?? '' },
     })
     const updatedAt = typeof data.titleUpdatedAt === 'string'
       ? Date.parse(data.titleUpdatedAt)
@@ -2213,7 +2214,21 @@ class ChatView extends ItemView {
         this.renderMessages()
       }
     })
-    addTopBtn('history', '历史', () => void this.showHistoryMenu())
+    const historyBtn = addTopBtn('history', '历史', () => {
+      if (historyBtn.disabled) return
+      historyBtn.disabled = true
+      historyBtn.setAttribute('aria-busy', 'true')
+      const loadingNotice = new Notice('正在加载对话历史…', 5000)
+      void this.showHistoryMenu()
+        .catch((error: unknown) => {
+          new Notice(`对话历史打开失败：${error instanceof Error ? error.message : String(error)}`, 8000)
+        })
+        .finally(() => {
+          loadingNotice.hide()
+          historyBtn.disabled = false
+          historyBtn.removeAttribute('aria-busy')
+        })
+    })
     addTopBtn('settings', '设置', () => this.plugin.openPluginSettings())
 
     // 访谈写作模式条(默认隐藏)
@@ -2733,7 +2748,11 @@ class ChatView extends ItemView {
     const localConvos = await this.plugin.loadConvos()
     let cloudSessions: CloudSessionSummary[] = []
     try {
-      cloudSessions = await this.plugin.loadCloudSessions()
+      cloudSessions = await boundedWait(
+        this.plugin.loadCloudSessions(),
+        4000,
+        '云端历史加载超时',
+      )
     } catch {
       // 云端不可用时历史菜单仍能展示本机缓存。
     }

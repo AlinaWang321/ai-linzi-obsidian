@@ -13,6 +13,17 @@ const core = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`
 )
 
+const boundedBundle = await build({
+  entryPoints: ['src/bounded-wait.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  write: false,
+})
+const { boundedWait } = await import(
+  `data:text/javascript;base64,${Buffer.from(boundedBundle.outputFiles[0].text).toString('base64')}`
+)
+
 const user = (text) => ({ role: 'user', parts: [{ text }] })
 const messages = [user('自动生成的第一条问题'), { role: 'assistant', parts: [{ text: '回答' }] }]
 
@@ -53,6 +64,13 @@ assert.match(main, /await this\.syncCurrentConversationTitleIfNeeded\(\)/)
 assert.match(main, /mergeConversationTitleStates\(/)
 assert.match(main, /requestConversationTitle\(this\.app, baseTitle\)/)
 assert.match(main, /this\.api\('\/api\/plugin\/v1\/chat\/sessions',[\s\S]*?method: 'PATCH'/)
+const renameStart = main.indexOf('async renameCloudConvo(')
+const renameEnd = main.indexOf('\n  async loadCloudConvo(', renameStart)
+const renameSource = main.slice(renameStart, renameEnd)
+assert.match(renameSource, /body:\s*\{\s*sessionId: normalized, title: titleOverride \?\? ''\s*\}/)
+assert.doesNotMatch(renameSource, /body:\s*JSON\.stringify/)
+assert.match(main, /boundedWait\(\s*this\.plugin\.loadCloudSessions\(\),\s*4000,/)
+assert.match(main, /historyBtn\.setAttribute\('aria-busy', 'true'\)/)
 assert.match(
   main,
   /latestLocal\.messages\.length === 0/,
@@ -69,5 +87,12 @@ assert.match(
   '云端摘要改名断网时也必须先保存 metadata-only 本机标题',
 )
 console.log('  ✓ 保存、加载、重置、云端合并、pending 重试与改名 UI 已接入同一状态链')
+
+assert.equal(await boundedWait(Promise.resolve('本机可继续'), 50, '不应超时'), '本机可继续')
+await assert.rejects(
+  boundedWait(new Promise(() => {}), 5, '云端历史加载超时'),
+  /云端历史加载超时/,
+)
+console.log('  ✓ 历史加载有明确忙碌态，云端超时回退本机，PATCH 请求体只序列化一次')
 
 console.log('[test-conversation-title] 全部通过')
