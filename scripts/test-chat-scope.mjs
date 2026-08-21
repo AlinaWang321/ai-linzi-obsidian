@@ -21,8 +21,8 @@ assert.match(
 assert.match(source, /text: '删除',[\s\S]*?onDeleteEntry\(entry\)/, '历史列表的每条会话必须提供单独删除入口')
 assert.match(
   source,
-  /kind: 'cloud' as const,[\s\S]*?convo: local,[\s\S]*?if \(item\.convo\)/,
-  '云端会话有本地副本时必须优先恢复本地图片候选卡片',
+  /kind: 'cloud' as const,[\s\S]*?convo: local,[\s\S]*?if \(item\.convo\?\.messages\.length\)/,
+  '云端会话有完整本地正文副本时必须优先恢复本地图片候选卡片，metadata-only 占位不得误打开',
 )
 assert.match(
   source,

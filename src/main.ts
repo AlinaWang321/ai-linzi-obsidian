@@ -2691,7 +2691,14 @@ class ChatView extends ItemView {
         await this.plugin.saveConvo(latestLocal)
       }
       const preserveRicherLocalCopy = sameSession && (localHasImageCards || localHasVaultSources)
-      if (latestCloudSummary && (!latestLocal || (cloudTime > latestLocal.updatedAt && !preserveRicherLocalCopy))) {
+      if (
+        latestCloudSummary &&
+        (
+          !latestLocal ||
+          latestLocal.messages.length === 0 ||
+          (cloudTime > latestLocal.updatedAt && !preserveRicherLocalCopy)
+        )
+      ) {
         const cloud = await this.plugin.loadCloudConvo(latestCloudSummary.sessionId, mergedTitleState)
         if (cloud?.messages.length) {
           this.loadConvo(cloud)
@@ -2794,7 +2801,7 @@ class ChatView extends ItemView {
       items.slice(0, MAX_SAVED_CONVOS),
       this.sessionId,
       async (item) => {
-        if (item.convo) {
+        if (item.convo?.messages.length) {
           this.loadConvo(item.convo)
           return
         }
@@ -2821,18 +2828,24 @@ class ChatView extends ItemView {
             nextState = await this.plugin.renameCloudConvo(item.id, nextTitle)
           } catch (error) {
             if (!local) {
-              const fallback = await this.plugin.loadCloudConvo(item.id, nextState)
-              if (fallback) {
-                await this.plugin.saveConvo(fallback)
-                local = await this.plugin.saveConvoTitle(item.id, {
-                  ...nextState,
-                  titleSyncPending: true,
-                })
-              }
+              // 新设备可能只有云端摘要、还没有本机正文。网络在列表加载后中断时，
+              // 也要把标题先落成 metadata-only 本机记录；下次打开仍从云端取正文，
+              // 不能把这个空消息占位误当成一条可直接打开的完整会话。
+              local = applyConversationTitleState({
+                id: item.id,
+                mode: item.mode,
+                title: item.automaticTitle || item.title || '未命名对话',
+                updatedAt: item.updatedAt,
+                messages: [],
+              }, {
+                ...nextState,
+                titleSyncPending: true,
+              })
+              await this.plugin.saveConvo(local)
             }
-            if (!local) throw error
             nextState = { ...nextState, titleSyncPending: true }
             local = await this.plugin.saveConvoTitle(item.id, nextState)
+            if (!local) throw error
             new Notice('标题已保存在本机；云端同步暂时失败，下一次成功对话后会自动重试。', 8000)
           }
           if (!nextState.titleSyncPending && local) {

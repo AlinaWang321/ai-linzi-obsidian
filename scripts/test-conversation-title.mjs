@@ -53,6 +53,21 @@ assert.match(main, /await this\.syncCurrentConversationTitleIfNeeded\(\)/)
 assert.match(main, /mergeConversationTitleStates\(/)
 assert.match(main, /requestConversationTitle\(this\.app, baseTitle\)/)
 assert.match(main, /this\.api\('\/api\/plugin\/v1\/chat\/sessions',[\s\S]*?method: 'PATCH'/)
+assert.match(
+  main,
+  /latestLocal\.messages\.length === 0/,
+  'metadata-only 标题记录启动时必须继续从云端取正文',
+)
+assert.match(
+  main,
+  /if \(item\.convo\?\.messages\.length\)/,
+  'metadata-only 标题记录不能被当成完整会话直接打开',
+)
+assert.match(
+  main,
+  /messages: \[\],[\s\S]*?titleSyncPending: true/,
+  '云端摘要改名断网时也必须先保存 metadata-only 本机标题',
+)
 console.log('  ✓ 保存、加载、重置、云端合并、pending 重试与改名 UI 已接入同一状态链')
 
 console.log('[test-conversation-title] 全部通过')
