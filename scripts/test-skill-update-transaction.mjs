@@ -338,6 +338,24 @@ async function snapshotState(host) {
   const host = new FakeHost()
   const transaction = createTransaction(host)
   const prepared = await transaction.prepare('Skills/weekly-review', 'Skills/weekly-review/SKILL.md', proposal())
+  host.failWriteAt = 2
+  host.failWriteHook = (liveHost) => {
+    const entry = liveHost.files.get('skill.md')
+    entry.path = 'skill.md'
+    entry.mtime = liveHost.clock++
+  }
+  await assert.rejects(
+    transaction.apply(prepared, proposal()),
+    /回滚时发现 SKILL\.md 被同时编辑，已保留现场/u,
+  )
+  assert.equal(host.files.get('skill.md').path, 'skill.md')
+  console.log('  ✓ 回滚把仅修改路径大小写也视为用户并发改动，不自动改回旧名称')
+}
+
+{
+  const host = new FakeHost()
+  const transaction = createTransaction(host)
+  const prepared = await transaction.prepare('Skills/weekly-review', 'Skills/weekly-review/SKILL.md', proposal())
   for (let index = 0; index < 5; index++) {
     const id = `old-${index}`
     host.snapshots.set(id, {
@@ -400,6 +418,29 @@ async function snapshotState(host) {
   assert.deepEqual(afterRestore, beforeRestore)
   assert.ok(host.snapshots.size >= 2, '恢复失败前也必须先保存当前版本的安全快照')
   console.log('  ✓ 历史恢复中途失败会回到恢复前完整状态')
+}
+
+{
+  const host = new FakeHost()
+  const transaction = createTransaction(host)
+  const prepared = await transaction.prepare('Skills/weekly-review', 'Skills/weekly-review/SKILL.md', proposal())
+  const applied = await transaction.apply(prepared, proposal())
+  const restorePrepared = await transaction.prepareRestore(
+    'Skills/weekly-review',
+    'weekly-review',
+    applied.snapshotId,
+  )
+  host.failWriteAt = host.writeAttempts + 2
+  host.failWriteHook = (liveHost) => {
+    liveHost.files.delete('references/ai-linzi-skill-manifest.json')
+  }
+  await assert.rejects(
+    transaction.restore(restorePrepared),
+    /回滚时发现 references\/ai-linzi-skill-manifest\.json 被同时编辑，已保留现场/u,
+  )
+  assert.equal(host.text('references/ai-linzi-skill-manifest.json'), undefined)
+  assert.ok(host.snapshots.size >= 2, '并发删除发生时仍保留恢复前安全快照供手工恢复')
+  console.log('  ✓ 恢复失败回滚能识别用户同时删除的共有文件，不把它悄悄重新创建')
 }
 
 {

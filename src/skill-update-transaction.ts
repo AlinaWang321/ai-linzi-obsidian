@@ -538,8 +538,8 @@ export class SkillUpdateTransaction {
       const after = intendedMap.get(key)
       const safe =
         (!live && (!before || !after)) ||
-        Boolean(live && before && live.sha256 === before.sha256) ||
-        Boolean(live && after && live.sha256 === after.sha256)
+        Boolean(live && before && live.path === before.path && live.sha256 === before.sha256) ||
+        Boolean(live && after && live.path === after.path && live.sha256 === after.sha256)
       if (!safe) {
         throw new Error(`回滚时发现 ${change.path} 被同时编辑，已保留现场，请从历史版本手动恢复。`)
       }
@@ -581,12 +581,22 @@ export class SkillUpdateTransaction {
     const live = await captureSkillTree(this.host, skillRoot)
     const originalMap = fileMap(original.files)
     const intendedMap = fileMap(intended.files)
-    for (const file of live.files) {
-      const key = file.path.toLocaleLowerCase()
+    const liveMap = fileMap(live.files)
+    const keys = new Set([...originalMap.keys(), ...intendedMap.keys(), ...liveMap.keys()])
+    for (const key of keys) {
+      const file = liveMap.get(key)
       const before = originalMap.get(key)
       const after = intendedMap.get(key)
-      if ((!before || file.sha256 !== before.sha256) && (!after || file.sha256 !== after.sha256)) {
-        throw new Error(`回滚时发现 ${file.path} 被同时编辑，已保留现场，请手动恢复。`)
+      const matchesBefore = (!file && !before) || Boolean(
+        file && before && file.path === before.path && file.sha256 === before.sha256,
+      )
+      const matchesAfter = (!file && !after) || Boolean(
+        file && after && file.path === after.path && file.sha256 === after.sha256,
+      )
+      if (!matchesBefore && !matchesAfter) {
+        throw new Error(
+          `回滚时发现 ${file?.path ?? before?.path ?? after?.path ?? key} 被同时编辑，已保留现场，请手动恢复。`,
+        )
       }
     }
     await this.replaceWholeTree(skillRoot, live, original)
