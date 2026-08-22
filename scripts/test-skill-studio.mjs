@@ -197,6 +197,14 @@ assert.equal(
   localSkillCore.localSkillForbidsVaultExpansion('读取最近 7 天内修改的所有文档'),
   false,
 )
+assert.equal(
+  localSkillCore.localSkillForbidsVaultExpansion(`
+    只读取用户明确指定的 Vault 文件夹。
+    不得扫描其他文件夹或整个知识库。
+  `),
+  false,
+  '“文件夹”不能因为包含“文件”二字而被误判为单篇输入锁定',
+)
 const scopedInputFiles = [
   '01_Raw/销售逐字稿/20260813193042-顾晓菲英语老师1v1商业咨询-逐字稿文本-1.txt',
   '01_Raw/销售逐字稿/20260817150019-沈立冬家庭教育咨询师1v1商业咨询-逐字稿文本-1.md',
@@ -247,7 +255,36 @@ const broadScopePrompt = studioCore.buildSkillStudioPrompt({
   sampleInput: '生成本周复盘',
   version: '1.0.0',
 })
-assert.match(broadScopePrompt, /仅在用户明确要求时搜索 Vault/)
+assert.match(broadScopePrompt, /允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹/)
+assert.match(broadScopePrompt, /指定范围内没有找到所需材料时，继续在整个 Vault 中搜索任务相关候选/)
+assert.match(broadScopePrompt, /不得把整个 Vault 的正文一次性提交给模型/)
+const folderScopePrompt = studioCore.buildSkillStudioPrompt({
+  name: 'folder-review',
+  purpose: '处理指定文件夹内的一组材料',
+  input: '用户运行时明确指定的一个仓库（Vault）文件夹',
+  steps: '确认文件类型\n读取文件夹内材料\n生成汇总',
+  triggers: ['汇总指定文件夹'],
+  output: 'create-note',
+  sampleInput: '用 folder-review Skill 汇总我指定的文件夹',
+  version: '1.0.0',
+})
+assert.match(folderScopePrompt, /只读取用户明确指定的 Vault 文件夹范围/)
+assert.match(folderScopePrompt, /只在该文件夹内按约定的文件类型和筛选条件处理/)
+assert.match(folderScopePrompt, /不得扩大到其他文件夹或整个 Vault/)
+assert.doesNotMatch(folderScopePrompt, /permissions=\["允许按 Skill 规则搜索整个 Vault/)
+const fallbackVaultPrompt = studioCore.buildSkillStudioPrompt({
+  name: 'vault-fallback-review',
+  purpose: '在仓库中找到任务材料并汇总',
+  input: '优先使用用户指定的仓库（Vault）文件夹；未指定或该文件夹没找到所需材料时，可搜索整个 Vault',
+  steps: '查找候选\n读取相关材料\n生成汇总',
+  triggers: ['搜索仓库并汇总'],
+  output: 'create-note',
+  sampleInput: '用 vault-fallback-review Skill 汇总相关材料',
+  version: '1.0.0',
+})
+assert.match(fallbackVaultPrompt, /允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹/)
+assert.match(fallbackVaultPrompt, /不要直接回答“没有”/)
+assert.doesNotMatch(fallbackVaultPrompt, /只读取用户明确指定的 Vault 文件夹范围/)
 assert.match(prompt, /原始素材用 \$RAW\//)
 assert.match(prompt, /知识库用 \$WIKI\//)
 assert.match(prompt, /AI 产出用 \$OUTPUT\//)

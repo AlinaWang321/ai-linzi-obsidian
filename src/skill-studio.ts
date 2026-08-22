@@ -28,7 +28,7 @@ function defaultDraft(): SkillStudioDraft {
   return {
     name: '',
     purpose: '',
-    input: '我明确指定的一篇 Markdown 笔记',
+    input: '优先使用用户指定的仓库（Vault）文件夹；未指定或该文件夹没找到所需材料时，可搜索整个 Vault',
     steps: '',
     triggers: [],
     output: 'create-note',
@@ -208,7 +208,7 @@ export class SkillStudioModal extends Modal {
         .onChange((value) => (this.draft.purpose = value.trim())))
     new Setting(this.contentEl)
       .setName('输入范围')
-      .setDesc('范围越明确，Skill 越稳定。')
+      .setDesc('默认先查用户指定的文件夹，找不到时再查整个仓库，避免被单篇或单目录锁死。')
       .addTextArea((input) => input
         .setValue(this.draft.input)
         .onChange((value) => (this.draft.input = value.trim())))
@@ -261,7 +261,7 @@ export class SkillStudioModal extends Modal {
     const permissionList = permissions.createEl('ul')
     permissionList.createEl('li', { text: this.draft.output === 'chat' ? '不写文件' : '写入前展示全文并再次确认' })
     permissionList.createEl('li', { text: '不生成或运行本机脚本' })
-    permissionList.createEl('li', { text: '不读取未明确指定的资料，除非 Skill 写明需要 Vault 搜索' })
+    permissionList.createEl('li', { text: '允许按 Skill 中声明的规则搜索 Vault；只向 AI 提交完成任务所需的文件内容' })
 
     new Setting(this.contentEl)
       .addButton((button) => button

@@ -203,7 +203,7 @@ export function localSkillOutputFromMarkdown(content: string): LocalSkillOutput 
  */
 export function localSkillForbidsVaultExpansion(content: string): boolean {
   const locksOneInput =
-    /(?:只|仅)(?:接受|读取|处理|使用).{0,48}(?:当前|明确打开|明确指定|用户指定).{0,36}(?:逐字稿|笔记|文件|文档|材料)/iu.test(content)
+    /(?:只|仅)(?:接受|读取|处理|使用).{0,48}(?:当前|明确打开|明确指定|用户指定).{0,36}(?:逐字稿|笔记|文件(?!夹)|文档|材料)/iu.test(content)
   const forbidsExpansion =
     /(?:不|不得|禁止).{0,24}(?:扫描|遍历|读取|搜索).{0,36}(?:其他|未指定|整个|全部|全库|知识库|文件夹)/iu.test(content)
   return locksOneInput && forbidsExpansion

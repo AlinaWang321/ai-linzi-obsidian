@@ -135,6 +135,15 @@ console.log('[test-skill-studio-ui] 自建 Skill 的名称、触发短语和测�
     onOfferBundle: () => {},
   })
   modal.onOpen()
+  assert.equal(
+    setting('输入范围').controls[0].value,
+    '优先使用用户指定的仓库（Vault）文件夹；未指定或该文件夹没找到所需材料时，可搜索整个 Vault',
+  )
+  assert.match(setting('输入范围').desc, /找不到时再查整个仓库/)
+  assert.match(
+    all(modal.contentEl).map((el) => el.text).join('\n'),
+    /允许按 Skill 中声明的规则搜索 Vault；只向 AI 提交完成任务所需的文件内容/,
+  )
   setting('英文名称').controls[0].trigger('client-follow-up')
   setting('自动识别的调用说法').controls[0].trigger('生成客户跟进行动清单')
   setting('创建后测试示例').controls[0].trigger('生成客户跟进行动清单')

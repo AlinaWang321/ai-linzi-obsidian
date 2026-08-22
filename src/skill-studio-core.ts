@@ -406,10 +406,20 @@ create-artifact`,
 
 export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
   const triggers = draft.triggers.map((item) => item.trim()).filter(Boolean).slice(0, 8)
+  const allowsVaultSearch = /(?:整个|全部|所有|全库|整库|最近|未指定|没找到|未找到|找不到)/iu.test(draft.input)
+  const usesFolderScope = /(?:文件夹|目录)/u.test(draft.input)
+  const inputPermission = allowsVaultSearch
+    ? '允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹'
+    : usesFolderScope
+      ? '只读取用户明确指定的 Vault 文件夹范围'
+      : '只读取用户明确指定的输入'
+  const inputScopeRequirement = allowsVaultSearch
+    ? '输入范围允许搜索整个 Vault 时，优先使用用户指定的文件夹；用户未指定文件夹，或指定范围内没有找到所需材料时，继续在整个 Vault 中搜索任务相关候选，不要直接回答“没有”。搜索和筛选在本机完成，只读取并提交完成任务所必需的文件内容，不得把整个 Vault 的正文一次性提交给模型。'
+    : usesFolderScope
+      ? '输入范围只允许文件夹时，SKILL.md 必须要求运行时由用户明确指定或选择一个文件夹，只在该文件夹内按约定的文件类型和筛选条件处理，不得扩大到其他文件夹或整个 Vault；文件类型或筛选条件不清楚时先追问。'
+      : '输入范围是单篇笔记或单个材料时，只读取用户明确指定的那一份。'
   const permissions = [
-    /(?:整个|全部|所有|全库|整库|知识库|vault|obsidian|文件夹|目录|最近)/iu.test(draft.input)
-      ? '仅在用户明确要求时搜索 Vault'
-      : '只读取用户明确指定的输入',
+    inputPermission,
     draft.output === 'chat'
       ? '只在聊天中输出，不写文件'
       : draft.output === 'create-note'
@@ -435,8 +445,9 @@ export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
 1. SKILL.md 必须把何时使用、输入、步骤、输出、事实边界和验收标准写清楚；复杂规范拆到 references/，且 SKILL.md 必须用相对链接指向每个会用到的 reference。
 2. 自动触发必须使用上面给出的完整动作短语，不要只写名词。
 3. 同时生成 references/ai-linzi-skill-manifest.json，内容必须是合法 JSON，包含 schemaVersion=1、"skillVersion":${JSON.stringify(draft.version)}、createdWith="AI霖子 Skill Studio"、permissions=${JSON.stringify(permissions)}、programs=[]、sampleInputs=${JSON.stringify([draft.sampleInput || `用 ${draft.name} 处理一份测试材料`])}。skillVersion 必须是上面这种带双引号的 JSON 字符串，绝不能写成 {"major":1,"minor":0,"patch":0} 对象。SKILL.md 必须链接该 manifest，并在正文重复“读取范围不扩大、写入先预览再确认、不覆盖”的关键边界，不能只把安全规则放在 manifest。
-4. 本版禁止生成 scripts；材料不足时先通过对话说明缺什么，不得猜测。所有 Vault 路径必须可移植：原始素材用 $RAW/，知识库用 $WIKI/，AI 产出用 $OUTPUT/；不要把 raw/wiki/output 或 01_Raw/02_Wiki/04_Output 写成固定字面目录。create-artifact 只用于 HTML/DOCX/PDF/PPTX 成品，路径必须使用 $OUTPUT/ 开头并由用户确认。
-5. 只输出一个 <<<新建Skill>>> 文件夹协议，等待我确认，不要改动任何现有文件。`
+4. ${inputScopeRequirement}
+5. 本版禁止生成 scripts；材料不足时先通过对话说明缺什么，不得猜测。所有 Vault 路径必须可移植：原始素材用 $RAW/，知识库用 $WIKI/，AI 产出用 $OUTPUT/；不要把 raw/wiki/output 或 01_Raw/02_Wiki/04_Output 写成固定字面目录。create-artifact 只用于 HTML/DOCX/PDF/PPTX 成品，路径必须使用 $OUTPUT/ 开头并由用户确认。
+6. 只输出一个 <<<新建Skill>>> 文件夹协议，等待我确认，不要改动任何现有文件。`
 }
 
 /**
