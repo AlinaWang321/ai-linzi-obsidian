@@ -184,4 +184,81 @@ assert.deepEqual(
   '确认新看板后应写入完整新指纹，供下一次继续增量',
 )
 
+// current-note Skill 可以为“保存到哪个客户库”只列目录元数据，但这项权限
+// 绝不能顺带放开 vault_search/read_note。这里真跑 LocalVaultAgent 三条分支，
+// 避免只靠源码 grep 造成假安全感。
+files.clear()
+const rootFolder = new module.TFolder('')
+const wikiFolder = new module.TFolder('02_Wiki')
+const customerFolder = new module.TFolder('02_Wiki/客户档案')
+const customerFile = addFile('02_Wiki/客户档案/客户甲.md', '# 不应被读取', now)
+rootFolder.children.push(wikiFolder)
+wikiFolder.children.push(customerFolder)
+customerFolder.children.push(customerFile)
+files.set(wikiFolder.path, wikiFolder)
+files.set(customerFolder.path, customerFolder)
+app.vault.getRoot = () => rootFolder
+
+const metadataContext = {
+  root: '05_System/Skills/consultation-client-workflow',
+  directory: '05_System/Skills/consultation-client-workflow',
+  entryPath: '05_System/Skills/consultation-client-workflow/SKILL.md',
+  linkedPaths: [],
+  fullyReadPaths: [],
+  readThroughByPath: {},
+  vaultReadPaths: [],
+  runtimePolicy: {
+    schemaVersion: 2,
+    source: 'structured-v2',
+    vaultRead: {
+      scope: 'current-note',
+      metadataDiscovery: true,
+      preferUserScope: false,
+      fallbackToWholeVault: false,
+      maxFiles: 1,
+    },
+    vaultWrite: {
+      mode: 'create-note',
+      confirmation: 'single-atomic-plan',
+      overwrite: false,
+    },
+    network: 'ai-linzi-only',
+  },
+}
+const metadataAgent = new module.LocalVaultAgent(
+  app,
+  search,
+  () => '05_System/Skills',
+  () => '04_Output/AI霖子输出',
+)
+const listed = await metadataAgent.executeCalls([{
+  id: 'metadata-list',
+  name: 'list_folder',
+  arguments: { path: '', depth: 3, maxEntries: 20 },
+}], metadataContext)
+assert.equal(listed.results[0].ok, true, '显式 metadataDiscovery 应允许列目录')
+const listedPayload = JSON.parse(listed.results[0].output)
+assert.equal(listedPayload.entries.some((entry) => entry.path === customerFile.path), true)
+assert.equal(listed.results[0].output.includes(customerFile.content), false, '目录结果不得夹带正文')
+
+const blockedContentReads = await metadataAgent.executeCalls([
+  { id: 'metadata-search', name: 'vault_search', arguments: { query: '客户甲' } },
+  { id: 'metadata-read', name: 'read_note', arguments: { path: customerFile.path } },
+], metadataContext)
+assert.deepEqual(
+  blockedContentReads.results.map((result) => result.ok),
+  [false, false],
+  '目录元数据权限不得放开搜索或读取其他正文',
+)
+assert.equal(metadataContext.vaultReadPaths.length, 0, '被拒绝的正文不能计入已授权读取')
+
+const closedContext = structuredClone(metadataContext)
+closedContext.runtimePolicy.vaultRead.metadataDiscovery = false
+const blockedListing = await metadataAgent.executeCalls([{
+  id: 'metadata-list-closed',
+  name: 'list_folder',
+  arguments: { path: '', depth: 1, maxEntries: 20 },
+}], closedContext)
+assert.equal(blockedListing.results[0].ok, false, '没有显式元数据权限时必须保持失败关闭')
+
 console.log('Weekly business agent integration tests passed')
