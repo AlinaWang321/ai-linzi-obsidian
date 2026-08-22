@@ -1147,6 +1147,36 @@
   cursor: default;
 }
 
+.ai-linzi-root .ai-linzi-composer-tools button.ai-linzi-stop {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--text-error);
+  box-shadow: none;
+  color: var(--text-on-accent);
+  cursor: pointer;
+}
+
+.ai-linzi-stop .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.ai-linzi-root .ai-linzi-composer-tools button.ai-linzi-stop:hover:not(:disabled) {
+  filter: brightness(0.92);
+}
+
+.ai-linzi-root .ai-linzi-composer-tools button.ai-linzi-stop:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .ai-linzi-vault-sources {
   display: block;
   margin: 7px 0 2px;

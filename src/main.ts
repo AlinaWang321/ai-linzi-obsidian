@@ -181,6 +181,8 @@ import {
   type WeeklyBusinessScanState,
 } from './weekly-business-cache'
 import {
+  VAULT_AGENT_BATCH_MAX_ROUNDS,
+  VAULT_AGENT_BATCH_MAX_TOTAL_RESULT_CHARS,
   VAULT_AGENT_MAX_CALLS_PER_ROUND,
   VAULT_AGENT_MAX_ROUNDS,
   WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS,
@@ -191,6 +193,7 @@ import {
   extractVaultOrganizePlan,
   extractVaultToolCalls,
   isCloudToolsTurnRequest,
+  isVaultBatchTask,
   isVaultNativeTurnRequest,
   isExplicitCurrentNoteTrashRequest,
   isExplicitVaultTrashIntent,
@@ -204,6 +207,7 @@ import {
   operationLabel,
   parseVaultOrganizePlanPayload,
   resolveVaultPlanPaths,
+  resolveVaultBoundPath,
   upgradeVaultIntent,
   vaultAutoAnswerRetryReason,
   vaultAnswerRetryReason,
@@ -1194,6 +1198,17 @@ function responseHeader(headers: Record<string, string>, wanted: string): string
   return hit?.[1] ?? ''
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  const error = new Error('用户已停止当前任务')
+  error.name = 'AbortError'
+  throw error
+}
+
 /**
  * 解析缓冲后的 UIMessage SSE 流(访谈写作路由用):只取 text-delta 正文,
  * 跳过 reasoning-delta(V4 Pro 思考过程,不该给用户看),error 事件透传。
@@ -2025,21 +2040,58 @@ export default class AiLinziPlugin extends Plugin {
     if (view instanceof ChatView) view.enterInterviewMode()
   }
 
-  /** 统一 API 调用(requestUrl 绕 CORS;throw:false 自己处理错误码) */
-  async api(path: string, init?: { method?: string; body?: unknown }) {
+  /** 统一 API 调用；可停止请求走 fetch+AbortSignal，其余仍走 requestUrl。 */
+  async api(path: string, init?: { method?: string; body?: unknown; signal?: AbortSignal }) {
     const { serverUrl } = this.settings
     const token = this.getApiToken()
     if (!serverUrl || !token) {
       throw new Error(NOT_CONNECTED_MSG)
     }
+    const url = `${serverUrl.replace(/\/+$/, '')}${path}`
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'X-AI-Linzi-Plugin-Version': this.manifest.version,
+    }
+    if (init?.signal) {
+      const response = await window.fetch(url, {
+        method: init.method ?? 'GET',
+        headers,
+        body: init.body === undefined ? undefined : JSON.stringify(init.body),
+        signal: init.signal,
+      })
+      const text = await response.text()
+      let data: Record<string, unknown> = {}
+      try {
+        const parsed: unknown = JSON.parse(text)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          data = parsed as Record<string, unknown>
+        }
+      } catch {
+        /* 非 JSON 响应 */
+      }
+      const minPluginVersion = response.headers.get('X-AI-Linzi-Min-Plugin-Version') ?? ''
+      if (minPluginVersion && compareVersions(this.manifest.version, minPluginVersion) < 0) {
+        throw new Error(
+          `当前插件版本 ${this.manifest.version} 已不再兼容服务器，请先更新到 ${minPluginVersion} 或更高版本`,
+        )
+      }
+      if (!response.ok) {
+        const timeout = /FUNCTION_INVOCATION_TIMEOUT|Task timed out|exceeded.*duration/i.test(text)
+        const msg = typeof data.error === 'string'
+          ? data.error
+          : timeout
+            ? '生成时间超过服务上限。系统没有写入残缺图片，请稍后重试。'
+            : `请求失败(${response.status})`
+        const supportId = typeof data.requestId === 'string' ? `（问题编号：${data.requestId}）` : ''
+        throw new Error(`${msg}${supportId}`)
+      }
+      return data
+    }
     const res = await requestUrl({
-      url: `${serverUrl.replace(/\/+$/, '')}${path}`,
+      url,
       method: init?.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'X-AI-Linzi-Plugin-Version': this.manifest.version,
-      },
+      headers,
       body: init?.body === undefined ? undefined : JSON.stringify(init.body),
       throw: false,
     })
@@ -2069,7 +2121,7 @@ export default class AiLinziPlugin extends Plugin {
     return data
   }
 
-  async getCapabilities(force = false): Promise<PluginCapabilities> {
+  async getCapabilities(force = false, signal?: AbortSignal): Promise<PluginCapabilities> {
     const now = Date.now()
     if (
       !force &&
@@ -2078,7 +2130,7 @@ export default class AiLinziPlugin extends Plugin {
     ) {
       return this.capabilitiesCache.data
     }
-    const data = (await this.api('/api/plugin/v1/capabilities')) as PluginCapabilities
+    const data = (await this.api('/api/plugin/v1/capabilities', { signal })) as PluginCapabilities
     this.capabilitiesCache = { data, loadedAt: now }
     return data
   }
@@ -2189,6 +2241,7 @@ class ChatView extends ItemView {
   private longDocumentChars = 0
   private longDocumentTask: LongDocumentTaskState | null = null
   private sending = false
+  private activeTurnAbort: AbortController | null = null
   /**
    * 跨用户轮次的 Vault 任务状态（阶段 A）。只存任务元数据与路径快照，正文与
    * 工具输出只驻留进程内存；确认卡被执行/取消、任务正常收尾或超时后清空。
@@ -2201,6 +2254,7 @@ class ChatView extends ItemView {
   private listEl!: HTMLElement
   private inputEl!: HTMLTextAreaElement
   private sendBtn!: HTMLButtonElement
+  private stopBtn!: HTMLButtonElement
   private authorizedContentBtn!: HTMLButtonElement
   private authorizedContentStatusEl!: HTMLElement
   /** composer 上的「技能」按钮，供二级菜单在键盘唤起时定位（0.7.71）。 */
@@ -2394,10 +2448,36 @@ class ChatView extends ItemView {
     })
     setIcon(this.sendBtn, 'arrow-up')
     this.sendBtn.onclick = () => void this.send()
+    this.stopBtn = tools.createEl('button', {
+      cls: 'ai-linzi-stop',
+      attr: {
+        title: '停止当前任务',
+        'aria-label': '停止当前任务',
+        type: 'button',
+      },
+    })
+    setIcon(this.stopBtn, 'square')
+    this.stopBtn.hidden = true
+    this.stopBtn.onclick = () => this.stopCurrentTurn()
 
     this.renderMessages()
     // 恢复最近一次会话(升级/重启后不丢)
     void this.restoreLatest()
+  }
+
+  private stopCurrentTurn(): void {
+    if (!this.sending || !this.activeTurnAbort || this.activeTurnAbort.signal.aborted) return
+    this.stopBtn.disabled = true
+    this.activeTurnAbort.abort()
+    this.activityEnd('error', '已停止当前任务')
+    new Notice('已停止后续处理。已经发出的这一轮可能已产生少量积分。', 6000)
+  }
+
+  private setSendingUi(active: boolean): void {
+    this.sendBtn.disabled = active
+    this.sendBtn.hidden = active
+    this.stopBtn.hidden = !active
+    this.stopBtn.disabled = !active
   }
 
   /**
@@ -3762,10 +3842,11 @@ class ChatView extends ItemView {
     return undefined
   }
 
-  private async rememberExplicitFact(content: string): Promise<string> {
+  private async rememberExplicitFact(content: string, signal?: AbortSignal): Promise<string> {
     const data = (await this.plugin.api('/api/plugin/v1/memories/remember', {
       method: 'POST',
       body: { content },
+      signal,
     })) as {
       status?: 'inserted' | 'updated' | 'skipped' | 'failed'
       content?: string
@@ -3841,8 +3922,10 @@ class ChatView extends ItemView {
     options: SendTurnOptions = {},
   ): Promise<void> {
     if (this.sending) return
+    const turnAbort = new AbortController()
+    this.activeTurnAbort = turnAbort
     this.sending = true
-    this.sendBtn.disabled = true
+    this.setSendingUi(true)
     this.renderMessages(true)
 
     let skillCreatorTurn = false
@@ -3933,7 +4016,7 @@ class ChatView extends ItemView {
         )
       consultationWorkflowTaskTurn = Boolean(options.consultationWorkflowTaskOriginId)
       if (this.mode === 'interview') {
-        const answer = await this.sendInterview()
+        const answer = await this.sendInterview(turnAbort.signal)
         this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: answer }] })
         await this.persistNow()
         return
@@ -3971,13 +4054,13 @@ class ChatView extends ItemView {
       }
       const memoryContent = explicitMemoryContent(text)
       if (memoryContent) {
-        const reply = await this.rememberExplicitFact(memoryContent)
+        const reply = await this.rememberExplicitFact(memoryContent, turnAbort.signal)
         this.messages.push({ id: uid(), role: 'assistant', parts: [{ type: 'text', text: reply }] })
         await this.persistNow()
         return
       }
       if (this.longDocumentPath) {
-        await this.startLongDocumentTask(text)
+        await this.startLongDocumentTask(text, turnAbort.signal)
         return
       }
       if (isLocalSkillListIntent(text)) {
@@ -4192,14 +4275,27 @@ class ChatView extends ItemView {
       const localSkillContext = localSkill ? this.localSkills.context(localSkill) : undefined
       const localSkillReadPolicy = localSkillContext?.runtimePolicy?.vaultRead
       if (localSkillContext && localSkillReadPolicy?.scope === 'user-specified-folder') {
-        const folder = this.plugin.vaultAgent.resolveUserSpecifiedFolder(text)
-        if (folder.kind === 'missing') {
-          throw new Error(`Skill《${localSkill?.name ?? '当前 Skill'}》需要你在这句话里指定一个 Vault 文件夹。`)
+        if (localSkillReadPolicy.fixedFolder) {
+          const fixedFolder = resolveVaultBoundPath(localSkillReadPolicy.fixedFolder, {
+            outputRoot: this.plugin.settings.outputFolder,
+            rawRoot: this.plugin.settings.cockpitSourcesFolder,
+            wikiRoot: this.plugin.settings.cockpitKnowledgeFolder,
+          })
+          const locked = this.app.vault.getAbstractFileByPath(fixedFolder)
+          if (!(locked instanceof TFolder)) {
+            throw new Error(`Skill《${localSkill?.name ?? '当前 Skill'}》锁定的文件夹已移动或删除：${fixedFolder}`)
+          }
+          localSkillContext.allowedReadFolders = [locked.path]
+        } else {
+          const folder = this.plugin.vaultAgent.resolveUserSpecifiedFolder(text)
+          if (folder.kind === 'missing') {
+            throw new Error(`Skill《${localSkill?.name ?? '当前 Skill'}》需要你在这句话里指定一个 Vault 文件夹。`)
+          }
+          if (folder.kind === 'ambiguous') {
+            throw new Error(`文件夹名称不唯一，请补充完整路径：${folder.paths.join('、')}`)
+          }
+          localSkillContext.allowedReadFolders = [folder.path]
         }
-        if (folder.kind === 'ambiguous') {
-          throw new Error(`文件夹名称不唯一，请补充完整路径：${folder.paths.join('、')}`)
-        }
-        localSkillContext.allowedReadFolders = [folder.path]
       } else if (
         localSkillContext &&
         localSkillReadPolicy?.scope === 'whole-vault' &&
@@ -4255,6 +4351,7 @@ class ChatView extends ItemView {
         try {
           agentResult = await this.runVaultAgentLoop({
             question: text,
+            signal: turnAbort.signal,
             noteContext,
             authorizedContent,
             localSkill: localSkillRequest,
@@ -4336,8 +4433,10 @@ class ChatView extends ItemView {
             singleIllustration,
             undefined,
             skillCreatorRequest,
+            turnAbort.signal,
           )
-        } catch {
+        } catch (error) {
+          if (isAbortError(error)) throw error
           streamed = null
         }
         if (streamed?.kind === 'bizError') {
@@ -4347,6 +4446,7 @@ class ChatView extends ItemView {
         } else {
           const data = await this.plugin.api('/api/plugin/v1/chat', {
             method: 'POST',
+            signal: turnAbort.signal,
             body: {
               messages: this.messagesForApi(),
               sessionId: this.sessionId,
@@ -4368,6 +4468,7 @@ class ChatView extends ItemView {
           answer = typeof data.text === 'string' ? data.text : '(空响应)'
         }
       }
+      throwIfAborted(turnAbort.signal)
       const skillUpdateExtraction = extractSkillUpdateProposals(answer)
       if (skillUpdateExtraction.invalidBlocks > 0) {
         throw new Error('AI 返回的 Skill 更新包格式不完整或没有通过本机安全校验，请重新生成。')
@@ -4488,20 +4589,34 @@ class ChatView extends ItemView {
         }
       }
       if (aiImageRequest.requests.length > 0 && !answer.startsWith('⚠️')) {
+        throwIfAborted(turnAbort.signal)
         await this.executeChatAiImageRequests(
           aiImageRequest.requests,
           imageAttachments,
           shouldInheritRecentImageStyle(text),
+          turnAbort.signal,
         )
       }
       if (singleIllustration && noteContext && !answer.startsWith('⚠️')) {
-        await this.generateChatIllustration(text, noteContext)
+        throwIfAborted(turnAbort.signal)
+        await this.generateChatIllustration(text, noteContext, turnAbort.signal)
       }
     } catch (e) {
+      const stopped = isAbortError(e)
       const msg = e instanceof Error ? e.message : String(e)
-      if (!options.localSkillChoiceOfferId) new Notice(`AI霖子:${msg}`, 6000)
+      if (!stopped && !options.localSkillChoiceOfferId) new Notice(`AI霖子:${msg}`, 6000)
       // 失败的那条用户消息保留在输入历史里,方便重试
-      if (!this.longDocumentTask && !options.localSkillChoiceOfferId) {
+      if (stopped) {
+        this.messages.push({
+          id: uid(),
+          role: 'assistant',
+          parts: [{
+            type: 'text',
+            text: '⏹️ 已停止当前任务。已经发出的这一轮可能已产生少量积分，后续请求和批次不会继续。',
+          }],
+        })
+        await this.persistNow()
+      } else if (!this.longDocumentTask && !options.localSkillChoiceOfferId) {
         this.messages.push({
           id: uid(),
           role: 'assistant',
@@ -4516,18 +4631,19 @@ class ChatView extends ItemView {
         )
         if (origin) origin.consultationWorkflowTaskRequestedAt = undefined
       }
-      if (options.localSkillChoiceOfferId) throw e
+      if (options.localSkillChoiceOfferId && !stopped) throw e
     } finally {
       this.sending = false
-      this.sendBtn.disabled = false
+      if (this.activeTurnAbort === turnAbort) this.activeTurnAbort = null
+      this.setSendingUi(false)
       this.renderMessages()
       // 这一轮已经扣过费，顶栏积分要跟着变；capabilities 是一次轻量读取，不产生消耗。
       void this.refreshAccountLine(true)
     }
   }
 
-  private async startLongDocumentTask(instruction: string): Promise<void> {
-    const capabilities = await this.plugin.getCapabilities(true)
+  private async startLongDocumentTask(instruction: string, signal?: AbortSignal): Promise<void> {
+    const capabilities = await this.plugin.getCapabilities(true, signal)
     if (capabilities.tier !== 'pro' && capabilities.tier !== 'business') {
       throw new Error('长文任务是 Pro 及以上会员功能')
     }
@@ -4554,10 +4670,10 @@ class ChatView extends ItemView {
       stage: 'processing',
     }
     this.renderMessages()
-    await this.processLongDocumentTask()
+    await this.processLongDocumentTask(signal)
   }
 
-  private async processLongDocumentTask(): Promise<void> {
+  private async processLongDocumentTask(signal?: AbortSignal): Promise<void> {
     const task = this.longDocumentTask
     if (!task) return
     const file = this.app.vault.getAbstractFileByPath(task.path)
@@ -4571,10 +4687,12 @@ class ChatView extends ItemView {
       task.stage = 'processing'
       task.error = undefined
       while (task.nextIndex < task.chunks.length) {
+        throwIfAborted(signal)
         const chunk = task.chunks[task.nextIndex]
         this.renderMessages()
         const data = await this.plugin.api('/api/plugin/v1/long-document', {
           method: 'POST',
+          signal,
           body: {
             phase: 'chunk',
             taskId: task.taskId,
@@ -4593,9 +4711,11 @@ class ChatView extends ItemView {
       }
 
       task.stage = 'synthesizing'
+      throwIfAborted(signal)
       this.renderMessages()
       const data = await this.plugin.api('/api/plugin/v1/long-document', {
         method: 'POST',
+        signal,
         body: {
           phase: 'final',
           taskId: task.taskId,
@@ -4634,15 +4754,20 @@ class ChatView extends ItemView {
 
   private async resumeLongDocumentTask(): Promise<void> {
     if (!this.longDocumentTask || this.sending) return
+    const turnAbort = new AbortController()
+    this.activeTurnAbort = turnAbort
     this.sending = true
-    this.sendBtn.disabled = true
+    this.setSendingUi(true)
     try {
-      await this.processLongDocumentTask()
+      await this.processLongDocumentTask(turnAbort.signal)
     } catch (error) {
-      new Notice(`长文任务仍未完成：${error instanceof Error ? error.message : String(error)}`, 8000)
+      if (!isAbortError(error)) {
+        new Notice(`长文任务仍未完成：${error instanceof Error ? error.message : String(error)}`, 8000)
+      }
     } finally {
       this.sending = false
-      this.sendBtn.disabled = false
+      if (this.activeTurnAbort === turnAbort) this.activeTurnAbort = null
+      this.setSendingUi(false)
       this.renderMessages()
     }
   }
@@ -4706,6 +4831,7 @@ class ChatView extends ItemView {
     requests: ChatAiImageRequest[],
     userReferences: LocalImageReference[],
     inheritRecentStyle = false,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!(await this.plugin.requireProAccess('AI 生图'))) {
       this.messages.push({
@@ -4732,6 +4858,7 @@ class ChatView extends ItemView {
       }
     }
     for (const [index, request] of requests.entries()) {
+      throwIfAborted(signal)
       const displayIndex = index + 1
       const progress: WireMessage = {
         id: uid(),
@@ -4775,6 +4902,7 @@ class ChatView extends ItemView {
           request.preserveOriginalRatio,
           inheritRecentStyle && !editReference && styleReferences.length > 0,
         )
+        throwIfAborted(signal)
         const savedPath = await saveAiImageToVault(
           this.plugin,
           generated.imageUrl,
@@ -4804,6 +4932,12 @@ class ChatView extends ItemView {
           styleReference = await vaultImageToReferenceDataUrl(this.plugin, savedPath)
         }
       } catch (error) {
+        if (isAbortError(error)) {
+          progress.parts = [{ type: 'text', text: `⏹️ 已停止“${request.label}”及后续图片任务。` }]
+          await this.persistNow()
+          this.renderMessages()
+          throw error
+        }
         progress.parts = [{
           type: 'text',
           text: `⚠️ ${request.label}生成失败：${error instanceof Error ? error.message : String(error)}`,
@@ -4832,6 +4966,7 @@ class ChatView extends ItemView {
   private async generateChatIllustration(
     instruction: string,
     noteContext: { filename: string; text: string; path: string },
+    signal?: AbortSignal,
   ): Promise<void> {
     const message: WireMessage = {
       id: uid(),
@@ -4842,17 +4977,23 @@ class ChatView extends ItemView {
     this.renderMessages()
     const notice = new Notice('🎨 正在读取文章并生成候选配图…', 0)
     try {
+      throwIfAborted(signal)
       const candidate = await generateArticleIllustrationFromChat(
         this.plugin,
         instruction,
         noteContext,
       )
+      throwIfAborted(signal)
       message.imageResult = candidate
       message.parts = [{
         type: 'text',
         text: `已根据当前笔记生成一张候选配图，准备放在「${candidate.anchor}」之后。请先预览，确认后再插入文章。`,
       }]
     } catch (error) {
+      if (isAbortError(error)) {
+        message.parts = [{ type: 'text', text: '⏹️ 已停止候选配图任务。' }]
+        throw error
+      }
       message.parts = [{
         type: 'text',
         text: `⚠️ 候选配图生成失败：${error instanceof Error ? error.message : String(error)}`,
@@ -4906,12 +5047,11 @@ class ChatView extends ItemView {
   }
 
   /** 访谈模式发送:走 wechat-interview 技能路由(UIMessage SSE,缓冲后解析) */
-  private async sendInterview(): Promise<string> {
+  private async sendInterview(signal?: AbortSignal): Promise<string> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
     if (!token) return `⚠️ ${NOT_CONNECTED_MSG}`
-    const res = await requestUrl({
-      url: `${serverUrl.replace(/\/+$/, '')}/api/plugin/v1/skills/wechat-interview`,
+    const res = await window.fetch(`${serverUrl.replace(/\/+$/, '')}/api/plugin/v1/skills/wechat-interview`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -4919,17 +5059,18 @@ class ChatView extends ItemView {
         'X-AI-Linzi-Plugin-Version': this.plugin.manifest.version,
       },
       body: JSON.stringify({ messages: this.messages }),
-      throw: false,
+      signal,
     })
+    const responseText = await res.text()
     if (res.status >= 400) {
       let msg = `请求失败(${res.status})`
       try {
-        const d = JSON.parse(res.text) as { error?: string }
+        const d = JSON.parse(responseText) as { error?: string }
         if (typeof d.error === 'string') msg = d.error
       } catch { /* 非 JSON */ }
       return `⚠️ ${msg}`
     }
-    const { text, error } = extractTextFromSSE(res.text ?? '')
+    const { text, error } = extractTextFromSSE(responseText)
     if (error) return `⚠️ ${error}`
     if (!text.trim()) return '⚠️ AI 返回了空内容,请再发一次'
     return text
@@ -4941,6 +5082,7 @@ class ChatView extends ItemView {
    */
   private async runVaultAgentLoop(input: {
     question: string
+    signal?: AbortSignal
     noteContext: { filename: string; text: string; path: string } | undefined
     authorizedContent:
       | { items: { filename: string; path: string; text: string }[] }
@@ -4979,6 +5121,12 @@ class ChatView extends ItemView {
     successfulCloudWriteTools?: string[]
     weeklyBusinessScan?: WeeklyBusinessScanState
   }> {
+    throwIfAborted(input.signal)
+    const batchMode = isVaultBatchTask([
+      input.question,
+      input.resumeQuestion?.goal ?? '',
+    ].join('\n'))
+    const maxRounds = batchMode ? VAULT_AGENT_BATCH_MAX_ROUNDS : VAULT_AGENT_MAX_ROUNDS
     let toolResults: VaultAgentToolResult[] = []
     const sources: VaultMessageSource[] = []
     const localSkillRunIds: string[] = []
@@ -4995,7 +5143,9 @@ class ChatView extends ItemView {
         incoming,
         input.localSkill?.name === WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME
           ? WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS
-          : undefined,
+          : batchMode
+            ? VAULT_AGENT_BATCH_MAX_TOTAL_RESULT_CHARS
+            : undefined,
       )
       toolResults = merged.results
       if (merged.exhausted && !toolBudgetExhausted) {
@@ -5281,6 +5431,7 @@ class ChatView extends ItemView {
           ? {
               question: input.question,
               round: input.resumeQuestion.round,
+              batchMode,
               sessionId: this.sessionId,
               previousResponseId: input.resumeQuestion.responseId,
               toolOutputs: [{
@@ -5290,21 +5441,24 @@ class ChatView extends ItemView {
             }
           : null
         let stalledRetries = 0
-        for (let step = 0; step < VAULT_AGENT_MAX_ROUNDS; step++) {
+        for (let step = 0; step < maxRounds; step++) {
+          throwIfAborted(input.signal)
           this.activityCurrent(
             step === 0
               ? '文件操作引擎启动，正在核对相关文件…'
-              : `文件引擎 第 ${step + 1}/${VAULT_AGENT_MAX_ROUNDS} 步 · 继续执行…`,
+              : `${batchMode ? '批量文件引擎' : '文件引擎'} 第 ${step + 1}/${maxRounds} 步 · 继续执行…`,
           )
           const requestBody = nextBody ?? {
             question: input.question,
             round: 0,
+            batchMode,
             sessionId: this.sessionId,
             pendingTaskGoal: taskContinuation ? this.pendingVaultTask?.goal : undefined,
           }
           const requestRound = typeof requestBody.round === 'number' ? requestBody.round : 0
           const data = await this.plugin.api('/api/plugin/v1/vault-native/step', {
             method: 'POST',
+            signal: input.signal,
             body: requestBody,
           })
           const responseId = typeof data.responseId === 'string' ? data.responseId : ''
@@ -5335,7 +5489,7 @@ class ChatView extends ItemView {
                   ? args.options.filter((item): item is string => typeof item === 'string').map((item) => item.trim().slice(0, 120)).filter(Boolean).slice(0, 6)
                   : [],
                 allowFreeText: args.allowFreeText !== false,
-                round: Math.min(requestRound + 1, VAULT_AGENT_MAX_ROUNDS - 1),
+                round: Math.min(requestRound + 1, maxRounds - 1),
                 goal: this.pendingVaultTask?.goal ?? input.resumeQuestion?.goal ?? input.question.slice(0, 300),
                 createdAt: Date.now(),
               }
@@ -5362,7 +5516,8 @@ class ChatView extends ItemView {
                 if (!callId) throw new Error('native: invalid dynamic dashboard call')
                 nextBody = {
                   question: input.question,
-                  round: Math.min(requestRound + 1, VAULT_AGENT_MAX_ROUNDS - 1),
+                  round: Math.min(requestRound + 1, maxRounds - 1),
+                  batchMode,
                   sessionId: this.sessionId,
                   previousResponseId,
                   toolOutputs: [{
@@ -5487,7 +5642,8 @@ class ChatView extends ItemView {
             toolResults.push(...merged.results)
             nextBody = {
               question: input.question,
-              round: Math.min(requestRound + 1, VAULT_AGENT_MAX_ROUNDS - 1),
+              round: Math.min(requestRound + 1, maxRounds - 1),
+              batchMode,
               sessionId: this.sessionId,
               previousResponseId,
               toolOutputs: executed.results.map((result) => ({
@@ -5515,11 +5671,12 @@ class ChatView extends ItemView {
                   vaultWriteFlowRetryReason(this.pendingVaultTask, 'organize', false, false) !== undefined
                 )
               )
-            if (needsPlan && step + 1 < VAULT_AGENT_MAX_ROUNDS) {
+            if (needsPlan && step + 1 < maxRounds) {
               stalledRetries += 1
               nextBody = {
                 question: input.question,
-                round: Math.min(requestRound + 1, VAULT_AGENT_MAX_ROUNDS - 1),
+                round: Math.min(requestRound + 1, maxRounds - 1),
+                batchMode,
                 sessionId: this.sessionId,
                 previousResponseId,
                 toolOutputs: [],
@@ -5532,7 +5689,8 @@ class ChatView extends ItemView {
           throw new Error('native: empty step')
         }
         throw new Error('native: no final text')
-      } catch {
+      } catch (error) {
+        if (isAbortError(error)) throw error
         // 静默回退散文协议；已获得的工具结果保留在 toolResults 里继续可用。
         nativeChannelFailed = true
         return null
@@ -5541,7 +5699,8 @@ class ChatView extends ItemView {
     if (nativeFastPath) {
       pendingNativeText = await runNativeChannel()
     }
-    for (let round = 0; round < VAULT_AGENT_MAX_ROUNDS; round++) {
+    for (let round = 0; round < maxRounds; round++) {
+      throwIfAborted(input.signal)
       if (round > 0) {
         // 纠正原因对用户可见：让"为什么又跑了一轮"不再是黑盒(0.7.53)。
         if (pendingRetryReason) {
@@ -5561,10 +5720,10 @@ class ChatView extends ItemView {
                           ? '改档案必须先读原文，已退回重做'
                           : '要求补齐缺失信息后再收尾'
             }`,
-            `第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮 · ${continuationActivity}`,
+            `${batchMode ? '批量任务 ' : ''}第 ${round + 1}/${maxRounds} 轮 · ${continuationActivity}`,
           )
         } else {
-          this.activityCurrent(`第 ${round + 1}/${VAULT_AGENT_MAX_ROUNDS} 轮 · ${continuationActivity}`)
+          this.activityCurrent(`${batchMode ? '批量任务 ' : ''}第 ${round + 1}/${maxRounds} 轮 · ${continuationActivity}`)
         }
       }
       const vaultAgentRequest = {
@@ -5572,7 +5731,8 @@ class ChatView extends ItemView {
         vaultAccess: input.vaultAccess,
         intent,
         round,
-        canRequestTools: round < VAULT_AGENT_MAX_ROUNDS - 1 && !toolBudgetExhausted,
+        batchMode,
+        canRequestTools: round < maxRounds - 1 && !toolBudgetExhausted,
         retryReason: pendingRetryReason,
         toolResults,
         // v0.7.35+：跨轮任务状态只传目标与阶段元数据；正文和片段绝不进请求。
@@ -5591,6 +5751,7 @@ class ChatView extends ItemView {
         this.activityStep('☁️ 已确认创建跟进任务，直接写入任务清单', '正在创建跟进任务…')
         const data = await this.plugin.api('/api/plugin/v1/chat', {
           method: 'POST',
+          signal: input.signal,
           body: {
             messages: this.messagesForApi(),
             sessionId: this.sessionId,
@@ -5639,12 +5800,15 @@ class ChatView extends ItemView {
           input.noteEdit,
           input.noteImageIntent,
           vaultAgentRequest,
+          undefined,
+          input.signal,
         )
         if (streamed.kind === 'bizError') throw new Error(streamed.message)
         lastText = streamed.text
       } else {
         const data = await this.plugin.api('/api/plugin/v1/chat', {
           method: 'POST',
+          signal: input.signal,
           body: {
             messages: this.messagesForApi(),
             sessionId: this.sessionId,
@@ -5661,7 +5825,7 @@ class ChatView extends ItemView {
         lastText = typeof data.text === 'string' ? data.text : ''
       }
       if (!lastText.trim()) {
-        if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+        if (round >= maxRounds - 1) {
           throw new Error('Vault 工具循环连续没有返回可见内容，请重试')
         }
         pendingRetryReason = 'empty_response'
@@ -5679,6 +5843,7 @@ class ChatView extends ItemView {
         this.activityStep('☁️ 判定为云端写入（任务清单 / 客户管理）', '正在执行云端写入…')
         const data = await this.plugin.api('/api/plugin/v1/chat', {
           method: 'POST',
+          signal: input.signal,
           body: {
             messages: this.messagesForApi(),
             sessionId: this.sessionId,
@@ -5731,7 +5896,7 @@ class ChatView extends ItemView {
       // 模型若仍输出切换原生文件引擎的标记，不能把标记展示给用户，更不能
       // 进入那个不携带 Skill 权限上下文的通道；要求它在现有材料内重做。
       if (!nativeAvailable && isVaultNativeTurnRequest(lastText)) {
-        if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+        if (round >= maxRounds - 1) {
           throw new Error('Skill 仍试图扩大读取范围，已被本机停止。请在创建 Skill 时进一步缩小输入。')
         }
         pendingRetryReason = 'missing_tool_use'
@@ -5770,7 +5935,7 @@ class ChatView extends ItemView {
       if (toolRequest.calls.length === 0) {
         const plan = extractVaultOrganizePlan(lastText)
         if (plan.invalid) {
-          if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+          if (round >= maxRounds - 1) {
             throw new Error('AI 没有在安全轮次内生成可执行的 Vault 方案，请缩小范围后重试')
           }
           pendingRetryReason = 'invalid_plan'
@@ -5788,7 +5953,7 @@ class ChatView extends ItemView {
           return { text: lastText, sources, localSkillRunIds }
         }
         if (input.intent === 'answer' && plan.plan) {
-          if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+          if (round >= maxRounds - 1) {
             if (plan.cleanText.trim()) {
               return { text: plan.cleanText.trim(), sources, localSkillRunIds }
             }
@@ -5812,7 +5977,7 @@ class ChatView extends ItemView {
             (plan.plan.operations.some((operation) => operation.type === 'trash_note') &&
               !isExplicitVaultTrashIntent(input.question)))
         ) {
-          if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+          if (round >= maxRounds - 1) {
             if (plan.cleanText.trim()) {
               return { text: plan.cleanText.trim(), sources, localSkillRunIds }
             }
@@ -5838,7 +6003,7 @@ class ChatView extends ItemView {
           !noReadRequiredCreationPlan &&
           (input.intent !== 'auto' || Boolean(plan.plan) || mutationAsk)
         ) {
-          if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+          if (round >= maxRounds - 1) {
             throw new Error('AI 没有实际调用 Vault 工具，已停止这次任务；请重试')
           }
           pendingRetryReason = 'missing_tool_use'
@@ -5883,7 +6048,7 @@ class ChatView extends ItemView {
             this.activityStep('📋 已生成整理方案，等待你确认', null)
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
-            if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+            if (round >= maxRounds - 1) {
               throw new Error(`方案未通过本机预检：${message}`)
             }
             toolResults.push({
@@ -5920,7 +6085,7 @@ class ChatView extends ItemView {
           // 但模型仍停在“接下来会做”时，才把它判为 deferred_answer。
           const stalled = structuredStall ??
             (hasPreloadedCreateSkillEvidence ? 'deferred_answer' : undefined)
-          if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+          if (round >= maxRounds - 1) {
             throw new Error(
               '这次没做成：AI 没能在安全轮次内给出可确认的整理方案。' +
                 '请检查活动记录里的未读或失败文件，再重试；批量任务可以按时间或文件夹拆分。',
@@ -5934,7 +6099,7 @@ class ChatView extends ItemView {
             vaultAutoAnswerRetryReason(lastText, toolResults.length > 0) ??
             vaultAnswerRetryReason(input.question, lastText)
           if (retryReason) {
-            if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+            if (round >= maxRounds - 1) {
               throw new Error(
                 retryReason === 'deferred_answer'
                   ? '这次没做成：AI 一直说「接下来去读/去写」，但始终没真的动文件。' +
@@ -5992,7 +6157,7 @@ class ChatView extends ItemView {
         }
         return { text: lastText, sources, localSkillRunIds }
       }
-      if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
+      if (round >= maxRounds - 1) {
         throw new Error('本次翻阅已达到安全轮次上限，请缩小范围后再试')
       }
       const forbidden = toolRequest.calls.find((call) =>
@@ -6275,6 +6440,7 @@ class ChatView extends ItemView {
       vaultAccess: boolean
       intent: VaultAgentIntent
       round: number
+      batchMode?: boolean
       canRequestTools: boolean
       retryReason?: VaultAnswerRetryReason
       toolResults: VaultAgentToolResult[]
@@ -6289,6 +6455,7 @@ class ChatView extends ItemView {
       cloudToolsTurn?: boolean
     },
     skillCreator?: SkillCreatorRequest,
+    signal?: AbortSignal,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
@@ -6320,6 +6487,7 @@ class ChatView extends ItemView {
         vaultAgent,
         skillCreator,
       }),
+      signal,
     })
     if (!res.ok) {
       let msg = `请求失败(${res.status})`

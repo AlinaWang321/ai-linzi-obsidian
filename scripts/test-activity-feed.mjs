@@ -39,7 +39,7 @@ assert('搜索动作带关键词与命中数', /🔍 搜索「\$\{query\.slice\(
 assert('查看文件夹动作', main.includes('📁 查看 ${folder}'))
 assert(
   '旧循环轮数进活动流(第 N/12 轮)',
-  /第 \$\{round \+ 1\}\/\$\{VAULT_AGENT_MAX_ROUNDS\} 轮 · \$\{continuationActivity\}/.test(main) &&
+  /第 \$\{round \+ 1\}\/\$\{maxRounds\} 轮 · \$\{continuationActivity\}/.test(main) &&
     main.includes("? '继续处理当前材料…'") &&
     main.includes(": '继续翻阅 Vault…'"),
 )

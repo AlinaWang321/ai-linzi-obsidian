@@ -278,8 +278,8 @@ console.log('[test-vault-task-state]')
   )
   assert.match(
     mainSource,
-    /catch \{[\s\S]{0,120}return null/,
-    '原生通道失败必须静默回退散文协议（回滚保险丝）',
+    /catch \(error\) \{\s*if \(isAbortError\(error\)\) throw error[\s\S]{0,180}nativeChannelFailed = true\s*return null/,
+    '用户停止必须向上传播；其他原生通道失败仍静默回退散文协议（回滚保险丝）',
   )
   assert.match(
     mainSource,

@@ -104,6 +104,7 @@ assert.match(
     'ai-linzi-composer-menu-btn',
     'ai-linzi-attachment-btn',
     'ai-linzi-send',
+    'ai-linzi-stop',
     'ai-linzi-starter-btn',
     'ai-linzi-activity-toggle',
     'ai-linzi-brand-credits',

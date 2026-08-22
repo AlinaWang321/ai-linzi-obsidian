@@ -7,11 +7,13 @@ import {
   type CreateLocalSkillBlock,
 } from './create-local-skill'
 import {
+  IMPORTED_SKILL_READ_SCOPE_OPTIONS,
   OFFICIAL_SKILL_TEMPLATES,
   SKILL_STUDIO_READ_SCOPE_OPTIONS,
   adaptImportedSkillReadScope,
   buildSkillStudioPrompt,
   importedSkillReadScope,
+  importedSkillFixedFolder,
   previewSkillInvocation,
   previewSkillStudioDraftInvocation,
   skillBlockManifest,
@@ -74,6 +76,7 @@ function defaultDraft(): SkillStudioDraft {
 
 export class ImportedSkillPermissionModal extends Modal {
   private readScope: LocalSkillVaultReadScope
+  private fixedFolder = ''
 
   constructor(
     app: App,
@@ -82,6 +85,7 @@ export class ImportedSkillPermissionModal extends Modal {
   ) {
     super(app)
     this.readScope = importedSkillReadScope(block)
+    this.fixedFolder = importedSkillFixedFolder(block) ?? ''
   }
 
   onOpen(): void {
@@ -93,22 +97,40 @@ export class ImportedSkillPermissionModal extends Modal {
     })
     const scopeDescription = this.contentEl.createDiv({ cls: 'ai-linzi-skill-studio-intro' })
     const refreshDescription = () => {
-      const option = SKILL_STUDIO_READ_SCOPE_OPTIONS.find((item) => item.value === this.readScope)
+      const option = IMPORTED_SKILL_READ_SCOPE_OPTIONS.find((item) => item.value === this.readScope)
       scopeDescription.setText(option?.description ?? '')
+    }
+    const folderSetting = new Setting(this.contentEl)
+      .setName('指定文件夹')
+      .setDesc('安装后自动锁定这个文件夹，调用 Skill 时不用反复输入路径。')
+    folderSetting.addDropdown((dropdown) => {
+      dropdown.addOption('', '请选择 Vault 文件夹')
+      const folders = this.app.vault.getAllFolders()
+        .filter((folder) => Boolean(folder.path) && !folder.path.startsWith('.'))
+        .sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'))
+      for (const folder of folders) dropdown.addOption(folder.path, folder.path)
+      dropdown.setValue(this.fixedFolder).onChange((value) => {
+        this.fixedFolder = value
+      })
+    })
+    const refreshFolderSetting = () => {
+      folderSetting.settingEl.style.display = this.readScope === 'user-specified-folder' ? '' : 'none'
     }
     new Setting(this.contentEl)
       .setName('读取范围')
       .setDesc('这是运行时硬边界，后续也可以在主对话中更新这个 Skill 的范围。')
       .addDropdown((dropdown) => {
-        for (const option of SKILL_STUDIO_READ_SCOPE_OPTIONS) {
+        for (const option of IMPORTED_SKILL_READ_SCOPE_OPTIONS) {
           dropdown.addOption(option.value, option.label)
         }
         dropdown.setValue(this.readScope).onChange((value) => {
           this.readScope = value as LocalSkillVaultReadScope
           refreshDescription()
+          refreshFolderSetting()
         })
       })
     refreshDescription()
+    refreshFolderSetting()
     const scripts = this.block.files.filter((file) => file.path.startsWith('scripts/'))
     const boundary = this.contentEl.createDiv({ cls: 'ai-linzi-skill-permissions' })
     boundary.createEl('strong', { text: '导入边界' })
@@ -125,7 +147,11 @@ export class ImportedSkillPermissionModal extends Modal {
         .setButtonText('生成安装确认卡')
         .setCta()
         .onClick(() => {
-          const adapted = adaptImportedSkillReadScope(this.block, this.readScope)
+          if (this.readScope === 'user-specified-folder' && !this.fixedFolder) {
+            new Notice('请先选择一个 Vault 文件夹', 5000)
+            return
+          }
+          const adapted = adaptImportedSkillReadScope(this.block, this.readScope, this.fixedFolder)
           const manifest = skillBlockManifest(adapted.block)
           if (!manifest.valid) {
             new Notice(`Skill 适配后仍未通过校验：${manifest.problems.join('；')}`, 9000)

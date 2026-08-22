@@ -294,6 +294,11 @@ assert.match(
 )
 assert.match(
   mainSource,
+  /localSkillReadPolicy\.fixedFolder[\s\S]*resolveVaultBoundPath\(localSkillReadPolicy\.fixedFolder[\s\S]*getAbstractFileByPath\(fixedFolder\)[\s\S]*allowedReadFolders = \[locked\.path\]/,
+  '导入时选择的固定文件夹必须在每次运行时重新核实并自动锁定',
+)
+assert.match(
+  mainSource,
   /consultation-preload-client-library/,
   '官方咨询闭环必须预读客户库目录，避免把安全轮次浪费在固定前置资料上',
 )
@@ -331,6 +336,12 @@ assert.equal(core.shouldBlockPlanPath('.trash/x', 'create_folder', '05_System/Sk
 // 2026-08-18 Alina 拍板开放：12 轮 + 36 万字符预算（打卡营批量整理实测 6 轮/10 万必撞顶）
 assert.equal(core.VAULT_AGENT_MAX_ROUNDS, 12)
 assert.equal(core.VAULT_AGENT_MAX_TOTAL_RESULT_CHARS, 360_000)
+assert.equal(core.VAULT_AGENT_BATCH_MAX_ROUNDS, 36)
+assert.equal(core.VAULT_AGENT_BATCH_MAX_TOTAL_RESULT_CHARS, 1_000_000)
+assert.equal(core.isVaultBatchTask('批量总结这个文件夹里的所有逐字稿'), true)
+assert.equal(core.isVaultBatchTask('逐份处理这些客户档案'), true)
+assert.equal(core.isVaultBatchTask('总结当前打开的笔记'), false)
+assert.equal(core.isVaultBatchTask('帮我找一份 Obsidian 资料'), false)
 
 // ── 预算并入：去重 / 截断 / 用尽提示（0.7.45）──
 {

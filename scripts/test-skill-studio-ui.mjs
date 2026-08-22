@@ -6,6 +6,7 @@ function makeEl(tag = 'div', options = {}) {
     tag,
     cls: options.cls || '',
     text: options.text || '',
+    style: {},
     children: [],
     addClass(value) { this.cls = `${this.cls} ${value}`.trim() },
     setText(value) { this.text = value },
@@ -183,27 +184,41 @@ console.log('[test-skill-studio-ui] 外部 Skill 导入先选择 Vault 权限，
       { path: 'scripts/run.mjs', content: 'console.log("ok")' },
     ],
   }
-  const modal = new ImportedSkillPermissionModal({}, block, (adapted, sampleInput) => {
+  const modal = new ImportedSkillPermissionModal({
+    vault: {
+      getAllFolders: () => [
+        { path: '', name: '' },
+        { path: '01_Raw/课程逐字稿', name: '课程逐字稿' },
+        { path: '02_Wiki', name: '02_Wiki' },
+      ],
+    },
+  }, block, (adapted, sampleInput) => {
     offered.push({ adapted, sampleInput })
   })
   modal.onOpen()
-  assert.equal(setting('读取范围').controls[0].value, 'current-note')
+  assert.equal(setting('读取范围').controls[0].value, 'whole-vault')
+  assert.deepEqual(Object.keys(setting('读取范围').controls[0].options), [
+    'whole-vault',
+    'user-specified-folder',
+  ])
   assert.match(all(modal.contentEl).map((el) => el.text).join('\n'), /不能读取 Vault 外的电脑文件/)
   assert.match(all(modal.contentEl).map((el) => el.text).join('\n'), /检测到 1 个脚本/)
-  setting('读取范围').controls[0].trigger('whole-vault')
+  setting('读取范围').controls[0].trigger('user-specified-folder')
+  setting('指定文件夹').controls[0].trigger('01_Raw/课程逐字稿')
   const submit = [...globalThis.__ui.settings]
     .flatMap((item) => item.controls)
     .find((control) => control.text === '生成安装确认卡')
   submit.click()
   assert.equal(offered.length, 1)
-  assert.equal(offered[0].sampleInput, '用 external-workflow Skill 在整个 Vault 中完成这项任务')
+  assert.equal(offered[0].sampleInput, '用 external-workflow Skill 处理我指定的文件夹')
   const manifest = JSON.parse(
     offered[0].adapted.files.find(
       (file) => file.path === 'references/ai-linzi-skill-manifest.json',
     ).content,
   )
   assert.equal(manifest.schemaVersion, 2)
-  assert.equal(manifest.vaultRead.scope, 'whole-vault')
+  assert.equal(manifest.vaultRead.scope, 'user-specified-folder')
+  assert.equal(manifest.vaultRead.fixedFolder, '$RAW/课程逐字稿')
   assert.deepEqual(manifest.programs, ['scripts/run.mjs'])
   assert.equal(modal.closed, true)
 }

@@ -545,10 +545,23 @@ for (const scope of ['current-note', 'user-specified-files', 'user-specified-fol
 }
 assert.equal(
   studioCore.importedSkillReadScope(importableExternalScript),
-  'current-note',
-  '外部包没有有效权限声明时，导入弹窗初始值必须是最低单篇权限',
+  'whole-vault',
+  '外部包没有有效权限声明时，导入弹窗默认当前整个 Vault',
 )
-console.log('  ✓ 外部脚本 Skill 只有在用户选择范围后才适配，四种范围均锁在当前 Vault 且脚本不自动运行')
+assert.deepEqual(
+  studioCore.IMPORTED_SKILL_READ_SCOPE_OPTIONS.map((option) => option.value),
+  ['whole-vault', 'user-specified-folder'],
+)
+const fixedFolderAdapted = studioCore.adaptImportedSkillReadScope(
+  importableExternalScript,
+  'user-specified-folder',
+  '01_Raw/课程逐字稿',
+)
+const fixedFolderManifest = JSON.parse(fixedFolderAdapted.block.files.find(
+  (file) => file.path === 'references/ai-linzi-skill-manifest.json',
+).content)
+assert.equal(fixedFolderManifest.vaultRead.fixedFolder, '$RAW/课程逐字稿')
+console.log('  ✓ 外部脚本 Skill 默认全 Vault；安装界面只保留全库/锁定文件夹两项，脚本不自动运行')
 const generatedWithoutOutput = {
   ...generatedWithoutSampleInput,
   content: generatedWithoutSampleInput.content.replace(
@@ -795,7 +808,7 @@ assert.throws(
   })),
   /隐藏路径/,
 )
-console.log('  ✓ Skill ZIP 可往返导入、缺 manifest 时最低权限适配，并拒绝隐藏路径')
+console.log('  ✓ Skill ZIP 可往返导入、缺 manifest 时先安全修复再按安装选择适配，并拒绝隐藏路径')
 
 const mainSource = await (await import('node:fs/promises')).readFile('src/main.ts', 'utf8')
 const studioSource = await (await import('node:fs/promises')).readFile('src/skill-studio.ts', 'utf8')

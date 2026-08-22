@@ -8,6 +8,8 @@ export type LocalSkillVaultReadScope =
 
 export interface LocalSkillVaultReadPolicy {
   scope: LocalSkillVaultReadScope
+  /** 安装时锁定的 Vault 相对文件夹；只对 user-specified-folder 生效。 */
+  fixedFolder?: string
   /** 允许只列出 Vault 路径、类型和修改时间；不允许读取或搜索正文。 */
   metadataDiscovery: boolean
   /** 有用户指定文件夹时先查该范围；这不是权限边界。 */
@@ -73,6 +75,18 @@ function defaultMaxFiles(scope: LocalSkillVaultReadScope): number {
   return 120
 }
 
+function normalizedFixedFolder(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (
+    !normalized ||
+    normalized.startsWith('.') ||
+    normalized.split('/').some((part) => !part || part === '.' || part === '..')
+  ) return null
+  return normalized
+}
+
 function parseV2(value: Record<string, unknown>, expectedOutput: LocalSkillOutput): LocalSkillManifestResult {
   const read = record(value.vaultRead)
   const write = record(value.vaultWrite)
@@ -84,6 +98,13 @@ function parseV2(value: Record<string, unknown>, expectedOutput: LocalSkillOutpu
     return { kind: 'invalid', message: 'manifest v2 的 vaultRead.scope 无效' }
   }
   const typedScope = scope as LocalSkillVaultReadScope
+  const fixedFolder = normalizedFixedFolder(read.fixedFolder)
+  if (fixedFolder === null) {
+    return { kind: 'invalid', message: 'manifest v2 的 vaultRead.fixedFolder 不是安全的 Vault 相对文件夹' }
+  }
+  if (fixedFolder !== undefined && typedScope !== 'user-specified-folder') {
+    return { kind: 'invalid', message: 'vaultRead.fixedFolder 只允许用于 user-specified-folder' }
+  }
   const preferUserScope = read.preferUserScope
   const fallbackToWholeVault = read.fallbackToWholeVault
   const metadataDiscovery = read.metadataDiscovery === true
@@ -132,6 +153,7 @@ function parseV2(value: Record<string, unknown>, expectedOutput: LocalSkillOutpu
       source: 'structured-v2',
       vaultRead: {
         scope: typedScope,
+        ...(fixedFolder ? { fixedFolder } : {}),
         metadataDiscovery,
         preferUserScope,
         fallbackToWholeVault,

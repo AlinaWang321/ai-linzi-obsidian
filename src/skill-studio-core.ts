@@ -64,6 +64,11 @@ export const SKILL_STUDIO_READ_SCOPE_OPTIONS: {
   },
 ]
 
+/** 外部 Skill 安装只给新手两个明确选择；单篇/多篇属于每次运行的输入，不是安装权限。 */
+export const IMPORTED_SKILL_READ_SCOPE_OPTIONS = SKILL_STUDIO_READ_SCOPE_OPTIONS.filter(
+  (option) => option.value === 'whole-vault' || option.value === 'user-specified-folder',
+).sort((left, right) => left.value === 'whole-vault' ? -1 : right.value === 'whole-vault' ? 1 : 0)
+
 function inferredDraftReadScope(input: string): LocalSkillVaultReadScope {
   if (/(?:整个|全部|所有|全库|整库|最近|未指定|没找到|未找到|找不到)/iu.test(input)) {
     return 'whole-vault'
@@ -77,15 +82,20 @@ export function skillStudioReadScope(draft: Pick<SkillStudioDraft, 'readScope' |
   return draft.readScope ?? inferredDraftReadScope(draft.input)
 }
 
-export function skillReadScopePermission(scope: LocalSkillVaultReadScope): string {
+export function skillReadScopePermission(scope: LocalSkillVaultReadScope, fixedFolder?: string): string {
   if (scope === 'current-note') return '只读取用户明确打开或点名的一篇 Vault 笔记'
   if (scope === 'user-specified-files') return '只读取用户明确指定的多份 Vault 文件'
-  if (scope === 'user-specified-folder') return '只读取用户明确指定的 Vault 文件夹范围'
+  if (scope === 'user-specified-folder') {
+    return fixedFolder
+      ? `只读取安装时锁定的 Vault 文件夹：${fixedFolder}`
+      : '只读取用户明确指定的 Vault 文件夹范围'
+  }
   return '允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹'
 }
 
-export function skillReadPolicy(scope: LocalSkillVaultReadScope, metadataDiscovery = false): {
+export function skillReadPolicy(scope: LocalSkillVaultReadScope, metadataDiscovery = false, fixedFolder?: string): {
   scope: LocalSkillVaultReadScope
+  fixedFolder?: string
   metadataDiscovery: boolean
   preferUserScope: boolean
   fallbackToWholeVault: boolean
@@ -93,6 +103,7 @@ export function skillReadPolicy(scope: LocalSkillVaultReadScope, metadataDiscove
 } {
   return {
     scope,
+    ...(scope === 'user-specified-folder' && fixedFolder ? { fixedFolder } : {}),
     metadataDiscovery,
     preferUserScope: scope === 'whole-vault' || scope === 'user-specified-folder',
     fallbackToWholeVault: scope === 'whole-vault',
@@ -831,9 +842,19 @@ function readScopeFromManifest(block: CreateLocalSkillBlock): LocalSkillVaultRea
   return parsed.kind === 'valid' ? parsed.policy.vaultRead.scope : null
 }
 
-/** 导入权限弹窗的初始值只用于展示；无有效声明时保持最低的单篇范围。 */
+/** 外部 Skill 默认授权当前整个 Vault；已有文件夹硬边界则原样保留。 */
 export function importedSkillReadScope(block: CreateLocalSkillBlock): LocalSkillVaultReadScope {
-  return readScopeFromManifest(normalizeGeneratedSkillManifest(block).block) ?? 'current-note'
+  return readScopeFromManifest(normalizeGeneratedSkillManifest(block).block) === 'user-specified-folder'
+    ? 'user-specified-folder'
+    : 'whole-vault'
+}
+
+export function importedSkillFixedFolder(block: CreateLocalSkillBlock): string | undefined {
+  const normalized = normalizeGeneratedSkillManifest(block).block
+  const file = normalized.files.find((item) => item.path === SKILL_MANIFEST_PATH)
+  if (!file) return undefined
+  const parsed = parseLocalSkillManifest(file.content, localSkillOutputFromMarkdown(normalized.content))
+  return parsed.kind === 'valid' ? parsed.policy.vaultRead.fixedFolder : undefined
 }
 
 function replaceCompatibilitySection(content: string, section: string): string {
@@ -850,6 +871,7 @@ function replaceCompatibilitySection(content: string, section: string): string {
 export function adaptImportedSkillReadScope(
   sourceBlock: CreateLocalSkillBlock,
   scope: LocalSkillVaultReadScope,
+  fixedFolder?: string,
 ): { block: CreateLocalSkillBlock; repairs: string[] } {
   const firstPass = normalizeGeneratedSkillManifest(sourceBlock)
   const block = firstPass.block
@@ -875,8 +897,11 @@ export function adaptImportedSkillReadScope(
     ? previous.skillVersion
     : '1.0.0'
   const sampleInput = skillTestInputForReadScope(block.name, scope)
+  const normalizedFolder = scope === 'user-specified-folder'
+    ? fixedFolder?.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+    : undefined
   const permissions = [
-    skillReadScopePermission(scope),
+    skillReadScopePermission(scope, normalizedFolder),
     '读取权限仅限当前 Obsidian Vault，不包含电脑其他目录',
     importedSkillOutputPermission(output),
     scripts.length > 0
@@ -894,7 +919,7 @@ export function adaptImportedSkillReadScope(
       ? previous.createdWith
       : 'external-skill',
     permissions,
-    vaultRead: skillReadPolicy(scope),
+    vaultRead: skillReadPolicy(scope, false, normalizedFolder),
     vaultWrite: {
       mode: output,
       confirmation: 'single-atomic-plan',
@@ -907,7 +932,7 @@ export function adaptImportedSkillReadScope(
   const compatibilitySection = [
     '## AI霖子兼容权限',
     `- [权限与版本](${SKILL_MANIFEST_PATH})`,
-    `- ${skillReadScopePermission(scope)}`,
+    `- ${skillReadScopePermission(scope, normalizedFolder)}`,
     '- 权限上限是当前 Obsidian Vault，不能访问 Vault 外的电脑文件。',
     '- 全库搜索只在本机用目录和索引筛选候选，只向 AI 提交完成任务所需的文件正文。',
     `- ${importedSkillOutputPermission(output)}；写入使用一次原子确认。`,

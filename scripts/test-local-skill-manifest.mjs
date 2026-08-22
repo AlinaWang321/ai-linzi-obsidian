@@ -86,6 +86,35 @@ const invalidFolderFallback = manifest.parseLocalSkillManifest(JSON.stringify({
 }), 'chat')
 assert.equal(invalidFolderFallback.kind, 'invalid')
 
+const fixedFolder = manifest.parseLocalSkillManifest(JSON.stringify({
+  schemaVersion: 2,
+  permissions: ['只读安装时选择的逐字稿文件夹'],
+  vaultRead: {
+    scope: 'user-specified-folder',
+    fixedFolder: '01_Raw/课程逐字稿',
+    preferUserScope: true,
+    fallbackToWholeVault: false,
+    maxFiles: 80,
+  },
+  vaultWrite: { mode: 'chat', confirmation: 'single-atomic-plan', overwrite: false },
+  network: 'ai-linzi-only',
+  programs: [],
+}), 'chat')
+assert.equal(fixedFolder.kind, 'valid')
+assert.equal(fixedFolder.policy.vaultRead.fixedFolder, '01_Raw/课程逐字稿')
+
+const escapedFolder = manifest.parseLocalSkillManifest(JSON.stringify({
+  schemaVersion: 2,
+  permissions: ['坏路径'],
+  vaultRead: {
+    scope: 'user-specified-folder', fixedFolder: '../电脑目录', preferUserScope: true,
+    fallbackToWholeVault: false, maxFiles: 80,
+  },
+  vaultWrite: { mode: 'chat', confirmation: 'single-atomic-plan', overwrite: false },
+  network: 'ai-linzi-only', programs: [],
+}), 'chat')
+assert.equal(escapedFolder.kind, 'invalid')
+
 const legacyWhole = manifest.parseLocalSkillManifest(JSON.stringify({
   schemaVersion: 1,
   permissions: ['允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹'],

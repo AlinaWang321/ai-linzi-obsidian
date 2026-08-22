@@ -948,7 +948,9 @@ export class LocalVaultAgent {
       if (!path) throw new Error('read_note 缺少合法 path')
       if (this.protected(path)) throw new Error('该文件属于插件保护范围，不能读取')
       this.assertSkillReadPathAllowed(path, skillContext)
-      const offset = clampInt(call.arguments.offset, 0, 0, 120_000)
+      // 批量逐字稿/PDF 可能远超 12 万字；offset 只决定从本机哪里继续读，
+      // 单次上传仍受 READ_NOTE_MAX_CHARS 限制，不会把整份长文一次提交给模型。
+      const offset = clampInt(call.arguments.offset, 0, 0, 8_000_000)
       const maxChars = clampInt(call.arguments.maxChars, 12_000, 500, READ_NOTE_MAX_CHARS)
       const result = await this.search.readPath(path, { offset, maxChars })
       this.recordSkillVaultRead(path, skillContext)

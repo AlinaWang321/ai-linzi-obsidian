@@ -20,14 +20,26 @@ import {
  * Alina 明确接受。预算用尽不再报错断头，改为提示模型立即收尾（见下方函数）。
  */
 export const VAULT_AGENT_MAX_ROUNDS = 12
+/** 明确的批量文件任务最多自动续跑 3 批；普通问答仍保持 12 轮。 */
+export const VAULT_AGENT_BATCH_MAX_ROUNDS = 36
 export const VAULT_AGENT_MAX_CALLS_PER_ROUND = 4
 export const VAULT_AGENT_MAX_TOTAL_RESULT_CHARS = 360_000
+export const VAULT_AGENT_BATCH_MAX_TOTAL_RESULT_CHARS = 1_000_000
 /** 经营周报官方 Skill 的显式全库批读上限；普通对话仍保持 36 万字符。 */
 export const WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS = 1_000_000
 export const VAULT_AGENT_MAX_PLAN_OPERATIONS = 60
 export const VAULT_NOTE_WRITE_MAX_CHARS = 30_000
 export const VAULT_NOTE_UPDATE_MAX_OPERATIONS = 30
 export const VAULT_NOTE_WRITE_MAX_FILES = 12
+
+/** 只在用户明确要求处理一批资料时扩容，避免普通闲聊误跑 36 轮。 */
+export function isVaultBatchTask(text: string): boolean {
+  const normalized = text.normalize('NFKC')
+  const scope = /(?:批量|全部|所有|每(?:一|份|篇|个)|逐(?:份|篇|个)|整批|一批|多份|多个|整个(?:文件夹|目录|Vault|仓库|知识库)|文件夹(?:里|内|下))/iu
+  const material = /(?:逐字稿|文件|文档|笔记|材料|资料|文章|档案|记录|内容|Vault|仓库|知识库)/iu
+  const action = /(?:处理|总结|整理|提炼|归纳|分析|改写|生成|更新|读取|搜索|查找|扫描|复盘)/u
+  return scope.test(normalized) && material.test(normalized) && action.test(normalized)
+}
 
 export type VaultAgentToolName =
   | 'vault_search'
