@@ -27,12 +27,90 @@ export interface SkillStudioTemplate {
 export interface SkillStudioDraft {
   name: string
   purpose: string
+  /** 机器可读的真实权限边界；input 只描述业务材料，不再承担权限猜测。 */
+  readScope?: LocalSkillVaultReadScope
   input: string
   steps: string
   triggers: string[]
   output: SkillStudioOutput
   sampleInput: string
   version: string
+}
+
+export const SKILL_STUDIO_READ_SCOPE_OPTIONS: {
+  value: LocalSkillVaultReadScope
+  label: string
+  description: string
+}[] = [
+  {
+    value: 'current-note',
+    label: '当前打开或点名的一篇笔记',
+    description: '适合只处理一份逐字稿或单篇文档的流程。',
+  },
+  {
+    value: 'user-specified-files',
+    label: '用户指定的多份文件',
+    description: '适合对几份明确材料做对比、合并或复盘。',
+  },
+  {
+    value: 'user-specified-folder',
+    label: '用户指定的一个文件夹',
+    description: '适合只处理某个项目、客户或课程文件夹。',
+  },
+  {
+    value: 'whole-vault',
+    label: '当前整个 Vault',
+    description: '适合周报、经营看板和 AI 管家；先查指定范围，没找到再查整库。',
+  },
+]
+
+function inferredDraftReadScope(input: string): LocalSkillVaultReadScope {
+  if (/(?:整个|全部|所有|全库|整库|最近|未指定|没找到|未找到|找不到)/iu.test(input)) {
+    return 'whole-vault'
+  }
+  if (/(?:文件夹|目录)/u.test(input)) return 'user-specified-folder'
+  if (/(?:多份|多个|几份|一组|这些文件)/u.test(input)) return 'user-specified-files'
+  return 'current-note'
+}
+
+export function skillStudioReadScope(draft: Pick<SkillStudioDraft, 'readScope' | 'input'>): LocalSkillVaultReadScope {
+  return draft.readScope ?? inferredDraftReadScope(draft.input)
+}
+
+export function skillReadScopePermission(scope: LocalSkillVaultReadScope): string {
+  if (scope === 'current-note') return '只读取用户明确打开或点名的一篇 Vault 笔记'
+  if (scope === 'user-specified-files') return '只读取用户明确指定的多份 Vault 文件'
+  if (scope === 'user-specified-folder') return '只读取用户明确指定的 Vault 文件夹范围'
+  return '允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹'
+}
+
+export function skillReadPolicy(scope: LocalSkillVaultReadScope, metadataDiscovery = false): {
+  scope: LocalSkillVaultReadScope
+  metadataDiscovery: boolean
+  preferUserScope: boolean
+  fallbackToWholeVault: boolean
+  maxFiles: number
+} {
+  return {
+    scope,
+    metadataDiscovery,
+    preferUserScope: scope === 'whole-vault' || scope === 'user-specified-folder',
+    fallbackToWholeVault: scope === 'whole-vault',
+    maxFiles: scope === 'current-note'
+      ? 1
+      : scope === 'user-specified-files'
+        ? 12
+        : scope === 'user-specified-folder'
+          ? 80
+          : 120,
+  }
+}
+
+export function skillTestInputForReadScope(name: string, scope: LocalSkillVaultReadScope): string {
+  if (scope === 'current-note') return `用 ${name} Skill 处理当前笔记`
+  if (scope === 'user-specified-files') return `用 ${name} Skill 处理我指定的这些文件`
+  if (scope === 'user-specified-folder') return `用 ${name} Skill 处理我指定的文件夹`
+  return `用 ${name} Skill 在整个 Vault 中完成这项任务`
 }
 
 export type SkillInvocationPreview = {
@@ -454,45 +532,24 @@ create-artifact`,
 
 export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
   const triggers = draft.triggers.map((item) => item.trim()).filter(Boolean).slice(0, 8)
-  const allowsVaultSearch = /(?:整个|全部|所有|全库|整库|最近|未指定|没找到|未找到|找不到)/iu.test(draft.input)
-  const usesFolderScope = /(?:文件夹|目录)/u.test(draft.input)
-  const inputPermission = allowsVaultSearch
-    ? '允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹'
-    : usesFolderScope
-      ? '只读取用户明确指定的 Vault 文件夹范围'
-      : '只读取用户明确指定的当前一份材料'
-  const vaultRead = allowsVaultSearch
-    ? {
-        scope: 'whole-vault',
-        preferUserScope: true,
-        fallbackToWholeVault: true,
-        maxFiles: 120,
-      }
-    : usesFolderScope
-      ? {
-          scope: 'user-specified-folder',
-          preferUserScope: true,
-          fallbackToWholeVault: false,
-          maxFiles: 80,
-        }
-      : {
-          scope: 'current-note',
-          preferUserScope: false,
-          fallbackToWholeVault: false,
-          maxFiles: 1,
-        }
+  const readScope = skillStudioReadScope(draft)
+  const inputPermission = skillReadScopePermission(readScope)
+  const vaultRead = skillReadPolicy(readScope)
   const vaultWrite = {
     mode: draft.output,
     confirmation: 'single-atomic-plan',
     overwrite: false,
   }
-  const inputScopeRequirement = allowsVaultSearch
-    ? '输入范围允许搜索整个 Vault 时，优先使用用户指定的文件夹；用户未指定文件夹，或指定范围内没有找到所需材料时，继续在整个 Vault 中搜索任务相关候选，不要直接回答“没有”。搜索和筛选在本机完成，只读取并提交完成任务所必需的文件内容，不得把整个 Vault 的正文一次性提交给模型。'
-    : usesFolderScope
-      ? '输入范围只允许文件夹时，SKILL.md 必须要求运行时由用户明确指定或选择一个文件夹，只在该文件夹内按约定的文件类型和筛选条件处理，不得扩大到其他文件夹或整个 Vault；文件类型或筛选条件不清楚时先追问。'
-      : '输入范围是单篇笔记或单个材料时，只读取用户明确指定的那一份。'
+  const inputScopeRequirement = readScope === 'whole-vault'
+    ? '读取范围允许搜索当前整个 Vault：优先使用用户指定的文件或文件夹；用户未指定范围，或指定范围内没有找到所需材料时，继续在整个 Vault 中搜索任务相关候选，不要直接回答“没有”。搜索和筛选在本机完成，只读取并提交完成任务所必需的文件内容，不得把整个 Vault 的正文一次性提交给模型，也永远不能访问 Vault 外的电脑文件。'
+    : readScope === 'user-specified-folder'
+      ? '读取范围只允许一个用户指定文件夹：SKILL.md 必须要求运行时由用户明确指定或选择一个文件夹，只在该文件夹内按约定的文件类型和筛选条件处理，不得扩大到其他文件夹或整个 Vault；文件类型或筛选条件不清楚时先追问。'
+      : readScope === 'user-specified-files'
+        ? '读取范围只允许用户明确指定的多份文件：不得读取未选中的文件；用户没有指定材料或候选有歧义时，先让用户选择。'
+        : '读取范围是单篇笔记：只读取用户明确打开或点名的那一份；没有唯一目标时先让用户选择。'
   const permissions = [
     inputPermission,
+    '读取权限仅限当前 Obsidian Vault，不包含电脑其他目录',
     draft.output === 'chat'
       ? '只在聊天中输出，不写文件'
       : draft.output === 'create-note'
@@ -508,7 +565,8 @@ export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
 名称：${draft.name}
 版本：${draft.version}
 用途：${draft.purpose}
-输入范围：${draft.input}
+读取权限：${inputPermission}
+输入材料说明：${draft.input}
 工作步骤：${draft.steps}
 自动触发短语：${triggers.join('；') || '不要自动触发，只允许点名调用'}
 输出方式：${draft.output}
@@ -757,6 +815,120 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
   } catch {
     return { block: workingBlock, repairs: initialRepairs }
   }
+}
+
+function importedSkillOutputPermission(output: SkillStudioOutput): string {
+  if (output === 'chat') return '只在聊天中输出，不写文件'
+  if (output === 'create-artifact') return '确认后只生成一个本机成品文件，不覆盖'
+  if (output === 'update-current-note') return '确认后只更新发送时锁定的当前笔记，不静默覆盖'
+  return '确认后只新建 Markdown，不覆盖'
+}
+
+function readScopeFromManifest(block: CreateLocalSkillBlock): LocalSkillVaultReadScope | null {
+  const file = block.files.find((item) => item.path === SKILL_MANIFEST_PATH)
+  if (!file) return null
+  const parsed = parseLocalSkillManifest(file.content, localSkillOutputFromMarkdown(block.content))
+  return parsed.kind === 'valid' ? parsed.policy.vaultRead.scope : null
+}
+
+/** 导入权限弹窗的初始值只用于展示；无有效声明时保持最低的单篇范围。 */
+export function importedSkillReadScope(block: CreateLocalSkillBlock): LocalSkillVaultReadScope {
+  return readScopeFromManifest(normalizeGeneratedSkillManifest(block).block) ?? 'current-note'
+}
+
+function replaceCompatibilitySection(content: string, section: string): string {
+  const pattern = /\n## AI霖子兼容权限\s*\n[\s\S]*?(?=\n##\s|\s*$)/u
+  if (pattern.test(content)) return content.replace(pattern, `\n${section}`)
+  return `${content.trim()}\n\n${section}`
+}
+
+/**
+ * 外部 Skill 没有 AI霖子 manifest 时，只有用户在导入弹窗明确选择读取范围后，
+ * 才本机生成可见权限合同。即使包内有脚本也只完成安装适配：本地程序总开关
+ * 仍默认关闭，运行时仍逐步确认，绝不因导入而执行。
+ */
+export function adaptImportedSkillReadScope(
+  sourceBlock: CreateLocalSkillBlock,
+  scope: LocalSkillVaultReadScope,
+): { block: CreateLocalSkillBlock; repairs: string[] } {
+  const firstPass = normalizeGeneratedSkillManifest(sourceBlock)
+  const block = firstPass.block
+  const manifestFile = block.files.find((item) => item.path === SKILL_MANIFEST_PATH)
+  let previous: Record<string, unknown> = {}
+  if (manifestFile) {
+    try {
+      const parsed: unknown = JSON.parse(manifestFile.content)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        previous = parsed as Record<string, unknown>
+      }
+    } catch {
+      // 用户已经在导入弹窗明确授权；损坏的外部 manifest 由本机重建为最小合同。
+    }
+  }
+  const output = localSkillOutputFromMarkdown(block.content)
+  const scripts = block.files
+    .filter((item) => item.path.startsWith('scripts/'))
+    .map((item) => item.path)
+    .sort((left, right) => left.localeCompare(right, 'en'))
+  const previousVersion = typeof previous.skillVersion === 'string' &&
+    /^\d{1,9}\.\d{1,9}\.\d{1,9}$/u.test(previous.skillVersion)
+    ? previous.skillVersion
+    : '1.0.0'
+  const sampleInput = skillTestInputForReadScope(block.name, scope)
+  const permissions = [
+    skillReadScopePermission(scope),
+    '读取权限仅限当前 Obsidian Vault，不包含电脑其他目录',
+    importedSkillOutputPermission(output),
+    scripts.length > 0
+      ? `包含 ${scripts.length} 个本机脚本；导入时不执行，开启本地程序后每一步仍需确认`
+      : '不运行本机程序',
+    scripts.length > 0
+      ? '脚本如声明联网，会在该步确认卡中明确提示'
+      : '不额外联网',
+  ]
+  const manifest = {
+    schemaVersion: 2,
+    skillVersion: previousVersion,
+    createdWith: 'AI霖子 Skill Studio',
+    adaptedFrom: typeof previous.createdWith === 'string'
+      ? previous.createdWith
+      : 'external-skill',
+    permissions,
+    vaultRead: skillReadPolicy(scope),
+    vaultWrite: {
+      mode: output,
+      confirmation: 'single-atomic-plan',
+      overwrite: false,
+    },
+    network: 'ai-linzi-only',
+    programs: scripts,
+    sampleInputs: [sampleInput],
+  }
+  const compatibilitySection = [
+    '## AI霖子兼容权限',
+    `- [权限与版本](${SKILL_MANIFEST_PATH})`,
+    `- ${skillReadScopePermission(scope)}`,
+    '- 权限上限是当前 Obsidian Vault，不能访问 Vault 外的电脑文件。',
+    '- 全库搜索只在本机用目录和索引筛选候选，只向 AI 提交完成任务所需的文件正文。',
+    `- ${importedSkillOutputPermission(output)}；写入使用一次原子确认。`,
+    scripts.length > 0
+      ? `- 包含 ${scripts.length} 个本机脚本；安装不等于运行，程序默认关闭且每一步仍需确认。`
+      : '- 不运行本机程序。',
+    ...(scripts.length > 0 ? ['- 脚本如声明联网，会在该步确认卡中明确提示。'] : []),
+  ].join('\n')
+  const skillContent = replaceCompatibilitySection(block.content, compatibilitySection)
+  const files = block.files
+    .filter((item) => item.path !== SKILL_MANIFEST_PATH)
+    .map((item) => item.path === 'SKILL.md' ? { ...item, content: skillContent } : item)
+  files.push({ path: SKILL_MANIFEST_PATH, content: JSON.stringify(manifest, null, 2) })
+  const secondPass = normalizeGeneratedSkillManifest({ ...block, content: skillContent, files })
+  const repairs = [
+    ...firstPass.repairs.filter((item) => !/最低权限兼容 manifest/u.test(item)),
+    `导入时已选择读取范围：${skillReadScopePermission(scope)}`,
+    ...(scripts.length > 0 ? [`已登记 ${scripts.length} 个脚本；不会自动运行`] : []),
+    ...secondPass.repairs,
+  ]
+  return { block: secondPass.block, repairs: [...new Set(repairs)] }
 }
 
 export function skillBlockManifest(block: CreateLocalSkillBlock): {

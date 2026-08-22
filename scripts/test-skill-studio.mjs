@@ -336,6 +336,20 @@ const fallbackVaultPrompt = studioCore.buildSkillStudioPrompt({
 assert.match(fallbackVaultPrompt, /允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹/)
 assert.match(fallbackVaultPrompt, /不要直接回答“没有”/)
 assert.doesNotMatch(fallbackVaultPrompt, /只读取用户明确指定的 Vault 文件夹范围/)
+const explicitSingleNotePrompt = studioCore.buildSkillStudioPrompt({
+  name: 'single-note-review',
+  purpose: '只处理一篇笔记',
+  readScope: 'current-note',
+  input: '业务说明里即使提到整个知识库，也不能靠文字扩大权限',
+  steps: '读取当前笔记\n生成摘要',
+  triggers: ['总结当前笔记'],
+  output: 'chat',
+  sampleInput: '用 single-note-review Skill 总结当前笔记',
+  version: '1.0.0',
+})
+assert.match(explicitSingleNotePrompt, /"scope":"current-note"/)
+assert.doesNotMatch(explicitSingleNotePrompt, /"scope":"whole-vault"/)
+assert.match(explicitSingleNotePrompt, /不包含电脑其他目录/)
 assert.match(prompt, /原始素材用 \$RAW\//)
 assert.match(prompt, /知识库用 \$WIKI\//)
 assert.match(prompt, /AI 产出用 \$OUTPUT\//)
@@ -497,6 +511,44 @@ assert.equal(
   false,
   '缺少 manifest 的脚本包不能自动猜权限后放行',
 )
+const importableExternalScript = {
+  ...importedWithoutManifest,
+  name: 'external-script-skill',
+  description: '读取 Vault 资料并运行本机脚本生成结果',
+  content: importedWithoutManifest.content
+    .replaceAll('external-note-method', 'external-script-skill')
+    .replace('把当前材料沉淀为一份方法论笔记', '读取 Vault 资料并运行本机脚本生成结果'),
+  files: [
+    {
+      path: 'SKILL.md',
+      content: importedWithoutManifest.files[0].content
+        .replaceAll('external-note-method', 'external-script-skill')
+        .replace('把当前材料沉淀为一份方法论笔记', '读取 Vault 资料并运行本机脚本生成结果'),
+    },
+    { path: 'scripts/run.mjs', content: 'console.log("ok")' },
+  ],
+}
+for (const scope of ['current-note', 'user-specified-files', 'user-specified-folder', 'whole-vault']) {
+  const adapted = studioCore.adaptImportedSkillReadScope(importableExternalScript, scope)
+  const checked = studioCore.skillBlockManifest(adapted.block)
+  assert.equal(checked.valid, true, `${scope}: ${checked.problems.join('；')}`)
+  const adaptedManifest = JSON.parse(adapted.block.files.find(
+    (file) => file.path === 'references/ai-linzi-skill-manifest.json',
+  ).content)
+  assert.equal(adaptedManifest.schemaVersion, 2)
+  assert.equal(adaptedManifest.vaultRead.scope, scope)
+  assert.equal(adaptedManifest.vaultRead.fallbackToWholeVault, scope === 'whole-vault')
+  assert.deepEqual(adaptedManifest.programs, ['scripts/run.mjs'])
+  assert.ok(adaptedManifest.permissions.some((item) => /不包含电脑其他目录/u.test(item)))
+  assert.ok(adaptedManifest.permissions.some((item) => /声明联网.*确认卡/u.test(item)))
+  assert.match(adapted.block.content, /不能访问 Vault 外的电脑文件/u)
+}
+assert.equal(
+  studioCore.importedSkillReadScope(importableExternalScript),
+  'current-note',
+  '外部包没有有效权限声明时，导入弹窗初始值必须是最低单篇权限',
+)
+console.log('  ✓ 外部脚本 Skill 只有在用户选择范围后才适配，四种范围均锁在当前 Vault 且脚本不自动运行')
 const generatedWithoutOutput = {
   ...generatedWithoutSampleInput,
   content: generatedWithoutSampleInput.content.replace(
@@ -586,6 +638,15 @@ export class Modal { constructor(app) { this.app = app } }
 export class Notice { constructor() {} }
 export class Setting { constructor() {} }
 export const normalizePath = (value) => value.replaceAll('\\\\', '/').replace(/^\\.\\//, '').replace(/\\/{2,}/g, '/')
+export const parseYaml = (value) => {
+  const result = {}
+  for (const line of value.split(/\\r?\\n/)) {
+    const match = /^([A-Za-z][A-Za-z0-9_-]*):\\s*(.*)$/.exec(line.trim())
+    if (!match) continue
+    try { result[match[1]] = JSON.parse(match[2]) } catch { result[match[1]] = match[2] }
+  }
+  return result
+}
 `
 const obsidianPlugin = {
   name: 'obsidian-test-double',
@@ -693,6 +754,25 @@ const zipBytes = zipSync({
 const imported = studioUi.portableBundleFromZip(zipBytes)
 assert.equal(imported.name, 'round-trip-skill')
 assert.equal(imported.files.some((file) => file.path === 'INSTALL.md'), false)
+const importedAgentSkill = studioUi.portableBundleFromZip(zipSync({
+  'agent-standard-skill/SKILL.md': strToU8(`---
+name: agent-standard-skill
+description: "Codex 或 WorkBuddy 导出的标准 Agent Skill"
+license: Apache-2.0
+compatibility: Requires local files
+allowed-tools: Read Grep
+---
+# Agent standard skill
+
+按需读取本地资料。`),
+  'agent-standard-skill/references/guide.md': strToU8('# Guide\n\nFollow this guide.'),
+}))
+assert.equal(importedAgentSkill.name, 'agent-standard-skill')
+assert.match(importedAgentSkill.content, /^---\nname: agent-standard-skill\ndescription: /u)
+assert.doesNotMatch(importedAgentSkill.content, /license:|compatibility:|allowed-tools:/u)
+const adaptedAgentSkill = studioCore.adaptImportedSkillReadScope(importedAgentSkill, 'whole-vault')
+assert.equal(studioCore.skillBlockManifest(adaptedAgentSkill.block).valid, true)
+assert.match(adaptedAgentSkill.block.content, /references\/guide\.md/u)
 const importedWithoutManifestZip = studioUi.portableBundleFromZip(zipSync({
   'plain-text-skill/SKILL.md': strToU8(`---
 name: plain-text-skill

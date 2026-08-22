@@ -325,6 +325,26 @@ assert.equal(
   '用户写出已安装 Skill 的精确英文名时，即使省略 Skill 类型词也必须进入更新器',
 )
 assert.equal(
+  core.matchLocalSkillUpdateIntent(
+    '让 codex-daily-reflection 可以读取整个 Vault，优先看我指定的文件夹。',
+    [customerProfile, codexDailyReflection],
+  ).skill.path,
+  codexDailyReflection.path,
+  '自然权限表达也必须进入同一个 Skill 更新器，不要求用户先说“修改权限”',
+)
+assert.equal(
+  core.matchLocalSkillUpdateIntent(
+    '把 codex-daily-reflection 的读取范围收窄到当前笔记。',
+    [customerProfile, codexDailyReflection],
+  ).skill.path,
+  codexDailyReflection.path,
+)
+assert.equal(
+  core.matchLocalSkillUpdateIntent('开放知识库读取权限', [customerProfile, codexDailyReflection]).kind,
+  'none',
+  '没有点名已安装 Skill 时不能把普通权限讨论劫持成更新',
+)
+assert.equal(
   core.matchLocalSkillUpdateIntent('请修改“每周经营复盘”：把输出放到方法论目录', [portable]).skill.path,
   portable.path,
   '用户用引号精确点名中文 Skill 时可以省略类型词',

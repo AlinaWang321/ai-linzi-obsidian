@@ -50,6 +50,11 @@ assert.equal(core.detectVaultAgentIntent('请把这篇笔记整理到归档目�
 assert.equal(core.detectVaultAgentIntent('请把这篇笔记删除'), 'organize')
 assert.equal(core.detectVaultAgentIntent('删除这篇笔记'), 'organize')
 assert.equal(core.detectVaultAgentIntent('把当前笔记移入回收站'), 'organize')
+assert.equal(
+  core.detectVaultAgentIntent('把我们刚才重新梳理好的产品资料更新到我的知识库中'),
+  'organize',
+  '自然语言要求把对话成果更新到知识库时，必须进入带预览和确认的 Vault 写入流程',
+)
 assert.equal(core.detectVaultAgentIntent('只读取，不要整理或移动任何文件'), 'answer')
 assert.equal(core.detectVaultAgentIntent('不要删除这篇笔记'), 'answer')
 assert.equal(core.detectVaultAgentIntent('别帮我删除这篇笔记'), 'answer')

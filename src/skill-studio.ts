@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Setting, TFile, TFolder, normalizePath } from 'obsidian'
+import { App, Modal, Notice, Setting, TFile, TFolder, normalizePath, parseYaml } from 'obsidian'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import {
   CREATE_LOCAL_SKILL_MAX_FILES,
@@ -8,14 +8,21 @@ import {
 } from './create-local-skill'
 import {
   OFFICIAL_SKILL_TEMPLATES,
+  SKILL_STUDIO_READ_SCOPE_OPTIONS,
+  adaptImportedSkillReadScope,
   buildSkillStudioPrompt,
+  importedSkillReadScope,
   previewSkillInvocation,
   previewSkillStudioDraftInvocation,
+  skillBlockManifest,
   skillInvocationPreviewText,
+  skillReadScopePermission,
+  skillTestInputForReadScope,
   type SkillStudioDraft,
   type SkillStudioOutput,
 } from './skill-studio-core'
 import type { LocalSkillDescriptor } from './local-skill-core'
+import type { LocalSkillVaultReadScope } from './local-skill-manifest'
 
 export interface SkillStudioOptions {
   onCreateWithAi: (prompt: string, sampleInput: string) => void
@@ -24,16 +31,110 @@ export interface SkillStudioOptions {
   onUpdateWithAi?: (skill: LocalSkillDescriptor, instruction: string) => void
 }
 
+function portableExternalSkillEntry(content: string): { name: string; content: string } {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/u.exec(content)
+  if (!match) throw new Error('SKILL.md 缺少 YAML frontmatter')
+  let metadata: unknown
+  try {
+    metadata = parseYaml(match[1])
+  } catch {
+    throw new Error('SKILL.md frontmatter 不是合法 YAML')
+  }
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    throw new Error('SKILL.md frontmatter 顶层必须是对象')
+  }
+  const record = metadata as Record<string, unknown>
+  const name = typeof record.name === 'string' ? record.name.trim() : ''
+  const description = typeof record.description === 'string' ? record.description.trim() : ''
+  const body = match[2].trim()
+  if (!name || !description || !body) {
+    throw new Error('SKILL.md 必须包含 name、description 和正文')
+  }
+  return {
+    name,
+    // Codex / WorkBuddy 等 Agent Skills 允许额外 frontmatter。AI霖子运行入口只保留
+    // 跨端必需的两个公共字段，其余能力与权限改写到可见正文和 manifest v2。
+    content: `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n${body}`,
+  }
+}
+
 function defaultDraft(): SkillStudioDraft {
   return {
     name: '',
     purpose: '',
-    input: '优先使用用户指定的仓库（Vault）文件夹；未指定或该文件夹没找到所需材料时，可搜索整个 Vault',
+    readScope: 'whole-vault',
+    input: '按任务查找相关材料，优先使用用户点名的文件或文件夹',
     steps: '',
     triggers: [],
     output: 'create-note',
     sampleInput: '',
     version: '1.0.0',
+  }
+}
+
+export class ImportedSkillPermissionModal extends Modal {
+  private readScope: LocalSkillVaultReadScope
+
+  constructor(
+    app: App,
+    private readonly block: CreateLocalSkillBlock,
+    private readonly onConfirm: (block: CreateLocalSkillBlock, sampleInput: string) => void,
+  ) {
+    super(app)
+    this.readScope = importedSkillReadScope(block)
+  }
+
+  onOpen(): void {
+    this.setTitle(`导入 Skill：${this.block.name}`)
+    this.contentEl.empty()
+    this.contentEl.createDiv({
+      text: '先选择这个 Skill 能读取多大范围。权限只在当前 Obsidian Vault 内生效；无论选择哪项，都不能读取 Vault 外的电脑文件。',
+      cls: 'ai-linzi-skill-studio-intro',
+    })
+    const scopeDescription = this.contentEl.createDiv({ cls: 'ai-linzi-skill-studio-intro' })
+    const refreshDescription = () => {
+      const option = SKILL_STUDIO_READ_SCOPE_OPTIONS.find((item) => item.value === this.readScope)
+      scopeDescription.setText(option?.description ?? '')
+    }
+    new Setting(this.contentEl)
+      .setName('读取范围')
+      .setDesc('这是运行时硬边界，后续也可以在主对话中更新这个 Skill 的范围。')
+      .addDropdown((dropdown) => {
+        for (const option of SKILL_STUDIO_READ_SCOPE_OPTIONS) {
+          dropdown.addOption(option.value, option.label)
+        }
+        dropdown.setValue(this.readScope).onChange((value) => {
+          this.readScope = value as LocalSkillVaultReadScope
+          refreshDescription()
+        })
+      })
+    refreshDescription()
+    const scripts = this.block.files.filter((file) => file.path.startsWith('scripts/'))
+    const boundary = this.contentEl.createDiv({ cls: 'ai-linzi-skill-permissions' })
+    boundary.createEl('strong', { text: '导入边界' })
+    const list = boundary.createEl('ul')
+    list.createEl('li', { text: '全库搜索只在本机先筛选候选，不会把整个 Vault 正文一次性上传' })
+    list.createEl('li', { text: '普通写入仍先展示完整方案，用户确认一次后才执行' })
+    list.createEl('li', {
+      text: scripts.length > 0
+        ? `检测到 ${scripts.length} 个脚本：安装不会运行；本地程序默认关闭，开启后每一步仍需确认`
+        : '未检测到本机脚本',
+    })
+    new Setting(this.contentEl)
+      .addButton((button) => button
+        .setButtonText('生成安装确认卡')
+        .setCta()
+        .onClick(() => {
+          const adapted = adaptImportedSkillReadScope(this.block, this.readScope)
+          const manifest = skillBlockManifest(adapted.block)
+          if (!manifest.valid) {
+            new Notice(`Skill 适配后仍未通过校验：${manifest.problems.join('；')}`, 9000)
+            return
+          }
+          this.close()
+          this.onConfirm(adapted.block, skillTestInputForReadScope(adapted.block.name, this.readScope))
+        }))
+      .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
   }
 }
 
@@ -68,11 +169,14 @@ export function portableBundleFromZip(data: Uint8Array): CreateLocalSkillBlock {
   }
   const entry = files.find((file) => file.path.toLocaleLowerCase() === 'skill.md')
   if (!entry) throw new Error('ZIP 根目录缺少 SKILL.md')
-  const name = /^---\r?\n[\s\S]*?^name:\s*([^\r\n]+)$/m.exec(entry.content)?.[1]?.trim() ?? ''
-  const protocol = files
+  const normalizedEntry = portableExternalSkillEntry(entry.content)
+  const normalizedFiles = files.map((file) =>
+    file === entry ? { ...file, path: 'SKILL.md', content: normalizedEntry.content } : file,
+  )
+  const protocol = normalizedFiles
     .map((file) => `<<<Skill文件 path=${file.path}>>>\n${file.content}\n<<<Skill文件结束>>>`)
     .join('\n')
-  const parsed = parsePortableSkillBundle(name, protocol)
+  const parsed = parsePortableSkillBundle(normalizedEntry.name, protocol)
   if (!parsed) throw new Error('ZIP 没有通过 AI霖子 Skill 安全校验，请检查名称、frontmatter 和文件路径')
   return parsed
 }
@@ -207,8 +311,20 @@ export class SkillStudioModal extends Modal {
         .setValue(this.draft.purpose)
         .onChange((value) => (this.draft.purpose = value.trim())))
     new Setting(this.contentEl)
-      .setName('输入范围')
-      .setDesc('默认先查用户指定的文件夹，找不到时再查整个仓库，避免被单篇或单目录锁死。')
+      .setName('读取范围')
+      .setDesc('这是运行时硬边界。整个 Vault 也只限当前 Obsidian 仓库，不包含电脑其他文件。')
+      .addDropdown((dropdown) => {
+        for (const option of SKILL_STUDIO_READ_SCOPE_OPTIONS) {
+          dropdown.addOption(option.value, option.label)
+        }
+        dropdown.setValue(this.draft.readScope ?? 'whole-vault').onChange((value) => {
+          this.draft.readScope = value as LocalSkillVaultReadScope
+          this.render()
+        })
+      })
+    new Setting(this.contentEl)
+      .setName('输入材料说明')
+      .setDesc('描述要找什么材料、优先看哪里；权限以上面的读取范围为准，不再靠关键词猜。')
       .addTextArea((input) => input
         .setValue(this.draft.input)
         .onChange((value) => (this.draft.input = value.trim())))
@@ -259,9 +375,13 @@ export class SkillStudioModal extends Modal {
     const permissions = this.contentEl.createDiv({ cls: 'ai-linzi-skill-permissions' })
     permissions.createEl('strong', { text: '本版默认权限' })
     const permissionList = permissions.createEl('ul')
+    permissionList.createEl('li', {
+      text: skillReadScopePermission(this.draft.readScope ?? 'whole-vault'),
+    })
+    permissionList.createEl('li', { text: '读取权限只到当前 Vault，不能访问电脑其他目录' })
     permissionList.createEl('li', { text: this.draft.output === 'chat' ? '不写文件' : '写入前展示全文并再次确认' })
     permissionList.createEl('li', { text: '不生成或运行本机脚本' })
-    permissionList.createEl('li', { text: '允许按 Skill 中声明的规则搜索 Vault；只向 AI 提交完成任务所需的文件内容' })
+    permissionList.createEl('li', { text: '先用本机目录与索引筛选，只向 AI 提交完成任务所需的文件内容' })
 
     new Setting(this.contentEl)
       .addButton((button) => button
@@ -312,7 +432,7 @@ export class SkillStudioModal extends Modal {
     permissions.createEl('strong', { text: '本次更新边界' })
     const list = permissions.createEl('ul')
     list.createEl('li', { text: '只把所选 Skill 的可更新文本交给主对话模型；脚本和二进制只传路径、大小与哈希' })
-    list.createEl('li', { text: '写入前生成完整本机快照；失败自动回滚；成功后最多保留 5 个历史版本' })
+    list.createEl('li', { text: '写入前锁定完整本机快照；失败时用本轮内存快照自动回滚，不额外保存历史版本' })
     list.createEl('li', { text: '不会访问 Skills 目录以外的文件，不会自动执行脚本' })
     new Setting(this.contentEl).addButton((button) => button
       .setButtonText('让 AI 生成更新确认卡')
@@ -369,7 +489,9 @@ export class SkillStudioModal extends Modal {
         try {
           const block = portableBundleFromZip(new Uint8Array(await file.arrayBuffer()))
           this.close()
-          this.options.onOfferBundle(block, `用 ${block.name} Skill 处理当前笔记`)
+          new ImportedSkillPermissionModal(this.app, block, (adapted, sampleInput) => {
+            this.options.onOfferBundle(adapted, sampleInput)
+          }).open()
         } catch (error) {
           new Notice(`Skill ZIP 导入失败：${error instanceof Error ? error.message : String(error)}`, 9000)
         }
