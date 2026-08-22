@@ -15,12 +15,16 @@ export function explicitMemoryContent(text: string): string | undefined {
 }
 
 export function isCurrentNoteKnowledgeSaveIntent(text: string): boolean {
-  const input = text.normalize('NFKC').replace(/\s+/g, '')
-  const currentTarget =
-    /(?:当前|这篇|这份|这个|正在打开的|刚打开的).{0,8}(?:笔记|文章|文档|文件|内容)/u.test(input)
-  const knowledgeTarget = /(?:AI霖子)?知识库/u.test(input)
-  const saveAction = /(?:存入|保存到|加入|沉淀到|写入|喂给|喂入)/u.test(input)
-  return currentTarget && knowledgeTarget && saveAction
+  const normalized = text.normalize('NFKC').trim()
+  // 这是一个会立即打开本机写入流程的快捷意图，只接受用户能直接说出的短句。
+  // Skill Studio 的内部提示词同时包含“当前笔记”“知识库”“写入”，但它是多行
+  // 生成协议，不是用户要求保存当前笔记；若只做三个关键词的全局 AND，会把创建
+  // Skill 的请求错误劫持到“存入知识库”弹窗。
+  if (!normalized || normalized.length > 240 || /[\r\n]/u.test(normalized)) return false
+  const input = normalized.replace(/\s+/g, '')
+  return /(?:把|将|请把|请将)?(?:当前|这篇|这份|这个|正在打开的|刚打开的).{0,16}(?:笔记|文章|文档|文件|内容).{0,24}(?:存入|保存到|加入|沉淀到|写入|喂给|喂入).{0,12}(?:AI霖子)?知识库[。.!！]?$/u.test(
+    input,
+  )
 }
 
 export function isFullCurrentNoteReplaceIntent(text: string): boolean {

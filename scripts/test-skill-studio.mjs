@@ -36,6 +36,16 @@ for (const template of studioCore.OFFICIAL_SKILL_TEMPLATES) {
   assert.ok(Array.isArray(manifest.permissions) && manifest.permissions.length > 0)
   assert.deepEqual(manifest.programs, [])
   assert.deepEqual(manifest.sampleInputs, [template.sampleInput])
+  assert.equal(
+    manifest.vaultRead.scope,
+    template.id === 'weekly-business-dashboard' ? 'whole-vault' : 'current-note',
+    `${template.id} 必须显式声明真实输入范围，不能被输出目录文案误导`,
+  )
+  assert.equal(
+    manifest.vaultRead.metadataDiscovery,
+    template.id === 'consultation-client-workflow',
+    `${template.id} 的目录元数据权限必须精确声明`,
+  )
   assert.equal(template.block.files.some((file) => file.path.startsWith('scripts/')), false)
   assert.match(template.block.content, /^description: .+$/m)
   assert.match(template.block.content, /references\/ai-linzi-skill-manifest\.json/)
@@ -53,14 +63,15 @@ for (const template of studioCore.OFFICIAL_SKILL_TEMPLATES) {
 const consultation = studioCore.OFFICIAL_SKILL_TEMPLATES.find(
   (item) => item.id === 'consultation-client-workflow',
 )
-assert.match(consultation.block.content, /模板优先级/)
+assert.match(consultation.block.content, /保存位置与模板/)
 assert.match(consultation.block.content, /AI霖子 CRM/)
 assert.match(consultation.block.content, /客户咨询简报/)
 assert.match(consultation.block.content, /普通文字“继续”不能代替这次文件写入确认/)
 assert.match(consultation.block.content, /不得把确认客户档案的一次操作同时解释为确认 CRM/)
-assert.match(consultation.block.content, /不得把客户档案写进模板目录/)
 assert.match(consultation.block.content, /必须再用 list_folder 真实列出候选父目录/)
 assert.match(consultation.block.content, /客户档案保存到哪个 Vault 文件夹/)
+assert.match(consultation.block.content, /不得读取或搜索其他笔记正文/)
+assert.match(consultation.block.content, /不读取其他客户档案正文来模仿格式/)
 const consultationDescriptor = localSkillCore.buildLocalSkillDescriptor(
   '05_System/Skills/consultation-client-workflow/SKILL.md',
   { name: consultation.block.name },
@@ -376,6 +387,116 @@ assert.deepEqual(
 assert.deepEqual(normalizedSampleInput.repairs, [
   '已补充试运行输入：用 consultation-client-workflow 处理当前打开的材料',
 ])
+
+const legacySingleNoteWithGenericPermission = {
+  ...consultation.block,
+  files: consultation.block.files.map((file) =>
+    file.path === 'references/ai-linzi-skill-manifest.json'
+      ? {
+          ...file,
+          content: JSON.stringify({
+            schemaVersion: 1,
+            skillVersion: '1.1.0',
+            createdWith: 'AI霖子 Skill Studio',
+            permissions: ['只读取用户明确指定的输入', '确认后只新建 Markdown，不覆盖'],
+            programs: [],
+            sampleInputs: ['用 consultation-client-workflow Skill 处理当前笔记'],
+          }),
+        }
+      : file,
+  ),
+}
+const normalizedLegacySingleNote = studioCore.normalizeGeneratedSkillManifest(
+  legacySingleNoteWithGenericPermission,
+)
+assert.equal(
+  JSON.parse(normalizedLegacySingleNote.block.files.find(
+    (file) => file.path === 'references/ai-linzi-skill-manifest.json',
+  ).content).vaultRead.scope,
+  'current-note',
+  '旧 manifest 的宽泛权限文案不得覆盖 SKILL.md 已声明的当前单篇边界',
+)
+
+const generatedWithUnlinkedReference = {
+  ...consultation.block,
+  files: [
+    ...consultation.block.files,
+    { path: 'references/test-cases.md', content: '# 测试用例\n\n- 输入一篇材料。' },
+  ],
+}
+assert.equal(studioCore.skillBlockManifest(generatedWithUnlinkedReference).valid, false)
+const normalizedReferenceLinks = studioCore.normalizeGeneratedSkillManifest(
+  generatedWithUnlinkedReference,
+)
+assert.equal(studioCore.skillBlockManifest(normalizedReferenceLinks.block).valid, true)
+assert.match(
+  normalizedReferenceLinks.block.content,
+  /\[test-cases\.md\]\(references\/test-cases\.md\)/u,
+)
+assert.ok(normalizedReferenceLinks.repairs.includes('已补充 1 个遗漏的 reference 链接'))
+
+const importedWithoutManifest = {
+  name: 'external-note-method',
+  description: '把当前材料沉淀为一份方法论笔记',
+  content: `---
+name: external-note-method
+description: 把当前材料沉淀为一份方法论笔记
+---
+# External note method
+
+将结果新建到 wiki/方法论与框架/。
+
+## AI霖子输出方式
+create-note`,
+  files: [{
+    path: 'SKILL.md',
+    content: `---
+name: external-note-method
+description: 把当前材料沉淀为一份方法论笔记
+---
+# External note method
+
+将结果新建到 wiki/方法论与框架/。
+
+## AI霖子输出方式
+create-note`,
+  }],
+}
+assert.equal(studioCore.skillBlockManifest(importedWithoutManifest).valid, false)
+const adaptedExternal = studioCore.normalizeGeneratedSkillManifest(importedWithoutManifest)
+assert.equal(studioCore.skillBlockManifest(adaptedExternal.block).valid, true)
+assert.match(adaptedExternal.block.content, /\$WIKI\/方法论与框架\//u)
+assert.match(adaptedExternal.block.content, /references\/ai-linzi-skill-manifest\.json/u)
+assert.deepEqual(
+  JSON.parse(adaptedExternal.block.files.find(
+    (file) => file.path === 'references/ai-linzi-skill-manifest.json',
+  ).content).vaultRead,
+  {
+    scope: 'current-note',
+    preferUserScope: false,
+    fallbackToWholeVault: false,
+    maxFiles: 1,
+  },
+)
+assert.ok(adaptedExternal.repairs.some((item) => /最低权限兼容 manifest/u.test(item)))
+
+const unsafeExternalWithoutManifest = {
+  ...importedWithoutManifest,
+  name: 'external-script-skill',
+  files: [
+    ...importedWithoutManifest.files,
+    { path: 'scripts/run.sh', content: '#!/bin/sh\necho test' },
+  ],
+}
+const blockedExternal = studioCore.normalizeGeneratedSkillManifest(unsafeExternalWithoutManifest)
+assert.equal(studioCore.skillBlockManifest(blockedExternal.block).valid, false)
+assert.equal(
+  blockedExternal.block.files.some(
+    (file) => file.path === 'references/ai-linzi-skill-manifest.json',
+  ),
+  false,
+  '缺少 manifest 的脚本包不能自动猜权限后放行',
+)
 const generatedWithoutOutput = {
   ...generatedWithoutSampleInput,
   content: generatedWithoutSampleInput.content.replace(
@@ -572,6 +693,21 @@ const zipBytes = zipSync({
 const imported = studioUi.portableBundleFromZip(zipBytes)
 assert.equal(imported.name, 'round-trip-skill')
 assert.equal(imported.files.some((file) => file.path === 'INSTALL.md'), false)
+const importedWithoutManifestZip = studioUi.portableBundleFromZip(zipSync({
+  'plain-text-skill/SKILL.md': strToU8(`---
+name: plain-text-skill
+description: 整理当前一份材料的外部纯文本 Skill
+---
+# Plain text Skill
+
+## AI霖子输出方式
+chat`),
+}))
+const adaptedWithoutManifestZip = studioCore.normalizeGeneratedSkillManifest(
+  importedWithoutManifestZip,
+)
+assert.equal(studioCore.skillBlockManifest(adaptedWithoutManifestZip.block).valid, true)
+assert.ok(adaptedWithoutManifestZip.repairs.some((item) => /最低权限兼容 manifest/u.test(item)))
 assert.throws(
   () => studioUi.portableBundleFromZip(zipSync({
     'bad-skill/SKILL.md': strToU8('---\nname: bad-skill\ndescription: bad\n---\n# Bad'),
@@ -579,7 +715,7 @@ assert.throws(
   })),
   /隐藏路径/,
 )
-console.log('  ✓ Skill ZIP 可往返导入，并拒绝隐藏路径')
+console.log('  ✓ Skill ZIP 可往返导入、缺 manifest 时最低权限适配，并拒绝隐藏路径')
 
 const mainSource = await (await import('node:fs/promises')).readFile('src/main.ts', 'utf8')
 const studioSource = await (await import('node:fs/promises')).readFile('src/skill-studio.ts', 'utf8')
@@ -601,14 +737,16 @@ assert.match(studioSource, /refreshTemplatePreview\(\)/)
 assert.match(studioSource, /refreshDraftPreview\(\)/)
 assert.match(studioSource, /previewSkillInvocation\(template\.block, templateSampleInput \|\| template\.sampleInput\)/)
 assert.match(studioSource, /previewSkillStudioDraftInvocation\(this\.draft\)/)
-// 「Skill Creator 产出的非法包不得给创建按钮」这条守卫，现由
+// 「任何来源的非法包不得给创建按钮」这条守卫，现由
 // scripts/test-create-local-skill-card.mjs 第 3 组**真跑分支**验证
 // （断言非法包时按钮总数为 0）。这里保留源码断言作为搬迁后的位置守卫，
-// 防止有人把这段判断整体删掉。
-assert.match(cardSource, /message\.skillCreatorResult && !manifest\.valid/)
+// 防止有人重新依赖云端历史不会保留的 skillCreatorResult 标记。
+assert.match(cardSource, /const normalized = normalizeGeneratedSkillManifest\(rawBlock\)/)
+assert.match(cardSource, /if \(!manifest\.valid\)/)
+assert.doesNotMatch(cardSource, /message\.skillCreatorResult && !manifest\.valid/)
 assert.doesNotMatch(
   mainSource,
-  /message\.skillCreatorResult && !manifest\.valid/,
+  /if \(!manifest\.valid\)/,
   '确认卡渲染已抽出，main.ts 不应再持有这段判断（避免两处实现漂移）',
 )
 assert.match(mainSource, /private hasPendingSkillCreatorInterview\(\): boolean \{[\s\S]*?return message\.skillCreatorPending === true/)

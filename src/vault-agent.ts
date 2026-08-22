@@ -606,7 +606,10 @@ export class LocalVaultAgent {
             : `没有找到文件夹：${path || '/'}`,
         )
       }
-      this.assertSkillReadPathAllowed(root.path, skillContext)
+      const readPolicy = skillContext?.runtimePolicy?.vaultRead
+      if (!readPolicy?.metadataDiscovery) {
+        this.assertSkillReadPathAllowed(root.path, skillContext)
+      }
       const entries: Array<{
         path: string
         type: 'folder' | 'file'

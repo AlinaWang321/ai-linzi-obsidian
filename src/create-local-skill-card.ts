@@ -51,6 +51,7 @@ export interface CreateLocalSkillCardMessage {
 export interface CreateLocalSkillCardHost {
   app: App
   skillsRoot(): string
+  skillEntryExists(path: string): boolean
   outputFolder(): string
   fillInput(text: string): void
   persist(): Promise<void>
@@ -70,9 +71,10 @@ export function renderCreateLocalSkillOffers(
   message: CreateLocalSkillCardMessage,
 ): void {
   for (const rawBlock of blocks) {
-    const normalized = message.skillCreatorResult
-      ? normalizeGeneratedSkillManifest(rawBlock)
-      : { block: rawBlock, repairs: [] }
+    // 不依赖 skillCreatorResult 这个本机 UI 标记决定安全校验。云端历史只保存
+    // 标准消息正文，完整重载后该标记可能不存在；任何来源的 Skill 包都必须
+    // 重新走同一套兼容修正和 manifest 校验，不能因重载而出现创建按钮绕过。
+    const normalized = normalizeGeneratedSkillManifest(rawBlock)
     const block = normalized.block
     const root = host.skillsRoot()
     const skillRoot = normalizePath(`${root}/${block.name}`)
@@ -105,7 +107,7 @@ export function renderCreateLocalSkillOffers(
     permissionCard.createEl('strong', { text: '权限清单' })
     const permissions = permissionCard.createEl('ul')
     for (const permission of manifest.permissions) permissions.createEl('li', { text: permission })
-    if (message.skillCreatorResult && !manifest.valid) {
+    if (!manifest.valid) {
       const invalid = card.createDiv({ cls: 'ai-linzi-create-note-preview' })
       invalid.createEl('strong', { text: '⚠️ Skill 包未通过本机校验' })
       const problems = invalid.createEl('ul')
@@ -117,14 +119,17 @@ export function renderCreateLocalSkillOffers(
       details.createEl('pre', { text: file.content, cls: 'ai-linzi-vault-write-preview' })
     }
     const actionsRow = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
-    if (message.skillCreatorResult && !manifest.valid) {
+    if (!manifest.valid) {
       actionsRow.createSpan({
         text: '本次不允许安装，请让 AI霖子重新生成完整 Skill 包。',
         cls: 'ai-linzi-create-note-done',
       })
       continue
     }
-    if (message.createdLocalSkill?.root === skillRoot) {
+    if (
+      message.createdLocalSkill?.root === skillRoot &&
+      host.skillEntryExists(filePath)
+    ) {
       actionsRow.createSpan({ text: '✅ 已创建', cls: 'ai-linzi-create-note-done' })
       const open = actionsRow.createEl('button', { text: '打开 SKILL.md' })
       open.onclick = () =>

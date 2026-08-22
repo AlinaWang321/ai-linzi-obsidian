@@ -8,6 +8,8 @@ export type LocalSkillVaultReadScope =
 
 export interface LocalSkillVaultReadPolicy {
   scope: LocalSkillVaultReadScope
+  /** 允许只列出 Vault 路径、类型和修改时间；不允许读取或搜索正文。 */
+  metadataDiscovery: boolean
   /** 有用户指定文件夹时先查该范围；这不是权限边界。 */
   preferUserScope: boolean
   /** 指定范围没有命中时是否允许继续搜索整个 Vault。 */
@@ -84,6 +86,10 @@ function parseV2(value: Record<string, unknown>, expectedOutput: LocalSkillOutpu
   const typedScope = scope as LocalSkillVaultReadScope
   const preferUserScope = read.preferUserScope
   const fallbackToWholeVault = read.fallbackToWholeVault
+  const metadataDiscovery = read.metadataDiscovery === true
+  if (read.metadataDiscovery !== undefined && typeof read.metadataDiscovery !== 'boolean') {
+    return { kind: 'invalid', message: 'manifest v2 的 vaultRead.metadataDiscovery 必须是布尔值' }
+  }
   if (typeof preferUserScope !== 'boolean' || typeof fallbackToWholeVault !== 'boolean') {
     return { kind: 'invalid', message: 'manifest v2 的读取回退字段必须是布尔值' }
   }
@@ -124,7 +130,13 @@ function parseV2(value: Record<string, unknown>, expectedOutput: LocalSkillOutpu
     policy: {
       schemaVersion: 2,
       source: 'structured-v2',
-      vaultRead: { scope: typedScope, preferUserScope, fallbackToWholeVault, maxFiles },
+      vaultRead: {
+        scope: typedScope,
+        metadataDiscovery,
+        preferUserScope,
+        fallbackToWholeVault,
+        maxFiles,
+      },
       vaultWrite: {
         mode: normalizedMode,
         confirmation: 'single-atomic-plan',
@@ -154,6 +166,7 @@ function inferLegacyPolicy(value: Record<string, unknown>, expectedOutput: Local
       source: 'legacy-v1',
       vaultRead: {
         scope,
+        metadataDiscovery: false,
         preferUserScope: scope === 'whole-vault' || scope === 'user-specified-folder',
         fallbackToWholeVault,
         maxFiles: defaultMaxFiles(scope),

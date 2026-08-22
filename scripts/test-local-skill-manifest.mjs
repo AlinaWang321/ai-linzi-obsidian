@@ -21,6 +21,7 @@ const wholeVault = manifest.parseLocalSkillManifest(JSON.stringify({
   permissions: ['允许先查用户指定文件夹，没找到再搜索整个 Vault'],
   vaultRead: {
     scope: 'whole-vault',
+    metadataDiscovery: false,
     preferUserScope: true,
     fallbackToWholeVault: true,
     maxFiles: 120,
@@ -36,6 +37,24 @@ const wholeVault = manifest.parseLocalSkillManifest(JSON.stringify({
 assert.equal(wholeVault.kind, 'valid')
 assert.equal(wholeVault.policy.vaultRead.scope, 'whole-vault')
 assert.equal(wholeVault.policy.vaultRead.fallbackToWholeVault, true)
+assert.equal(wholeVault.policy.vaultRead.metadataDiscovery, false)
+
+const metadataOnly = manifest.parseLocalSkillManifest(JSON.stringify({
+  schemaVersion: 2,
+  permissions: ['只读取当前笔记，并只列出 Vault 路径确认保存位置'],
+  vaultRead: {
+    scope: 'current-note',
+    metadataDiscovery: true,
+    preferUserScope: false,
+    fallbackToWholeVault: false,
+    maxFiles: 1,
+  },
+  vaultWrite: { mode: 'create-note', confirmation: 'single-atomic-plan', overwrite: false },
+  network: 'ai-linzi-only',
+  programs: [],
+}), 'create-note')
+assert.equal(metadataOnly.kind, 'valid')
+assert.equal(metadataOnly.policy.vaultRead.metadataDiscovery, true)
 
 const invalidCurrent = manifest.parseLocalSkillManifest(JSON.stringify({
   schemaVersion: 2,

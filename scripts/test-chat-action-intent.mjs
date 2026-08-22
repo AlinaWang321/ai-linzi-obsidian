@@ -20,6 +20,10 @@ assert.equal(intent.isCurrentNoteKnowledgeSaveIntent('把当前笔记存入 AI�
 assert.equal(intent.isCurrentNoteKnowledgeSaveIntent('把这篇文章加入知识库'), true)
 assert.equal(intent.isCurrentNoteKnowledgeSaveIntent('知识库应该怎么搭？'), false)
 assert.equal(intent.isCurrentNoteKnowledgeSaveIntent('把客户档案存入知识库'), false)
+assert.equal(intent.isCurrentNoteKnowledgeSaveIntent(`请用 AI霖子 Skill Creator 创建一个完整、可移植、可测试的 Skill 文件夹。
+
+输入范围：当前笔记
+要求：知识库使用 $WIKI/，确认后才写入。`), false)
 
 assert.equal(intent.isFullCurrentNoteReplaceIntent('用刚才的回复覆盖当前笔记'), true)
 assert.equal(intent.isFullCurrentNoteReplaceIntent('把这一版全文更新到这篇文章'), true)

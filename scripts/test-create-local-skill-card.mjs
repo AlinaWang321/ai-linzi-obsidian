@@ -145,6 +145,7 @@ function setup(over = {}) {
       if (over.rootSequence && over.rootSequence.length) currentRoot = over.rootSequence.shift()
       return v
     },
+    skillEntryExists: () => over.entryExists ?? true,
     outputFolder: () => '04_Output',
     fillInput: (t) => calls.filled.push(t),
     persist: async () => { calls.persisted += 1 },
@@ -195,7 +196,7 @@ console.log('第3组 非法包：不给创建按钮，只给拒绝说明')
   const { host, row } = setup({
     skillBlockManifest: () => ({ ...VALID_MANIFEST, valid: false, problems: ['缺少 manifest'] }),
   })
-  renderCreateLocalSkillOffers(host, row, [BLOCK], { skillCreatorResult: true })
+  renderCreateLocalSkillOffers(host, row, [BLOCK], {})
   assert.ok(byText(row, '本次不允许安装，请让 AI霖子重新生成完整 Skill 包。'), '缺拒绝说明')
   assert.equal(
     all(row).filter((e) => e.tag === 'button').length,
@@ -203,6 +204,7 @@ console.log('第3组 非法包：不给创建按钮，只给拒绝说明')
     '非法包不得出现任何按钮（含创建、试运行、导出）',
   )
   assert.ok(byText(row, '⚠️ Skill 包未通过本机校验'), '缺校验失败标题')
+  console.log('  ✓ 云端历史重载后即使缺少 skillCreatorResult 标记也不能绕过校验')
 }
 
 console.log('第4组 自动修正提示只在有 repairs 时出现')
@@ -343,6 +345,19 @@ console.log('第10组 已创建判定按 skillRoot 精确比对，不同 Skill �
   })
   assert.ok(!byText(row, '✅ 已创建'), '别的 Skill 的创建结果不得让本卡显示已创建')
   assert.ok(byText(row, '创建完整 Skill（2 个文件）'))
+}
+
+console.log('第10.5组 历史标记不能冒充已经不存在的 SKILL.md')
+{
+  const { host, row } = setup({ entryExists: false })
+  renderCreateLocalSkillOffers(host, row, [BLOCK], {
+    createdLocalSkill: {
+      root: '05_System/Skills/demo-skill',
+      entry: '05_System/Skills/demo-skill/SKILL.md',
+    },
+  })
+  assert.ok(byText(row, '创建完整 Skill（2 个文件）'), '文件已不存在时应恢复创建按钮')
+  assert.ok(!byText(row, '✅ 已创建'), '文件已不存在时不得显示假成功')
 }
 
 console.log('第11组 多个 block 各自独立成卡')

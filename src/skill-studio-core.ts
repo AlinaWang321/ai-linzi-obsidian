@@ -4,7 +4,10 @@ import {
   localSkillOutputFromMarkdown,
   matchLocalSkillInvocation,
 } from './local-skill-core'
-import { parseLocalSkillManifest } from './local-skill-manifest'
+import {
+  parseLocalSkillManifest,
+  type LocalSkillVaultReadScope,
+} from './local-skill-manifest'
 
 export type SkillStudioOutput =
   | 'chat'
@@ -125,15 +128,22 @@ function manifestFile(
   permissions: string[],
   sampleInput: string,
   entry: string,
+  explicitReadScope?: LocalSkillVaultReadScope,
+  metadataDiscovery = false,
 ): { path: string; content: string } {
   const joined = permissions.join('\n').normalize('NFKC')
-  const scope = /(?:最近\s*7\s*天|整个|全部|所有|全库|整库).{0,12}(?:Vault|知识库|文档)/iu.test(joined)
-    ? 'whole-vault'
-    : /(?:文件夹|目录)/u.test(joined)
-      ? 'user-specified-folder'
+  // 官方模板必须显式声明输入权限。不能从整段产品文案猜：例如咨询模板会把
+  // PNG 保存到“输出目录”，若按“目录”二字推断，就会把本应读取当前笔记的
+  // Skill 错配成“必须指定输入文件夹”。推断仅保留给旧调用方兼容。
+  const scope: LocalSkillVaultReadScope = explicitReadScope ?? (
+    /(?:最近\s*7\s*天|整个|全部|所有|全库|整库).{0,12}(?:Vault|知识库|文档)/iu.test(joined)
+      ? 'whole-vault'
       : /(?:当前(?:打开)?|一份|一个|一篇|单篇|单个)/u.test(joined)
         ? 'current-note'
-        : 'user-specified-files'
+        : /(?:文件夹|目录)/u.test(joined)
+          ? 'user-specified-folder'
+          : 'user-specified-files'
+  )
   const output = localSkillOutputFromMarkdown(entry)
   return {
     path: 'references/ai-linzi-skill-manifest.json',
@@ -146,6 +156,7 @@ function manifestFile(
         permissions,
         vaultRead: {
           scope,
+          metadataDiscovery,
           preferUserScope: scope === 'whole-vault' || scope === 'user-specified-folder',
           fallbackToWholeVault: scope === 'whole-vault',
           maxFiles: scope === 'current-note' ? 1 : scope === 'user-specified-files' ? 12 : scope === 'user-specified-folder' ? 80 : 120,
@@ -172,12 +183,22 @@ function makeTemplate(input: {
   sampleInput: string
   permissions: string[]
   entry: string
+  vaultReadScope?: LocalSkillVaultReadScope
+  metadataDiscovery?: boolean
   references?: { path: string; content: string }[]
 }): SkillStudioTemplate {
   const files = [
     { path: 'SKILL.md', content: input.entry },
     ...(input.references ?? []),
-    manifestFile(input.id, '1.1.0', input.permissions, input.sampleInput, input.entry),
+    manifestFile(
+      input.id,
+      '1.1.0',
+      input.permissions,
+      input.sampleInput,
+      input.entry,
+      input.vaultReadScope,
+      input.metadataDiscovery,
+    ),
   ]
   const name = /^name:\s*([^\r\n]+)/m.exec(input.entry)?.[1]?.trim() ?? input.id
   return {
@@ -199,12 +220,15 @@ export const OFFICIAL_SKILL_TEMPLATES: SkillStudioTemplate[] = [
     sampleInput: '用咨询交付闭环处理当前打开的咨询文档',
     permissions: [
       '读取你当前明确打开的一份咨询逐字稿或咨询文档',
-      '优先沿用你原有的客户档案模板和保存位置',
+      '只列出 Vault 目录和文件名来确认真实客户库，不读取无关正文',
+      '默认使用内置客户档案模板；路径不唯一或已有同名档案时先询问',
       '你确认后，新建或更新这位客户的档案',
       '继续确认后，同步到 AI霖子客户管理并创建跟进任务',
       '最后生成客户咨询简报 PNG，保存到你设置的 AI霖子输出目录',
       '不会运行本机脚本，也不会访问无关网站',
     ],
+    vaultReadScope: 'current-note',
+    metadataDiscovery: true,
     entry: `---
 name: consultation-client-workflow
 description: 把当前一份咨询逐字稿处理成客户档案，确认后分步写入 AI霖子 CRM、创建跟进任务，并生成客户可见的咨询简报 PNG。用于销售咨询、商业咨询或交付咨询结束后的完整沉淀。
@@ -219,23 +243,22 @@ description: 把当前一份咨询逐字稿处理成客户档案，确认后分�
 
 ## 输入
 - 必须由用户打开并明确发送当前这一份咨询逐字稿、咨询文档或咨询记录；一次只处理一位客户的一份材料。
+- 允许列出 Vault 目录和文件名来定位真实客户库，但不得读取或搜索其他笔记正文；找不到明确位置时必须询问用户。
 - 开始前先读取 [权限与版本](references/ai-linzi-skill-manifest.json)、[客户档案兜底模板](references/customer-profile-fallback.md) 和 [五步验收规则](references/workflow-checklist.md)。
 
-## 模板优先级
-1. 先列出 Vault 根目录，再搜索“客户档案模板”“客户模板”以及含 CRM 字段的既有客户档案；不得假设所有用户都使用 02_Wiki 或任何固定目录名。
-2. 找到用户自己的明确模板时，完整保留它的 frontmatter 字段、章节顺序和命名方式；用户自定义字段不得删除。模板若在“模板库”，不得把客户档案写进模板目录：继续查找该模板对应的真实客户库或既有档案目录。
-   - 产出客户档案方案前，必须再用 list_folder 真实列出候选父目录，确认目标文件夹已存在。不得从模板文件名或搜索片段猜造目录，不得把没有 list_folder 回执的路径说成“已核实”。
-3. 没有模板文件但有既有客户档案时，读取同一客户库中一份结构完整的近期档案作为样例，并沿用其结构、文件夹和命名规则。
-4. 多套模板无法判断时，列出候选模板的完整路径、关键字段和章节差异，只问用户选择哪一套。
-5. 完全找不到模板或样例时才使用 references/customer-profile-fallback.md。先从用户真实根目录中寻找名称含“客户”“CRM”“Wiki”“知识库”的候选位置：只有一个明确候选时，提出在其中新建“客户档案”文件夹的方案；有多个或没有候选时，只追问一次“客户档案保存到哪个 Vault 文件夹”。用户确认后可以随档案一起新建缺少的“客户档案”文件夹，不猜目录、不写到 AI霖子输出目录。
-6. 无论沿用哪套模板，最终客户档案必须保留用户原字段，并补齐 references/customer-profile-fallback.md 中供 CRM 识别的 14 个标准字段；没有事实的字段写“待补充”，不得删除用户自定义字段。
+## 保存位置与模板
+1. 先列出 Vault 根目录和必要的下级目录，只根据真实文件夹路径定位客户库；不得假设所有用户都使用 02_Wiki 或任何固定目录名，也不得读取无关笔记正文。
+2. 只有一个名称明确包含“客户档案”或“客户库”的现有文件夹时，使用它作为候选保存位置；有多个或没有候选时，只追问一次“客户档案保存到哪个 Vault 文件夹”。
+3. 产出客户档案方案前，必须再用 list_folder 真实列出候选父目录，确认目标文件夹已存在。不得从文件名或片段猜造目录，不得把没有 list_folder 回执的路径说成“已核实”。
+4. 默认使用 references/customer-profile-fallback.md 的 14 个标准字段和章节；没有事实的字段写“待补充”。本轮不读取其他客户档案正文来模仿格式。
+5. 目录元数据里已经出现可能的同一客户档案时，不覆盖、不猜内容，先询问用户是否改走“更新已有 Skill/档案”的单独流程。
 
 ## 五步工作流
 ### 第 1 步：处理咨询逐字稿
 完整读取逐字稿，区分客户原话、顾问判断、双方共识、承诺、顾虑与待确认事实。缺失信息写“待补充”，不得把报价当收入、把意向当成交、把建议当已完成。
 
 ### 第 2 步：生成客户档案
-按“模板优先级”生成完整客户档案。已有同一客户档案时先 read_note，再提出局部更新；没有时新建到已经核实或由用户确认的新客户库。展示全文或差异确认卡后停下。**必须等待用户点击本地确认卡并收到“已新建/已更新客户档案”的真实回执；普通文字“继续”不能代替这次文件写入确认。** 档案真实写入后，插件应显示“下一步：同步到 AI霖子 CRM”，不让用户猜下一句该说什么。
+按“保存位置与模板”生成完整客户档案，新建到已经核实或由用户确认的客户库。展示全文确认卡后停下。**必须等待用户点击本地确认卡并收到“已新建客户档案”的真实回执；普通文字“继续”不能代替这次文件写入确认。** 档案真实写入后，插件应显示“下一步：同步到 AI霖子 CRM”，不让用户猜下一句该说什么。
 
 ### 第 3 步：添加到 AI霖子 CRM
 只有第 2 步已有真实文件写入回执且用户点击“下一步：同步到 AI霖子 CRM”或明确回复继续，才用确认后的档案事实写入 CRM；不得把确认客户档案的一次操作同时解释为确认 CRM。成功必须原样复述 CRM 客户编号；没有真实工具成功回执，绝不说已添加。完成后显示“下一步：确认创建跟进任务”。
@@ -324,6 +347,7 @@ create-note`,
       '你确认后，在设置的 AI霖子输出目录生成一个 HTML 看板',
       '不会修改源文件、运行本机脚本或访问无关网站',
     ],
+    vaultReadScope: 'whole-vault',
     entry: `---
 name: weekly-business-dashboard
 description: 批量读取 Obsidian 最近 7 天内改动的文档内容，单独突出昨天进展并结合 AI霖子当前任务，生成可搜索、可勾选、带进度统计的 HTML 经营周报看板。
@@ -436,7 +460,7 @@ export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
     ? '允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹'
     : usesFolderScope
       ? '只读取用户明确指定的 Vault 文件夹范围'
-      : '只读取用户明确指定的输入'
+      : '只读取用户明确指定的当前一份材料'
   const vaultRead = allowsVaultSearch
     ? {
         scope: 'whole-vault',
@@ -499,6 +523,27 @@ export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
 6. 只输出一个 <<<新建Skill>>> 文件夹协议，等待我确认，不要改动任何现有文件。`
 }
 
+const SKILL_MANIFEST_PATH = 'references/ai-linzi-skill-manifest.json'
+
+/**
+ * 外部 Skill 常把作者自己的 01_Raw/02_Wiki/04_Output 写死。只改明确位于
+ * 路径边界的三类目录，不碰普通英文单词（例如 draw/outputting），让同一份
+ * Skill 可以在不同用户的 Vault 别名设置下运行。
+ */
+function portableVaultPaths(content: string): { content: string; changed: boolean } {
+  let changed = false
+  const replace = (pattern: RegExp, alias: string) => {
+    content = content.replace(pattern, (_match, prefix: string) => {
+      changed = true
+      return `${prefix}${alias}/`
+    })
+  }
+  replace(/(^|[^\p{L}\p{N}_$])(?:01_Raw|raw)\//gimu, '$RAW')
+  replace(/(^|[^\p{L}\p{N}_$])(?:02_Wiki|wiki)\//gimu, '$WIKI')
+  replace(/(^|[^\p{L}\p{N}_$])(?:04_Output|output)\//gimu, '$OUTPUT')
+  return { content, changed }
+}
+
 /**
  * 大模型常把语义版本写成 { major, minor, patch } 对象。它表达的信息完整、
  * 修复规则又是唯一的，因此在确认卡前本机转成跨端约定的 "1.0.0" 字符串；
@@ -508,13 +553,90 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
   block: CreateLocalSkillBlock
   repairs: string[]
 } {
-  const manifestIndex = block.files.findIndex(
-    (item) => item.path === 'references/ai-linzi-skill-manifest.json',
+  let pathsChanged = false
+  const portableFiles = block.files.map((file) => {
+    const normalized = portableVaultPaths(file.content)
+    pathsChanged ||= normalized.changed
+    return normalized.changed ? { ...file, content: normalized.content } : file
+  })
+  const portableEntry = portableFiles.find((file) => file.path === 'SKILL.md')
+  const portableFallback = portableVaultPaths(block.content)
+  pathsChanged ||= portableFallback.changed
+  const workingBlock: CreateLocalSkillBlock = pathsChanged
+    ? {
+        ...block,
+        content: portableEntry?.content ?? portableFallback.content,
+        files: portableFiles,
+      }
+    : block
+  const initialRepairs = pathsChanged
+    ? ['已把固定 Raw/Wiki/Output 路径改为可移植变量']
+    : []
+  const manifestIndex = workingBlock.files.findIndex(
+    (item) => item.path === SKILL_MANIFEST_PATH,
   )
-  if (manifestIndex < 0) return { block, repairs: [] }
+  if (manifestIndex < 0) {
+    // 没有 manifest 的纯文本 Skill 可以安全降级为“只读当前一份材料”。包含
+    // scripts 的包不能靠猜测 programs 权限自动放行，仍保留为不可安装状态。
+    if (workingBlock.files.some((item) => item.path.startsWith('scripts/'))) {
+      return { block: workingBlock, repairs: initialRepairs }
+    }
+    const output = localSkillOutputFromMarkdown(workingBlock.content)
+    const outputPermission = output === 'chat'
+      ? '只在聊天中输出，不写文件'
+      : output === 'create-artifact'
+        ? '确认后只生成一个本机成品文件，不覆盖'
+        : output === 'update-current-note'
+          ? '确认后只更新发送时锁定的当前笔记，不静默覆盖'
+          : '确认后只新建 Markdown，不覆盖'
+    const permissions = [
+      '只读取用户明确指定的当前一份材料',
+      outputPermission,
+      '不运行本机程序',
+      '不额外联网',
+    ]
+    const manifest = {
+      schemaVersion: 2,
+      skillVersion: '1.0.0',
+      createdWith: 'AI霖子 Skill Studio',
+      adaptedFrom: 'external-skill-without-manifest',
+      permissions,
+      vaultRead: {
+        scope: 'current-note',
+        preferUserScope: false,
+        fallbackToWholeVault: false,
+        maxFiles: 1,
+      },
+      vaultWrite: {
+        mode: output,
+        confirmation: 'single-atomic-plan',
+        overwrite: false,
+      },
+      network: 'ai-linzi-only',
+      programs: [],
+      sampleInputs: [`用 ${workingBlock.name} Skill 处理当前笔记`],
+    }
+    const manifestLink = `[权限与版本](${SKILL_MANIFEST_PATH})`
+    const skillContent = workingBlock.content.includes(SKILL_MANIFEST_PATH)
+      ? workingBlock.content
+      : `${workingBlock.content.trim()}\n\n## AI霖子兼容权限\n- ${manifestLink}\n- 读取范围不扩大；写入前一次原子确认；不覆盖未知同名文件。`
+    const files = [
+      ...workingBlock.files.map((file) =>
+        file.path === 'SKILL.md' ? { ...file, content: skillContent } : file,
+      ),
+      { path: SKILL_MANIFEST_PATH, content: JSON.stringify(manifest, null, 2) },
+    ]
+    return {
+      block: { ...workingBlock, content: skillContent, files },
+      repairs: [
+        ...initialRepairs,
+        '缺少权限清单，已补充最低权限兼容 manifest（只读当前一份材料）',
+      ],
+    }
+  }
   try {
-    const value = JSON.parse(block.files[manifestIndex].content) as Record<string, unknown>
-    const repairs: string[] = []
+    const value = JSON.parse(workingBlock.files[manifestIndex].content) as Record<string, unknown>
+    const repairs: string[] = [...initialRepairs]
     const version = value.skillVersion
     if (version && typeof version === 'object' && !Array.isArray(version)) {
       const parts = ['major', 'minor', 'patch'].map((key) =>
@@ -537,12 +659,26 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
         (item) => typeof item === 'string' && Boolean(item.trim()),
       ))
     ) {
-      const sampleInput = `用 ${block.name} 处理当前打开的材料`
+      const sampleInput = `用 ${workingBlock.name} 处理当前打开的材料`
       value.sampleInputs = [sampleInput]
       repairs.push(`已补充试运行输入：${sampleInput}`)
     }
 
-    let skillContent = block.content
+    let skillContent = workingBlock.content
+    const unlinkedReferences = workingBlock.files
+      .filter((item) =>
+        item.path.startsWith('references/') &&
+        item.path !== SKILL_MANIFEST_PATH &&
+        !skillContent.includes(item.path),
+      )
+      .map((item) => item.path)
+    if (unlinkedReferences.length > 0) {
+      const links = unlinkedReferences
+        .map((path) => `- [${path.replace(/^references\//u, '')}](${path})`)
+        .join('\n')
+      skillContent = `${skillContent.trim()}\n\n## AI霖子参考文件\n${links}`
+      repairs.push(`已补充 ${unlinkedReferences.length} 个遗漏的 reference 链接`)
+    }
     // 普通的“## 输出方式”说明段落不是机器可执行声明。只有标题下一行明确写了
     // chat/create-note/update-current-note/create-artifact，才算已有输出路由；否则
     // 仍要补上 AI霖子的确定性声明，避免 Skill 创建成功后静默退回聊天输出。
@@ -572,7 +708,7 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
         : ''
       const output = normalizedInlineOutput || (
         /(?:html|dashboard|看板|交互成品|本机成品文件)/iu.test(
-          `${block.description}\n${permissions.join('\n')}`,
+          `${workingBlock.description}\n${permissions.join('\n')}`,
         )
           ? 'create-artifact'
           : permissions.some((item) => /(?:write|create|update|sync|写入|创建|更新|同步)/iu.test(item))
@@ -585,20 +721,29 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
 
     if (value.schemaVersion === 1) {
       const legacy = parseLocalSkillManifest(
-        block.files[manifestIndex].content,
+        workingBlock.files[manifestIndex].content,
         localSkillOutputFromMarkdown(skillContent),
       )
       if (legacy.kind === 'valid') {
+        const vaultRead = legacy.policy.vaultRead.scope === 'user-specified-files' &&
+          /(?:只读取|一次只处理|最多读取).{0,36}(?:当前|单篇|一篇|一份|1\s*个文件)/iu.test(skillContent)
+          ? {
+              scope: 'current-note',
+              preferUserScope: false,
+              fallbackToWholeVault: false,
+              maxFiles: 1,
+            }
+          : legacy.policy.vaultRead
         value.schemaVersion = 2
-        value.vaultRead = legacy.policy.vaultRead
+        value.vaultRead = vaultRead
         value.vaultWrite = legacy.policy.vaultWrite
         value.network = legacy.policy.network
         repairs.push('已把旧版文字权限清单升级为机器可读权限合同')
       }
     }
 
-    if (repairs.length === 0) return { block, repairs }
-    const files = block.files.map((file, index) =>
+    if (repairs.length === 0) return { block: workingBlock, repairs }
+    const files = workingBlock.files.map((file, index) =>
       file.path === 'SKILL.md'
         ? { ...file, content: skillContent }
         : index === manifestIndex
@@ -606,11 +751,11 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
         : file,
     )
     return {
-      block: { ...block, content: skillContent, files },
+      block: { ...workingBlock, content: skillContent, files },
       repairs,
     }
   } catch {
-    return { block, repairs: [] }
+    return { block: workingBlock, repairs: initialRepairs }
   }
 }
 

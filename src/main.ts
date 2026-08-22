@@ -5004,8 +5004,8 @@ class ChatView extends ItemView {
         new Notice('本次任务读取量较大，AI霖子将基于已读内容收尾；更多材料建议分批处理。', 6000)
       }
     }
-    // 官方咨询闭环的前置条件是固定且完全本机的：工作流规则、
-    // 用户的客户库一级目录和客户模板候选。若全部交给模型逐轮请求，
+    // 官方咨询闭环的前置条件是固定且完全本机的：工作流规则和
+    // 用户的客户库目录元数据。若全部交给模型逐轮请求，
     // 实测会在找到真实目录后才撞满 12 轮。用户显式调用该 Skill 时，
     // 先在本机预读这些已授权材料；不扩大到其他 Skill，也不产生任何写入。
     if (
@@ -5019,11 +5019,6 @@ class ChatView extends ItemView {
           name: 'list_folder',
           arguments: { path: '', depth: 2, offset: 0, maxEntries: 160 },
         },
-        {
-          id: 'consultation-preload-template-search',
-          name: 'vault_search',
-          arguments: { query: '客户档案模板', maxResults: 8 },
-        },
         ...[
           'references/ai-linzi-skill-manifest.json',
           'references/customer-profile-fallback.md',
@@ -5036,26 +5031,7 @@ class ChatView extends ItemView {
       ], input.localSkillContext)
       appendToolResults(preload.results)
       sources.push(...preload.sources)
-
-      const templateCandidates = preload.sources
-        .filter((source) =>
-          source.sourceId === 'consultation-preload-template-search' &&
-          /(?:客户档案模板|客户模板)/.test(source.filename),
-        )
-        .slice(0, 2)
-      if (templateCandidates.length > 0) {
-        const templates = await this.plugin.vaultAgent.executeCalls(
-          templateCandidates.map((source, index) => ({
-            id: `consultation-preload-template-${index + 1}`,
-            name: 'read_note' as const,
-            arguments: { path: source.path, offset: 0, maxChars: 16_000 },
-          })),
-          input.localSkillContext,
-        )
-        appendToolResults(templates.results)
-        sources.push(...templates.sources)
-      }
-      this.activityStep('🧩 已查看知识库根目录，并预读咨询闭环规则与客户模板')
+      this.activityStep('🧩 已查看知识库目录，并预读咨询闭环规则（未读取无关正文）')
     }
     // 经营周报的唯一可信输入是最近 7 天真实改动的文档快照。不能把首个
     // read_recent_documents 调用交给模型自由选择：实测模型可能先追问 KPI，
@@ -6415,6 +6391,7 @@ class ChatView extends ItemView {
       {
         app: this.app,
         skillsRoot: () => this.localSkills.root(),
+        skillEntryExists: (path) => this.app.vault.getAbstractFileByPath(path) instanceof TFile,
         outputFolder: () => this.plugin.settings.outputFolder,
         fillInput: (text) => {
           this.inputEl.value = text

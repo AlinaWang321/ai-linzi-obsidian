@@ -276,6 +276,11 @@ assert.match(
   /客户档案父目录不存在/,
   '官方咨询闭环必须在确认卡前拦截猜测的客户库目录',
 )
+assert.match(
+  vaultAgentSource,
+  /metadataDiscovery[\s\S]{0,120}assertSkillReadPathAllowed/,
+  'current-note Skill 只能在 manifest 明确授权后列目录元数据，不能读取其他正文',
+)
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
 assert.match(
   mainSource,
