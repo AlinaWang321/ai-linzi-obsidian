@@ -628,10 +628,10 @@ function buildSearchTerms(query: string): string[] {
   // 客户代号、单字人名、缩写在真实使用里非常普遍，必须能搜到。
   // 现在：中英混合整体成词（小b）、单个汉字也保留、单字母/数字仅在与其他字符相连时保留。
   const tokenPattern = /[\p{Script=Han}]+[a-z0-9._-]+|[a-z0-9._-]+[\p{Script=Han}]+|[a-z0-9][a-z0-9._-]*|[\p{Script=Han}]+/gu
-  for (const token of normalized.match(tokenPattern) ?? []) {
-    if (GENERIC_QUERY_WORDS.has(token)) continue
+  const addToken = (token: string) => {
+    if (GENERIC_QUERY_WORDS.has(token)) return
     // 单个泛用汉字（的/了/和…）单独出现时没有检索价值，只在混合词里才保留
-    if (/^[\p{Script=Han}]$/u.test(token) && GENERIC_SINGLE_HAN.has(token)) continue
+    if (/^[\p{Script=Han}]$/u.test(token) && GENERIC_SINGLE_HAN.has(token)) return
     if (/^[\p{Script=Han}]+$/u.test(token)) {
       if (token.length <= 12) terms.add(token)
       for (let index = 0; index < token.length - 1; index++) {
@@ -640,6 +640,16 @@ function buildSearchTerms(query: string): string[] {
       }
     } else {
       terms.add(token)
+    }
+  }
+  for (const token of normalized.match(tokenPattern) ?? []) {
+    // 「20260818日期的obsidian课程逐字稿」旧实现会被正则吞成一个
+    // 超长混合词，路径中当然不存在这一整串，所以精确日期也会搜索为空。
+    // 短代号（小B）仍保留整体；超长中英数字连写则拆成各脚本连续段。
+    const runs = token.match(/[a-z0-9][a-z0-9._-]*|[\p{Script=Han}]+/gu) ?? [token]
+    if (runs.length === 1 || token.length <= 16) addToken(token)
+    if (runs.length > 1) {
+      for (const run of runs) addToken(run)
     }
   }
   return [...terms].slice(0, 24)

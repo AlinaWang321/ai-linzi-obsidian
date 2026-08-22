@@ -140,6 +140,27 @@ assert.equal(
   '01_Raw/学员商业私教咨询逐字稿/2026.07/20260724133543-雷琼老师第二次商业私教课-逐字稿文本-1.txt',
 )
 
+const courseTranscriptDocs = [
+  '01_Raw/课程逐字稿/20260821091806-Obsidian X AI霖子打卡营直播课-逐字稿文本-1.txt',
+  '01_Raw/课程逐字稿/20260818094644-Obsidian X AI霖子打卡营直播课-逐字稿文本-1(1).txt',
+  '01_Raw/课程逐字稿/20260819094350-Obsidian X AI霖子打卡营直播课-逐字稿文本-1(1).txt',
+  '01_Raw/课程逐字稿/20260817093857-Obsidian X AI霖子打卡营直播课-逐字稿文本-1(1).txt',
+].map((path) => ({
+  path,
+  filename: path.split('/').at(-1),
+  text: 'Obsidian X AI霖子实操营课程逐字稿。',
+}))
+assert.equal(
+  core.searchVaultDocuments('20260818日期的obsidian课程逐字稿', courseTranscriptDocs, { explicit: true })[0]?.path,
+  '01_Raw/课程逐字稿/20260818094644-Obsidian X AI霖子打卡营直播课-逐字稿文本-1(1).txt',
+  '日期 + 中英混合的模糊文件名必须命中正确那一份',
+)
+assert.equal(
+  core.searchVaultDocuments('课程逐字稿/obsidianx AI霖子实操营', courseTranscriptDocs, { explicit: true }).length,
+  4,
+  '指向包含多份文件的课程范围时，不得只返回或强制唯一文件',
+)
+
 assert.equal(core.isVaultSearchPathExcluded('㊙️财务/收入.md'), false)
 assert.equal(core.isVaultSearchPathExcluded('.obsidian/plugins/private.md'), true)
 assert.equal(core.isVaultSearchPathExcluded('trash/旧文章.md'), true)

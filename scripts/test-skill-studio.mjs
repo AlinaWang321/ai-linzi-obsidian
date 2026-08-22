@@ -205,6 +205,25 @@ assert.equal(
   false,
   '“文件夹”不能因为包含“文件”二字而被误判为单篇输入锁定',
 )
+assert.equal(
+  localSkillCore.localSkillForbidsVaultExpansion(`
+    支持用户指定的 Vault 文件夹路径、一个或多个笔记名称。
+    优先读取用户明确指定的 Vault 文件夹。
+    只读取完成当前任务所必需的文件内容。
+    对候选材料记录来源路径、标题和必要的上下文，不擅自扩大读取范围。
+    读取范围不扩大：优先使用指定范围，仅在指定范围缺少材料时才搜索整个 Vault。
+  `),
+  false,
+  '“只读任务所需内容 + 找不到搜整库”是最小必要读取，不是单文件锁定',
+)
+assert.equal(
+  localSkillCore.localSkillForbidsVaultExpansion(`
+    本 Skill 只读取当前打开的笔记。
+    不得搜索其他文件或整个 Vault。
+  `),
+  true,
+  '明确的当前单笔记合同仍必须失败关闭',
+)
 const scopedInputFiles = [
   '01_Raw/销售逐字稿/20260813193042-顾晓菲英语老师1v1商业咨询-逐字稿文本-1.txt',
   '01_Raw/销售逐字稿/20260817150019-沈立冬家庭教育咨询师1v1商业咨询-逐字稿文本-1.md',

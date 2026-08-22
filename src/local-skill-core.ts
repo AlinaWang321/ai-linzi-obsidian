@@ -202,10 +202,19 @@ export function localSkillOutputFromMarkdown(content: string): LocalSkillOutput 
  * 插件必须把这条文字边界落实成工具权限，而不能只依赖模型自觉遵守。
  */
 export function localSkillForbidsVaultExpansion(content: string): boolean {
-  const locksOneInput =
-    /(?:只|仅)(?:接受|读取|处理|使用).{0,48}(?:当前|明确打开|明确指定|用户指定).{0,36}(?:逐字稿|笔记|文件(?!夹)|文档|材料)/iu.test(content)
-  const forbidsExpansion =
-    /(?:不|不得|禁止).{0,24}(?:扫描|遍历|读取|搜索).{0,36}(?:其他|未指定|整个|全部|全库|知识库|文件夹)/iu.test(content)
+  // 按句子判断，不让“只读任务所需内容”和后文一个毫不相干的
+  // “一个…文件”跨行拼成单文件权限。只有明确单数或当前笔记描述才上锁。
+  const statements = content
+    .split(/\r?\n|[。；;]/u)
+    .map((line) => line.replace(/^\s*(?:[-*+]\s+|\d+[.)、]\s*)/u, '').trim())
+    .filter(Boolean)
+  const locksOneInput = statements.some((statement) =>
+    /(?:只|仅)(?:接受|读取|处理|使用)\s*(?:(?:由)?用户(?:明确)?(?:打开|指定)的?)?\s*(?:一份|一个|一篇|单篇|单个|唯一(?:一份|一个|一篇)?)\s*(?:由用户(?:明确)?(?:打开|指定)的?)?[^,，。；;\n]{0,20}(?:逐字稿|笔记|文件(?!夹)|文档|材料)/iu.test(statement) ||
+    /(?:只|仅)(?:接受|读取|处理|使用)\s*(?:当前|这|该)(?:明确打开|打开|指定)?的?(?:一篇|一份|一个|篇|份|个)?\s*(?:逐字稿|笔记|文件(?!夹)|文档|材料)/iu.test(statement),
+  )
+  const forbidsExpansion = statements.some((statement) =>
+    /(?:(?:不得|禁止|不要|不能|不应)[^,，。；;\n]{0,16}|不(?:主动|再|去|擅自)?)(?:扫描|遍历|读取|搜索)[^,，。；;\n]{0,36}(?:其他|未指定|整个|全部|全库|知识库|文件夹)/iu.test(statement),
+  )
   return locksOneInput && forbidsExpansion
 }
 
