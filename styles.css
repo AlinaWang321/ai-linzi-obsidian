@@ -3623,12 +3623,11 @@ button.ai-linzi-vault-source-link:focus-visible {
   line-height: 1.8;
 }
 
-.ai-linzi-consultation-body blockquote.ai-linzi-consultation-summary::before {
+.ai-linzi-consultation-quote-mark {
   position: absolute;
   top: 12px;
   left: 20px;
   color: #d97706;
-  content: "“";
   font-family: Georgia, serif;
   font-size: 42px;
   font-weight: 700;

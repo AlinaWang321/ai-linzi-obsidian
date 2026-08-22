@@ -30,6 +30,7 @@ import {
 import { validateMarkdownAgainstTemplate } from './skill-template'
 import {
   ARTIFACT_MAX_CONTENT_CHARS,
+  presentationContentProblem,
   resolveArtifactPath,
   type CreateArtifactOperation,
 } from './artifact-renderer-core'
@@ -422,6 +423,8 @@ export class LocalVaultAgent {
     if (operation.content.length > ARTIFACT_MAX_CONTENT_CHARS) {
       throw new Error(`成品正文超过 ${ARTIFACT_MAX_CONTENT_CHARS.toLocaleString()} 字，请拆分后生成`)
     }
+    const presentationProblem = presentationContentProblem(operation)
+    if (presentationProblem) throw new Error(presentationProblem)
     if (this.app.vault.getAbstractFileByPath(path)) {
       throw new Error(`目标文件已存在，绝不覆盖：${path}`)
     }

@@ -637,6 +637,35 @@ assert.equal(extractedQuestion.invalid, false)
 assert.equal(extractedQuestion.question.responseId, 'resp-1')
 assert.equal(extractedQuestion.cleanText, '请补充范围。')
 assert.equal(questionCore.extractVaultQuestion('<<<AI_LINZI_ASK_USER>>>bad').invalid, true)
+const webSearchQuestion = {
+  ...pendingQuestion,
+  kind: 'web-search',
+  question: '是否允许联网搜索？',
+  options: ['允许联网搜索', '仅用现有内容'],
+  allowFreeText: false,
+  webSearchQuery: '2026 内容增长趋势',
+  webSearchReason: '补充最新外部数据',
+}
+const extractedWebSearch = questionCore.extractVaultQuestion(
+  questionCore.formatVaultQuestionMarker(webSearchQuestion),
+)
+assert.equal(extractedWebSearch.invalid, false)
+assert.equal(extractedWebSearch.question.kind, 'web-search')
+assert.equal(extractedWebSearch.question.allowFreeText, false)
+assert.equal(extractedWebSearch.question.webSearchQuery, '2026 内容增长趋势')
+assert.equal(
+  questionCore.extractVaultQuestion(
+    questionCore.formatVaultQuestionMarker({ ...webSearchQuestion, round: 36 }),
+  ).invalid,
+  false,
+  '批量任务最后一轮的联网授权也必须能恢复',
+)
+assert.equal(
+  questionCore.extractVaultQuestion(
+    questionCore.formatVaultQuestionMarker({ ...webSearchQuestion, webSearchQuery: '' }),
+  ).invalid,
+  true,
+)
 console.log('  ✓ ask_user 状态可安全落盘并恢复')
 
 const obsidianMock = `

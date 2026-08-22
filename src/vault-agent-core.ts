@@ -9,6 +9,9 @@ import {
   ARTIFACT_FORMATS,
   ARTIFACT_MAX_CONTENT_CHARS,
   ARTIFACT_MAX_TITLE_CHARS,
+  normalizeArtifactStyle,
+  normalizeArtifactTemplate,
+  normalizePresentationSpec,
   type ArtifactFormat,
   type CreateArtifactOperation,
 } from './artifact-renderer-core'
@@ -332,6 +335,29 @@ export function isCloudToolsTurnRequest(text: string): boolean {
  */
 export const VAULT_NATIVE_TURN_MARKER = '<<<VAULT_NATIVE_TURN>>>'
 
+/**
+ * 用户明确要求最新/当前的外部证据时，必须先进入可申请 Web Search 的原生通道。
+ * 这不是用词表替模型决定任务怎么做，而是把「联网前必须确认」做成客户端硬边界：
+ * 普通内容生成仍由模型自主判断，只有时效词与外部证据词同时出现才提前路由。
+ */
+export function requiresWebSearchNativeRouting(text: string): boolean {
+  const normalized = text.normalize('NFKC').toLocaleLowerCase()
+  const asksForCurrentInformation =
+    /(?:最新|实时|当前|近期|截至\s*20\d{2}|20(?:2[6-9]|[3-9]\d)\s*年|today|latest|current|up[- ]to[- ]date|real[- ]time)/u.test(normalized)
+  const asksForExternalEvidence =
+    /(?:公开数据|真实案例|案例|数据|来源|出处|引用|报告|研究|证据|趋势|市场|新闻|政策|价格|榜单|联网|搜索|检索|查找|source|citation|case study|data|report|research|trend)/u.test(normalized)
+  return asksForCurrentInformation && asksForExternalEvidence
+}
+
+/** 内部通道路由标记无论模型是否按格式输出，都不能展示给用户。 */
+export function stripVaultInternalTurnMarkers(text: string): string {
+  return text
+    .replaceAll(CLOUD_TOOLS_TURN_MARKER, '')
+    .replaceAll(VAULT_NATIVE_TURN_MARKER, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 export function isVaultNativeTurnRequest(text: string): boolean {
   const trimmed = text.trim()
   if (!trimmed.includes(VAULT_NATIVE_TURN_MARKER)) return false
@@ -374,6 +400,51 @@ function safeJsonObject(raw: string): Record<string, unknown> | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Responses 偶尔会把原生 propose_artifact 的参数退化成“说明文字 + 裸 JSON”。
+ * 这里只提取能完整通过 VaultOrganizePlan 校验的单个 JSON 对象；普通聊天里的
+ * 代码片段、示例 JSON 或多个候选对象都不会被当成可执行方案。
+ */
+function extractBarePlanObject(text: string): {
+  start: number
+  end: number
+  plan: VaultOrganizePlan
+} | null {
+  const candidates: { start: number; end: number; plan: VaultOrganizePlan }[] = []
+  for (let start = 0; start < text.length; start++) {
+    if (text[start] !== '{') continue
+    let depth = 0
+    let quoted = false
+    let escaped = false
+    for (let index = start; index < text.length; index++) {
+      const char = text[index]
+      if (quoted) {
+        if (escaped) escaped = false
+        else if (char === '\\') escaped = true
+        else if (char === '"') quoted = false
+        continue
+      }
+      if (char === '"') {
+        quoted = true
+        continue
+      }
+      if (char === '{') depth += 1
+      else if (char === '}') {
+        depth -= 1
+        if (depth === 0) {
+          const plan = parseVaultOrganizePlanPayload(
+            safeJsonObject(text.slice(start, index + 1)),
+          )
+          if (plan) candidates.push({ start, end: index + 1, plan })
+          break
+        }
+      }
+      if (depth < 0) break
+    }
+  }
+  return candidates.length === 1 ? candidates[0] : null
 }
 
 function shortText(value: unknown, max: number): string {
@@ -665,14 +736,12 @@ export function appendToolResultsWithinBudget(
   cap = VAULT_AGENT_MAX_TOTAL_RESULT_CHARS,
 ): { results: VaultAgentToolResult[]; exhausted: boolean } {
   const results = [...existing]
-  const seen = new Set(
-    results.filter((item) => item.ok).map((item) => `${item.name}\n${item.output}`),
-  )
+  const seen = new Set(results.map((item) => `${item.name}\n${item.output}`))
   let total = results.reduce((sum, item) => sum + item.output.length, 0)
   let exhausted = false
   for (const item of incoming) {
     const key = `${item.name}\n${item.output}`
-    if (item.ok && seen.has(key)) continue
+    if (seen.has(key)) continue
     const remaining = cap - total
     if (remaining <= 0) {
       exhausted = true
@@ -686,7 +755,7 @@ export function appendToolResultsWithinBudget(
       break
     }
     results.push(item)
-    if (item.ok) seen.add(key)
+    seen.add(key)
     total += item.output.length
   }
   if (exhausted && !results.some((item) => item.output === VAULT_AGENT_BUDGET_EXHAUSTED_NOTE)) {
@@ -785,6 +854,11 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
     const theme = (themeValue === 'brand' || themeValue === 'clean')
       ? themeValue
       : undefined
+    const template = normalizeArtifactTemplate(record.template)
+    const style = normalizeArtifactStyle(record.style, template, theme ?? 'brand')
+    const presentation = format === 'pptx'
+      ? normalizePresentationSpec(record.presentation)
+      : undefined
     // 0.7.54：HTML 版式（document 长文 / dashboard 交互看板）；不合法值一律忽略，
     // 交由 resolveArtifactLayout 按内容特征自动判断。
     const layoutValue = shortText(record.layout, 12).toLocaleLowerCase()
@@ -796,11 +870,12 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
       !ARTIFACT_FORMATS.includes(format) ||
       artifactExtension(path) !== format ||
       !title ||
-      !content
+      !content ||
+      (format === 'pptx' && record.presentation !== undefined && !presentation)
     ) {
       return null
     }
-    return { type, path, format, title, content, theme, layout, reason }
+    return { type, path, format, title, content, theme, template, style, presentation, layout, reason }
   }
   if (type === 'update_note') {
     const path = normalizeVaultRelativePath(record.path)
@@ -891,6 +966,16 @@ export function extractVaultOrganizePlan(text: string): VaultPlanExtraction {
     return ''
   })
   if (text.includes('<<<VAULT_ORGANIZE_PLAN>>>') && !sawBlock) invalid = true
+  if (!sawBlock && !plan) {
+    const bare = extractBarePlanObject(text)
+    if (bare) {
+      return {
+        cleanText: cleaned(`${text.slice(0, bare.start)}\n${text.slice(bare.end)}`),
+        plan: bare.plan,
+        invalid: false,
+      }
+    }
+  }
   return { cleanText: cleaned(cleanText), plan, invalid }
 }
 
@@ -914,6 +999,27 @@ export function namespaceVaultToolCalls(
     ...call,
     id: `r${round + 1}-${index + 1}-${call.id}`.slice(0, 64),
   }))
+}
+
+function stableVaultToolValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableVaultToolValue)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, stableVaultToolValue(item)]),
+  )
+}
+
+/**
+ * 同一任务内只读工具的确定性身份。原生引擎失败回退兼容通道时，Luna 可能把
+ * 已完成的 read_note/list_folder/vault_inventory 再请求一遍；轮次 ID 不同，
+ * 不能靠 callId 判重。按工具名 + 规范化参数识别，offset 不同仍视为合法分页。
+ */
+export function vaultToolCallSignature(
+  call: Pick<VaultAgentToolCall, 'name' | 'arguments'>,
+): string {
+  return `${call.name}\n${JSON.stringify(stableVaultToolValue(call.arguments))}`
 }
 
 function isDraftOnlyWriteIntent(normalized: string): boolean {

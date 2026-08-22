@@ -24,6 +24,15 @@ await build({
   format: 'esm',
 })
 const runtime = await import(pathToFileURL(runtimeOutfile).href)
+const styleOutfile = path.join(tempDir, 'style.mjs')
+await build({
+  entryPoints: [fileURLToPath(new URL('../src/customer-consultation-brief-style.ts', import.meta.url))],
+  outfile: styleOutfile,
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+})
+const styleModule = await import(pathToFileURL(styleOutfile).href)
 
 assert.equal(core.CUSTOMER_CONSULTATION_TRANSCRIPT_MIN, 800)
 assert.equal(core.CUSTOMER_CONSULTATION_TRANSCRIPT_MAX, 100_000)
@@ -87,6 +96,8 @@ assert.match(source, /readLocalDocumentText\(/)
 assert.doesNotMatch(source, /writeOutput\(/)
 assert.doesNotMatch(source, /toneMode/)
 assert.match(source, /toPng\(card/)
+assert.match(source, /applyConsultationBriefExportStyles\(host, card, body\)/)
+assert.match(source, /ai-linzi-consultation-quote-mark/)
 assert.match(source, /ai-linzi-consultation-footer/)
 assert.match(source, /AI 霖子生成/)
 assert.match(actions, /runSalesReview[\s\S]+?selectTranscriptSource\(/)
@@ -96,5 +107,86 @@ assert.match(transcriptSource, /isTranscriptExtension\(file\.extension\)/)
 assert.match(transcriptSource, /readLocalDocumentText\(plugin\.app, file, maxChars, 'skill'\)/)
 assert.match(transcriptSource, /stripFrontmatter\(result\.text\)/)
 assert.match(transcriptSource, /原始 Word\/PDF\/TXT 文件不会上传/)
+
+// 真跑导出样式行为：先模拟深色主题把所有文字刷成近白，再确认导出专用
+// 内联样式能独立恢复正文、标题、建议卡、表格和页脚，不依赖 styles.css。
+class FakeStyle {
+  values = new Map()
+  setProperty(name, value) { this.values.set(name, value) }
+  get(name) { return this.values.get(name) }
+}
+class FakeElement {
+  style = new FakeStyle()
+  selectors = new Map()
+  add(selector, ...elements) { this.selectors.set(selector, elements); return this }
+  querySelectorAll(selector) { return this.selectors.get(selector) ?? [] }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null }
+}
+globalThis.HTMLElement = FakeElement
+const host = new FakeElement()
+const card = new FakeElement()
+const body = new FakeElement()
+const header = new FakeElement()
+const headerLabel = new FakeElement()
+const headerTitle = new FakeElement()
+const headerQuote = new FakeElement()
+const headerQuoteText = new FakeElement()
+const h2 = new FakeElement()
+const paragraph = new FakeElement()
+const advice = new FakeElement()
+const adviceText = new FakeElement()
+const summary = new FakeElement()
+const summaryText = new FakeElement()
+const quoteMark = new FakeElement()
+const table = new FakeElement()
+const th = new FakeElement()
+const td = new FakeElement()
+const footer = new FakeElement()
+const footerText = new FakeElement()
+const footerSite = new FakeElement()
+const footerDate = new FakeElement()
+for (const element of [card, body, paragraph, headerTitle, adviceText, summaryText, th, td, footer]) {
+  element.style.setProperty('color', '#f8fafc')
+  element.style.setProperty('background', '#0b1020')
+}
+card
+  .add('.ai-linzi-consultation-header', header)
+  .add('.ai-linzi-consultation-header-label', headerLabel)
+  .add('.ai-linzi-consultation-header h1', headerTitle)
+  .add('.ai-linzi-consultation-header blockquote', headerQuote)
+  .add('.ai-linzi-consultation-header blockquote p', headerQuoteText)
+  .add('.ai-linzi-consultation-footer', footer)
+  .add('.ai-linzi-consultation-footer span', footerText, footerSite, footerDate)
+  .add('.ai-linzi-consultation-footer-site', footerSite)
+  .add('.ai-linzi-consultation-footer-date', footerDate)
+body
+  .add('h2', h2)
+  .add('p', paragraph)
+  .add('blockquote.ai-linzi-consultation-advice', advice)
+  .add('blockquote.ai-linzi-consultation-summary', summary)
+  .add('blockquote.ai-linzi-consultation-advice p, blockquote.ai-linzi-consultation-summary p', adviceText, summaryText)
+  .add('.ai-linzi-consultation-quote-mark', quoteMark)
+  .add('table', table)
+  .add('th, td', th, td)
+  .add('th', th)
+styleModule.applyConsultationBriefExportStyles(host, card, body)
+assert.equal(host.style.get('left'), '-12000px')
+assert.equal(card.style.get('background'), '#fafaf7')
+assert.equal(card.style.get('color'), '#1f2937')
+assert.match(header.style.get('background'), /#0f172a/)
+assert.equal(headerTitle.style.get('color'), '#ffffff')
+assert.equal(body.style.get('background'), '#fafaf7')
+assert.equal(paragraph.style.get('color'), '#1f2937')
+assert.equal(advice.style.get('background'), '#0f172a')
+assert.equal(adviceText.style.get('color'), '#f8fafc')
+assert.equal(summaryText.style.get('color'), '#f8fafc')
+assert.equal(quoteMark.style.get('color'), '#d97706')
+assert.equal(table.style.get('background'), '#ffffff')
+assert.equal(th.style.get('background'), '#0f172a')
+assert.equal(th.style.get('color'), '#f8fafc')
+assert.equal(td.style.get('color'), '#1f2937')
+assert.equal(footer.style.get('background'), '#ffffff')
+assert.equal(footerSite.style.get('color'), '#0f172a')
+delete globalThis.HTMLElement
 
 console.log('customer consultation brief PNG tests passed')

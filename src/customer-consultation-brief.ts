@@ -22,6 +22,7 @@ import {
 import { selectTranscriptSource } from './transcript-source'
 import { stripFrontmatter } from './article-format'
 import { readLocalDocumentText } from './long-document'
+import { applyConsultationBriefExportStyles } from './customer-consultation-brief-style'
 
 function fileDate(): string {
   const date = new Date()
@@ -133,11 +134,12 @@ function decorateConsultationCard(card: HTMLElement, body: HTMLElement, coachNam
       continue
     }
     if (element.tagName === 'BLOCKQUOTE') {
-      element.classList.add(
-        section.includes('洞察')
-          ? 'ai-linzi-consultation-advice'
-          : 'ai-linzi-consultation-summary',
-      )
+      const advice = section.includes('洞察')
+      element.classList.add(advice ? 'ai-linzi-consultation-advice' : 'ai-linzi-consultation-summary')
+      if (!advice) {
+        const mark = createSpan({ cls: 'ai-linzi-consultation-quote-mark', text: '“' })
+        element.prepend(mark)
+      }
       if (coachName) {
         const signature = createDiv()
         signature.className = 'ai-linzi-consultation-signature'
@@ -188,6 +190,7 @@ async function renderConsultationBriefPng(
   try {
     await MarkdownRenderer.render(plugin.app, markdown, body, sourcePath, component)
     decorateConsultationCard(card, body, coachName)
+    applyConsultationBriefExportStyles(host, card, body)
     await document.fonts?.ready
     await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
     const dataUrl = await toPng(card, {

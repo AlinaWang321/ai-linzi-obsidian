@@ -1,4 +1,5 @@
 export interface PendingVaultQuestion {
+  kind?: 'clarification' | 'web-search'
   callId: string
   responseId: string
   question: string
@@ -8,6 +9,8 @@ export interface PendingVaultQuestion {
   goal: string
   createdAt: number
   answeredAt?: number
+  webSearchQuery?: string
+  webSearchReason?: string
 }
 
 const QUESTION_RE =
@@ -42,11 +45,19 @@ export function extractVaultQuestion(text: string): {
       const prompt = shortText(parsed.question, 600)
       const goal = shortText(parsed.goal, 300)
       const round = typeof parsed.round === 'number' ? Math.trunc(parsed.round) : -1
-      if (!callId || !responseId || !prompt || !goal || round < 1 || round > 12) {
+      const kind = parsed.kind === 'web-search' ? 'web-search' : 'clarification'
+      const webSearchQuery = shortText(parsed.webSearchQuery, 300)
+      const webSearchReason = shortText(parsed.webSearchReason, 200)
+      if (!callId || !responseId || !prompt || !goal || round < 1 || round > 36) {
+        invalid = true
+        return ''
+      }
+      if (kind === 'web-search' && (!webSearchQuery || !webSearchReason)) {
         invalid = true
         return ''
       }
       question = {
+        kind,
         callId,
         responseId,
         question: prompt,
@@ -57,6 +68,7 @@ export function extractVaultQuestion(text: string): {
         round,
         goal,
         createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : Date.now(),
+        ...(kind === 'web-search' ? { webSearchQuery, webSearchReason } : {}),
       }
     } catch {
       invalid = true

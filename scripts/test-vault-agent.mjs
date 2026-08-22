@@ -46,6 +46,28 @@ const roundTwo = core.namespaceVaultToolCalls(calls.calls, 1)
 assert.equal(roundOne[0].id, 'r1-1-search-1')
 assert.equal(roundTwo[0].id, 'r2-1-search-1')
 assert.equal(new Set([...roundOne, ...roundTwo].map((call) => call.id)).size, 4)
+assert.equal(
+  core.vaultToolCallSignature({
+    name: 'read_note',
+    arguments: { maxChars: 12000, path: 'wiki/产品.md', offset: 0 },
+  }),
+  core.vaultToolCallSignature({
+    name: 'read_note',
+    arguments: { path: 'wiki/产品.md', offset: 0, maxChars: 12000 },
+  }),
+  '参数键顺序不同仍必须识别为同一次读取',
+)
+assert.notEqual(
+  core.vaultToolCallSignature({
+    name: 'read_note',
+    arguments: { path: 'wiki/产品.md', offset: 0, maxChars: 12000 },
+  }),
+  core.vaultToolCallSignature({
+    name: 'read_note',
+    arguments: { path: 'wiki/产品.md', offset: 12000, maxChars: 12000 },
+  }),
+  '不同 offset 是合法分页，不能被误判为重复',
+)
 assert.equal(core.detectVaultAgentIntent('请把这篇笔记整理到归档目录'), 'organize')
 assert.equal(core.detectVaultAgentIntent('请把这篇笔记删除'), 'organize')
 assert.equal(core.detectVaultAgentIntent('删除这篇笔记'), 'organize')
@@ -167,6 +189,44 @@ assert.equal(plan.plan?.operations.length, 2)
 assert.equal(plan.plan?.operations[1].type, 'move')
 assert.equal(plan.cleanText, '我先给你一份待确认方案。')
 
+const bareArtifactPlan = {
+  title: '生成内容增长PPT',
+  summary: '确认后生成，不联网。',
+  operations: [{
+    type: 'create_artifact',
+    path: '$OUTPUT/演示文稿/内容增长三步法.pptx',
+    format: 'pptx',
+    title: '内容增长三步法',
+    content: '# 内容增长三步法',
+    presentation: {
+      requestedSlideCount: 3,
+      slides: [
+        { layout: 'cover', headline: '内容增长三步法', body: '从被看见到被成交' },
+        {
+          layout: 'process',
+          headline: '定位—内容—转化',
+          body: '先锁定具体人群与高频问题，再持续输出痛点、方法和案例，最后设置明确承接入口。',
+          steps: [
+            { title: '定位', description: '锁定人群、场景与可验证结果' },
+            { title: '内容', description: '持续表达痛点、方法与客户结果' },
+            { title: '转化', description: '用诊断、清单或咨询承接下一步' },
+          ],
+        },
+        { layout: 'summary', headline: '今天就开始', body: '完成一句定位、三个选题和一个转化入口。' },
+      ],
+    },
+  }],
+}
+const barePlan = core.extractVaultOrganizePlan(
+  `小霖，我已经补全成恰好 3 页。\n\n${JSON.stringify(bareArtifactPlan)}`,
+)
+assert.equal(barePlan.plan?.operations[0]?.type, 'create_artifact')
+assert.equal(barePlan.cleanText, '小霖，我已经补全成恰好 3 页。')
+const ambiguousBarePlans = core.extractVaultOrganizePlan(
+  `${JSON.stringify(bareArtifactPlan)}\n${JSON.stringify(bareArtifactPlan)}`,
+)
+assert.equal(ambiguousBarePlans.plan, undefined, '多个裸方案不能猜选其中一个')
+
 const trashPlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
 {"title":"删除重复笔记","summary":"只移入回收站","operations":[{"type":"trash_note","path":"inbox/重复内容.md","reason":"用户明确要求"}],"notes":["确认后执行"]}
 <<<VAULT_ORGANIZE_PLAN_END>>>`)
@@ -207,6 +267,32 @@ const artifactPlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
 assert.equal(artifactPlan.invalid, false)
 assert.equal(artifactPlan.plan?.operations[0].type, 'create_artifact')
 assert.equal(core.operationLabel(artifactPlan.plan.operations[0]), '生成 DOCX：$OUTPUT/文档/客户方案.docx')
+assert.equal(artifactPlan.plan.operations[0].template, 'general')
+
+const workbookPlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+{"title":"生成经营数据 Excel","summary":"本机生成可编辑工作簿","operations":[{"type":"create_artifact","path":"$OUTPUT/表格/经营数据.xlsx","format":"xlsx","title":"经营数据","content":"# 经营数据\\n\\n| 月份 | 收入 |\\n| --- | --- |\\n| 8月 | 12000 |","template":"data-workbook","style":{"bodySizePt":99,"marginMm":1,"accentColor":"#12B76A","headerText":"经营\\u0000数据"}}],"notes":[]}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+assert.equal(workbookPlan.invalid, false)
+assert.equal(workbookPlan.plan?.operations[0].type, 'create_artifact')
+assert.equal(workbookPlan.plan.operations[0].format, 'xlsx')
+assert.equal(workbookPlan.plan.operations[0].template, 'data-workbook')
+assert.equal(workbookPlan.plan.operations[0].style.bodySizePt, 20)
+assert.equal(workbookPlan.plan.operations[0].style.marginMm, 10)
+assert.equal(workbookPlan.plan.operations[0].style.headerText, '经营 数据')
+
+const presentationPlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+{"title":"生成课程 PPT","summary":"主对话自然生成","operations":[{"type":"create_artifact","path":"$OUTPUT/演示文稿/增长课.pptx","format":"pptx","title":"增长课","content":"# 增长课\\n\\n完整讲义","template":"presentation","presentation":{"template":"course-explainer","subtitle":"行动课","requestedSlideCount":3,"slides":[{"layout":"cover","headline":"增长不是流量游戏。"},{"layout":"process","headline":"把目标拆成四步。","items":["选定一类有明确痛点且愿意付费的目标客户","用真实对话核实场景、需求和决策条件","交付一个能获得反馈的最小成果","记录咨询、转化和复购信号再迭代"],"css":"display:none"},{"layout":"closing","headline":"今天就开始第一步。"}]}}],"notes":[]}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+assert.equal(presentationPlan.invalid, false)
+assert.equal(presentationPlan.plan.operations[0].presentation.slides.length, 3)
+assert.equal(presentationPlan.plan.operations[0].presentation.requestedSlideCount, 3)
+assert.equal(presentationPlan.plan.operations[0].presentation.slides[1].layout, 'process')
+assert.equal(presentationPlan.plan.operations[0].presentation.slides[1].css, undefined)
+
+const mismatchedPresentationPlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
+{"title":"错误页数","summary":"必须拒绝","operations":[{"type":"create_artifact","path":"$OUTPUT/演示文稿/错误.pptx","format":"pptx","title":"错误","content":"# 错误","template":"presentation","presentation":{"template":"course-explainer","requestedSlideCount":3,"slides":[{"layout":"cover","headline":"一"},{"layout":"content","headline":"二"},{"layout":"content","headline":"三"},{"layout":"closing","headline":"四"}]}}],"notes":[]}
+<<<VAULT_ORGANIZE_PLAN_END>>>`)
+assert.equal(mismatchedPresentationPlan.invalid, true, '声明 3 页却提交 4 页时整份方案必须拒绝')
 
 const outputAliasPlan = core.resolveVaultPlanOutputPaths({
   title: '生成行动计划',
@@ -307,6 +393,46 @@ assert.match(
   /hasPreloadedCreateSkillEvidence[\s\S]*?'deferred_answer'/,
   '官方成品 Skill 已有预读证据时必须强制生成确认方案，不得误报未调用工具',
 )
+assert.match(
+  mainSource,
+  /record\.name === 'propose_artifact'[\s\S]{0,1100}template: args\.template,[\s\S]{0,160}style: args\.style,[\s\S]{0,160}presentation: args\.presentation/,
+  '原生 propose_artifact 必须把受控模板、样式与 PPT 页面设计稿交给本机预检，不能静默丢失',
+)
+assert.match(
+  mainSource,
+  /seenVaultReadCallSignatures[\s\S]*vaultToolCallSignature\(call\)[\s\S]*executeCalls\(freshCalls, undefined\)/,
+  '原生文件引擎必须缓存同任务内相同参数的只读调用，避免回退前反复读同一文件',
+)
+assert.match(
+  mainSource,
+  /freshReadCalls[\s\S]*vaultToolCallSignature\(call\)[\s\S]*executeCalls\([\s\S]*freshReadCalls/,
+  '兼容通道必须复用同一份判重状态，跨通道重复读取不能再次执行',
+)
+assert.match(
+  mainSource,
+  /webSearchNativeRouting[\s\S]*nativeAvailable[\s\S]*本轮只授权了外部公开资料搜索，没有开放 Vault 文件读取/,
+  '联网成品可以进入原生通道，但未授权时任何 Vault 读取都必须失败关闭',
+)
+assert.match(
+  mainSource,
+  /answer = stripVaultInternalTurnMarkers\(answer\)/,
+  '所有主对话出口都必须剥离内部路由标记',
+)
+assert.match(
+  mainSource,
+  /presentationSlideCountProblem\(input\.question, plan\.plan\.operations\[0\]\)[\s\S]*PPT 页数与要求不一致，已要求 AI 重新生成/,
+  '主对话必须在确认卡前把用户明确页数与实际 slides 做确定性比对',
+)
+assert.match(
+  mainSource,
+  /presentationContentProblem\(plan\.plan\.operations\[0\]\)[\s\S]*this\.activityStep\(`🧩 \$\{contentProblem\}`/,
+  '主对话必须在确认卡前拦住只有栏目词的空洞 PPT，并把具体失败页反馈给模型和用户',
+)
+assert.match(
+  mainSource,
+  /这份 PPT 方案已由后面的自然语言修订版替代[\s\S]*latestPendingPptOfferByPath/,
+  '同一路径的新版 PPT 方案必须让旧确认卡失效，避免自然语言改稿后误生成旧版',
+)
 
 assert.equal(core.normalizeVaultRelativePath('../secret.md'), null)
 assert.equal(core.normalizeVaultRelativePath('/absolute/file.md'), null)
@@ -368,12 +494,12 @@ assert.equal(core.isVaultBatchTask('帮我找一份 Obsidian 资料'), false)
     again.results.filter((entry) => entry.output === core.VAULT_AGENT_BUDGET_EXHAUSTED_NOTE).length,
     1,
   )
-  // 失败结果（如报错提示）不参与去重，照常保留
+  // 完全相同的失败提示也只保留一次，避免模型重复犯错时把上下文塞满
   const errors = core.appendToolResultsWithinBudget(
     [item('a', '读取失败', false)],
     [item('b', '读取失败', false)],
   )
-  assert.equal(errors.results.length, 2)
+  assert.equal(errors.results.length, 1)
 }
 assert.equal(
   core.isVaultAgentToolAllowed('read_skill_file', { vault: false, localSkill: true }),

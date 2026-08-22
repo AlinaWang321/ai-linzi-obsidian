@@ -1,15 +1,21 @@
 import {
   AlignmentType,
   BorderStyle,
+  convertMillimetersToTwip,
   Document,
   Footer,
+  Header,
   HeadingLevel,
   Packer,
+  PageBreak,
   PageNumber,
+  PageOrientation,
   Paragraph,
   ShadingType,
   Table,
   TableCell,
+  TableLayoutType,
+  TableOfContents,
   TableRow,
   TextRun,
   WidthType,
@@ -18,10 +24,17 @@ import { PDFDocument } from 'pdf-lib'
 import { strToU8, zipSync } from 'fflate'
 import {
   parseArtifactMarkdown,
+  normalizeArtifactStyle,
+  normalizePresentationSpec,
+  presentationContentProblem,
   resolveArtifactLayout,
+  type ArtifactFont,
   type ArtifactBlock,
   type ArtifactDocument,
   type CreateArtifactOperation,
+  type PresentationSlide,
+  type PresentationSpec,
+  type ResolvedArtifactStyle,
 } from './artifact-renderer-core'
 
 export interface RenderedArtifact {
@@ -45,8 +58,27 @@ const BRAND = {
   white: 'FFFFFF',
 }
 
+const OFFICE_FONTS: Record<ArtifactFont, string> = {
+  default: 'Hiragino Sans GB',
+  songti: 'Songti SC',
+  yahei: 'Microsoft YaHei',
+  heiti: 'Heiti SC',
+  fangsong: 'FangSong',
+  kaiti: 'KaiTi',
+  calibri: 'Calibri',
+  arial: 'Arial',
+}
+
 function escapeHtml(value: string): string {
-  return value
+  const safeText = Array.from(value)
+    .map((character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return codePoint === 9 || codePoint === 10 || codePoint === 13 || codePoint >= 32
+        ? character
+        : '�'
+    })
+    .join('')
+  return safeText
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -543,27 +575,65 @@ export function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand'
 </html>`
 }
 
-function docxTable(block: Extract<ArtifactBlock, { type: 'table' }>): Table {
+function docxTable(
+  block: Extract<ArtifactBlock, { type: 'table' }>,
+  style: ResolvedArtifactStyle,
+): Table {
   const border = { style: BorderStyle.SINGLE, size: 4, color: BRAND.line }
+  const bodyFont = OFFICE_FONTS[style.bodyFont]
+  const portraitWidth = style.pageSize === 'letter' ? 12_240 : 11_906
+  const portraitHeight = style.pageSize === 'letter' ? 15_840 : 16_838
+  const pageWidth = style.orientation === 'landscape' ? portraitHeight : portraitWidth
+  const availableWidth = Math.max(3_600, pageWidth - convertMillimetersToTwip(style.marginMm) * 2)
+  const columnCount = Math.max(1, block.headers.length)
+  const firstWidth = columnCount === 2 ? Math.round(availableWidth * .34) : Math.round(availableWidth / columnCount)
+  const columnWidths = Array.from({ length: columnCount }, (_, index) =>
+    index === columnCount - 1
+      ? availableWidth - firstWidth * (columnCount - 1)
+      : firstWidth,
+  )
   const row = (cells: string[], header = false) => new TableRow({
-    children: cells.map((cell) => new TableCell({
-      shading: header ? { type: ShadingType.CLEAR, fill: 'F3F6FA' } : undefined,
+    children: cells.map((cell, index) => new TableCell({
+      width: { size: columnWidths[index] ?? firstWidth, type: WidthType.DXA },
+      shading: header ? { type: ShadingType.CLEAR, fill: style.accentColor } : undefined,
       borders: { top: border, bottom: border, left: border, right: border },
       children: [new Paragraph({
-        children: [new TextRun({ text: cell, bold: header, color: header ? BRAND.blue : BRAND.ink, font: 'Hiragino Sans GB' })],
+        spacing: { before: 45, after: 45, line: Math.round(240 * style.lineSpacing) },
+        children: [new TextRun({
+          text: cell,
+          bold: header,
+          color: header ? BRAND.white : BRAND.ink,
+          font: bodyFont,
+          size: Math.round(style.bodySizePt * 2),
+        })],
       })],
     })),
   })
   return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
+    width: { size: availableWidth, type: WidthType.DXA },
+    columnWidths,
+    layout: TableLayoutType.FIXED,
     rows: [row(block.headers, true), ...block.rows.map((cells) => row(cells))],
   })
 }
 
-async function artifactDocx(document: ArtifactDocument): Promise<ArrayBuffer> {
-  const children: Array<Paragraph | Table> = [
+async function artifactDocx(
+  document: ArtifactDocument,
+  style: ResolvedArtifactStyle,
+): Promise<ArrayBuffer> {
+  const bodyFont = OFFICE_FONTS[style.bodyFont]
+  const headingFont = OFFICE_FONTS[style.headingFont]
+  const bodySize = Math.round(style.bodySizePt * 2)
+  const titleSize = Math.round(style.titleSizePt * 2)
+  const children: Array<Paragraph | Table | TableOfContents> = [
     new Paragraph({
-      text: document.title,
+      children: [new TextRun({
+        text: document.title,
+        bold: true,
+        color: BRAND.ink,
+        font: headingFont,
+        size: titleSize,
+      })],
       heading: HeadingLevel.TITLE,
       alignment: AlignmentType.CENTER,
       spacing: { after: 260 },
@@ -571,27 +641,47 @@ async function artifactDocx(document: ArtifactDocument): Promise<ArrayBuffer> {
     new Paragraph({
       alignment: AlignmentType.CENTER,
       spacing: { after: 460 },
-      children: [new TextRun({ text: 'AI霖子 · 智能生成文档', color: BRAND.muted, size: 20, font: 'Hiragino Sans GB' })],
+      children: [new TextRun({ text: 'AI霖子 · 智能生成文档', color: BRAND.muted, size: 20, font: bodyFont })],
     }),
   ]
+  if (style.includeCover) {
+    children.push(new Paragraph({ children: [new PageBreak()] }))
+  }
+  if (style.includeToc) {
+    children.push(new Paragraph({
+      children: [new TextRun({ text: '目录', bold: true, color: style.accentColor, font: headingFont, size: 36 })],
+      spacing: { after: 180 },
+    }))
+    children.push(new TableOfContents('目录', { hyperlink: true, headingStyleRange: '1-3' }))
+    children.push(new Paragraph({ children: [new PageBreak()] }))
+  }
   for (const block of document.blocks) {
     if (block.type === 'heading') {
       const headings = [HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3, HeadingLevel.HEADING_4]
       children.push(new Paragraph({
-        text: block.text,
+        children: [new TextRun({
+          text: block.text,
+          bold: true,
+          color: block.level <= 2 ? style.accentColor : BRAND.ink,
+          font: headingFont,
+          size: Math.max(bodySize + 2, titleSize - (block.level * 6)),
+        })],
         heading: headings[Math.max(0, Math.min(3, block.level - 1))],
         spacing: { before: 260, after: 120 },
       }))
     } else if (block.type === 'paragraph') {
       children.push(new Paragraph({
-        children: [new TextRun({ text: block.text, font: 'Hiragino Sans GB', size: 22, color: BRAND.ink })],
-        spacing: { after: 150, line: 360 },
+        children: [new TextRun({ text: block.text, font: bodyFont, size: bodySize, color: BRAND.ink })],
+        indent: style.firstLineIndentChars > 0
+          ? { firstLine: Math.round(style.bodySizePt * 20 * style.firstLineIndentChars) }
+          : undefined,
+        spacing: { after: 150, line: Math.round(240 * style.lineSpacing) },
       }))
     } else if (block.type === 'quote') {
       children.push(new Paragraph({
-        children: [new TextRun({ text: block.text, italics: true, color: BRAND.muted, font: 'Hiragino Sans GB' })],
+        children: [new TextRun({ text: block.text, italics: true, color: BRAND.muted, font: bodyFont, size: bodySize })],
         indent: { left: 420 },
-        border: { left: { style: BorderStyle.SINGLE, size: 18, color: BRAND.orange, space: 10 } },
+        border: { left: { style: BorderStyle.SINGLE, size: 18, color: style.accentColor, space: 10 } },
         spacing: { before: 120, after: 160 },
       }))
     } else if (block.type === 'code') {
@@ -604,15 +694,46 @@ async function artifactDocx(document: ArtifactDocument): Promise<ArrayBuffer> {
       children.push(new Paragraph({ border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: BRAND.line, space: 8 } } }))
     } else if (block.type === 'list') {
       block.items.forEach((item) => children.push(new Paragraph({
-        children: [new TextRun({ text: item, font: 'Hiragino Sans GB', size: 22 })],
+        children: [new TextRun({ text: item, font: bodyFont, size: bodySize })],
         bullet: block.ordered ? undefined : { level: 0 },
         numbering: block.ordered ? { reference: 'artifact-numbering', level: 0, instance: 1 } : undefined,
-        spacing: { after: 80, line: 320 },
+        spacing: { after: 80, line: Math.round(240 * style.lineSpacing) },
       })))
     } else {
-      children.push(docxTable(block))
+      children.push(docxTable(block, style))
     }
   }
+  const page = style.pageSize === 'letter'
+    ? { width: 12_240, height: 15_840 }
+    : { width: 11_906, height: 16_838 }
+  const pageSize = style.orientation === 'landscape'
+    ? { width: page.height, height: page.width, orientation: PageOrientation.LANDSCAPE }
+    : { ...page, orientation: PageOrientation.PORTRAIT }
+  const margin = convertMillimetersToTwip(style.marginMm)
+  const headers = style.headerText
+    ? {
+        default: new Header({
+          children: [new Paragraph({
+            alignment: AlignmentType.RIGHT,
+            children: [new TextRun({ text: style.headerText, color: BRAND.muted, size: 18, font: bodyFont })],
+          })],
+        }),
+      }
+    : undefined
+  const footers = style.footerText || style.pageNumbers
+    ? {
+        default: new Footer({
+          children: [new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [
+              ...(style.footerText ? [new TextRun({ text: style.footerText, color: BRAND.muted, size: 18, font: bodyFont })] : []),
+              ...(style.footerText && style.pageNumbers ? [new TextRun({ text: '  ·  ', color: BRAND.muted, size: 18, font: bodyFont })] : []),
+              ...(style.pageNumbers ? [new TextRun({ children: [PageNumber.CURRENT], color: BRAND.muted, size: 18, font: bodyFont })] : []),
+            ],
+          })],
+        }),
+      }
+    : undefined
   const doc = new Document({
     creator: 'AI霖子',
     title: document.title,
@@ -630,22 +751,19 @@ async function artifactDocx(document: ArtifactDocument): Promise<ArrayBuffer> {
       }],
     },
     styles: {
-      default: { document: { run: { font: 'Hiragino Sans GB', size: 22, color: BRAND.ink } } },
+      default: { document: { run: { font: bodyFont, size: bodySize, color: BRAND.ink } } },
     },
+    features: { updateFields: true },
     sections: [{
-      properties: { page: { margin: { top: 1080, right: 1080, bottom: 1080, left: 1080 } } },
-      children,
-      footers: {
-        default: new Footer({
-          children: [new Paragraph({
-            alignment: AlignmentType.CENTER,
-            children: [
-              new TextRun({ text: 'AI霖子  ·  ', color: BRAND.muted, size: 18 }),
-              new TextRun({ children: [PageNumber.CURRENT], color: BRAND.muted, size: 18 }),
-            ],
-          })],
-        }),
+      properties: {
+        page: {
+          size: pageSize,
+          margin: { top: margin, right: margin, bottom: margin, left: margin },
+        },
       },
+      children,
+      headers,
+      footers,
     }],
   })
   const blob = await Packer.toBlob(doc)
@@ -821,40 +939,197 @@ function pptxPages(document: ArtifactDocument): Array<{ title: string; lines: st
   return pages.length > 0 ? pages : [{ title: '核心内容', lines: ['内容已生成，请根据实际情况补充。'] }]
 }
 
-async function artifactPptx(document: ArtifactDocument, theme: 'brand' | 'clean'): Promise<ArrayBuffer> {
-  const accent = theme === 'clean' ? '1F2937' : BRAND.orange
+function fallbackPresentation(document: ArtifactDocument): PresentationSpec {
   const pages = pptxPages(document)
-  const slides = [
-    pptxSlide([
-      pptxRect(2, 0, 0, .18, 7.5, accent),
-      pptxRect(3, .18, 0, 13.15, .12, BRAND.blue),
-      pptxText(4, document.title, 1, 2.05, 11.2, 1.5, { size: 34, bold: true, color: BRAND.ink }),
-      pptxText(5, 'AI霖子 · 智能生成演示文稿', 1.03, 3.78, 8, .45, { size: 15, color: BRAND.muted }),
-      pptxRect(6, 1.03, 4.42, 2, .05, accent),
-    ]),
-    ...pages.map((page, index) => {
-      const lineHeight = Math.min(.72, 5.25 / Math.max(1, page.lines.length))
-      const shapes = [
-        pptxRect(2, 0, 0, .13, 7.5, accent),
-        pptxText(3, page.title, .75, .55, 11.6, .65, { size: 25, bold: true, color: BRAND.blue }),
-        pptxRect(4, .75, 1.35, 11.75, .012, BRAND.line),
-        ...page.lines.map((line, lineIndex) => {
-          const isSection = line.startsWith('§ ')
-          return pptxText(
-            5 + lineIndex,
-            isSection ? line.slice(2) : line,
-            isSection ? .85 : 1.02,
-            1.65 + lineIndex * lineHeight,
-            isSection ? 11.45 : 11.1,
-            Math.max(.42, lineHeight - .05),
-            { size: isSection ? 20 : 17, bold: isSection, color: isSection ? BRAND.ink : '344054' },
-          )
-        }),
-        pptxText(30, `${index + 2} / ${pages.length + 1}`, 11.8, 7.03, .8, .22, { size: 9, color: '98A2B3', align: 'r' }),
-      ]
-      return pptxSlide(shapes)
-    }),
+  const layouts: PresentationSlide['layout'][] = ['statement', 'content', 'cards', 'process', 'comparison', 'metrics']
+  const slides: PresentationSlide[] = [
+    {
+      layout: 'cover', kicker: '课程讲解', headline: document.title, body: '把复杂内容讲清楚、讲生动、讲得能行动',
+      items: [], leftTitle: '', leftItems: [], rightTitle: '', rightItems: [], metrics: [], quote: '', source: '', notes: '',
+    },
+    ...pages.map((page, index) => ({
+      layout: page.lines.length === 1 ? 'statement' : layouts[index % layouts.length],
+      kicker: `第 ${index + 1} 部分`, headline: page.title, body: page.lines[0] ?? '',
+      items: page.lines.slice(1, 7).map((line) => line.replace(/^§\s*/u, '')),
+      leftTitle: '现状', leftItems: page.lines.slice(0, 3),
+      rightTitle: '行动', rightItems: page.lines.slice(3, 6),
+      metrics: [], quote: '', source: '', notes: '',
+    })),
+    {
+      layout: 'closing', kicker: '带走一个行动', headline: '理解只是开始，真正的变化来自下一步行动。',
+      body: '现在选出最重要的一件事，今天就开始。', items: [], leftTitle: '', leftItems: [], rightTitle: '', rightItems: [], metrics: [], quote: '', source: '', notes: '',
+    },
   ]
+  return { template: 'course-explainer', subtitle: '', slides: slides.slice(0, 40) }
+}
+
+function presentationFor(operation: CreateArtifactOperation, document: ArtifactDocument): PresentationSpec {
+  const normalized = normalizePresentationSpec(operation.presentation)
+  if (normalized) {
+    const contentProblem = presentationContentProblem(operation)
+    if (contentProblem) throw new Error(contentProblem)
+    return normalized
+  }
+  if (operation.presentation !== undefined) {
+    throw new Error('PPT 页面设计稿无效或页数与用户要求不一致，请重新生成方案')
+  }
+  return fallbackPresentation(document)
+}
+
+function presentationItemsHtml(items: string[]): string {
+  return items.length > 0 ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''
+}
+
+/**
+ * 本机验收与确认卡复用的 HTML 预览。它与 PPTX 读取同一份 SlideSpec，
+ * 但不包含脚本、外链和模型 CSS，不能借预览执行任意代码。
+ */
+export function renderPresentationPreviewHtml(operation: CreateArtifactOperation): string {
+  const document = parseArtifactMarkdown(operation.content, operation.title)
+  const spec = presentationFor(operation, document)
+  const slides = spec.slides.map((slide, index) => {
+    const metrics = slide.metrics.length > 0
+      ? `<div class="metrics">${slide.metrics.map((metric) => `<div><strong>${escapeHtml(metric.value)}</strong><span>${escapeHtml(metric.label)}</span></div>`).join('')}</div>`
+      : ''
+    const comparison = slide.layout === 'comparison'
+      ? `<div class="comparison"><div><b>${escapeHtml(slide.leftTitle || '现状')}</b>${presentationItemsHtml(slide.leftItems)}</div><div><b>${escapeHtml(slide.rightTitle || '行动')}</b>${presentationItemsHtml(slide.rightItems)}</div></div>`
+      : ''
+    return `<section class="slide ${slide.layout}">
+      <div class="orb orb-a"></div><div class="orb orb-b"></div>
+      <div class="page">${index + 1} / ${spec.slides.length}</div>
+      <div class="content"><small>${escapeHtml(slide.kicker)}</small><h2>${escapeHtml(slide.headline)}</h2>
+      ${slide.quote ? `<blockquote>“${escapeHtml(slide.quote)}”</blockquote>` : ''}
+      ${slide.body ? `<p>${escapeHtml(slide.body)}</p>` : ''}${presentationItemsHtml(slide.items)}${comparison}${metrics}
+      ${slide.source ? `<em>${escapeHtml(slide.source)}</em>` : ''}</div>
+    </section>`
+  }).join('\n')
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(document.title)}</title><style>
+  :root{--navy:#0b1730;--ink:#14213d;--paper:#fbf7ef;--purple:#7f56d9;--gold:#f39800;--jade:#3db389;--line:#dfe5ef}*{box-sizing:border-box}body{margin:0;background:#18223a;font-family:"PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink)}.slide{position:relative;width:min(1280px,100vw);aspect-ratio:16/9;margin:28px auto;overflow:hidden;background:var(--paper);box-shadow:0 24px 70px #0006}.content{position:absolute;inset:10% 8%;z-index:2}.content small{display:block;color:var(--purple);font-weight:800;letter-spacing:.16em;font-size:1.05vw}.content h2{max-width:84%;margin:.35em 0 .5em;font-size:3.4vw;line-height:1.12;letter-spacing:-.035em}.content p{max-width:70%;font-size:1.45vw;line-height:1.65;color:#44506a}.content ul{max-width:76%;padding:0;display:grid;gap:.8vw;list-style:none}.content li{padding:1vw 1.2vw;border:1px solid var(--line);border-left:.45vw solid var(--jade);background:#fff;border-radius:1vw;font-size:1.25vw}.page{position:absolute;right:4%;bottom:4%;z-index:3;color:#8290aa;font-size:1vw}.orb{position:absolute;border-radius:50%}.orb-a{width:27%;aspect-ratio:1;right:-5%;top:-12%;background:#7f56d922}.orb-b{width:14%;aspect-ratio:1;right:10%;bottom:7%;background:#f3980030}.cover,.quote,.closing{background:var(--navy);color:white}.cover .content h2,.closing .content h2{max-width:68%;font-size:4.4vw}.cover .content p,.closing .content p,.quote .content p{color:#d7def0}.cover .orb-a,.closing .orb-a{background:var(--purple);right:5%;top:17%}.cover .orb-b,.closing .orb-b{background:var(--jade);right:21%;bottom:17%}.statement .content h2{max-width:78%;font-size:4.4vw}.statement:before{content:'01';position:absolute;right:8%;top:15%;font-size:16vw;font-weight:900;color:#7f56d914}.cards .content ul,.process .content ul{max-width:100%;grid-template-columns:repeat(3,1fr)}.process .content ul{grid-template-columns:repeat(4,1fr)}.comparison{display:grid;grid-template-columns:1fr 1fr;gap:2vw;margin-top:2vw}.comparison>div{padding:1.7vw;background:#fff;border:1px solid var(--line);border-radius:1.2vw}.comparison>div:last-child{border-top:.5vw solid var(--jade)}.comparison b{font-size:1.6vw}.comparison ul{display:block}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:1.3vw;margin-top:2vw}.metrics>div{padding:2vw 1.4vw;background:white;border-radius:1.2vw;border:1px solid var(--line)}.metrics strong{display:block;font-size:3vw;color:var(--purple)}.metrics span{font-size:1.1vw}.quote blockquote{max-width:80%;margin:1.2vw 0;font-family:"Songti SC",serif;font-size:3.5vw;line-height:1.35}.quote .orb-a{background:#7f56d9aa}.content em{display:block;margin-top:1.5vw;color:#8290aa}@media(max-width:700px){.slide{margin:8px auto}}
+  </style></head><body>${slides}</body></html>`
+}
+
+function pptxList(
+  items: string[],
+  startId: number,
+  x: number,
+  y: number,
+  width: number,
+  rowHeight: number,
+  font: string,
+  accent = COURSE.jade,
+): string[] {
+  return items.slice(0, 6).flatMap((item, index) => [
+    pptxRoundRect(startId + index * 3, x, y + index * rowHeight, width, rowHeight - .12, COURSE.white, COURSE.line),
+    pptxRoundRect(startId + index * 3 + 1, x, y + index * rowHeight, .08, rowHeight - .12, accent, accent),
+    pptxText(startId + index * 3 + 2, item, x + .28, y + index * rowHeight + .05, width - .45, rowHeight - .22, { size: 14, color: COURSE.ink, font, anchor: 'ctr' }),
+  ])
+}
+
+const COURSE = {
+  navy: '0B1730', ink: '14213D', purple: '7F56D9', gold: 'F39800', jade: '3DB389',
+  cream: 'FBF7EF', paper: 'F4F1EB', white: 'FFFFFF', muted: '667085', line: 'DFE5EF', lilac: 'EFE9FC',
+}
+
+/**
+ * PPTX 面向 Keynote 与 Windows PowerPoint 双端交付。中文专用字体在另一平台
+ * 往往不存在，会触发“缺少字体”警告；拉丁字体固定为两端都有的 Arial，中文
+ * 则交给 Office/Keynote 的东亚默认字体回退，视觉保持系统原生且不弹缺字库。
+ */
+function pptxPortableFont(font: string): string {
+  return font === 'Georgia' ? 'Georgia' : 'Arial'
+}
+
+function pptxPresentationSlide(
+  slide: PresentationSlide,
+  index: number,
+  total: number,
+  style: ResolvedArtifactStyle,
+): string {
+  const headingFont = pptxPortableFont(OFFICE_FONTS[style.headingFont])
+  const bodyFont = pptxPortableFont(OFFICE_FONTS[style.bodyFont])
+  const dark = slide.layout === 'cover' || slide.layout === 'quote' || slide.layout === 'closing'
+  const background = dark ? COURSE.navy : COURSE.cream
+  const titleColor = dark ? COURSE.white : COURSE.ink
+  const shapes: string[] = [pptxRect(2, 0, 0, 13.333, 7.5, background)]
+  let id = 3
+  const add = (...next: string[]) => { shapes.push(...next); id += next.length }
+  const kicker = slide.kicker || (index === 0 ? '课程讲解' : `第 ${index + 1} 页`)
+
+  if (slide.layout === 'cover' || slide.layout === 'closing') {
+    add(pptxEllipse(id, 10.75, -1.4, 4, 4, COURSE.purple))
+    add(pptxText(id, kicker, .82, .7, 5.8, .36, { size: 13, bold: true, color: COURSE.gold, font: bodyFont }))
+    add(pptxText(id, slide.headline, .82, 1.45, 7.4, 2.5, { size: Math.min(42, style.titleSizePt + 4), bold: true, color: titleColor, font: headingFont, anchor: 'ctr' }))
+    if (slide.body) add(pptxText(id, slide.body, .86, 4.32, 6.9, 1.05, { size: 17, color: 'D7DEF0', font: bodyFont, anchor: 't' }))
+    add(pptxRect(id, .86, 5.82, 1.65, .06, COURSE.gold))
+  } else if (slide.layout === 'quote') {
+    add(pptxEllipse(id, 9.6, -.8, 4.5, 4.5, COURSE.purple))
+    add(pptxText(id, '“', .75, .65, 1.2, 1.1, { size: 64, bold: true, color: COURSE.gold, font: 'Georgia' }))
+    add(pptxText(id, slide.quote || slide.headline, 1.15, 1.5, 10.75, 3.25, { size: 30, bold: true, color: COURSE.white, font: headingFont, anchor: 'ctr' }))
+    if (slide.source) add(pptxText(id, `— ${slide.source}`, 7.3, 5.25, 4.6, .45, { size: 14, color: 'D7DEF0', align: 'r', font: bodyFont }))
+  } else {
+    add(pptxText(id, kicker, .72, .42, 5.5, .28, { size: 11, bold: true, color: COURSE.purple, font: bodyFont }))
+    add(pptxText(id, slide.headline, .72, .8, 11.85, 1.18, { size: Math.min(32, style.titleSizePt), bold: true, color: titleColor, font: headingFont, anchor: 'ctr' }))
+    add(pptxRect(id, .72, 2.08, 1.12, .055, COURSE.gold))
+
+    if (slide.layout === 'statement') {
+      add(pptxText(id, String(index + 1).padStart(2, '0'), 9.4, 1.55, 3.1, 2.3, { size: 90, bold: true, color: COURSE.lilac, align: 'r', font: headingFont }))
+      add(pptxText(id, slide.body || slide.items[0] || '', .8, 3.03, 8.2, 1.65, { size: 23, color: COURSE.ink, font: bodyFont, anchor: 'ctr' }))
+      add(...pptxList(slide.items.slice(slide.body ? 0 : 1), id, .8, 5.05, 8.8, .62, bodyFont))
+    } else if (slide.layout === 'comparison') {
+      const panels = [
+        { x: .78, title: slide.leftTitle || '现状', items: slide.leftItems, color: COURSE.gold },
+        { x: 6.83, title: slide.rightTitle || '行动', items: slide.rightItems, color: COURSE.jade },
+      ]
+      for (const panel of panels) {
+        add(pptxRoundRect(id, panel.x, 2.48, 5.72, 3.95, COURSE.white, COURSE.line))
+        add(pptxRect(id, panel.x, 2.48, 5.72, .12, panel.color))
+        add(pptxText(id, panel.title, panel.x + .35, 2.82, 4.9, .5, { size: 19, bold: true, color: COURSE.ink, font: headingFont }))
+        add(...pptxList(panel.items, id, panel.x + .33, 3.52, 5.05, .62, bodyFont, panel.color))
+      }
+    } else if (slide.layout === 'metrics') {
+      const metrics = slide.metrics.length > 0 ? slide.metrics : slide.items.slice(0, 4).map((item, metricIndex) => ({ value: `0${metricIndex + 1}`, label: item }))
+      const cardWidth = metrics.length <= 3 ? 3.75 : 2.8
+      metrics.slice(0, 4).forEach((metric, metricIndex) => {
+        const x = .78 + metricIndex * (cardWidth + .28)
+        add(pptxRoundRect(id, x, 2.72, cardWidth, 2.55, COURSE.white, COURSE.line))
+        add(pptxText(id, metric.value, x + .25, 3.08, cardWidth - .5, .82, { size: 32, bold: true, color: metricIndex % 2 ? COURSE.jade : COURSE.purple, font: headingFont }))
+        add(pptxText(id, metric.label, x + .25, 4.12, cardWidth - .5, .72, { size: 14, color: COURSE.ink, font: bodyFont, anchor: 't' }))
+      })
+      if (slide.body) add(pptxText(id, slide.body, .82, 5.72, 11.7, .65, { size: 15, color: COURSE.muted, font: bodyFont }))
+    } else if (slide.layout === 'cards' || slide.layout === 'process') {
+      const items = slide.items.slice(0, slide.layout === 'process' ? 4 : 6)
+      const columns = slide.layout === 'process' ? 4 : Math.min(3, Math.max(1, items.length))
+      const cardWidth = (11.8 - (columns - 1) * .28) / columns
+      items.forEach((item, itemIndex) => {
+        const row = Math.floor(itemIndex / columns)
+        const column = itemIndex % columns
+        const x = .78 + column * (cardWidth + .28)
+        const y = 2.55 + row * 1.85
+        add(pptxRoundRect(id, x, y, cardWidth, 1.58, COURSE.white, COURSE.line))
+        add(pptxEllipse(id, x + .25, y + .25, .48, .48, itemIndex % 3 === 0 ? COURSE.purple : itemIndex % 3 === 1 ? COURSE.gold : COURSE.jade))
+        add(pptxText(id, String(itemIndex + 1), x + .25, y + .25, .48, .48, { size: 12, bold: true, color: COURSE.white, align: 'ctr', font: bodyFont }))
+        add(pptxText(id, item, x + .88, y + .28, cardWidth - 1.12, 1.02, { size: 14, bold: slide.layout === 'process', color: COURSE.ink, font: bodyFont, anchor: 't' }))
+      })
+    } else {
+      add(pptxRoundRect(id, 8.45, 2.45, 4.05, 3.68, COURSE.navy, COURSE.navy))
+      add(pptxEllipse(id, 9.12, 3.02, 1.35, 1.35, COURSE.purple))
+      add(pptxEllipse(id, 10.65, 4.45, .78, .78, COURSE.jade))
+      add(pptxRoundRect(id, 9.02, 5.28, 2.72, .45, COURSE.cream, COURSE.cream))
+      if (slide.body) add(pptxText(id, slide.body, .8, 2.58, 7.05, 1.1, { size: 17, color: COURSE.ink, font: bodyFont, anchor: 't' }))
+      add(...pptxList(slide.items, id, .8, slide.body ? 3.92 : 2.62, 7.1, .62, bodyFont))
+    }
+  }
+  if (style.pageNumbers) add(pptxText(id, `${index + 1} / ${total}`, 11.85, 7.05, .75, .2, { size: 9, color: dark ? 'AAB5CC' : '8290AA', align: 'r', font: bodyFont }))
+  return pptxSlide(shapes)
+}
+
+async function artifactPptx(
+  operation: CreateArtifactOperation,
+  document: ArtifactDocument,
+  style: ResolvedArtifactStyle,
+): Promise<ArrayBuffer> {
+  const spec = presentationFor(operation, document)
+  const slides = spec.slides.map((slide, index) => pptxPresentationSlide(slide, index, spec.slides.length, style))
   const files: Record<string, Uint8Array> = {
     '[Content_Types].xml': strToU8(pptxContentTypes(slides.length)),
     '_rels/.rels': strToU8(PPTX_ROOT_RELS),
@@ -862,7 +1137,7 @@ async function artifactPptx(document: ArtifactDocument, theme: 'brand' | 'clean'
     'docProps/core.xml': strToU8(pptxCore(document.title)),
     'ppt/presentation.xml': strToU8(pptxPresentation(slides.length)),
     'ppt/_rels/presentation.xml.rels': strToU8(pptxPresentationRels(slides.length)),
-    'ppt/theme/theme1.xml': strToU8(PPTX_THEME),
+    'ppt/theme/theme1.xml': strToU8(pptxTheme(style)),
     'ppt/slideMasters/slideMaster1.xml': strToU8(PPTX_MASTER),
     'ppt/slideMasters/_rels/slideMaster1.xml.rels': strToU8(PPTX_MASTER_RELS),
     'ppt/slideLayouts/slideLayout1.xml': strToU8(PPTX_LAYOUT),
@@ -884,6 +1159,22 @@ function pptxRect(id: number, x: number, y: number, width: number, height: numbe
   return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Rectangle ${id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${pptxEmu(x)}" y="${pptxEmu(y)}"/><a:ext cx="${pptxEmu(width)}" cy="${pptxEmu(height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="${color}"/></a:solidFill><a:ln><a:noFill/></a:ln></p:spPr></p:sp>`
 }
 
+function pptxRoundRect(
+  id: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  color: string,
+  lineColor: string,
+): string {
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Rounded Rectangle ${id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${pptxEmu(x)}" y="${pptxEmu(y)}"/><a:ext cx="${pptxEmu(width)}" cy="${pptxEmu(height)}"/></a:xfrm><a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="${color}"/></a:solidFill><a:ln w="12700"><a:solidFill><a:srgbClr val="${lineColor}"/></a:solidFill></a:ln></p:spPr></p:sp>`
+}
+
+function pptxEllipse(id: number, x: number, y: number, width: number, height: number, color: string): string {
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Ellipse ${id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${pptxEmu(x)}" y="${pptxEmu(y)}"/><a:ext cx="${pptxEmu(width)}" cy="${pptxEmu(height)}"/></a:xfrm><a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="${color}"/></a:solidFill><a:ln><a:noFill/></a:ln></p:spPr></p:sp>`
+}
+
 function pptxText(
   id: number,
   text: string,
@@ -891,9 +1182,10 @@ function pptxText(
   y: number,
   width: number,
   height: number,
-  options: { size: number; color: string; bold?: boolean; align?: 'l' | 'r' | 'ctr' },
+  options: { size: number; color: string; bold?: boolean; align?: 'l' | 'r' | 'ctr'; font?: string; anchor?: 't' | 'ctr' | 'b' },
 ): string {
-  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Text ${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${pptxEmu(x)}" y="${pptxEmu(y)}"/><a:ext cx="${pptxEmu(width)}" cy="${pptxEmu(height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr wrap="square" anchor="ctr" lIns="0" rIns="0" tIns="0" bIns="0"/><a:lstStyle/><a:p><a:pPr algn="${options.align ?? 'l'}"/><a:r><a:rPr lang="zh-CN" sz="${options.size * 100}"${options.bold ? ' b="1"' : ''}><a:solidFill><a:srgbClr val="${options.color}"/></a:solidFill><a:latin typeface="Hiragino Sans GB"/><a:ea typeface="Hiragino Sans GB"/></a:rPr><a:t>${escapeHtml(text)}</a:t></a:r><a:endParaRPr lang="zh-CN" sz="${options.size * 100}"/></a:p></p:txBody></p:sp>`
+  const font = pptxPortableFont(options.font ?? 'Arial')
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Text ${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${pptxEmu(x)}" y="${pptxEmu(y)}"/><a:ext cx="${pptxEmu(width)}" cy="${pptxEmu(height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr wrap="square" anchor="${options.anchor ?? 'ctr'}" lIns="0" rIns="0" tIns="0" bIns="0"/><a:lstStyle/><a:p><a:pPr algn="${options.align ?? 'l'}"/><a:r><a:rPr lang="zh-CN" sz="${options.size * 100}"${options.bold ? ' b="1"' : ''}><a:solidFill><a:srgbClr val="${options.color}"/></a:solidFill><a:latin typeface="${escapeHtml(font)}"/><a:ea typeface=""/></a:rPr><a:t>${escapeHtml(text)}</a:t></a:r><a:endParaRPr lang="zh-CN" sz="${options.size * 100}"/></a:p></p:txBody></p:sp>`
 }
 
 function pptxSlide(shapes: string[]): string {
@@ -927,7 +1219,142 @@ const PPTX_LAYOUT_RELS = `${PPTX_XML}<Relationships xmlns="http://schemas.openxm
 const PPTX_MASTER_RELS = `${PPTX_XML}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>`
 const PPTX_LAYOUT = `${PPTX_XML}<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1"><p:cSld name="空白"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>`
 const PPTX_MASTER = `${PPTX_XML}<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMap accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" bg1="lt1" bg2="lt2" folHlink="folHlink" hlink="hlink" tx1="dk1" tx2="dk2"/><p:sldLayoutIdLst><p:sldLayoutId id="1" r:id="rId2"/></p:sldLayoutIdLst><p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles></p:sldMaster>`
-const PPTX_THEME = `${PPTX_XML}<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="AI霖子"><a:themeElements><a:clrScheme name="AI霖子"><a:dk1><a:srgbClr val="172033"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="344054"/></a:dk2><a:lt2><a:srgbClr val="F4F6F8"/></a:lt2><a:accent1><a:srgbClr val="0057FF"/></a:accent1><a:accent2><a:srgbClr val="F39800"/></a:accent2><a:accent3><a:srgbClr val="12B76A"/></a:accent3><a:accent4><a:srgbClr val="7F56D9"/></a:accent4><a:accent5><a:srgbClr val="06AED4"/></a:accent5><a:accent6><a:srgbClr val="F04438"/></a:accent6><a:hlink><a:srgbClr val="0057FF"/></a:hlink><a:folHlink><a:srgbClr val="7F56D9"/></a:folHlink></a:clrScheme><a:fontScheme name="AI霖子"><a:majorFont><a:latin typeface="Hiragino Sans GB"/><a:ea typeface="Hiragino Sans GB"/><a:cs typeface="Arial"/></a:majorFont><a:minorFont><a:latin typeface="Hiragino Sans GB"/><a:ea typeface="Hiragino Sans GB"/><a:cs typeface="Arial"/></a:minorFont></a:fontScheme><a:fmtScheme name="AI霖子"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`
+function pptxTheme(style: ResolvedArtifactStyle): string {
+  const bodyFont = escapeHtml(pptxPortableFont(OFFICE_FONTS[style.bodyFont]))
+  const headingFont = escapeHtml(pptxPortableFont(OFFICE_FONTS[style.headingFont]))
+  return `${PPTX_XML}<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="AI霖子"><a:themeElements><a:clrScheme name="AI霖子"><a:dk1><a:srgbClr val="172033"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="344054"/></a:dk2><a:lt2><a:srgbClr val="F4F6F8"/></a:lt2><a:accent1><a:srgbClr val="${style.accentColor}"/></a:accent1><a:accent2><a:srgbClr val="F39800"/></a:accent2><a:accent3><a:srgbClr val="12B76A"/></a:accent3><a:accent4><a:srgbClr val="7F56D9"/></a:accent4><a:accent5><a:srgbClr val="06AED4"/></a:accent5><a:accent6><a:srgbClr val="F04438"/></a:accent6><a:hlink><a:srgbClr val="0057FF"/></a:hlink><a:folHlink><a:srgbClr val="7F56D9"/></a:folHlink></a:clrScheme><a:fontScheme name="AI霖子"><a:majorFont><a:latin typeface="${headingFont}"/><a:ea typeface=""/><a:cs typeface="Arial"/></a:majorFont><a:minorFont><a:latin typeface="${bodyFont}"/><a:ea typeface=""/><a:cs typeface="Arial"/></a:minorFont></a:fontScheme><a:fmtScheme name="AI霖子"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`
+}
+
+interface XlsxSheet {
+  name: string
+  rows: string[][]
+}
+
+function xlsxSheetName(value: string, fallback: string, used: Set<string>): string {
+  const base = value.replace(/[\\/*?:[\]]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, 31) || fallback
+  let name = base
+  let suffix = 2
+  while (used.has(name.toLocaleLowerCase())) {
+    const tail = ` ${suffix}`
+    name = `${base.slice(0, 31 - tail.length)}${tail}`
+    suffix += 1
+  }
+  used.add(name.toLocaleLowerCase())
+  return name
+}
+
+function xlsxSheets(document: ArtifactDocument): XlsxSheet[] {
+  const used = new Set<string>()
+  const summary: string[][] = [['类型', '内容'], ['文档标题', document.title]]
+  const tables: Array<{ title: string; headers: string[]; rows: string[][] }> = []
+  let section = document.title
+  for (const block of document.blocks) {
+    if (block.type === 'heading') {
+      section = block.text
+      summary.push([`标题 ${block.level}`, block.text])
+    } else if (block.type === 'paragraph') {
+      summary.push(['正文', block.text])
+    } else if (block.type === 'quote') {
+      summary.push(['引用', block.text])
+    } else if (block.type === 'code') {
+      summary.push(['代码', block.text])
+    } else if (block.type === 'list') {
+      block.items.forEach((item, index) => summary.push([block.ordered ? `步骤 ${index + 1}` : '清单', item]))
+    } else if (block.type === 'table') {
+      tables.push({ title: section, headers: block.headers, rows: block.rows })
+    }
+  }
+  const sheets: XlsxSheet[] = [{
+    name: xlsxSheetName('内容摘要', '内容摘要', used),
+    rows: summary,
+  }]
+  tables.forEach((table, index) => sheets.push({
+    name: xlsxSheetName(table.title, `数据表 ${index + 1}`, used),
+    rows: [table.headers, ...table.rows],
+  }))
+  return sheets
+}
+
+function xlsxColumnName(index: number): string {
+  let value = index + 1
+  let name = ''
+  while (value > 0) {
+    value -= 1
+    name = String.fromCharCode(65 + (value % 26)) + name
+    value = Math.floor(value / 26)
+  }
+  return name
+}
+
+function xlsxNumeric(value: string): boolean {
+  const text = value.trim()
+  if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(text) || text.length > 15) return false
+  // 编号、手机号和带前导零的数据必须保持文本，不能被 Excel 改写。
+  return !/^-?0\d/u.test(text)
+}
+
+function xlsxCell(value: string, row: number, column: number, header: boolean): string {
+  const ref = `${xlsxColumnName(column)}${row}`
+  const style = header ? 1 : 0
+  if (!header && xlsxNumeric(value)) {
+    return `<c r="${ref}" s="${style}"><v>${value.trim()}</v></c>`
+  }
+  // 一律写 inlineStr，不创建公式节点；即使用户正文以 =、+、-、@ 开头也只是文本。
+  return `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${escapeHtml(value)}</t></is></c>`
+}
+
+function xlsxWorksheet(sheet: XlsxSheet, index: number, style: ResolvedArtifactStyle): string {
+  const rowCount = Math.max(1, sheet.rows.length)
+  const columnCount = Math.max(1, ...sheet.rows.map((row) => row.length))
+  const rows = sheet.rows.map((cells, rowIndex) => {
+    const number = rowIndex + 1
+    return `<row r="${number}">${cells.map((cell, column) => xlsxCell(cell, number, column, rowIndex === 0)).join('')}</row>`
+  }).join('')
+  const columns = Array.from({ length: columnCount }, (_, column) => {
+    const longest = Math.max(8, ...sheet.rows.map((row) => Array.from(row[column] ?? '').length))
+    return `<col min="${column + 1}" max="${column + 1}" width="${Math.min(42, longest + 3)}" customWidth="1"/>`
+  }).join('')
+  const lastCell = `${xlsxColumnName(columnCount - 1)}${rowCount}`
+  const autoFilter = rowCount > 1 && columnCount > 1 ? `<autoFilter ref="A1:${lastCell}"/>` : ''
+  const paperSize = style.pageSize === 'letter' ? 1 : 9
+  return `${XLSX_XML}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:${lastCell}"/><sheetViews><sheetView workbookViewId="0"${index === 0 ? ' tabSelected="1"' : ''}><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${columns}</cols><sheetData>${rows}</sheetData>${autoFilter}<pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup paperSize="${paperSize}" orientation="${style.orientation}" fitToWidth="1" fitToHeight="0"/></worksheet>`
+}
+
+const XLSX_XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+
+function xlsxStyles(style: ResolvedArtifactStyle): string {
+  const font = escapeHtml(OFFICE_FONTS[style.bodyFont])
+  return `${XLSX_XML}<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="${style.bodySizePt}"/><name val="${font}"/><family val="2"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="${style.bodySizePt}"/><name val="${font}"/><family val="2"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF${style.accentColor}"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFE7EAF0"/></left><right style="thin"><color rgb="FFE7EAF0"/></right><top style="thin"><color rgb="FFE7EAF0"/></top><bottom style="thin"><color rgb="FFE7EAF0"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFill="1" applyFont="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`
+}
+
+async function artifactXlsx(
+  document: ArtifactDocument,
+  style: ResolvedArtifactStyle,
+): Promise<ArrayBuffer> {
+  const sheets = xlsxSheets(document)
+  const sheetEntries = sheets.map((sheet, index) =>
+    `<sheet name="${escapeHtml(sheet.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`,
+  ).join('')
+  const sheetOverrides = sheets.map((_, index) =>
+    `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`,
+  ).join('')
+  const sheetRelationships = sheets.map((_, index) =>
+    `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`,
+  ).join('')
+  const files: Record<string, Uint8Array> = {
+    '[Content_Types].xml': strToU8(`${XLSX_XML}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>${sheetOverrides}</Types>`),
+    '_rels/.rels': strToU8(`${XLSX_XML}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`),
+    'xl/workbook.xml': strToU8(`${XLSX_XML}<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView activeTab="0"/></bookViews><sheets>${sheetEntries}</sheets><calcPr calcId="0" calcMode="auto"/></workbook>`),
+    'xl/_rels/workbook.xml.rels': strToU8(`${XLSX_XML}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheetRelationships}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`),
+    'xl/styles.xml': strToU8(xlsxStyles(style)),
+    'docProps/core.xml': strToU8(pptxCore(document.title)),
+    'docProps/app.xml': strToU8(`${XLSX_XML}<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>AI霖子</Application><Company>AI霖子</Company><AppVersion>1.0</AppVersion></Properties>`),
+  }
+  sheets.forEach((sheet, index) => {
+    files[`xl/worksheets/sheet${index + 1}.xml`] = strToU8(xlsxWorksheet(sheet, index, style))
+  })
+  return Uint8Array.from(zipSync(files, { level: 6 })).buffer
+}
 
 export async function renderArtifact(
   operation: CreateArtifactOperation,
@@ -935,6 +1362,7 @@ export async function renderArtifact(
 ): Promise<RenderedArtifact> {
   const document = parseArtifactMarkdown(operation.content, operation.title)
   const theme = operation.theme ?? 'brand'
+  const style = normalizeArtifactStyle(operation.style, operation.template, theme)
   if (operation.format === 'html') {
     // 看板/日报类内容走交互版式；长文继续文档版式（0.7.54）。
     const data = resolveArtifactLayout(operation) === 'dashboard'
@@ -943,10 +1371,13 @@ export async function renderArtifact(
     return { binary: false, data, mimeType: 'text/html' }
   }
   if (operation.format === 'docx') {
-    return { binary: true, data: await artifactDocx(document), mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
+    return { binary: true, data: await artifactDocx(document, style), mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
   }
   if (operation.format === 'pdf') {
     return { binary: true, data: await artifactPdf(document, theme), mimeType: 'application/pdf' }
   }
-  return { binary: true, data: await artifactPptx(document, theme), mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+  if (operation.format === 'pptx') {
+    return { binary: true, data: await artifactPptx(operation, document, style), mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+  }
+  return { binary: true, data: await artifactXlsx(document, style), mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
 }

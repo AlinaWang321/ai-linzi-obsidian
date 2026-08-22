@@ -367,6 +367,25 @@ console.log('第12组 VAULT_NATIVE_TURN 标记行为（0.7.54 补齐）')
     false,
   )
   assert.equal(core.isVaultNativeTurnRequest('我已经帮你整理好了'), false)
+
+  // 联网是安全边界，不靠模型是否恰好遵守“只输出标记”。明确要求最新外部证据
+  // 必须直接进入能申请 OpenAI Web Search 的原生通道；普通内容/PPT 不应被误伤。
+  assert.equal(
+    core.requiresWebSearchNativeRouting('请做一份2026内容增长趋势PPT，加入最新公开数据、真实案例和来源'),
+    true,
+  )
+  assert.equal(core.requiresWebSearchNativeRouting('请做一份3页内容增长PPT，不要联网'), false)
+  assert.equal(core.requiresWebSearchNativeRouting('用现有内容讲讲增长趋势'), false)
+
+  // 即使服务端违规把内部标记混在长答复里，也不能泄露到用户界面。
+  assert.equal(
+    core.stripVaultInternalTurnMarkers('我先说明检索范围。\n<<<VAULT_NATIVE_TURN>>>'),
+    '我先说明检索范围。',
+  )
+  assert.equal(
+    core.stripVaultInternalTurnMarkers('准备写入 CRM。\n<<<CLOUD_TOOLS_TURN>>>'),
+    '准备写入 CRM。',
+  )
 }
 
 // ── 0.7.66 第13组：空承诺形态整段扫描（柚柠客户档案案，2026-08-20 学员实测）──

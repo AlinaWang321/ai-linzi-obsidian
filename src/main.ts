@@ -195,6 +195,8 @@ import {
   isCloudToolsTurnRequest,
   isVaultBatchTask,
   isVaultNativeTurnRequest,
+  requiresWebSearchNativeRouting,
+  stripVaultInternalTurnMarkers,
   isExplicitCurrentNoteTrashRequest,
   isExplicitVaultTrashIntent,
   isStructuredNoteWriteIntent,
@@ -211,6 +213,7 @@ import {
   upgradeVaultIntent,
   vaultAutoAnswerRetryReason,
   vaultAnswerRetryReason,
+  vaultToolCallSignature,
   vaultWriteFlowRetryReason,
   type PendingVaultTask,
   type VaultAnswerRetryReason,
@@ -223,7 +226,11 @@ import {
 } from './vault-agent-core'
 import {
   artifactFormatLabel,
+  artifactStyleSummary,
   estimateArtifactUnits,
+  normalizePresentationSpec,
+  presentationContentProblem,
+  presentationSlideCountProblem,
   resolveArtifactPath,
 } from './artifact-renderer-core'
 import {
@@ -4469,6 +4476,9 @@ class ChatView extends ItemView {
         }
       }
       throwIfAborted(turnAbort.signal)
+      // 最外层统一剥离通道路由标记。即使某个旧/回退端点把标记混在长答复里，
+      // 也不能把内部协议写进对话历史或展示给用户。
+      answer = stripVaultInternalTurnMarkers(answer)
       const skillUpdateExtraction = extractSkillUpdateProposals(answer)
       if (skillUpdateExtraction.invalidBlocks > 0) {
         throw new Error('AI 返回的 Skill 更新包格式不完整或没有通过本机安全校验，请重新生成。')
@@ -5134,6 +5144,7 @@ class ChatView extends ItemView {
     const localSkillRunIds: string[] = []
     let weeklyBusinessScan: WeeklyBusinessScanState | undefined
     const verifiedWritePaths = new Set<string>()
+    const seenVaultReadCallSignatures = new Set<string>()
     let lastText = ''
     let pendingRetryReason: VaultAnswerRetryReason | undefined
     // 本机结果预算（2026-08-18 开放到 36 万字符）：满了不再报错断头，
@@ -5413,7 +5424,8 @@ class ChatView extends ItemView {
     // VAULT_NATIVE_TURN，客户端也会因本地词表没命中“做个工作台”等自然说法
     // 而拒绝切换，语义判断名存实亡。现在纯文字、已授权 Vault 的普通对话都允许
     // 模型自主切换；只有明确词表命中/任务承接才跳过判断轮直接进引擎。
-    const nativeAvailable = Boolean(input.resumeQuestion) || (
+    const webSearchNativeRouting = requiresWebSearchNativeRouting(input.question)
+    const nativeAvailable = Boolean(input.resumeQuestion) || webSearchNativeRouting || (
       input.vaultAccess &&
       !input.localSkill &&
       !input.localSkillContext &&
@@ -5423,6 +5435,7 @@ class ChatView extends ItemView {
     const nativeFastPath = nativeAvailable && (
       Boolean(input.resumeQuestion) ||
       mutationAsk ||
+      webSearchNativeRouting ||
       (taskContinuation && this.pendingVaultTask?.intent === 'organize')
     )
     // 抽成闭包函数：词表命中的快路径与「模型自主切换标记」（0.7.52）共用同一引擎。
@@ -5440,6 +5453,8 @@ class ChatView extends ItemView {
                 callId: input.resumeQuestion.callId,
                 output: input.question.slice(0, 4_000),
               }],
+              webSearchApproved:
+                input.resumeQuestion.kind === 'web-search' && input.question.trim() === '允许联网搜索',
             }
           : null
         let stalledRetries = 0
@@ -5471,6 +5486,35 @@ class ChatView extends ItemView {
           if (!responseId) throw new Error('native: missing responseId')
           previousResponseId = responseId
           if (nativeCalls.length > 0) {
+            const webSearchRequest = nativeCalls.find(
+              (item) => item.name === 'request_web_search',
+            )
+            if (webSearchRequest) {
+              if (nativeCalls.length !== 1) throw new Error('native: request_web_search must be the only tool call')
+              const args = isUnknownRecord(webSearchRequest.arguments) ? webSearchRequest.arguments : {}
+              const callId = typeof webSearchRequest.callId === 'string' ? webSearchRequest.callId : ''
+              const query = typeof args.query === 'string' ? args.query.trim().slice(0, 300) : ''
+              const reason = typeof args.reason === 'string' ? args.reason.trim().slice(0, 200) : ''
+              if (!callId || !query || !reason) throw new Error('native: invalid request_web_search')
+              const pendingQuestion: PendingVaultQuestion = {
+                kind: 'web-search',
+                callId,
+                responseId,
+                question:
+                  `这份内容需要补充最新的外部资料。是否允许 AI霖子使用 OpenAI Web Search？\n\n` +
+                  `用途：${reason}\n公开搜索词：${query}\n\n` +
+                  '不会把 Vault 路径、客户姓名或私密原文发给搜索引擎。',
+                options: ['允许联网搜索', '仅用现有内容'],
+                allowFreeText: false,
+                round: Math.min(requestRound + 1, maxRounds - 1),
+                goal: this.pendingVaultTask?.goal ?? input.resumeQuestion?.goal ?? input.question.slice(0, 300),
+                createdAt: Date.now(),
+                webSearchQuery: query,
+                webSearchReason: reason,
+              }
+              this.activityStep('🌐 等待你确认联网搜索', null)
+              return `${pendingQuestion.question}\n\n${formatVaultQuestionMarker(pendingQuestion)}`
+            }
             const askUser = nativeCalls.find(
               (item) => item.name === 'ask_user',
             )
@@ -5552,6 +5596,9 @@ class ChatView extends ItemView {
                         title: args.title,
                         content: args.content,
                         theme: args.theme,
+                        template: args.template,
+                        style: args.style,
+                        presentation: args.presentation,
                         layout: args.layout,
                         reason: args.reason,
                       }],
@@ -5594,7 +5641,54 @@ class ChatView extends ItemView {
               if (!callId) throw new Error('native: missing callId')
               calls.push({ id: callId, name, arguments: args })
             }
-            const executed = await this.plugin.vaultAgent.executeCalls(calls, undefined)
+            // Web Search 授权本身不等于 Vault 授权。外部研究任务可以进入原生通道，
+            // 但若本轮未开放 Vault，任何本机读取调用都只返回拒绝结果，绝不执行。
+            if (!input.vaultAccess && calls.length > 0) {
+              const deniedResults: VaultAgentToolResult[] = calls.map((call) => ({
+                callId: call.id,
+                name: call.name,
+                ok: false,
+                output:
+                  '本轮只授权了外部公开资料搜索，没有开放 Vault 文件读取。' +
+                  '请基于公开搜索结果继续生成成品，不要调用本机文件工具。',
+              }))
+              const merged = appendToolResultsWithinBudget(toolResults, deniedResults)
+              toolBudgetExhausted ||= merged.exhausted
+              toolResults.length = 0
+              toolResults.push(...merged.results)
+              nextBody = {
+                question: input.question,
+                round: Math.min(requestRound + 1, maxRounds - 1),
+                batchMode,
+                sessionId: this.sessionId,
+                previousResponseId,
+                toolOutputs: deniedResults.map((result) => ({
+                  callId: result.callId,
+                  output: result.output,
+                })),
+              }
+              continue
+            }
+            const freshCalls: VaultAgentToolCall[] = []
+            const duplicateResults: VaultAgentToolResult[] = []
+            for (const call of calls) {
+              const signature = vaultToolCallSignature(call)
+              if (seenVaultReadCallSignatures.has(signature)) {
+                duplicateResults.push({
+                  callId: call.id,
+                  name: call.name,
+                  ok: false,
+                  output:
+                    '本轮已经用完全相同的参数执行过这个只读工具。请直接使用之前返回的真实结果继续，' +
+                    '不要重复读取；需要下一段时改用新的 offset。',
+                })
+                continue
+              }
+              seenVaultReadCallSignatures.add(signature)
+              freshCalls.push(call)
+            }
+            const executed = await this.plugin.vaultAgent.executeCalls(freshCalls, undefined)
+            executed.results.push(...duplicateResults)
             for (const call of calls) {
               const result = executed.results.find((item) => item.callId === call.id)
               if (!result?.ok) continue
@@ -5929,6 +6023,9 @@ class ChatView extends ItemView {
           continue
         }
       }
+      // 模型偶尔会在解释文字后再附内部路由标记，导致它超过“纯标记”长度门禁。
+      // 即便本轮不切换通道，内部协议也绝不能出现在用户可见回复里。
+      lastText = stripVaultInternalTurnMarkers(lastText)
       const toolRequest = extractVaultToolCalls(lastText)
       if (lastText.includes('<<<AI_LINZI_ASK_USER>>>')) {
         return { text: lastText, sources, localSkillRunIds }
@@ -6045,6 +6142,42 @@ class ChatView extends ItemView {
           continue
         }
         if (plan.plan) {
+          const slideCountProblem = plan.plan.operations.length === 1 &&
+            plan.plan.operations[0].type === 'create_artifact'
+            ? presentationSlideCountProblem(input.question, plan.plan.operations[0])
+            : undefined
+          if (slideCountProblem) {
+            if (round >= maxRounds - 1) {
+              throw new Error(`PPT 页数仍不符合用户要求：${slideCountProblem}`)
+            }
+            toolResults.push({
+              callId: `preflight-presentation-count-${round + 1}`,
+              name: 'read_note',
+              ok: false,
+              output: slideCountProblem,
+            })
+            this.activityStep('🧭 PPT 页数与要求不一致，已要求 AI 重新生成', null)
+            pendingRetryReason = 'invalid_plan'
+            continue
+          }
+          const contentProblem = plan.plan.operations.length === 1 &&
+            plan.plan.operations[0].type === 'create_artifact'
+            ? presentationContentProblem(plan.plan.operations[0])
+            : undefined
+          if (contentProblem) {
+            if (round >= maxRounds - 1) {
+              throw new Error(`PPT 内容仍不足以交付：${contentProblem}`)
+            }
+            toolResults.push({
+              callId: `preflight-presentation-content-${round + 1}`,
+              name: 'read_note',
+              ok: false,
+              output: contentProblem,
+            })
+            this.activityStep(`🧩 ${contentProblem}`, null)
+            pendingRetryReason = 'invalid_plan'
+            continue
+          }
           try {
             await this.plugin.vaultAgent.preflightPlan(plan.plan, input.localSkillContext)
             this.activityStep('📋 已生成整理方案，等待你确认', null)
@@ -6272,10 +6405,29 @@ class ChatView extends ItemView {
         pendingRetryReason = undefined
         continue
       }
+      const freshReadCalls: VaultAgentToolCall[] = []
+      const duplicateResults: VaultAgentToolResult[] = []
+      for (const call of readCalls) {
+        const signature = vaultToolCallSignature(call)
+        if (seenVaultReadCallSignatures.has(signature)) {
+          duplicateResults.push({
+            callId: call.id,
+            name: call.name,
+            ok: false,
+            output:
+              '本轮已经用完全相同的参数执行过这个只读工具。请直接使用之前返回的真实结果继续，' +
+              '不要重复读取；需要下一段时改用新的 offset。',
+          })
+          continue
+        }
+        seenVaultReadCallSignatures.add(signature)
+        freshReadCalls.push(call)
+      }
       const executed = await this.plugin.vaultAgent.executeCalls(
-        readCalls,
+        freshReadCalls,
         input.localSkillContext,
       )
+      executed.results.push(...duplicateResults)
       // 官方经营周报不再把分页继续交给模型“自觉”完成。
       // 实测 Luna 在拿到第 1 页后会直接出看板，把剩余文档误写成跳过。
       // 插件因此在本机按工具返回的文件游标+字符游标自动追页，
@@ -6741,6 +6893,7 @@ class ChatView extends ItemView {
     row: HTMLElement,
     plan: VaultOrganizePlan,
     message: WireMessage,
+    superseded = false,
   ): void {
     plan = resolveVaultPlanPaths(plan, {
       outputRoot: this.plugin.settings.outputFolder,
@@ -6830,7 +6983,7 @@ class ChatView extends ItemView {
       } else if (operation.type === 'create_artifact') {
         const estimate = estimateArtifactUnits(operation)
         item.createEl('small', {
-          text: `格式：${artifactFormatLabel(operation.format)} · 主题：${operation.theme === 'clean' ? '简洁' : 'AI霖子品牌'} · 预计 ${estimate.count} ${estimate.label}`,
+          text: `格式：${artifactFormatLabel(operation.format)} · ${artifactStyleSummary(operation)} · 主题：${operation.theme === 'clean' ? '简洁' : 'AI霖子品牌'} · 预计 ${estimate.count} ${estimate.label}`,
         })
         const details = item.createEl('details')
         details.createEl('summary', { text: '查看成品内容全文' })
@@ -6838,6 +6991,22 @@ class ChatView extends ItemView {
           text: operation.content,
           cls: 'ai-linzi-vault-write-preview',
         })
+        const presentation = operation.format === 'pptx'
+          ? normalizePresentationSpec(operation.presentation)
+          : undefined
+        if (presentation) {
+          const slideDetails = item.createEl('details')
+          slideDetails.createEl('summary', { text: `查看 ${presentation.slides.length} 页页面设计` })
+          const slideList = slideDetails.createEl('ol', { cls: 'ai-linzi-vault-plan-operations' })
+          presentation.slides.forEach((slide, slideIndex) => {
+            slideList.createEl('li', {
+              text: `第 ${slideIndex + 1} 页 · ${slide.headline || slide.quote}`,
+            })
+          })
+          slideDetails.createEl('small', {
+            text: '想修改时先不要点确认，直接在主对话说“第几页改成什么”；AI霖子会保留其他页面并给出修订版。',
+          })
+        }
       }
     }
     for (const note of plan.notes) {
@@ -6863,6 +7032,13 @@ class ChatView extends ItemView {
       })
     }
     const actions = card.createDiv({ cls: 'ai-linzi-create-note-actions' })
+    if (superseded && !record) {
+      actions.createSpan({
+        text: '↪️ 这份 PPT 方案已由后面的自然语言修订版替代，请确认最新一张卡片。',
+        cls: 'ai-linzi-create-note-done',
+      })
+      return
+    }
     if (record) {
       const trashedCount = record.trashedNotes?.length ?? 0
       const createdNoteCount = record.createdNotes?.length ?? 0
@@ -7370,11 +7546,20 @@ class ChatView extends ItemView {
       return
     }
     let latestFolderOfferIndex = -1
+    const latestPendingPptOfferByPath = new Map<string, string>()
     for (let index = 0; index < this.messages.length; index++) {
       const candidate = this.messages[index]
       if (candidate.role !== 'assistant') continue
       const candidateText = candidate.parts.map((part) => part.text).join('')
       const candidateVaultPlan = extractVaultOrganizePlan(candidateText)
+      const candidatePpt = candidateVaultPlan.plan?.operations.length === 1 &&
+        candidateVaultPlan.plan.operations[0].type === 'create_artifact' &&
+        candidateVaultPlan.plan.operations[0].format === 'pptx'
+        ? candidateVaultPlan.plan.operations[0]
+        : null
+      if (candidatePpt && !candidate.vaultActionId) {
+        latestPendingPptOfferByPath.set(candidatePpt.path, candidate.id)
+      }
       const candidateSkill = extractPluginSkillSuggestions(candidateVaultPlan.cleanText, '')
       const candidateLocalSkill = extractCreateLocalSkillBlocks(candidateSkill.cleanText)
       const candidateNote = extractCreateNoteBlocks(candidateLocalSkill.cleanText)
@@ -7449,7 +7634,17 @@ class ChatView extends ItemView {
           this.renderCreateFolderOffer(row, folderResult.folders, undefined, mi === latestFolderOfferIndex)
         }
         if (vaultPlanResult.plan) {
-          this.renderVaultPlanOffer(row, vaultPlanResult.plan, m)
+          const pendingPpt = vaultPlanResult.plan.operations.length === 1 &&
+            vaultPlanResult.plan.operations[0].type === 'create_artifact' &&
+            vaultPlanResult.plan.operations[0].format === 'pptx'
+            ? vaultPlanResult.plan.operations[0]
+            : null
+          const superseded = Boolean(
+            pendingPpt &&
+            !m.vaultActionId &&
+            latestPendingPptOfferByPath.get(pendingPpt.path) !== m.id,
+          )
+          this.renderVaultPlanOffer(row, vaultPlanResult.plan, m, superseded)
         }
         if (m.consultationWorkflowTaskCreatedAt) {
           this.renderConsultationWorkflowTaskOffer(row, m)
