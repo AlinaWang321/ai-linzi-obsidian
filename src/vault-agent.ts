@@ -1205,7 +1205,9 @@ export class LocalVaultAgent {
         // 提供的 API。仅在用户确认生成成品后加载，不能拖垮插件启动。
         const { renderArtifact } = await import('./artifact-renderer')
         // 先在内存中完整渲染；任何渲染错误都不会留下半成品文件。
-        const rendered = await renderArtifact(operation)
+        const rendered = await renderArtifact(operation, {
+          vaultName: this.app.vault.getName?.() ?? '',
+        })
         const parent = path.split('/').slice(0, -1).join('/')
         if (parent) await ensureFolder(parent)
         if (this.app.vault.getAbstractFileByPath(path)) {

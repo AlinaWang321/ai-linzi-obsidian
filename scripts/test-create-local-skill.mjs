@@ -72,6 +72,36 @@ description: 按统一模板创建或更新客户档案
 }
 
 {
+  const bundle = `这套做法以后可以重复调用，确认后才会写入。
+<<<新建Skill name=agent2-interview-review>>>
+<<<Skill文件 path=SKILL.md>>>
+---
+name: agent2-interview-review
+description: 提炼访谈背景、核心问题与行动项并输出复盘
+---
+# 学员访谈复盘
+
+按[复盘模板](references/interview-review-template.md)输出。
+<<<Skill文件结束>>>
+<<<Skill文件 path=references/interview-review-template.md>>>
+# 复盘模板
+
+- 背景
+- 核心问题
+- 行动项
+<<<Skill文件结束>>>
+<<<Skill文件 path=references/ai-linzi-skill-manifest.json>>>
+{"schemaVersion":1,"skillVersion":"1.0.0","permissions":["读取用户提供的访谈"],"programs":[],"sampleInputs":["复盘这份访谈"]}
+<<<Skill文件结束>>>
+<<<新建Skill结束>>>`
+  const result = skill.extractCreateLocalSkillBlocks(bundle)
+  assert.equal(result.blocks.length, 1)
+  assert.equal(result.blocks[0].files.length, 3)
+  assert.doesNotMatch(result.cleanText, /<<<新建Skill|<<<Skill文件/)
+  console.log('  ✓ 主对话自然创建的完整三文件协议被隐藏并渲染为确认卡')
+}
+
+{
   const unsafeBundle = `<<<新建Skill name=customer-profile>>>
 <<<Skill文件 path=SKILL.md>>>
 ---

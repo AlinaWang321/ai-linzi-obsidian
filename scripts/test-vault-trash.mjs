@@ -206,5 +206,12 @@ assert.match(
   /const record = message\.vaultActionId\s*\?\s*this\.plugin\.getVaultActionRecord\(message\.vaultActionId\)\s*:\s*undefined/,
   '没有 vaultActionId 的新确认卡不得借用上一条移动记录冒充已执行',
 )
+assert.match(
+  mainSource,
+  /const ok = trashOnlyPlan\s*\? await confirmAction\(this\.app,[\s\S]{0,1800}: true/,
+  '只有回收站动作保留第二次确认；普通写入和成品卡点击后必须直接执行',
+)
+assert.doesNotMatch(mainSource, /再次确认新建笔记|再次确认 Markdown 变更集|再次确认生成/)
+assert.match(mainSource, /再次确认移入回收站/)
 
 console.log('Vault trash-note integration tests passed')

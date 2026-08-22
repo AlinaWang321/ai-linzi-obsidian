@@ -42,8 +42,11 @@ const content = `---
 | --- | --- |
 | 第一周 | 客户访谈 |
 | 第二周 | MVP 交付 |
+| 本机入口 | 打开 01_Raw |
 
-<script>alert('不能执行')</script>`
+<script>alert('不能执行')</script>
+
+<div class="nav"><a href="../../../01_Raw/"><span>打开 01_Raw</span></a><a href="../../../02_Wiki/"><span>打开 02_Wiki</span></a></div>`
 
 const parsed = parseArtifactMarkdown(content, '备用标题')
 assert.equal(parsed.title, '客户增长方案')
@@ -60,12 +63,18 @@ const operation = (format) => ({
   theme: 'brand',
 })
 
-const html = await renderArtifact(operation('html'))
+const html = await renderArtifact(operation('html'), { vaultName: '数字大脑' })
 assert.equal(html.binary, false)
 assert.match(html.data, /<!doctype html>/i)
 assert.match(html.data, /客户增长方案/)
 assert.doesNotMatch(html.data, /<script>alert/)
 assert.match(html.data, /&lt;script&gt;alert/)
+assert.match(html.data, /<a class="vault-link" href="obsidian:\/\/search\?vault=/)
+assert.match(html.data, /&amp;query=.*">打开 01_Raw<\/a>/)
+assert.match(html.data, /<nav class="vault-nav-links">/)
+assert.doesNotMatch(html.data, /<p><nav class="vault-nav-links">/)
+assert.match(html.data, />打开 02_Wiki<\/a>/)
+assert.doesNotMatch(html.data, /href="\.\.\/\.\.\/\.\.\//)
 
 const docx = await renderArtifact(operation('docx'))
 assert.equal(docx.binary, true)

@@ -30,6 +30,11 @@ export interface RenderedArtifact {
   mimeType: string
 }
 
+export interface ArtifactRenderContext {
+  /** 仅用于把成品中的“打开 Vault 路径”渲染成可点击的 Obsidian URI。 */
+  vaultName?: string
+}
+
 const BRAND = {
   orange: 'F39800',
   blue: '0057FF',
@@ -49,22 +54,70 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;')
 }
 
-function artifactHtml(document: ArtifactDocument, theme: 'brand' | 'clean'): string {
+function safeVaultNavigationPath(value: string): string | null {
+  const normalized = value.trim().replace(/\\/gu, '/').replace(/^\/+|\/+$/gu, '')
+  if (!normalized || normalized.length > 240) return null
+  const parts = normalized.split('/')
+  if (parts.some((part) => !part || part === '.' || part === '..' || part.startsWith('.'))) return null
+  // eslint-disable-next-line no-control-regex -- Obsidian URI 绝不能接收控制字符。
+  return /[\u0000-\u001f<>"|?*]/u.test(normalized) ? null : normalized
+}
+
+function vaultNavigationLink(label: string, path: string, vaultName: string): string {
+  const query = `path:"${path.replace(/"/gu, '')}"`
+  const href = `obsidian://search?vault=${encodeURIComponent(vaultName)}&query=${encodeURIComponent(query)}`
+  return `<a class="vault-link" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`
+}
+
+function artifactInlineHtml(value: string, context: ArtifactRenderContext): string {
+  const escaped = escapeHtml(value)
+  const vaultName = context.vaultName?.trim()
+  if (!vaultName) return escaped
+
+  // 模型偶尔会把“导航页”正文写成 <div><a><span>打开 path</span></a></div>。
+  // 原始 HTML 绝不能直接放行（会带来脚本/事件属性注入）；只确定性提取其中的
+  // “打开/进入/查看 + Vault 相对路径”，丢弃模型标签并重建为受控 Obsidian URI。
+  if (/<\/?(?:a|div|nav|span)\b/iu.test(value)) {
+    const links: string[] = []
+    const seen = new Set<string>()
+    for (const match of value.matchAll(/(打开|进入|查看)\s+([^<\r\n]{1,240})/gu)) {
+      const path = safeVaultNavigationPath(match[2])
+      if (!path || seen.has(path.toLocaleLowerCase())) continue
+      seen.add(path.toLocaleLowerCase())
+      links.push(vaultNavigationLink(`${match[1]} ${path}`, path, vaultName))
+    }
+    if (links.length > 0) return `<nav class="vault-nav-links">${links.join('')}</nav>`
+  }
+
+  const match = /^(?:打开|进入|查看)\s+(.+)$/u.exec(value.trim())
+  const path = match ? safeVaultNavigationPath(match[1]) : null
+  if (!path) return escaped
+  return vaultNavigationLink(value.trim(), path, vaultName)
+}
+
+function artifactHtml(
+  document: ArtifactDocument,
+  theme: 'brand' | 'clean',
+  context: ArtifactRenderContext,
+): string {
   const blocks = document.blocks.map((block) => {
     if (block.type === 'heading') {
       const level = Math.min(4, Math.max(2, block.level + 1))
       return `<h${level}>${escapeHtml(block.text)}</h${level}>`
     }
-    if (block.type === 'paragraph') return `<p>${escapeHtml(block.text)}</p>`
+    if (block.type === 'paragraph') {
+      const inline = artifactInlineHtml(block.text, context)
+      return inline.startsWith('<nav class="vault-nav-links">') ? inline : `<p>${inline}</p>`
+    }
     if (block.type === 'quote') return `<blockquote>${escapeHtml(block.text)}</blockquote>`
     if (block.type === 'code') return `<pre><code>${escapeHtml(block.text)}</code></pre>`
     if (block.type === 'rule') return '<hr>'
     if (block.type === 'list') {
       const tag = block.ordered ? 'ol' : 'ul'
-      return `<${tag}>${block.items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</${tag}>`
+      return `<${tag}>${block.items.map((item) => `<li>${artifactInlineHtml(item, context)}</li>`).join('')}</${tag}>`
     }
     const head = `<thead><tr>${block.headers.map((cell) => `<th>${escapeHtml(cell)}</th>`).join('')}</tr></thead>`
-    const body = `<tbody>${block.rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody>`
+    const body = `<tbody>${block.rows.map((row) => `<tr>${row.map((cell) => `<td>${artifactInlineHtml(cell, context)}</td>`).join('')}</tr>`).join('')}</tbody>`
     return `<div class="table-wrap"><table>${head}${body}</table></div>`
   }).join('\n')
   const accent = theme === 'clean' ? '#1f2937' : `#${BRAND.orange}`
@@ -83,6 +136,8 @@ function artifactHtml(document: ArtifactDocument, theme: 'brand' | 'clean'): str
     h2,h3,h4{line-height:1.4;margin:2em 0 .65em}h2{font-size:27px;color:var(--blue);border-bottom:1px solid var(--line);padding-bottom:.35em}h3{font-size:21px}h4{font-size:18px}
     p,li{font-size:17px}p{margin:.8em 0}li{margin:.35em 0}blockquote{margin:1.4em 0;padding:16px 20px;border-left:5px solid var(--accent);background:#fff7ea;border-radius:8px;color:#3d4657}
     pre{overflow:auto;padding:18px 20px;background:#111827;color:#f9fafb;border-radius:10px;line-height:1.55}hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+    .vault-nav-links{display:flex;flex-wrap:wrap;gap:12px;margin:1.1em 0}.vault-nav-links .vault-link{display:inline-flex;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:#f8fafc}
+    .vault-link{color:var(--blue);font-weight:650;text-decoration:none;border-bottom:1px solid currentColor}.vault-link:hover{color:var(--accent)}
     .table-wrap{overflow-x:auto;margin:1.5em 0}table{width:100%;border-collapse:collapse;font-size:15px}th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}th{background:#f7f8fa;color:var(--blue)}
     footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
     @media(max-width:680px){main{margin:0;width:100%;padding:36px 24px;border-radius:0}h1{font-size:30px}}
@@ -874,14 +929,17 @@ const PPTX_LAYOUT = `${PPTX_XML}<p:sldLayout xmlns:a="http://schemas.openxmlform
 const PPTX_MASTER = `${PPTX_XML}<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMap accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" bg1="lt1" bg2="lt2" folHlink="folHlink" hlink="hlink" tx1="dk1" tx2="dk2"/><p:sldLayoutIdLst><p:sldLayoutId id="1" r:id="rId2"/></p:sldLayoutIdLst><p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles></p:sldMaster>`
 const PPTX_THEME = `${PPTX_XML}<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="AI霖子"><a:themeElements><a:clrScheme name="AI霖子"><a:dk1><a:srgbClr val="172033"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="344054"/></a:dk2><a:lt2><a:srgbClr val="F4F6F8"/></a:lt2><a:accent1><a:srgbClr val="0057FF"/></a:accent1><a:accent2><a:srgbClr val="F39800"/></a:accent2><a:accent3><a:srgbClr val="12B76A"/></a:accent3><a:accent4><a:srgbClr val="7F56D9"/></a:accent4><a:accent5><a:srgbClr val="06AED4"/></a:accent5><a:accent6><a:srgbClr val="F04438"/></a:accent6><a:hlink><a:srgbClr val="0057FF"/></a:hlink><a:folHlink><a:srgbClr val="7F56D9"/></a:folHlink></a:clrScheme><a:fontScheme name="AI霖子"><a:majorFont><a:latin typeface="Hiragino Sans GB"/><a:ea typeface="Hiragino Sans GB"/><a:cs typeface="Arial"/></a:majorFont><a:minorFont><a:latin typeface="Hiragino Sans GB"/><a:ea typeface="Hiragino Sans GB"/><a:cs typeface="Arial"/></a:minorFont></a:fontScheme><a:fmtScheme name="AI霖子"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`
 
-export async function renderArtifact(operation: CreateArtifactOperation): Promise<RenderedArtifact> {
+export async function renderArtifact(
+  operation: CreateArtifactOperation,
+  context: ArtifactRenderContext = {},
+): Promise<RenderedArtifact> {
   const document = parseArtifactMarkdown(operation.content, operation.title)
   const theme = operation.theme ?? 'brand'
   if (operation.format === 'html') {
     // 看板/日报类内容走交互版式；长文继续文档版式（0.7.54）。
     const data = resolveArtifactLayout(operation) === 'dashboard'
       ? artifactDashboardHtml(document, theme)
-      : artifactHtml(document, theme)
+      : artifactHtml(document, theme, context)
     return { binary: false, data, mimeType: 'text/html' }
   }
   if (operation.format === 'docx') {

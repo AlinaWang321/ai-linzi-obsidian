@@ -99,7 +99,7 @@ export function previewSkillStudioDraftInvocation(draft: SkillStudioDraft): Skil
 }
 
 const CREATE_SKILL_INTENT =
-  /(?:创建|生成|新建|做|制作|设计|搭建|保存成|沉淀成).{0,18}(?:skill|技能|工作流)|(?:skill|技能|工作流).{0,18}(?:创建|生成|新建|做|制作|设计|搭建)/iu
+  /(?:创建|生成|新建|做|制作|设计|搭建|保存成|沉淀成|固定成|固化成|封装成).{0,18}(?:skill|技能|工作流)|(?:skill|技能|工作流).{0,18}(?:创建|生成|新建|做|制作|设计|搭建|固定|固化|封装)/iu
 
 export function isExplicitLocalSkillRunIntent(text: string): boolean {
   return /(?:^|[，,。.!！?？:：]|请|帮我)(?:用|使用|调用|运行|执行|启用)\s*[^\r\n]{1,80}?(?:skill|技能)(?:\s|，|,|来)*(?:处理|整理|生成|制作|运行|执行|分析|改写|更新|创建)(?![^\r\n]{0,18}(?:skill|技能))/iu.test(

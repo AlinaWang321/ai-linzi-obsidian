@@ -4422,9 +4422,10 @@ class ChatView extends ItemView {
       const visibleAnswer = [aiImageRequest.cleanText, imageProtocolWarning]
         .filter(Boolean)
         .join('\n\n') || '我已经理解图片要求，正在准备生成。'
+      const returnedSkillCreatorBlock = extractCreateLocalSkillBlocks(answer).blocks.length > 0
       const skillCreatorPending = skillCreatorTurn &&
         !answer.startsWith('⚠️') &&
-        extractCreateLocalSkillBlocks(answer).blocks.length === 0
+        !returnedSkillCreatorBlock
       const skillUpdatePendingPath = skillUpdaterTurn && !skillUpdateOffer && !answer.startsWith('⚠️')
         ? skillUpdateTarget?.path
         : undefined
@@ -4450,7 +4451,9 @@ class ChatView extends ItemView {
         vaultQuestion: vaultQuestion.question,
         skillStudioTestInput: skillCreatorTurn ? options.skillStudioTestInput : undefined,
         skillCreatorPending,
-        skillCreatorResult: skillCreatorTurn || undefined,
+        // 用户不必背“创建 Skill”口令：主模型按语义主动返回新建协议时，也把它
+        // 当成 Creator 结果走完整 manifest 校验；不完整包只展示问题，绝不给按钮。
+        skillCreatorResult: skillCreatorTurn || returnedSkillCreatorBlock || undefined,
         skillUpdateOffer,
         skillUpdatePendingPath,
       })
@@ -6586,7 +6589,7 @@ class ChatView extends ItemView {
     createOnlyBtn.onclick = () => execute(false)
   }
 
-  /** Vault 方案：预览 → 二次确认 → 本机执行；永久删除禁止，移动可撤销。 */
+  /** Vault 方案：完整预览卡 → 用户确认 → 本机执行；回收站动作额外复核，永久删除禁止。 */
   private renderVaultPlanOffer(
     row: HTMLElement,
     plan: VaultOrganizePlan,
@@ -6619,9 +6622,6 @@ class ChatView extends ItemView {
     const noteWritePlan = noteWriteOperations.length > 0
     const artifactOperation = onlyOperation?.type === 'create_artifact'
       ? onlyOperation
-      : null
-    const artifactPath = artifactOperation
-      ? resolveArtifactPath(artifactOperation.path, this.plugin.settings.outputFolder)
       : null
     card.createDiv({
       text: `${trashOnlyPlan ? '🗑️' : noteWritePlan ? '📝' : artifactOperation ? '📦' : '🗂️'} 待确认：${plan.title}`,
@@ -6862,8 +6862,11 @@ class ChatView extends ItemView {
       executeBtn.disabled = true
       void (async () => {
         try {
-          const ok = await confirmAction(this.app, trashOnlyPlan
-            ? {
+          // 上方卡片已经逐项展示完整内容、精确路径与不覆盖边界；用户点击卡片内
+          // 的 CTA 就是这次写入确认。普通新建/更新/移动/成品不再弹第二个同义
+          // 窗口。只有移入回收站保留额外复核，避免误删与批量误触。
+          const ok = trashOnlyPlan
+            ? await confirmAction(this.app, {
                 title: '再次确认移入回收站',
                 message:
                   (trashOperations.length === 1
@@ -6875,42 +6878,8 @@ class ChatView extends ItemView {
                 confirmLabel: trashOperations.length > 1
                   ? `确认移入回收站（${trashOperations.length} 项）`
                   : '确认移入回收站',
-              }
-            : noteWritePlan
-              ? {
-                  title: noteWriteOperations.length === 1 && noteWriteOperations[0].type === 'create_note'
-                    ? '再次确认新建笔记'
-                    : '再次确认 Markdown 变更集',
-                  message:
-                    `即将写入以下 ${noteWriteOperations.length} 篇 Markdown：\n` +
-                    noteWriteOperations.map((operation) => `· ${operation.path}`).join('\n') +
-                    (plan.operations.length > noteWriteOperations.length
-                      ? `\n\n同时执行另外 ${plan.operations.length - noteWriteOperations.length} 项文件夹或移动操作。`
-                      : '') +
-                    '\n\n每篇目标和修改前版本都已锁定，上方可逐篇展开查看完整内容或差异。' +
-                    '缺少的父目录会同时创建；目标冲突或确认后文件发生变化就停止。' +
-                    '\n执行中任意一步失败，插件会自动恢复本次已改内容并清理本次新建文件。',
-                  confirmLabel: noteWriteOperations.length === 1 && noteWriteOperations[0].type === 'create_note'
-                    ? '确认新建'
-                    : `确认写入 ${noteWriteOperations.length} 篇`,
-                }
-              : artifactOperation
-                ? {
-                    title: `再次确认生成 ${artifactFormatLabel(artifactOperation.format)}`,
-                    message:
-                      `目标路径：${artifactPath}\n\n` +
-                      `插件将在本机把上方预览内容渲染成 ${artifactFormatLabel(artifactOperation.format)} 文件。` +
-                      '缺少的父目录会同时创建；如果目标已存在就停止，绝不覆盖。' +
-                      '\n如需移除，请在 Obsidian 中把成品移入回收站。',
-                    confirmLabel: '确认生成',
-                  }
-              : {
-                title: '执行 Vault 整理方案',
-                message:
-                  `即将执行 ${plan.operations.length} 项操作。插件只会新建文件夹、移动或重命名；` +
-                  '不会覆盖同名文件。移动/重命名会记录在本机，可撤销。',
-                confirmLabel: '确认执行',
               })
+            : true
           if (!ok) {
             executeBtn.disabled = false
             return

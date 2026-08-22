@@ -157,6 +157,20 @@ console.log('  ✓ 2 个真实业务官方模板可移植、权限透明、引�
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('帮我创建一个客户跟进 Skill'), true)
 assert.equal(
   studioCore.isExplicitLocalSkillCreationIntent(
+    '以后收到访谈记录都按这套步骤复盘，请把这套做法保存成可重复使用的工作流，英文名 interview-review。',
+  ),
+  true,
+  '自然表达“保存成可重复使用的工作流”必须进入 Skill Creator，不要求背创建 Skill 口令',
+)
+assert.equal(
+  studioCore.isExplicitLocalSkillCreationIntent(
+    '把每天读取一篇日记并生成复盘固定成以后可以反复使用的工作流，英文名 codex-daily-reflection。',
+  ),
+  true,
+  '自然表达“固定成以后反复使用的工作流”同样必须进入 Skill Creator',
+)
+assert.equal(
+  studioCore.isExplicitLocalSkillCreationIntent(
     '请把我前几天跑通的“客户咨询逐字稿交付流程”做成一个新的 Skill。输入里会更新现有客户档案。',
   ),
   true,
@@ -652,6 +666,11 @@ assert.match(
   runSendTurnSource,
   /skillCreatorTurn =\s*!pendingVaultQuestion\s*&&\s*!skillUpdaterTurn\s*&&[\s\S]{0,300}pendingSkillCreatorInterview \|\| explicitSkillCreation/,
   'Skill Creator 路由必须复用同一个新建意图结果',
+)
+assert.match(
+  runSendTurnSource,
+  /const returnedSkillCreatorBlock = extractCreateLocalSkillBlocks\(answer\)\.blocks\.length > 0[\s\S]{0,1600}skillCreatorResult: skillCreatorTurn \|\| returnedSkillCreatorBlock \|\| undefined/,
+  '主模型按语义返回的新建协议也必须走完整 Creator 校验，非法包不能出现安装按钮',
 )
 assert.match(
   runSendTurnSource,
