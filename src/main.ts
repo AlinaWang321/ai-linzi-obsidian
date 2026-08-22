@@ -226,7 +226,7 @@ import {
   LEGACY_LOCAL_SKILL_ROOT,
   formatLocalSkillList,
   formatMissingLocalSkillError,
-  isExplicitLocalSkillUpdateIntent,
+  isPotentialLocalSkillUpdateIntent,
   isLocalSkillListIntent,
   localSkillForbidsVaultExpansion,
   localSkillQuestionNamesInputFile,
@@ -3860,7 +3860,7 @@ class ChatView extends ItemView {
       const explicitSkillCreation = isExplicitLocalSkillCreationIntent(text)
       const naturalSkillUpdate = !options.skillUpdatePath && !pendingSkillUpdatePath &&
         !explicitSkillCreation &&
-        isExplicitLocalSkillUpdateIntent(text)
+        isPotentialLocalSkillUpdateIntent(text)
         ? await this.localSkills.resolveUpdate(text)
         : undefined
       if (naturalSkillUpdate?.kind === 'ambiguous') {

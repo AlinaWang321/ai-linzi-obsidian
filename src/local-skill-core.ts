@@ -673,16 +673,41 @@ export function matchLocalSkillInvocation(
   return { kind: 'matched', skill: top[0].skill, automatic: false }
 }
 
+const LOCAL_SKILL_UPDATE_ACTION_PATTERN =
+  /(?:修改|更新|调整|优化|改进|重写|补充|删掉|删除|移除|改一下|改成|改为|换成|以后.{0,12}(?:放到|保存到|输出到))/u
+
+/**
+ * 候选判断只看“这是一个修改动作”，最终仍必须由已安装 Skill 的精确名称匹配
+ * 决定是否进入更新器。这样可以支持“请修改 codex-daily-reflection”这种自然说法，
+ * 又不会把“更新客户档案”一类普通业务动作直接当成 Skill 管理。
+ */
+export function isPotentialLocalSkillUpdateIntent(message: string): boolean {
+  return LOCAL_SKILL_UPDATE_ACTION_PATTERN.test(message.trim())
+}
+
 /**
  * “修改/更新某个 Skill”是管理已安装 Skill，不是运行它，也不是创建同名 Skill。
- * 必须同时出现修改动词和 Skill/技能/工作流字样，避免把“更新客户档案”这类
- * 正常业务动作误劫持到 Skill 管理。
+ * 显式口径仍要求出现 Skill/技能/工作流；省略类型词时只允许后面的强名称匹配放行。
  */
 export function isExplicitLocalSkillUpdateIntent(message: string): boolean {
   const normalized = message.trim()
   if (!/(?:skill|技能|工作流)/iu.test(normalized)) return false
-  return /(?:修改|更新|调整|优化|改进|重写|补充|删掉|删除|移除|改一下|改成|改为|换成|以后.{0,12}(?:放到|保存到|输出到))/u.test(
-    normalized,
+  return isPotentialLocalSkillUpdateIntent(normalized)
+}
+
+function hasStrongUnlabelledSkillReference(message: string, skill: LocalSkillDescriptor): boolean {
+  const source = message.normalize('NFKC').toLocaleLowerCase()
+  const exactPortableNames = [skill.name, skill.folderName]
+    .map((value) => value.normalize('NFKC').toLocaleLowerCase().trim())
+    .filter((value) => /[a-z0-9_-]/u.test(value))
+  if (exactPortableNames.some((value) => source.includes(value))) return true
+
+  const quotedAliases = localSkillAliases(skill)
+    .map((item) => item.alias.normalize('NFKC').toLocaleLowerCase().trim())
+    .filter(Boolean)
+  return quotedAliases.some((alias) =>
+    [`“${alias}”`, `"${alias}"`, `「${alias}」`, `『${alias}』`, `‘${alias}’`, `'${alias}'`]
+      .some((wrapped) => source.includes(wrapped)),
   )
 }
 
@@ -690,7 +715,8 @@ export function matchLocalSkillUpdateIntent(
   message: string,
   skills: LocalSkillDescriptor[],
 ): LocalSkillMatch {
-  if (!isExplicitLocalSkillUpdateIntent(message)) return { kind: 'none' }
+  if (!isPotentialLocalSkillUpdateIntent(message)) return { kind: 'none' }
+  const explicit = isExplicitLocalSkillUpdateIntent(message)
   const normalized = normalizeText(message)
   const candidates = skills
     .map((skill) => {
@@ -706,9 +732,11 @@ export function matchLocalSkillUpdateIntent(
           }
         : null
     })
-    .filter((item): item is { skill: LocalSkillDescriptor; score: number } => Boolean(item))
+    .filter((item): item is { skill: LocalSkillDescriptor; score: number } =>
+      Boolean(item) && (explicit || hasStrongUnlabelledSkillReference(message, item!.skill)),
+    )
     .sort((left, right) => right.score - left.score)
-  if (candidates.length === 0) return { kind: 'missing' }
+  if (candidates.length === 0) return explicit ? { kind: 'missing' } : { kind: 'none' }
   const top = candidates.filter((candidate) => candidate.score === candidates[0].score)
   return top.length === 1
     ? { kind: 'matched', skill: top[0].skill }

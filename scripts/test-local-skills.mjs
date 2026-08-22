@@ -256,6 +256,7 @@ assert.equal(
 
 assert.equal(core.isExplicitLocalSkillUpdateIntent('修改“每周经营复盘”的这个 Skill'), true)
 assert.equal(core.isExplicitLocalSkillUpdateIntent('更新客户档案'), false)
+assert.equal(core.isPotentialLocalSkillUpdateIntent('请修改 codex-daily-reflection'), true)
 assert.equal(
   core.matchLocalSkillUpdateIntent(
     '你修改“每周经营复盘”的这个技能，以后输出到方法论文件夹',
@@ -309,6 +310,25 @@ assert.equal(
   'none',
   '业务动作没有 Skill 字样时不能误进管理路由',
 )
+const codexDailyReflection = core.buildLocalSkillDescriptor(
+  '05_System/Skills/codex-daily-reflection/SKILL.md',
+  { name: 'codex-daily-reflection', description: '生成每日复盘笔记' },
+  '# 每日复盘提炼\n\n## AI霖子输出方式\ncreate-note',
+)
+assert.ok(codexDailyReflection)
+assert.equal(
+  core.matchLocalSkillUpdateIntent(
+    '请修改 codex-daily-reflection：在每次生成的复盘笔记末尾固定增加一行“本次验收版本：0.7.80”。',
+    [customerProfile, codexDailyReflection],
+  ).skill.path,
+  codexDailyReflection.path,
+  '用户写出已安装 Skill 的精确英文名时，即使省略 Skill 类型词也必须进入更新器',
+)
+assert.equal(
+  core.matchLocalSkillUpdateIntent('请修改“每周经营复盘”：把输出放到方法论目录', [portable]).skill.path,
+  portable.path,
+  '用户用引号精确点名中文 Skill 时可以省略类型词',
+)
 
 // 0.7.64:点技能菜单时优先用 Skill 自己声明的触发短语(不同技能处理对象不同,
 // 统一填「处理当前笔记」会误导——知识库日报看板处理的是整个知识库)。
@@ -324,7 +344,7 @@ assert.match(
 )
 assert.match(
   __mainForMenu,
-  /const explicitSkillCreation = isExplicitLocalSkillCreationIntent\(text\)[\s\S]{0,220}!explicitSkillCreation[\s\S]{0,120}isExplicitLocalSkillUpdateIntent\(text\)[\s\S]{0,180}this\.localSkills\.resolveUpdate\(text\)/,
+  /const explicitSkillCreation = isExplicitLocalSkillCreationIntent\(text\)[\s\S]{0,220}!explicitSkillCreation[\s\S]{0,120}isPotentialLocalSkillUpdateIntent\(text\)[\s\S]{0,180}this\.localSkills\.resolveUpdate\(text\)/,
   '主对话必须让新建 Skill 意图优先于正文里的业务更新词',
 )
 assert.match(
