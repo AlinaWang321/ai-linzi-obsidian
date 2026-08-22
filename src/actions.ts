@@ -99,23 +99,52 @@ async function callImageApi<T>(
   path: string,
   body: Record<string, unknown>,
   requestId = contentId(),
+  signal?: AbortSignal,
 ): Promise<T> {
   let lastError = ''
   for (let attempt = 1; attempt <= IMAGE_API_ATTEMPTS; attempt++) {
+    if (signal?.aborted) throw abortError()
     try {
       return await plugin.api(path, {
         method: 'POST',
         body: { ...body, requestId },
+        signal,
       }) as T
     } catch (error) {
+      if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        throw error
+      }
       lastError = error instanceof Error ? error.message : String(error)
       if (!isRetryableImageTransportError(lastError) || attempt >= IMAGE_API_ATTEMPTS) {
         throw new Error(imageFailureMessage(lastError))
       }
-      await new Promise((resolve) => window.setTimeout(resolve, attempt * 800))
+      await abortableImageDelay(attempt * 800, signal)
     }
   }
   throw new Error(imageFailureMessage(lastError))
+}
+
+function abortError(): Error {
+  const error = new Error('The operation was aborted')
+  error.name = 'AbortError'
+  return error
+}
+
+function abortableImageDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => window.setTimeout(resolve, ms))
+  if (signal.aborted) return Promise.reject(abortError())
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      reject(abortError())
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 function sanitizeTitle(s: string): string {
@@ -1320,6 +1349,7 @@ export async function generateArticleIllustrationFromChat(
     referenceImageDataUrls?: string[]
     sessionId?: string
     ratio?: AiImageRatio
+    signal?: AbortSignal
   },
 ): Promise<ChatIllustrationCandidate> {
   const prepared = prepareWechatArticle(note.text)
@@ -1351,7 +1381,7 @@ export async function generateArticleIllustrationFromChat(
       referenceImages: options?.referenceImageDataUrls?.slice(0, 3),
       ratio: options?.ratio ?? '16:9',
     },
-  })
+  }, undefined, options?.signal)
   const image = data.image
   if (
     !image?.imageUrl ||
@@ -2114,6 +2144,7 @@ export async function generateAiImage(
   editPreviousImage = false,
   preserveOriginalRatio = false,
   inheritStyle = false,
+  signal?: AbortSignal,
 ): Promise<{ imageUrl: string; ratio: AiImageRatio }> {
   const data = await callImageApi<{ imageUrl?: string; ratio?: AiImageRatio }>(
     plugin,
@@ -2127,6 +2158,8 @@ export async function generateAiImage(
       preserveOriginalRatio,
       inheritStyle,
     },
+    undefined,
+    signal,
   )
   if (!data.imageUrl) throw new Error('服务端没有返回图片')
   return { imageUrl: data.imageUrl, ratio: data.ratio ?? ratio }

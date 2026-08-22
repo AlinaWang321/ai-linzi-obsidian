@@ -39,6 +39,19 @@ assert.match(main, /rememberImageStyleContext/)
 assert.match(actions, /\/api\/plugin\/v1\/images\/generate/)
 assert.match(actions, /ERR_NETWORK_IO_SUSPENDED/)
 assert.match(actions, /body: \{ \.\.\.body, requestId \}/)
+assert.match(actions, /signal\?: AbortSignal/)
+assert.match(actions, /signal,\s*\}\) as T/)
+assert.match(actions, /abortableImageDelay\(attempt \* 800, signal\)/)
+assert.match(
+  main,
+  /generateAiImage\([\s\S]*?inheritRecentStyle && !editReference && styleReferences\.length > 0,\s*signal,/,
+  '停止信号必须进入普通 AI 生图请求',
+)
+assert.match(
+  main,
+  /generateArticleIllustrationFromChat\([\s\S]*?noteContext,\s*\{ signal \},/,
+  '停止信号必须进入当前文章候选配图请求',
+)
 assert.match(actions, /inheritStyle,/)
 assert.match(actions, /export type AiImageRatio = '2\.35:1' \| '16:9' \| '3:4' \| '1:1'/)
 assert.match(actions, /preserveOriginalRatio = false/)

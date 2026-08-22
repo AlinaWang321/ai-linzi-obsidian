@@ -4901,6 +4901,7 @@ class ChatView extends ItemView {
           Boolean(editReference),
           request.preserveOriginalRatio,
           inheritRecentStyle && !editReference && styleReferences.length > 0,
+          signal,
         )
         throwIfAborted(signal)
         const savedPath = await saveAiImageToVault(
@@ -4982,6 +4983,7 @@ class ChatView extends ItemView {
         this.plugin,
         instruction,
         noteContext,
+        { signal },
       )
       throwIfAborted(signal)
       message.imageResult = candidate
