@@ -76,6 +76,12 @@ assert.equal(core.isExplicitCurrentNoteTrashRequest('不要删除这篇笔记'),
 assert.equal(core.isVaultMutationExplicitlyDenied('先不要写入，只生成一份草稿'), true)
 assert.equal(core.isVaultMutationExplicitlyDenied('只读取并告诉我有哪些档案'), true)
 assert.equal(
+  core.isVaultMutationExplicitlyDenied(
+    '用经验萃取 Skill 搜索 01_Raw/课程逐字稿 文件夹里关于 Obsidian 的资料，列出真实文件路径，先不要写入。',
+  ),
+  true,
+)
+assert.equal(
   core.isVaultMutationExplicitlyDenied('追加到客户甲.md，但确认前不要真的写入'),
   false,
 )

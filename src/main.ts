@@ -229,6 +229,7 @@ import {
   normalizeLocalSkillRoot,
   type LocalSkillOutput,
 } from './local-skill-core'
+import { resolveLocalSkillTurnPolicy } from './local-skill-turn'
 import {
   extractChatAiImageRequests,
   isDirectAiImageEditRequest,
@@ -4002,6 +4003,11 @@ class ChatView extends ItemView {
         localSkillMatch.kind === 'matched' ? localSkillMatch.skill : undefined
       const automaticLocalSkill =
         localSkillMatch.kind === 'matched' && localSkillMatch.automatic === true
+      // Skill 的输出方式是默认值；用户本轮明确说“只读取/先不要写入”时，
+      // 仍调用同一 Skill 搜索和读取，但本轮降为聊天回答，不进入任何写入通道。
+      const localSkillTurnPolicy = localSkill
+        ? resolveLocalSkillTurnPolicy(localSkill.output, text)
+        : undefined
       const localSkillCurrentOnly = Boolean(
         localSkill && (
           localSkill.runtimePolicy?.vaultRead.scope === 'current-note' ||
@@ -4024,7 +4030,7 @@ class ChatView extends ItemView {
           explicitCurrentNote ||
           continuingCurrentNote ||
           singleIllustrationIntent ||
-          localSkill?.output === 'update-current-note'
+          localSkillTurnPolicy?.output === 'update-current-note'
         )
       let noteContext = currentNoteRequested
         ? await this.currentNoteContext(continuingCurrentNote ? recentCurrentNotePath : undefined)
@@ -4032,9 +4038,9 @@ class ChatView extends ItemView {
       if (currentNoteRequested && !noteContext) {
         throw new Error('没有读取到目标笔记。请先点开要处理的笔记，再重新发送这条要求。')
       }
-      if (localSkill?.output === 'update-current-note' && !noteContext) {
+      if (localSkillTurnPolicy?.output === 'update-current-note' && !noteContext) {
         throw new Error(
-          `Skill《${localSkill.name}》需要修改当前笔记。请先打开目标笔记后重试。`,
+          `Skill《${localSkill?.name ?? '当前 Skill'}》需要修改当前笔记。请先打开目标笔记后重试。`,
         )
       }
       let scopedSkillInputPath: string | undefined
@@ -4114,7 +4120,7 @@ class ChatView extends ItemView {
           noteContext &&
             !illustrationEdit &&
             !singleIllustration &&
-            localSkill?.output === 'update-current-note',
+            localSkillTurnPolicy?.output === 'update-current-note',
         )
       // v0.7.30：不再由客户端关键词决定“这句话像不像 Vault 请求”。所有适合
       // Luna 判断的纯文字主对话都提供本机工具能力；在模型真正发起 tool call 前，
@@ -4139,7 +4145,7 @@ class ChatView extends ItemView {
         ? {
             name: localSkill.name,
             description: localSkill.description,
-            output: localSkill.output,
+            output: localSkillTurnPolicy?.output ?? localSkill.output,
             content: localSkill.content,
             entryChars: localSkill.entryChars,
             entryTruncated: localSkill.entryTruncated,
@@ -4225,16 +4231,16 @@ class ChatView extends ItemView {
             vaultSearch: vaultSearch.context,
             noteEdit,
             noteImageIntent: singleIllustration,
-            // create-note 是 Skill 作者已经声明、用户本轮也已触发的落盘意图。
-            // 如果仍按普通问答(auto)运行，模型可能只把成品贴在聊天里，跳过
-            // 预览/确认卡。这里单向升级为 organize，让安全循环强制收尾到方案卡。
+            // create-note/create-artifact 是 Skill 作者声明的默认落盘意图。
+            // 本轮没有明确只读要求时，单向升级为 organize，让安全循环强制
+            // 收尾到预览/确认卡；用户说“先不要写入”时则由上面的本轮策略
+            // 保持 auto，搜索结果直接在聊天里回答。
             // ask_user 是文件任务中的暂停点。用户回答后仍属于同一个写入任务，
             // 必须保持 organize 语义；否则原生通道若临时回退，兼容通道会把它
             // 当普通问答，只输出“请确认吗”的文字而没有可点击确认卡。
             intent:
               pendingVaultQuestion ||
-              localSkill?.output === 'create-note' ||
-              localSkill?.output === 'create-artifact'
+              localSkillTurnPolicy?.forceOrganize
                 ? 'organize'
                 : 'auto',
             resumeQuestion: pendingVaultQuestion?.question,

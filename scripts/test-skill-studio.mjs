@@ -676,7 +676,23 @@ assert.match(mainSource, /answerPlan\.plan && extractCreateNoteBlocks\(answer\)\
 assert.match(mainSource, /Boolean\(input\.resumeQuestion\)[\s\S]{0,280}vaultWriteFlowRetryReason/)
 assert.match(
   mainSource,
-  /pendingVaultQuestion \|\|[\s\S]{0,100}localSkill\?\.output === 'create-note'[\s\S]{0,100}localSkill\?\.output === 'create-artifact'[\s\S]{0,80}\? 'organize'/,
+  /const localSkillTurnPolicy = localSkill[\s\S]{0,160}resolveLocalSkillTurnPolicy\(localSkill\.output, text\)/,
+  '每轮必须先按用户只读要求覆盖 Skill 默认输出',
+)
+assert.match(
+  mainSource,
+  /output: localSkillTurnPolicy\?\.output \?\? localSkill\.output/,
+  '发给模型的 Skill 输出方式必须使用本轮策略',
+)
+assert.match(
+  runSendTurnSource,
+  /localSkillTurnPolicy\?\.output === 'update-current-note'[\s\S]{0,320}if \(currentNoteRequested && !noteContext\)/,
+  '只读本轮不能被 Skill 默认的 update-current-note 强行送进改写通道',
+)
+assert.match(
+  mainSource,
+  /pendingVaultQuestion \|\|[\s\S]{0,100}localSkillTurnPolicy\?\.forceOrganize[\s\S]{0,80}\? 'organize'/,
+  '只有本轮允许落盘的 create-note/create-artifact Skill 才能强制进入确认流程',
 )
 assert.match(studioSource, /addOption\('create-artifact'/)
 assert.match(mainSource, /let stalledRetries = 0/)
@@ -701,7 +717,7 @@ assert.match(
 console.log('  ✓ Skill Creator 完成后不会被历史待访谈状态劫持')
 console.log('  ✓ Skill Creator 专用提示不会被误判为本地 Skill 调用')
 console.log('  ✓ Skill 更新专用源、精确目标、确认卡与续问状态已接入且不上传本机元数据')
-console.log('  ✓ create-note Skill 强制进入预览确认流程')
+console.log('  ✓ create-note Skill 仅在本轮允许落盘时强制进入预览确认流程')
 console.log('  ✓ create-note 兼容协议是安全循环的合法终态')
 
 console.log('[test-skill-studio] 全部通过')
