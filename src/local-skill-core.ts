@@ -591,7 +591,10 @@ function invocationContext(message: string): {
     // 调用动词与 Skill/技能同时出现。“按/按照”仍可命中已存在的名称，但
     // 名称没命中时不应劫持普通说明句。
     missingIntent:
-      /(?:^|[\s，,。.!！?？:：]|请|帮我)(?:用|使用|调用|运行|执行|启用)\s*/u.test(trimmed),
+      // 失败关闭只在“调用动词确实指向 Skill/技能”时生效，不能把整句话里
+      // 任意位置出现的两个词硬拼起来。例如“做一份标题含 Skill 的讲义，
+      // 使用课程排版”是在生成 Word，不是在调用一个不存在的 Skill。
+      /(?:^|[\s，,。.!！?？:：]|请|帮我)(?:用|使用|调用|运行|执行|启用)\s*[^，,。.!！?？\r\n]{0,80}?(?:skill|技能)/iu.test(trimmed),
     slash: /^\/[^\s/]+/u.test(trimmed),
     mentionsSkillWord: /(?:skill|技能)/iu.test(trimmed),
   }

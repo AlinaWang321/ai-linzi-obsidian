@@ -377,6 +377,12 @@ const TOOL_BLOCK_RE =
 const PLAN_BLOCK_RE =
   /<<<VAULT_ORGANIZE_PLAN>>>\s*([\s\S]*?)\s*<<<VAULT_ORGANIZE_PLAN_END>>>/g
 
+function stripStrayVaultPlanMarkers(text: string): string {
+  return text
+    .replaceAll('<<<VAULT_ORGANIZE_PLAN>>>', '')
+    .replaceAll('<<<VAULT_ORGANIZE_PLAN_END>>>', '')
+}
+
 const TOOL_NAMES = new Set<VaultAgentToolName>([
   'vault_search',
   'list_folder',
@@ -796,25 +802,33 @@ export function extractVaultToolCalls(text: string): VaultToolCallExtraction {
       invalid = true
       return ''
     }
-    for (const item of rawCalls.slice(0, VAULT_AGENT_MAX_CALLS_PER_ROUND)) {
+    for (const [index, item] of rawCalls.entries()) {
+      // Luna 偶尔会把 5–6 个只读动作放进同一轮。客户端只接收前 4 个合法
+      // 调用，剩余内容由下一轮继续；不能因为“多给了一个”就把已经合法的
+      // 搜索/读取整轮丢掉。这里只截断模型请求，不扩大本机执行预算。
+      if (calls.length >= VAULT_AGENT_MAX_CALLS_PER_ROUND) break
       if (!item || typeof item !== 'object' || Array.isArray(item)) {
-        invalid = true
         continue
       }
       const record = item as Record<string, unknown>
-      const id = shortText(record.id, 64)
+      const requestedId = shortText(record.id, 64) || `call-${index + 1}`
       const name = shortText(record.name, 40) as VaultAgentToolName
       const args =
         record.arguments && typeof record.arguments === 'object' && !Array.isArray(record.arguments)
           ? (record.arguments as Record<string, unknown>)
           : {}
-      if (!id || !TOOL_NAMES.has(name) || calls.some((call) => call.id === id)) {
-        invalid = true
-        continue
+      // 未知工具始终丢弃，绝不执行。重复/缺失 ID 只是模型协议噪声；本机生成
+      // 唯一 ID 后仍会经过工具白名单、权限和参数校验，没必要让整轮失败。
+      if (!TOOL_NAMES.has(name)) continue
+      let id = requestedId
+      let suffix = 2
+      while (calls.some((call) => call.id === id)) {
+        id = `${requestedId}-${suffix}`.slice(0, 64)
+        suffix += 1
       }
       calls.push({ id, name, arguments: args })
     }
-    if (rawCalls.length > VAULT_AGENT_MAX_CALLS_PER_ROUND || calls.length === 0) invalid = true
+    if (calls.length === 0) invalid = true
     return ''
   })
   if (text.includes('<<<VAULT_TOOL_CALLS>>>') && !sawBlock) invalid = true
@@ -970,13 +984,17 @@ export function extractVaultOrganizePlan(text: string): VaultPlanExtraction {
     const bare = extractBarePlanObject(text)
     if (bare) {
       return {
-        cleanText: cleaned(`${text.slice(0, bare.start)}\n${text.slice(bare.end)}`),
+        // Responses 偶尔会把合法 JSON 前后的结束标记写错成第二个开始标记。
+        // 方案仍要经过完整 schema 校验，但任何残留内部标记都不能展示给用户。
+        cleanText: cleaned(stripStrayVaultPlanMarkers(
+          `${text.slice(0, bare.start)}\n${text.slice(bare.end)}`,
+        )),
         plan: bare.plan,
         invalid: false,
       }
     }
   }
-  return { cleanText: cleaned(cleanText), plan, invalid }
+  return { cleanText: cleaned(stripStrayVaultPlanMarkers(cleanText)), plan, invalid }
 }
 
 export function operationLabel(operation: VaultOrganizeOperation): string {

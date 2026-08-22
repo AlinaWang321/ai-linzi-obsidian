@@ -41,6 +41,26 @@ assert.equal(calls.calls.length, 2)
 assert.equal(calls.calls[0].name, 'vault_search')
 assert.equal(calls.cleanText, '准备继续查找。')
 
+const overflowCalls = core.extractVaultToolCalls(`<<<VAULT_TOOL_CALLS>>>
+${JSON.stringify({
+  calls: Array.from({ length: 6 }, (_, index) => ({
+    id: index < 2 ? 'read-duplicate-id' : `read-${index + 1}`,
+    name: 'read_note',
+    arguments: { path: `01_Raw/咨询交付逐字稿/第${index + 1}份.txt` },
+  })),
+})}
+<<<VAULT_TOOL_CALLS_END>>>`)
+assert.equal(overflowCalls.invalid, false, '超出单轮预算时应安全截断，不能把整轮判为无效')
+assert.equal(overflowCalls.calls.length, core.VAULT_AGENT_MAX_CALLS_PER_ROUND)
+assert.equal(new Set(overflowCalls.calls.map((call) => call.id)).size, overflowCalls.calls.length)
+assert.equal(overflowCalls.calls[1].id, 'read-duplicate-id-2')
+
+const mixedCalls = core.extractVaultToolCalls(`<<<VAULT_TOOL_CALLS>>>
+{"calls":[{"id":"unsafe","name":"delete_file","arguments":{"path":"02_Wiki/方法论.md"}},{"name":"","arguments":{}},{"id":"safe","name":"read_note","arguments":{"path":"02_Wiki/方法论.md"}}]}
+<<<VAULT_TOOL_CALLS_END>>>`)
+assert.equal(mixedCalls.invalid, false, '未知工具应丢弃，合法只读调用仍可继续')
+assert.deepEqual(mixedCalls.calls.map((call) => call.name), ['read_note'])
+
 const roundOne = core.namespaceVaultToolCalls(calls.calls, 0)
 const roundTwo = core.namespaceVaultToolCalls(calls.calls, 1)
 assert.equal(roundOne[0].id, 'r1-1-search-1')
@@ -344,6 +364,40 @@ const unsafeWritePlan = core.extractVaultOrganizePlan(`<<<VAULT_ORGANIZE_PLAN>>>
 {"title":"错误计划","summary":"越界","operations":[{"type":"create_note","path":"../客户甲.md","content":"内容"}],"notes":[]}
 <<<VAULT_ORGANIZE_PLAN_END>>>`)
 assert.equal(unsafeWritePlan.invalid, true)
+
+const recoveredPlanWithWrongEndMarker = core.extractVaultOrganizePlan(`已完成真实扫描，确认后才会生成。
+<<<VAULT_ORGANIZE_PLAN>>>
+${JSON.stringify({
+  title: '生成周报',
+  summary: '本机确认后生成',
+  operations: [{
+    type: 'create_artifact',
+    path: '$OUTPUT/经营周报/测试周报.html',
+    format: 'html',
+    title: '测试周报',
+    content: '# 测试周报\n\n完整正文',
+  }],
+  notes: [],
+})}
+<<<VAULT_ORGANIZE_PLAN>>>`)
+assert.equal(recoveredPlanWithWrongEndMarker.invalid, false)
+assert.equal(recoveredPlanWithWrongEndMarker.plan?.title, '生成周报')
+assert.equal(recoveredPlanWithWrongEndMarker.cleanText, '已完成真实扫描，确认后才会生成。')
+assert.doesNotMatch(recoveredPlanWithWrongEndMarker.cleanText, /VAULT_ORGANIZE_PLAN/)
+
+const validPlanWithTrailingMarker = core.extractVaultOrganizePlan(`已准备好。
+<<<VAULT_ORGANIZE_PLAN>>>
+${JSON.stringify({
+  title: '新建测试笔记',
+  summary: '',
+  operations: [{ type: 'create_note', path: '02_Wiki/测试.md', content: '# 测试' }],
+  notes: [],
+})}
+<<<VAULT_ORGANIZE_PLAN_END>>>
+<<<VAULT_ORGANIZE_PLAN>>>`)
+assert.equal(validPlanWithTrailingMarker.invalid, false)
+assert.equal(validPlanWithTrailingMarker.cleanText, '已准备好。')
+assert.doesNotMatch(validPlanWithTrailingMarker.cleanText, /VAULT_ORGANIZE_PLAN/)
 assert.equal(core.VAULT_NOTE_WRITE_MAX_CHARS, 30000)
 
 const vaultAgentSource = readFileSync(new URL('../src/vault-agent.ts', import.meta.url), 'utf8')

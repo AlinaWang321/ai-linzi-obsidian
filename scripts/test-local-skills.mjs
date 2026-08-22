@@ -169,6 +169,8 @@ for (const explanatory of [
   '调用 API 获取客户列表',
   '使用这个模板生成结果',
   '按照这个 Skill 的说明回答问题',
+  '不要联网。请生成一个名为“D6课堂讲义验收.docx”的 Word 文档，标题是“造自己的 Skill”，使用清晰的课程讲义排版。',
+  '制作一份讲 Skill 的 PPT，使用课程讲解模板。',
 ]) {
   assert.equal(
     core.matchLocalSkillInvocation(explanatory, [consultation, weekly, dashboard], {
