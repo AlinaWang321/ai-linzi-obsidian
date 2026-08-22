@@ -1,8 +1,10 @@
 import type { CreateLocalSkillBlock } from './create-local-skill'
 import {
   buildLocalSkillDescriptor,
+  localSkillOutputFromMarkdown,
   matchLocalSkillInvocation,
 } from './local-skill-core'
+import { parseLocalSkillManifest } from './local-skill-manifest'
 
 export type SkillStudioOutput =
   | 'chat'
@@ -122,16 +124,38 @@ function manifestFile(
   version: string,
   permissions: string[],
   sampleInput: string,
+  entry: string,
 ): { path: string; content: string } {
+  const joined = permissions.join('\n').normalize('NFKC')
+  const scope = /(?:最近\s*7\s*天|整个|全部|所有|全库|整库).{0,12}(?:Vault|知识库|文档)/iu.test(joined)
+    ? 'whole-vault'
+    : /(?:文件夹|目录)/u.test(joined)
+      ? 'user-specified-folder'
+      : /(?:当前(?:打开)?|一份|一个|一篇|单篇|单个)/u.test(joined)
+        ? 'current-note'
+        : 'user-specified-files'
+  const output = localSkillOutputFromMarkdown(entry)
   return {
     path: 'references/ai-linzi-skill-manifest.json',
     content: JSON.stringify(
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         skillVersion: version,
         createdWith: 'AI霖子 Skill Studio',
         templateId,
         permissions,
+        vaultRead: {
+          scope,
+          preferUserScope: scope === 'whole-vault' || scope === 'user-specified-folder',
+          fallbackToWholeVault: scope === 'whole-vault',
+          maxFiles: scope === 'current-note' ? 1 : scope === 'user-specified-files' ? 12 : scope === 'user-specified-folder' ? 80 : 120,
+        },
+        vaultWrite: {
+          mode: output,
+          confirmation: 'single-atomic-plan',
+          overwrite: false,
+        },
+        network: 'ai-linzi-only',
         programs: [],
         sampleInputs: [sampleInput],
       },
@@ -153,7 +177,7 @@ function makeTemplate(input: {
   const files = [
     { path: 'SKILL.md', content: input.entry },
     ...(input.references ?? []),
-    manifestFile(input.id, '1.1.0', input.permissions, input.sampleInput),
+    manifestFile(input.id, '1.1.0', input.permissions, input.sampleInput, input.entry),
   ]
   const name = /^name:\s*([^\r\n]+)/m.exec(input.entry)?.[1]?.trim() ?? input.id
   return {
@@ -413,6 +437,31 @@ export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
     : usesFolderScope
       ? '只读取用户明确指定的 Vault 文件夹范围'
       : '只读取用户明确指定的输入'
+  const vaultRead = allowsVaultSearch
+    ? {
+        scope: 'whole-vault',
+        preferUserScope: true,
+        fallbackToWholeVault: true,
+        maxFiles: 120,
+      }
+    : usesFolderScope
+      ? {
+          scope: 'user-specified-folder',
+          preferUserScope: true,
+          fallbackToWholeVault: false,
+          maxFiles: 80,
+        }
+      : {
+          scope: 'current-note',
+          preferUserScope: false,
+          fallbackToWholeVault: false,
+          maxFiles: 1,
+        }
+  const vaultWrite = {
+    mode: draft.output,
+    confirmation: 'single-atomic-plan',
+    overwrite: false,
+  }
   const inputScopeRequirement = allowsVaultSearch
     ? '输入范围允许搜索整个 Vault 时，优先使用用户指定的文件夹；用户未指定文件夹，或指定范围内没有找到所需材料时，继续在整个 Vault 中搜索任务相关候选，不要直接回答“没有”。搜索和筛选在本机完成，只读取并提交完成任务所必需的文件内容，不得把整个 Vault 的正文一次性提交给模型。'
     : usesFolderScope
@@ -444,7 +493,7 @@ export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
 要求：
 1. SKILL.md 必须把何时使用、输入、步骤、输出、事实边界和验收标准写清楚；复杂规范拆到 references/，且 SKILL.md 必须用相对链接指向每个会用到的 reference。
 2. 自动触发必须使用上面给出的完整动作短语，不要只写名词。
-3. 同时生成 references/ai-linzi-skill-manifest.json，内容必须是合法 JSON，包含 schemaVersion=1、"skillVersion":${JSON.stringify(draft.version)}、createdWith="AI霖子 Skill Studio"、permissions=${JSON.stringify(permissions)}、programs=[]、sampleInputs=${JSON.stringify([draft.sampleInput || `用 ${draft.name} 处理一份测试材料`])}。skillVersion 必须是上面这种带双引号的 JSON 字符串，绝不能写成 {"major":1,"minor":0,"patch":0} 对象。SKILL.md 必须链接该 manifest，并在正文重复“读取范围不扩大、写入先预览再确认、不覆盖”的关键边界，不能只把安全规则放在 manifest。
+3. 同时生成 references/ai-linzi-skill-manifest.json，内容必须是合法 JSON，包含 schemaVersion=2、"skillVersion":${JSON.stringify(draft.version)}、createdWith="AI霖子 Skill Studio"、permissions=${JSON.stringify(permissions)}、vaultRead=${JSON.stringify(vaultRead)}、vaultWrite=${JSON.stringify(vaultWrite)}、network="ai-linzi-only"、programs=[]、sampleInputs=${JSON.stringify([draft.sampleInput || `用 ${draft.name} 处理一份测试材料`])}。skillVersion 必须是上面这种带双引号的 JSON 字符串，绝不能写成 {"major":1,"minor":0,"patch":0} 对象。SKILL.md 必须链接该 manifest，并在正文重复“读取范围不扩大、写入一次原子确认、不覆盖”的关键边界，不能只把安全规则放在 manifest。
 4. ${inputScopeRequirement}
 5. 本版禁止生成 scripts；材料不足时先通过对话说明缺什么，不得猜测。所有 Vault 路径必须可移植：原始素材用 $RAW/，知识库用 $WIKI/，AI 产出用 $OUTPUT/；不要把 raw/wiki/output 或 01_Raw/02_Wiki/04_Output 写成固定字面目录。create-artifact 只用于 HTML/DOCX/PDF/PPTX 成品，路径必须使用 $OUTPUT/ 开头并由用户确认。
 6. 只输出一个 <<<新建Skill>>> 文件夹协议，等待我确认，不要改动任何现有文件。`
@@ -534,6 +583,20 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
       repairs.push(`已补充输出方式：${output}`)
     }
 
+    if (value.schemaVersion === 1) {
+      const legacy = parseLocalSkillManifest(
+        block.files[manifestIndex].content,
+        localSkillOutputFromMarkdown(skillContent),
+      )
+      if (legacy.kind === 'valid') {
+        value.schemaVersion = 2
+        value.vaultRead = legacy.policy.vaultRead
+        value.vaultWrite = legacy.policy.vaultWrite
+        value.network = legacy.policy.network
+        repairs.push('已把旧版文字权限清单升级为机器可读权限合同')
+      }
+    }
+
     if (repairs.length === 0) return { block, repairs }
     const files = block.files.map((file, index) =>
       file.path === 'SKILL.md'
@@ -577,7 +640,11 @@ export function skillBlockManifest(block: CreateLocalSkillBlock): {
       ? value.sampleInputs.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
       : []
     const problems: string[] = []
-    if (value.schemaVersion !== 1) problems.push('schemaVersion 必须为 1')
+    if (value.schemaVersion !== 1 && value.schemaVersion !== 2) {
+      problems.push('schemaVersion 必须为 1 或 2')
+    }
+    const runtimeManifest = parseLocalSkillManifest(file.content, localSkillOutputFromMarkdown(block.content))
+    if (runtimeManifest.kind === 'invalid') problems.push(runtimeManifest.message)
     if (!/^\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(version)) {
       problems.push('skillVersion 必须是三段版本号，且每段不超过 9 位')
     }

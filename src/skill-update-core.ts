@@ -45,7 +45,7 @@ export interface PreparedSkillUpdateChange {
   oldSha256?: string
 }
 
-/** 只保存可序列化的预检证据；原始二进制只存在事务执行器内存与快照目录。 */
+/** 只保存可序列化的预检证据；原始二进制只在本轮事务内存中用于失败回滚。 */
 export interface PreparedSkillUpdate {
   skillRoot: string
   entryPath: string
@@ -58,22 +58,6 @@ export interface PreparedSkillUpdate {
   changes: PreparedSkillUpdateChange[]
 }
 
-export interface SkillVersionMetadata {
-  schemaVersion: 1
-  skillName: string
-  skillVersion: string
-  archivedAt: string
-  archivedAtMs: number
-  sourceSnapshotHash: string
-  reason: string
-  files: SkillFileFingerprint[]
-}
-
-export interface SkillVersionSummary {
-  snapshotId: string
-  metadata: SkillVersionMetadata
-}
-
 export interface SkillUpdateSource {
   name: string
   currentVersion: string
@@ -82,13 +66,12 @@ export interface SkillUpdateSource {
 }
 
 export const SKILL_VERSION_MANIFEST_PATH = 'references/ai-linzi-skill-manifest.json'
-/** 使用 Vault API 可见目录；官方文档明确隐藏目录只能由 Adapter API 访问。 */
+/** 兼容旧版已生成的历史目录：新版不再创建，也不把它当作正式 Skill 文件改写或删除。 */
 export const SKILL_VERSION_HISTORY_FOLDER = 'ai-linzi-versions'
-export const SKILL_VERSION_HISTORY_KEEP = 5
 export const SKILL_UPDATE_MAX_DELETE_FILES = 12
 export const SKILL_UPDATE_MAX_AFFECTED_FILES = 20
 
-// 每段最多 9 位，保证 Number 比较与历史快照路径都保持有界；第三方 Skill
+// 每段最多 9 位，保证 Number 比较保持有界；第三方 Skill
 // 不能用超长数字制造 Infinity/NaN 后绕过升降级判断。
 const SEMVER_RE = /^\d{1,9}\.\d{1,9}\.\d{1,9}$/u
 const UPDATE_BLOCK_RE =
@@ -134,7 +117,7 @@ function safeRelativePath(value: string, maxParts: number): string[] | null {
 
 /**
  * AI 更新本车次不允许新建/改写 scripts：普通用户创建 Skill 不应顺手获得代码生成面。
- * 已有脚本仍会被快照完整保存；若用户明确淘汰旧脚本，可以在 deleteFiles 中单列。
+ * 已有脚本仍会原样保留；若用户明确淘汰旧脚本，可以在 deleteFiles 中单列。
  */
 export function normalizeSkillUpdateWritePath(value: string): string | null {
   const parts = safeRelativePath(value, 6)
@@ -160,7 +143,8 @@ export function normalizeSkillUpdateDeletePath(value: string): string | null {
 export function skillVersionFromManifestContent(content: string): string | null {
   try {
     const parsed = JSON.parse(content) as Record<string, unknown>
-    return parsed.schemaVersion === 1 && typeof parsed.skillVersion === 'string' && isSkillSemver(parsed.skillVersion)
+    return (parsed.schemaVersion === 1 || parsed.schemaVersion === 2) &&
+      typeof parsed.skillVersion === 'string' && isSkillSemver(parsed.skillVersion)
       ? parsed.skillVersion
       : null
   } catch {

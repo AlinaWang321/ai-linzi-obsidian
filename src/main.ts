@@ -220,6 +220,7 @@ import {
   LEGACY_LOCAL_SKILL_ROOT,
   formatLocalSkillList,
   formatMissingLocalSkillError,
+  isExplicitLocalSkillUpdateIntent,
   isLocalSkillListIntent,
   localSkillForbidsVaultExpansion,
   localSkillQuestionNamesInputFile,
@@ -1214,7 +1215,10 @@ function extractTextFromSSE(raw: string): { text: string; error?: string } {
 
 export default class AiLinziPlugin extends Plugin {
   settings: AiLinziSettings = DEFAULT_SETTINGS
-  readonly vaultSearch = new LocalVaultSearch(this.app)
+  readonly vaultSearch = new LocalVaultSearch(
+    this.app,
+    () => [this.settings.localSkillsFolder],
+  )
   private weeklyBusinessDashboardCache: WeeklyBusinessDashboardCache | null = null
   readonly vaultAgent = new LocalVaultAgent(
     this.app,
@@ -1280,6 +1284,31 @@ export default class AiLinziPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       this.rememberCurrentMarkdownFile()
       this.warnOrphanLocalSkills()
+      void this.vaultSearch.initialize()
+      this.registerEvent(
+        this.app.vault.on('create', (file) => {
+          if (file instanceof TFile) void this.vaultSearch.handleCreate(file)
+        }),
+      )
+      this.registerEvent(
+        this.app.vault.on('modify', (file) => {
+          if (file instanceof TFile) void this.vaultSearch.handleModify(file)
+        }),
+      )
+      this.registerEvent(
+        this.app.vault.on('delete', (file) => {
+          void this.vaultSearch.handleDelete(file.path)
+        }),
+      )
+      this.registerEvent(
+        this.app.vault.on('rename', (file, oldPath) => {
+          if (file instanceof TFile) void this.vaultSearch.handleRename(file, oldPath)
+          else {
+            void this.vaultSearch.handleDelete(oldPath)
+            this.vaultSearch.clear()
+          }
+        }),
+      )
     })
 
     this.registerEvent(
@@ -1396,6 +1425,7 @@ export default class AiLinziPlugin extends Plugin {
 
   onunload(): void {
     // Obsidian 官方规范:卸载时不 detach leaves(用户布局归用户)
+    this.vaultSearch.dispose()
   }
 
   async loadSettings() {
@@ -3789,7 +3819,30 @@ class ChatView extends ItemView {
     try {
       const pendingVaultQuestion = this.recentPendingVaultQuestion()
       const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
-      skillUpdateTargetPath = options.skillUpdatePath ?? this.recentPendingSkillUpdatePath()
+      const pendingSkillUpdatePath = this.recentPendingSkillUpdatePath()
+      const naturalSkillUpdate = !options.skillUpdatePath && !pendingSkillUpdatePath &&
+        isExplicitLocalSkillUpdateIntent(text)
+        ? await this.localSkills.resolveUpdate(text)
+        : undefined
+      if (naturalSkillUpdate?.kind === 'ambiguous') {
+        throw new Error(
+          `你要修改的 Skill 不唯一：${naturalSkillUpdate.skills.map(localSkillMenuTitle).join('、')}。` +
+          '请补充完整名称后重试。',
+        )
+      }
+      if (naturalSkillUpdate?.kind === 'missing') {
+        const recentPath = /(?:这个|刚才|当前|它)\s*(?:skill|技能|工作流)/iu.test(text)
+          ? this.recentLocalSkillPath()
+          : undefined
+        if (recentPath) skillUpdateTargetPath = recentPath
+        else {
+          const skills = await this.localSkills.list()
+          throw new Error(`没有找到要修改的 Skill。${formatMissingLocalSkillError(skills, this.localSkills.root())}`)
+        }
+      } else {
+        skillUpdateTargetPath = options.skillUpdatePath ?? pendingSkillUpdatePath ??
+          (naturalSkillUpdate?.kind === 'matched' ? naturalSkillUpdate.skill.path : undefined)
+      }
       const skillUpdateTarget = skillUpdateTargetPath
         ? await this.localSkills.resolvePath(skillUpdateTargetPath)
         : undefined
@@ -3950,7 +4003,11 @@ class ChatView extends ItemView {
       const automaticLocalSkill =
         localSkillMatch.kind === 'matched' && localSkillMatch.automatic === true
       const localSkillCurrentOnly = Boolean(
-        localSkill && localSkillForbidsVaultExpansion(localSkill.fullContent),
+        localSkill && (
+          localSkill.runtimePolicy?.vaultRead.scope === 'current-note' ||
+          localSkill.runtimePolicy?.vaultRead.scope === 'user-specified-files' ||
+          (!localSkill.runtimePolicy && localSkillForbidsVaultExpansion(localSkill.fullContent))
+        ),
       )
       const illustrationEdit = isArticleIllustrationEditIntent(text)
       const singleIllustrationIntent = isSingleArticleIllustrationIntent(text)
@@ -4088,10 +4145,36 @@ class ChatView extends ItemView {
             entryTruncated: localSkill.entryTruncated,
           }
         : undefined
+      const localSkillContext = localSkill ? this.localSkills.context(localSkill) : undefined
+      const localSkillReadPolicy = localSkillContext?.runtimePolicy?.vaultRead
+      if (localSkillContext && localSkillReadPolicy?.scope === 'user-specified-folder') {
+        const folder = this.plugin.vaultAgent.resolveUserSpecifiedFolder(text)
+        if (folder.kind === 'missing') {
+          throw new Error(`Skill《${localSkill?.name ?? '当前 Skill'}》需要你在这句话里指定一个 Vault 文件夹。`)
+        }
+        if (folder.kind === 'ambiguous') {
+          throw new Error(`文件夹名称不唯一，请补充完整路径：${folder.paths.join('、')}`)
+        }
+        localSkillContext.allowedReadFolders = [folder.path]
+      } else if (
+        localSkillContext &&
+        localSkillReadPolicy?.scope === 'whole-vault' &&
+        localSkillReadPolicy.preferUserScope
+      ) {
+        const folder = this.plugin.vaultAgent.resolveUserSpecifiedFolder(text)
+        if (folder.kind === 'ambiguous') {
+          throw new Error(`你指定的优先文件夹不唯一，请补充完整路径：${folder.paths.join('、')}`)
+        }
+        if (folder.kind === 'matched') localSkillContext.allowedReadFolders = [folder.path]
+      }
       const skillCreatorRequest: SkillCreatorRequest | undefined = skillCreatorTurn
         ? { mode: 'create', source: options.skillCreator ? 'studio' : 'chat' }
         : skillUpdaterTurn && skillUpdateSource
-          ? { mode: 'update', source: 'studio', target: skillUpdateSource }
+          ? {
+              mode: 'update',
+              source: options.skillUpdatePath ? 'studio' : 'chat',
+              target: skillUpdateSource,
+            }
           : undefined
       if (localSkill) {
         new Notice(
@@ -4131,7 +4214,7 @@ class ChatView extends ItemView {
             noteContext,
             authorizedContent,
             localSkill: localSkillRequest,
-            localSkillContext: localSkill ? this.localSkills.context(localSkill) : undefined,
+            localSkillContext,
             scopedSkillInputPath,
             // 已由用户精确勾选的整篇资料可以直接用于回答或生成成品，但这一轮不再
             // 额外开放整个 Vault 工具，避免“精确授权”被扩大成未选择文件的读取。
@@ -4261,7 +4344,6 @@ class ChatView extends ItemView {
         skillUpdateOffer = {
           proposal,
           prepared,
-          versions: await this.skillUpdateTransaction.listVersions(skillUpdateRoot),
         }
         answer = skillUpdateExtraction.cleanText || '已生成完整更新预览。确认前不会修改任何 Skill 文件。'
       } else if (skillUpdaterTurn) {
@@ -4915,12 +4997,13 @@ class ChatView extends ItemView {
         )
         .slice(0, 2)
       if (templateCandidates.length > 0) {
-        const templates = await this.plugin.vaultAgent.executeReadCalls(
+        const templates = await this.plugin.vaultAgent.executeCalls(
           templateCandidates.map((source, index) => ({
             id: `consultation-preload-template-${index + 1}`,
             name: 'read_note' as const,
             arguments: { path: source.path, offset: 0, maxChars: 16_000 },
           })),
+          input.localSkillContext,
         )
         appendToolResults(templates.results)
         sources.push(...templates.sources)
@@ -4979,7 +5062,7 @@ class ChatView extends ItemView {
           break
         }
         if (!Number.isInteger(parsed.nextOffset)) break
-        const followup = await this.plugin.vaultAgent.executeReadCalls([{
+        const followup = await this.plugin.vaultAgent.executeCalls([{
           id: `${seed.id}-auto-${page}`,
           name: 'read_recent_documents',
           arguments: {
@@ -4992,7 +5075,7 @@ class ChatView extends ItemView {
               ? Number(parsed.nextCharOffset)
               : 0,
           },
-        }])
+        }], input.localSkillContext)
         const nextResult = followup.results[0]
         if (!nextResult) break
         preload.results.push(nextResult)
@@ -6234,10 +6317,6 @@ class ChatView extends ItemView {
       {
         skillsRoot: () => this.localSkills.root(),
         applyUpdate: (prepared, proposal) => this.skillUpdateTransaction.apply(prepared, proposal),
-        listVersions: (skillRoot) => this.skillUpdateTransaction.listVersions(skillRoot),
-        prepareRestore: (skillRoot, skillName, snapshotId) =>
-          this.skillUpdateTransaction.prepareRestore(skillRoot, skillName, snapshotId),
-        restore: (prepared) => this.skillUpdateTransaction.restore(prepared),
         persist: () => this.persistNow(),
         rerender: () => this.renderMessages(),
         notify: (text, timeoutMs) => new Notice(text, timeoutMs),
@@ -7557,6 +7636,21 @@ class AiLinziSettingTab extends PluginSettingTab {
             this.plugin.settings.outputFolder = v.trim() || 'AI霖子输出'
             await this.plugin.saveSettings()
           }),
+      )
+
+    const vaultIndex = this.plugin.vaultSearch.indexStatus()
+    const vaultIndexDesc = vaultIndex.active
+      ? `已索引 ${vaultIndex.ready + vaultIndex.empty + vaultIndex.skipped + vaultIndex.failed}/${vaultIndex.total} 份，` +
+        `待处理 ${vaultIndex.pending} 份${vaultIndex.running ? '（正在后台更新）' : ''}。` +
+        '索引只保存在本机，只存文件元数据和紧凑词项位图，不保存或上传整库正文。'
+      : '尚未激活。第一次使用文件检索后，AI霖子才会在本机建立索引，并自动增量更新；普通对话不会预扫正文。'
+    new Setting(containerEl)
+      .setName('本地 Vault 检索索引')
+      .setDesc(vaultIndexDesc)
+      .addButton((button) =>
+        button.setButtonText('刷新状态').onClick(() => {
+          void this.plugin.vaultSearch.initialize().then(() => this.redisplaySettings())
+        }),
       )
 
     new Setting(containerEl).setName('一人公司驾驶舱 · 目录映射').setHeading()

@@ -653,7 +653,10 @@ assert.match(
 )
 assert.match(studioSource, /addOption\('update', '更新已经安装的 Skill'\)/)
 assert.match(studioSource, /onUpdateWithAi\(skill, this\.updateInstruction\)/)
-assert.match(runSendTurnSource, /skillUpdateTargetPath = options\.skillUpdatePath \?\? this\.recentPendingSkillUpdatePath\(\)/)
+assert.match(
+  runSendTurnSource,
+  /const pendingSkillUpdatePath = this\.recentPendingSkillUpdatePath\(\)[\s\S]{0,900}skillUpdateTargetPath = options\.skillUpdatePath \?\? pendingSkillUpdatePath/,
+)
 assert.match(runSendTurnSource, /buildSkillUpdateSource\(this\.skillUpdateHost, skillUpdateRoot, skillUpdateTarget\.name\)/)
 assert.match(runSendTurnSource, /skillUpdaterTurn && imageAttachments\.length > 0/)
 assert.match(runSendTurnSource, /skillCreator: skillCreatorRequest/)
@@ -661,9 +664,13 @@ assert.match(runSendTurnSource, /extractSkillUpdateProposals\(answer\)/)
 assert.match(runSendTurnSource, /this\.skillUpdateTransaction\.prepare\([\s\S]{0,180}skillUpdateTarget\.path/)
 assert.match(runSendTurnSource, /skillUpdatePendingPath = skillUpdaterTurn && !skillUpdateOffer/)
 assert.match(mainSource, /\.filter\(\(message\) => !message\.localSkillStatus && !message\.localSkillChoice\)[\s\S]{0,120}\.map\(\(\{ id, role, parts \}\)/)
-assert.match(updateCardSource, /单独确认删除/)
-assert.match(updateCardSource, /prepared\.skillRoot !== `\$\{currentRoot\}\/\$\{proposal\.name\}`/)
-assert.match(updateCardSource, /prepareRestore[\s\S]{0,500}确认恢复到/)
+assert.match(updateCardSource, /确认并更新到/)
+assert.match(
+  updateCardSource,
+  /const lockedParent = prepared\.skillRoot\.split\('\/'\)\.slice\(0, -1\)\.join\('\/'\)[\s\S]{0,120}lockedParent !== currentRoot/,
+)
+assert.match(updateCardSource, /不会额外保存 Skill 历史版本/)
+assert.doesNotMatch(updateCardSource, /prepareRestore|确认恢复到|单独确认删除/)
 assert.match(mainSource, /input\.localSkill\?\.output === 'create-note'[\s\S]{0,220}extractCreateNoteBlocks\(lastText\)\.blocks\.length > 0[\s\S]{0,80}!plan\.plan/)
 assert.match(mainSource, /answerPlan\.plan && extractCreateNoteBlocks\(answer\)\.blocks\.length > 0/)
 assert.match(mainSource, /Boolean\(input\.resumeQuestion\)[\s\S]{0,280}vaultWriteFlowRetryReason/)

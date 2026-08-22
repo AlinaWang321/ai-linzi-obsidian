@@ -1,5 +1,4 @@
 import {
-  SKILL_VERSION_HISTORY_KEEP,
   SKILL_VERSION_MANIFEST_PATH,
   compareSkillSemver,
   normalizeSkillUpdateWritePath,
@@ -13,8 +12,6 @@ import {
   type SkillTreeFingerprint,
   type SkillUpdateProposal,
   type SkillUpdateSource,
-  type SkillVersionMetadata,
-  type SkillVersionSummary,
 } from './skill-update-core'
 import {
   CREATE_LOCAL_SKILL_MAX_FILES,
@@ -31,53 +28,19 @@ export interface SkillCapturedTree {
   fingerprint: SkillTreeFingerprint
 }
 
-export interface StoredSkillSnapshot {
-  snapshotId: string
-  metadata: SkillVersionMetadata
-  files: SkillCapturedFile[]
-}
-
 export interface SkillUpdateTransactionHost {
   captureFormalFiles(skillRoot: string): Promise<Array<Omit<SkillCapturedFile, 'sha256'>>>
   writeFormalText(skillRoot: string, relativePath: string, content: string): Promise<void>
   writeFormalBinary(skillRoot: string, relativePath: string, bytes: ArrayBuffer): Promise<void>
   deleteFormalFile(skillRoot: string, relativePath: string): Promise<void>
-  createSnapshot(
-    skillRoot: string,
-    snapshotId: string,
-    metadata: SkillVersionMetadata,
-    files: SkillCapturedFile[],
-  ): Promise<void>
-  listSnapshots(skillRoot: string): Promise<SkillVersionSummary[]>
-  readSnapshot(skillRoot: string, snapshotId: string): Promise<StoredSkillSnapshot>
-  removeSnapshot(skillRoot: string, snapshotId: string): Promise<void>
 }
 
 export interface AppliedSkillUpdate {
-  snapshotId: string
   previousVersion: string
   nextVersion: string
-  historyCleanupWarning?: string
 }
 
-export interface PreparedSkillRestore {
-  skillRoot: string
-  skillName: string
-  snapshotId: string
-  targetVersion: string
-  preparedAt: number
-  baseline: SkillTreeFingerprint
-  targetFingerprint: SkillTreeFingerprint
-}
-
-export interface AppliedSkillRestore {
-  safetySnapshotId: string
-  restoredSnapshotId: string
-  restoredVersion: string
-  historyCleanupWarning?: string
-}
-
-/** 12 个可更新文本 + 最多 100 个只读保留文件；快照前先限资源，避免导入 Skill 卡死 Obsidian。 */
+/** 12 个可更新文本 + 最多 100 个只读保留文件；变更前先限资源，避免导入 Skill 卡死 Obsidian。 */
 export const SKILL_UPDATE_MAX_PRESERVED_FILES = 100
 export const SKILL_UPDATE_MAX_TREE_FILES = CREATE_LOCAL_SKILL_MAX_FILES + SKILL_UPDATE_MAX_PRESERVED_FILES
 export const SKILL_UPDATE_MAX_SINGLE_FILE_BYTES = 50 * 1024 * 1024
@@ -95,11 +58,11 @@ export function skillTreeResourceLimitError(
       return `${file.path} 的文件大小无效。`
     }
     if (file.size > SKILL_UPDATE_MAX_SINGLE_FILE_BYTES) {
-      return `${file.path} 超过单文件 50 MB 的快照安全上限。`
+      return `${file.path} 超过单文件 50 MB 的更新安全上限。`
     }
     total += file.size
     if (total > SKILL_UPDATE_MAX_TREE_BYTES) {
-      return '这个 Skill 超过 100 MB 的整包快照安全上限。'
+      return '这个 Skill 超过 100 MB 的整包更新安全上限。'
     }
   }
   return null
@@ -243,35 +206,6 @@ function validateFinalSkill(name: string, files: SkillCapturedFile[], nextVersio
   if (manifestVersion !== nextVersion) throw new Error('更新后的版本清单与提案版本不一致。')
 }
 
-function assertSnapshotIntegrity(snapshot: StoredSkillSnapshot): Promise<SkillTreeFingerprint> {
-  return (async () => {
-    const files: SkillCapturedFile[] = []
-    for (const file of snapshot.files) {
-      const bytes = cloneBytes(file.bytes)
-      const sha256 = await sha256Hex(bytes)
-      if (file.size !== bytes.byteLength || file.sha256 !== sha256) {
-        throw new Error(`历史版本 ${snapshot.snapshotId} 中的 ${file.path} 校验失败。`)
-      }
-      files.push({ ...file, bytes })
-    }
-    const fingerprint = await fingerprintFiles(files)
-    if (fingerprint.sha256 !== snapshot.metadata.sourceSnapshotHash) {
-      throw new Error(`历史版本 ${snapshot.snapshotId} 的整包校验失败。`)
-    }
-    const metadataFiles = [...snapshot.metadata.files].sort((a, b) => a.path.localeCompare(b.path))
-    if (
-      metadataFiles.length !== fingerprint.files.length ||
-      metadataFiles.some((file, index) => {
-        const actual = fingerprint.files[index]
-        return !actual || file.path !== actual.path || file.size !== actual.size || file.sha256 !== actual.sha256
-      })
-    ) {
-      throw new Error(`历史版本 ${snapshot.snapshotId} 的文件清单校验失败。`)
-    }
-    return fingerprint
-  })()
-}
-
 export class SkillUpdateTransaction {
   constructor(
     private readonly host: SkillUpdateTransactionHost,
@@ -377,15 +311,6 @@ export class SkillUpdateTransaction {
     }
     const expected = await expectedTreeAfterProposal(current, proposal)
     validateFinalSkill(proposal.name, expected.files, prepared.nextVersion)
-    const snapshotId = this.snapshotId(prepared.currentVersion)
-    const metadata = this.snapshotMetadata(
-      proposal.name,
-      prepared.currentVersion,
-      proposal.reason,
-      current,
-    )
-    await this.host.createSnapshot(prepared.skillRoot, snapshotId, metadata, current.files)
-
     let mutationStarted = false
     try {
       mutationStarted = true
@@ -402,111 +327,10 @@ export class SkillUpdateTransaction {
       throw new Error(`Skill 更新失败，已恢复原版本：${this.message(error)}`)
     }
 
-    const historyCleanupWarning = await this.pruneHistory(prepared.skillRoot)
     return {
-      snapshotId,
       previousVersion: prepared.currentVersion,
       nextVersion: prepared.nextVersion,
-      ...(historyCleanupWarning ? { historyCleanupWarning } : {}),
     }
-  }
-
-  async listVersions(skillRoot: string): Promise<SkillVersionSummary[]> {
-    return (await this.host.listSnapshots(skillRoot)).sort(
-      (left, right) => right.metadata.archivedAtMs - left.metadata.archivedAtMs,
-    )
-  }
-
-  async prepareRestore(skillRoot: string, skillName: string, snapshotId: string): Promise<PreparedSkillRestore> {
-    const current = await captureSkillTree(this.host, skillRoot)
-    const snapshot = await this.host.readSnapshot(skillRoot, snapshotId)
-    const targetFingerprint = await assertSnapshotIntegrity(snapshot)
-    if (snapshot.metadata.skillName !== skillName) throw new Error('历史版本不属于当前 Skill。')
-    validateFinalSkill(skillName, snapshot.files, snapshot.metadata.skillVersion)
-    return {
-      skillRoot,
-      skillName,
-      snapshotId,
-      targetVersion: snapshot.metadata.skillVersion,
-      preparedAt: this.now().getTime(),
-      baseline: current.fingerprint,
-      targetFingerprint,
-    }
-  }
-
-  async restore(prepared: PreparedSkillRestore): Promise<AppliedSkillRestore> {
-    const current = await captureSkillTree(this.host, prepared.skillRoot)
-    if (!skillTreeFingerprintsEqual(current.fingerprint, prepared.baseline)) {
-      throw new Error('Skill 在恢复确认前被改动了，已取消恢复。')
-    }
-    const snapshot = await this.host.readSnapshot(prepared.skillRoot, prepared.snapshotId)
-    const targetFingerprint = await assertSnapshotIntegrity(snapshot)
-    if (targetFingerprint.sha256 !== prepared.targetFingerprint.sha256) {
-      throw new Error('历史版本在确认后发生变化，已取消恢复。')
-    }
-    const target: SkillCapturedTree = { files: snapshot.files, fingerprint: targetFingerprint }
-    validateFinalSkill(prepared.skillName, target.files, prepared.targetVersion)
-
-    const currentVersion = this.versionFromTree(current)
-    const safetySnapshotId = this.snapshotId(currentVersion)
-    await this.host.createSnapshot(
-      prepared.skillRoot,
-      safetySnapshotId,
-      this.snapshotMetadata(
-        prepared.skillName,
-        currentVersion,
-        `恢复到历史版本 ${prepared.targetVersion} 前的安全快照`,
-        current,
-      ),
-      current.files,
-    )
-    try {
-      await this.replaceWholeTree(prepared.skillRoot, current, target)
-      const actual = await captureSkillTree(this.host, prepared.skillRoot)
-      this.assertContentTreeEqual(actual, target, '恢复后的 Skill 与历史版本不一致')
-    } catch (error) {
-      await this.rollbackWholeTree(prepared.skillRoot, current, target)
-      throw new Error(`恢复历史版本失败，已回到恢复前状态：${this.message(error)}`)
-    }
-    const historyCleanupWarning = await this.pruneHistory(prepared.skillRoot)
-    return {
-      safetySnapshotId,
-      restoredSnapshotId: prepared.snapshotId,
-      restoredVersion: prepared.targetVersion,
-      ...(historyCleanupWarning ? { historyCleanupWarning } : {}),
-    }
-  }
-
-  private snapshotId(version: string): string {
-    const stamp = this.now().toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, (value) => value.slice(1, 4) + 'Z')
-    return `${stamp}__${version}`
-  }
-
-  private snapshotMetadata(
-    skillName: string,
-    version: string,
-    reason: string,
-    tree: SkillCapturedTree,
-  ): SkillVersionMetadata {
-    const archivedAt = this.now()
-    return {
-      schemaVersion: 1,
-      skillName,
-      skillVersion: version,
-      archivedAt: archivedAt.toISOString(),
-      archivedAtMs: archivedAt.getTime(),
-      sourceSnapshotHash: tree.fingerprint.sha256,
-      reason,
-      files: tree.fingerprint.files,
-    }
-  }
-
-  private versionFromTree(tree: SkillCapturedTree): string {
-    const manifest = fileMap(tree.files).get(SKILL_VERSION_MANIFEST_PATH)
-    if (!manifest) throw new Error('当前 Skill 缺少版本清单。')
-    const version = skillVersionFromManifestContent(decodeTextFile(manifest, '当前版本清单'))
-    if (!version) throw new Error('当前 Skill 版本清单无效。')
-    return version
   }
 
   private assertContentTreeEqual(actual: SkillCapturedTree, expected: SkillCapturedTree, prefix: string): void {
@@ -541,7 +365,7 @@ export class SkillUpdateTransaction {
         Boolean(live && before && live.path === before.path && live.sha256 === before.sha256) ||
         Boolean(live && after && live.path === after.path && live.sha256 === after.sha256)
       if (!safe) {
-        throw new Error(`回滚时发现 ${change.path} 被同时编辑，已保留现场，请从历史版本手动恢复。`)
+        throw new Error(`回滚时发现 ${change.path} 被同时编辑，已保留现场，请使用 Obsidian 文件恢复。`)
       }
     }
     for (const change of changes) {
@@ -554,65 +378,8 @@ export class SkillUpdateTransaction {
       const before = originalMap.get(change.path.toLocaleLowerCase())
       const live = fileMap(restored.files).get(change.path.toLocaleLowerCase())
       if ((!before && live) || (before && (!live || live.sha256 !== before.sha256))) {
-        throw new Error(`自动回滚后 ${change.path} 校验失败，请从历史版本手动恢复。`)
+        throw new Error(`自动回滚后 ${change.path} 校验失败，请使用 Obsidian 文件恢复或你的备份。`)
       }
-    }
-  }
-
-  private async replaceWholeTree(
-    skillRoot: string,
-    current: SkillCapturedTree,
-    target: SkillCapturedTree,
-  ): Promise<void> {
-    const targetMap = fileMap(target.files)
-    for (const file of target.files) {
-      await this.host.writeFormalBinary(skillRoot, file.path, cloneBytes(file.bytes))
-    }
-    for (const file of current.files) {
-      if (!targetMap.has(file.path.toLocaleLowerCase())) await this.host.deleteFormalFile(skillRoot, file.path)
-    }
-  }
-
-  private async rollbackWholeTree(
-    skillRoot: string,
-    original: SkillCapturedTree,
-    intended: SkillCapturedTree,
-  ): Promise<void> {
-    const live = await captureSkillTree(this.host, skillRoot)
-    const originalMap = fileMap(original.files)
-    const intendedMap = fileMap(intended.files)
-    const liveMap = fileMap(live.files)
-    const keys = new Set([...originalMap.keys(), ...intendedMap.keys(), ...liveMap.keys()])
-    for (const key of keys) {
-      const file = liveMap.get(key)
-      const before = originalMap.get(key)
-      const after = intendedMap.get(key)
-      const matchesBefore = (!file && !before) || Boolean(
-        file && before && file.path === before.path && file.sha256 === before.sha256,
-      )
-      const matchesAfter = (!file && !after) || Boolean(
-        file && after && file.path === after.path && file.sha256 === after.sha256,
-      )
-      if (!matchesBefore && !matchesAfter) {
-        throw new Error(
-          `回滚时发现 ${file?.path ?? before?.path ?? after?.path ?? key} 被同时编辑，已保留现场，请手动恢复。`,
-        )
-      }
-    }
-    await this.replaceWholeTree(skillRoot, live, original)
-    const restored = await captureSkillTree(this.host, skillRoot)
-    this.assertContentTreeEqual(restored, original, '恢复失败后的自动回滚未通过')
-  }
-
-  private async pruneHistory(skillRoot: string): Promise<string | undefined> {
-    try {
-      const versions = await this.listVersions(skillRoot)
-      for (const version of versions.slice(SKILL_VERSION_HISTORY_KEEP)) {
-        await this.host.removeSnapshot(skillRoot, version.snapshotId)
-      }
-      return undefined
-    } catch (error) {
-      return `更新已成功，但清理旧版本失败：${this.message(error)}`
     }
   }
 

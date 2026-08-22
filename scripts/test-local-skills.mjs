@@ -254,6 +254,62 @@ assert.equal(
   'ambiguous',
 )
 
+assert.equal(core.isExplicitLocalSkillUpdateIntent('修改“每周经营复盘”的这个 Skill'), true)
+assert.equal(core.isExplicitLocalSkillUpdateIntent('更新客户档案'), false)
+assert.equal(
+  core.matchLocalSkillUpdateIntent(
+    '你修改“每周经营复盘”的这个技能，以后输出到方法论文件夹',
+    [consultation, portable],
+  ).skill.path,
+  portable.path,
+  '自然语言修改必须命中已安装 Skill，而不是再次创建同名目录',
+)
+const extraction = core.buildLocalSkillDescriptor(
+  '05_System/Skills/jingyancuiqu/SKILL.md',
+  { name: 'jingyancuiqu', description: '萃取经验并沉淀方法论' },
+  '# 经验萃取技能\n\n## AI霖子输出方式\ncreate-note',
+)
+assert.ok(extraction)
+assert.equal(
+  core.matchLocalSkillInvocation(
+    '用经验萃取 Skill 搜索 01_Raw/课程逐字稿 文件夹里关于 Obsidian 的资料，列出真实文件路径，先不要写入。',
+    [consultation, portable, extraction],
+  ).skill.path,
+  extraction.path,
+  '显示名以“技能”结尾时，用户用短名 + Skill 仍必须命中，不得在读取文件夹前报找不到',
+)
+assert.equal(
+  core.matchLocalSkillUpdateIntent(
+    '你修改“经验萃取”的这个技能，以后产出的都放在“06方法论和框架”文件夹里面',
+    [consultation, portable, extraction],
+  ).skill.path,
+  extraction.path,
+  '截图中的真实说法必须进入已有 Skill 更新，不得报同名创建冲突',
+)
+const extractionDuplicateShortName = core.buildLocalSkillDescriptor(
+  '05_System/Skills/jingyancuiqu-workflow/SKILL.md',
+  { name: 'jingyancuiqu-workflow', description: '另一套经验萃取流程' },
+  '# 经验萃取工作流\n\n## AI霖子输出方式\nchat',
+)
+assert.ok(extractionDuplicateShortName)
+assert.equal(
+  core.matchLocalSkillInvocation(
+    '用经验萃取 Skill 处理资料',
+    [extraction, extractionDuplicateShortName],
+  ).kind,
+  'ambiguous',
+  '后缀短名发生冲突时必须让用户选择，不能猜错 Skill',
+)
+assert.equal(
+  core.matchLocalSkillUpdateIntent('修改不存在的 Skill', [consultation, portable]).kind,
+  'missing',
+)
+assert.equal(
+  core.matchLocalSkillUpdateIntent('更新客户档案', [customerProfile]).kind,
+  'none',
+  '业务动作没有 Skill 字样时不能误进管理路由',
+)
+
 // 0.7.64:点技能菜单时优先用 Skill 自己声明的触发短语(不同技能处理对象不同,
 // 统一填「处理当前笔记」会误导——知识库日报看板处理的是整个知识库)。
 import { readFileSync as __readMainForMenu } from 'node:fs'
@@ -265,6 +321,16 @@ assert.match(
   __mainForMenu,
   /if \(localSkillMatch\.kind === 'missing'\) \{[\s\S]{0,180}this\.localSkills\.list\(\)[\s\S]{0,180}formatMissingLocalSkillError\(skills, this\.localSkills\.root\(\)\)/,
   '主对话命中 missing 时必须列出当前可用 Skill，不能重新静默落回普通对话',
+)
+assert.match(
+  __mainForMenu,
+  /isExplicitLocalSkillUpdateIntent\(text\)[\s\S]{0,180}this\.localSkills\.resolveUpdate\(text\)/,
+  '主对话必须在 Skill Creator 之前识别自然语言更新目标',
+)
+assert.match(
+  __mainForMenu,
+  /source: options\.skillUpdatePath \? 'studio' : 'chat'/,
+  '自然语言更新必须明确走 chat 更新源，不能伪装成 Studio 创建',
 )
 
 console.log('local skill tests passed')

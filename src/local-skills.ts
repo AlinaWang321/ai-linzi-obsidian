@@ -6,11 +6,16 @@ import {
   isLocalSkillPath,
   localSkillLinkedPathCandidates,
   matchLocalSkillInvocation,
+  matchLocalSkillUpdateIntent,
   normalizeLocalSkillRoot,
   type LocalSkillDescriptor,
   type LocalSkillMatch,
   type LocalSkillOutput,
 } from './local-skill-core'
+import {
+  parseLocalSkillManifest,
+  type LocalSkillRuntimePolicy,
+} from './local-skill-manifest'
 
 interface CachedLocalSkill {
   mtime: number
@@ -30,6 +35,8 @@ export interface ResolvedLocalSkill {
   fullContent: string
   /** 仅用于本地检索去重，绝不发送到服务端。 */
   path: string
+  /** Skill Studio v2 的机器可读权限；旧 Skill 可由 v1 manifest 兼容推断。 */
+  runtimePolicy?: LocalSkillRuntimePolicy
 }
 
 export interface ActiveLocalSkillContext {
@@ -43,6 +50,11 @@ export interface ActiveLocalSkillContext {
   fullyReadPaths: string[]
   /** Continuous read coverage from character zero; skipped ranges never authorize execution. */
   readThroughByPath: Record<string, number>
+  runtimePolicy?: LocalSkillRuntimePolicy
+  /** 本轮真正交给模型的 Vault 正文路径；用于落实 manifest 的 maxFiles。 */
+  vaultReadPaths: string[]
+  /** folder-only 权限在发送瞬间锁定的真实 Vault 文件夹。 */
+  allowedReadFolders?: string[]
 }
 
 export type ResolvedLocalSkillMatch =
@@ -118,6 +130,8 @@ export class LocalSkillRegistry {
       readThroughByPath: {
         [entryPath]: skill.entryTruncated ? skill.content.length : skill.fullContent.length,
       },
+      runtimePolicy: skill.runtimePolicy,
+      vaultReadPaths: [],
     }
   }
 
@@ -169,6 +183,16 @@ export class LocalSkillRegistry {
           `超过 ${LOCAL_SKILL_MAX_ENTRY_CHARS.toLocaleString('zh-CN')} 字的本地安全上限，请拆分到 references/ 后再试。`,
       )
     }
+    const directory = record.descriptor.path.replace(/\\/g, '/').split('/').slice(0, -1).join('/')
+    const manifestPath = `${directory}/references/ai-linzi-skill-manifest.json`
+    const manifestFile = this.app.vault.getAbstractFileByPath(manifestPath)
+    const manifestContent = manifestFile instanceof TFile
+      ? await this.app.vault.cachedRead(manifestFile)
+      : undefined
+    const manifest = parseLocalSkillManifest(manifestContent, record.descriptor.output)
+    if (manifest.kind === 'invalid') {
+      throw new Error(`Skill《${record.descriptor.name}》权限清单无效：${manifest.message}`)
+    }
     return {
       name: record.descriptor.name,
       description: record.descriptor.description,
@@ -178,6 +202,7 @@ export class LocalSkillRegistry {
       entryTruncated: record.content.length > LOCAL_SKILL_MAX_CONTENT_CHARS,
       fullContent: record.content,
       path: record.descriptor.path,
+      runtimePolicy: manifest.kind === 'valid' ? manifest.policy : undefined,
     }
   }
 
@@ -201,6 +226,17 @@ export class LocalSkillRegistry {
       automatic: match.automatic,
       skill,
     }
+  }
+
+  async resolveUpdate(message: string): Promise<ResolvedLocalSkillMatch> {
+    const records = await this.refresh()
+    const match = matchLocalSkillUpdateIntent(
+      message,
+      records.map((record) => record.descriptor),
+    )
+    if (match.kind !== 'matched') return match
+    const skill = await this.resolvePath(match.skill.path)
+    return skill ? { kind: 'matched', skill } : { kind: 'missing' }
   }
 }
 

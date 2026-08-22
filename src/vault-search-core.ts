@@ -13,6 +13,8 @@ export interface VaultSearchOptions {
   excludedPaths?: string[]
   /** 整个文件夹树不参与普通 Vault 搜索，例如用户指定的本地 Skills 根目录。 */
   excludedFolders?: string[]
+  /** 只在这些文件夹树内检索；为空时表示整个 Vault。 */
+  includedFolders?: string[]
   /** 仅用于可重复测试；生产环境默认使用当前设备时间。 */
   nowMs?: number
   /** 只供 Agent 明确调用 vault_search 使用；允许“小B”这类短代号，自动预扫仍保持四字门槛。 */
@@ -338,7 +340,7 @@ export function shouldSearchVault(query: string): boolean {
   if (!normalized || NO_SEARCH_MESSAGES.has(normalized)) return false
   const compact = normalized.replace(/[\s\p{P}\p{S}]+/gu, '')
   if (compact.length < 4) return false
-  return buildSearchTerms(query).length > 0
+  return buildVaultSearchTerms(query).length > 0
 }
 
 export function searchVaultDocuments(
@@ -347,7 +349,7 @@ export function searchVaultDocuments(
   options: VaultSearchOptions = {},
 ): VaultSearchResult[] {
   const normalized = normalizeText(query)
-  const terms = buildSearchTerms(query)
+  const terms = buildVaultSearchTerms(query)
   if (options.explicit) {
     if (!normalized || NO_SEARCH_MESSAGES.has(normalized) || terms.length === 0) return []
   } else if (!shouldSearchVault(query)) {
@@ -370,12 +372,15 @@ export function searchVaultDocuments(
   )
   const excludedPathSet = new Set((options.excludedPaths ?? []).map(normalizePath))
   const excludedFolders = (options.excludedFolders ?? []).map(normalizePath).filter(Boolean)
+  const includedFolders = (options.includedFolders ?? []).map(normalizePath).filter(Boolean)
   const queryPhrase = normalizeText(query).replace(/\s+/g, ' ')
   const querySignals = buildQuerySignals(query, options.nowMs ?? Date.now())
   const eligible = documents.filter(
     (doc) =>
       !excludedPathSet.has(normalizePath(doc.path)) &&
       !excludedFolders.some((folder) => isPathInsideFolder(doc.path, folder)) &&
+      (includedFolders.length === 0 ||
+        includedFolders.some((folder) => isPathInsideFolder(doc.path, folder))) &&
       !isVaultSearchPathExcluded(doc.path) &&
       Boolean(doc.text.trim()),
   )
@@ -619,7 +624,7 @@ const GENERIC_SINGLE_HAN = new Set([
   '我', '你', '他', '她', '它', '们', '这', '那', '里', '中', '上', '下', '内', '外',
 ])
 
-function buildSearchTerms(query: string): string[] {
+export function buildVaultSearchTerms(query: string): string[] {
   const normalized = normalizeText(query)
   const terms = new Set<string>()
   // 2026-08-19 修复：旧正则要求英文 ≥2 字符、中文 ≥2 连续汉字，于是「小B」「小A」这类

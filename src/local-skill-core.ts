@@ -597,6 +597,27 @@ function invocationContext(message: string): {
   }
 }
 
+/**
+ * 学员会自然省略显示名末尾重复的“Skill/技能/工作流”，例如把
+ * “经验萃取技能”说成“经验萃取 Skill”。这里只生成确定性的后缀别名，
+ * 不做语义模糊匹配；若两个 Skill 得到同一个短名，后续评分仍会返回 ambiguous。
+ */
+function localSkillAliases(skill: LocalSkillDescriptor): Array<{ alias: string; normalized: string }> {
+  const aliases = new Set([
+    skill.name,
+    skill.displayName,
+    skill.folderName,
+    ...skill.triggers,
+  ])
+  for (const alias of [...aliases]) {
+    const withoutTypeSuffix = alias.replace(/(?:\s*(?:skill|技能|工作流))\s*$/iu, '').trim()
+    if (withoutTypeSuffix) aliases.add(withoutTypeSuffix)
+  }
+  return [...aliases]
+    .map((alias) => ({ alias, normalized: normalizeText(alias) }))
+    .filter((item) => item.normalized.length >= 2)
+}
+
 export function matchLocalSkillInvocation(
   message: string,
   skills: LocalSkillDescriptor[],
@@ -625,9 +646,7 @@ export function matchLocalSkillInvocation(
 
   const candidates = skills
     .map((skill) => {
-      const aliases = [...new Set([skill.name, ...skill.triggers])]
-        .map((alias) => ({ alias, normalized: normalizeText(alias) }))
-        .filter((item) => item.normalized.length >= 2)
+      const aliases = localSkillAliases(skill)
       const matched = aliases
         .filter((item) => context.normalized.includes(item.normalized))
         .sort((left, right) => right.normalized.length - left.normalized.length)[0]
@@ -652,6 +671,48 @@ export function matchLocalSkillInvocation(
   const top = candidates.filter((candidate) => candidate.score === topScore)
   if (top.length > 1) return { kind: 'ambiguous', skills: top.map((item) => item.skill) }
   return { kind: 'matched', skill: top[0].skill, automatic: false }
+}
+
+/**
+ * “修改/更新某个 Skill”是管理已安装 Skill，不是运行它，也不是创建同名 Skill。
+ * 必须同时出现修改动词和 Skill/技能/工作流字样，避免把“更新客户档案”这类
+ * 正常业务动作误劫持到 Skill 管理。
+ */
+export function isExplicitLocalSkillUpdateIntent(message: string): boolean {
+  const normalized = message.trim()
+  if (!/(?:skill|技能|工作流)/iu.test(normalized)) return false
+  return /(?:修改|更新|调整|优化|改进|重写|补充|删掉|删除|移除|改一下|改成|改为|换成|以后.{0,12}(?:放到|保存到|输出到))/u.test(
+    normalized,
+  )
+}
+
+export function matchLocalSkillUpdateIntent(
+  message: string,
+  skills: LocalSkillDescriptor[],
+): LocalSkillMatch {
+  if (!isExplicitLocalSkillUpdateIntent(message)) return { kind: 'none' }
+  const normalized = normalizeText(message)
+  const candidates = skills
+    .map((skill) => {
+      const aliases = localSkillAliases(skill)
+      const matched = aliases
+        .filter((item) => normalized.includes(item.normalized))
+        .sort((left, right) => right.normalized.length - left.normalized.length)[0]
+      return matched
+        ? {
+            skill,
+            score: matched.normalized.length * 10 +
+              (normalizeText(skill.name) === matched.normalized ? 5 : 0),
+          }
+        : null
+    })
+    .filter((item): item is { skill: LocalSkillDescriptor; score: number } => Boolean(item))
+    .sort((left, right) => right.score - left.score)
+  if (candidates.length === 0) return { kind: 'missing' }
+  const top = candidates.filter((candidate) => candidate.score === candidates[0].score)
+  return top.length === 1
+    ? { kind: 'matched', skill: top[0].skill }
+    : { kind: 'ambiguous', skills: top.map((item) => item.skill) }
 }
 
 export function formatLocalSkillList(

@@ -17,7 +17,7 @@ assert.equal(update.isSkillSemver('1.2.3'), true)
 assert.equal(update.isSkillSemver('123456789.0.1'), true)
 assert.equal(update.isSkillSemver('1234567890.0.1'), false)
 assert.ok(Number.isNaN(update.compareSkillSemver('1234567890.0.1', '1.0.0')))
-console.log('  ✓ 三段版本号数值与快照路径有界，超长数字不能制造 Infinity 绕过比较')
+console.log('  ✓ 三段版本号数值有界，超长数字不能制造 Infinity 绕过比较')
 
 const skillMd = `---
 name: weekly-review

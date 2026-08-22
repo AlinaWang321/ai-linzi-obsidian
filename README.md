@@ -23,7 +23,7 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 - Turn a WeChat article into a publish-ready Xiaohongshu note with three title choices, 300–800 Chinese characters of copy, hashtags, and local 3:4 cards that mix the original images with surrounding text.
 - Review a local four-platform publishing matrix, five-stage creation pipeline, account growth, and per-post performance for WeChat, Xiaohongshu, Channels, and Douyin. Platform screenshots are analyzed only after an explicit selection and require confirmation before local metrics are saved.
 - Review local content activity and authorized account data in the one-person-company cockpit.
-- Create, test, import, export, and safely update portable personal Skills in **Skill Studio**. Every update shows the complete text changes and deletions before confirmation, rechecks the whole Skill, creates a verified binary snapshot, and can restore one of the latest five local versions. Existing Skills can progressively read referenced files and—when the user separately enables local execution—request per-step confirmation for Node.js, Python, FFmpeg, or FFprobe actions. Shell command strings are not accepted.
+- Create, test, import, export, and update portable personal Skills in **Skill Studio** or by asking in the main chat. Every update locks one installed Skill, shows all text changes and deletions, and writes only after one confirmation. The plugin does not create a separate Skill version history; if a write fails mid-update, it restores the affected files from an in-memory copy. Existing Skills can progressively read referenced files and—when the user separately enables local execution—request per-step confirmation for Node.js, Python, FFmpeg, or FFprobe actions. Shell command strings are not accepted.
 
 ## Installation
 
@@ -38,7 +38,7 @@ AI Linzi is currently desktop-only and requires Obsidian 1.11.4 or later.
 
 ## Privacy and network access
 
-Local search scans supported files in memory on the user's device. It does not create a cloud index or upload the whole Vault. For a normal chat request, the plugin sends only an explicitly requested still-open note, explicitly authorized documents, or a bounded set of locally matched excerpts. When the user asks to search their Vault, knowledge base, digital brain, or file repository, the service may request a bounded sequence of local search, folder listing, and document-read operations; the model never receives direct filesystem access.
+Local search remains dormant until a user request actually invokes a file-search or read tool. At that point the plugin builds a local, persistent search index and keeps it current from Obsidian Vault events. The index stores file metadata and a compact term-membership bitset, not document text, and is never uploaded. Search hits are re-read from the Vault before use. For a normal chat request, the plugin sends only an explicitly requested still-open note, explicitly authorized documents, or a bounded set of locally matched excerpts. It never uploads the whole Vault, and the model never receives direct filesystem access.
 
 The only supported file read outside the Vault is an `.xlsx` workbook that the user explicitly selects or drops into the chat. It is converted to bounded worksheet text on-device; the original workbook is not uploaded, copied into the Vault, or stored in chat history.
 
@@ -50,7 +50,7 @@ Local program execution is disabled by default. If enabled, every action is show
 
 Generated images and local conversation cards remain in the Vault or Obsidian-managed local plugin data. Cloud history contains text only and excludes local paths and image data. User-edited titles for Obsidian-plugin conversations are synced as account metadata so the same title can appear on another device; titles are not added to model prompts.
 
-Before an installed Skill is updated or restored, the plugin stores a full binary snapshot inside that Skill's visible `ai-linzi-versions` folder and verifies it before use. These snapshots are Vault files, remain under the user's own sync and backup policy, and are not uploaded by AI Linzi as cloud chat data. The plugin retains at most five snapshots after a successful operation.
+An installed Skill update uses one complete preview and one confirmation. The plugin rechecks the locked Skill immediately before writing and keeps the original affected bytes only in memory for automatic rollback during that operation. It does not create or retain plugin-managed Skill history. Normal Obsidian File Recovery, Trash, sync, or user backups remain available according to the user's own setup.
 
 ## Security and implementation notes
 

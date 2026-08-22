@@ -64,47 +64,13 @@ const prepared = {
     { path: 'assets/old.png', kind: 'delete', oldSize: 128, oldSha256: 'abcdef1234567890' },
   ],
 }
-const oldVersion = {
-  snapshotId: '20260822T010203000Z__1.0.0',
-  metadata: {
-    schemaVersion: 1,
-    skillName: 'weekly-review',
-    skillVersion: '1.0.0',
-    archivedAt: '2026-08-22T01:02:03.000Z',
-    archivedAtMs: Date.parse('2026-08-22T01:02:03.000Z'),
-    sourceSnapshotHash: 'tree',
-    reason: '旧版',
-    files: [],
-  },
-}
-
 function setup(overrides = {}) {
-  const calls = { apply: 0, list: 0, prepareRestore: 0, restore: 0, persist: 0, rerender: 0, notices: [] }
+  const calls = { apply: 0, persist: 0, rerender: 0, notices: [] }
   const host = {
     skillsRoot: () => overrides.root ?? '05_System/Skills',
     applyUpdate: overrides.applyUpdate ?? (async () => {
       calls.apply += 1
-      return { snapshotId: oldVersion.snapshotId, previousVersion: '1.0.0', nextVersion: '1.1.0' }
-    }),
-    listVersions: async () => {
-      calls.list += 1
-      return overrides.listVersions ?? [oldVersion]
-    },
-    prepareRestore: overrides.prepareRestore ?? (async () => {
-      calls.prepareRestore += 1
-      return {
-        skillRoot: prepared.skillRoot,
-        skillName: proposal.name,
-        snapshotId: oldVersion.snapshotId,
-        targetVersion: '1.0.0',
-        preparedAt: 1,
-        baseline: prepared.baseline,
-        targetFingerprint: prepared.baseline,
-      }
-    }),
-    restore: overrides.restore ?? (async () => {
-      calls.restore += 1
-      return { safetySnapshotId: 'safe', restoredSnapshotId: oldVersion.snapshotId, restoredVersion: '1.0.0' }
+      return { previousVersion: '1.0.0', nextVersion: '1.1.0' }
     }),
     persist: async () => { calls.persist += 1 },
     rerender: () => { calls.rerender += 1 },
@@ -114,7 +80,6 @@ function setup(overrides = {}) {
     skillUpdateOffer: {
       proposal: structuredClone(proposal),
       prepared: structuredClone(prepared),
-      versions: structuredClone(overrides.versions ?? []),
     },
   }
   return { host, calls, message, row: makeEl() }
@@ -129,34 +94,40 @@ function setup(overrides = {}) {
   assert.ok(byText(row, '修改后全文'))
   assert.ok(byText(row, '新增全文'))
   assert.ok(texts(row).some((text) => text.includes('二进制文件 · 128 bytes · SHA-256 abcdef123456')))
-  assert.ok(texts(row).some((text) => text.includes('不会上传到 AI霖子服务器')))
-  assert.equal(byText(row, '应用更新到 1.1.0').disabled, true)
-  console.log('  ✓ 全文前后预览、二进制指纹与本机历史边界')
+  assert.ok(texts(row).some((text) => text.includes('不会额外保存 Skill 历史版本')))
+  assert.equal(byText(row, '确认并更新到 1.1.0').disabled, false)
+  assert.ok(!byText(row, '单独确认删除 1 个文件'))
+  console.log('  ✓ 全文前后预览、二进制指纹与一次确认边界')
 }
 
 {
   const { host, calls, message, row } = setup()
   renderSkillUpdateOffer(host, row, message)
-  const confirm = byText(row, '单独确认删除 1 个文件')
-  const apply = byText(row, '应用更新到 1.1.0')
-  confirm.onclick()
-  assert.equal(confirm.text, '✅ 已确认删除清单')
-  assert.equal(apply.disabled, false)
+  const apply = byText(row, '确认并更新到 1.1.0')
   apply.onclick()
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(calls.apply, 1)
-  assert.equal(calls.list, 1)
   assert.equal(calls.persist, 1)
   assert.equal(calls.rerender, 1)
   assert.equal(message.skillUpdateOffer.applied.nextVersion, '1.1.0')
-  console.log('  ✓ 删除必须单独确认，更新成功后刷新历史并落盘')
+  console.log('  ✓ 包含删除的多文件更新只需一次确认')
+}
+
+{
+  const { host, calls, message, row } = setup()
+  message.skillUpdateOffer.prepared.skillRoot = '05_System/Skills/custom-folder-name'
+  message.skillUpdateOffer.prepared.entryPath = '05_System/Skills/custom-folder-name/SKILL.md'
+  renderSkillUpdateOffer(host, row, message)
+  byText(row, '确认并更新到 1.1.0').onclick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(calls.apply, 1, 'Skill 文件夹名与 manifest name 不同时仍应更新锁定目标')
+  console.log('  ✓ 文件夹别名不会被误判为重名新建或目录变化')
 }
 
 {
   const { host, calls, message, row } = setup({ root: '99_New/Skills' })
   renderSkillUpdateOffer(host, row, message)
-  byText(row, '单独确认删除 1 个文件').onclick()
-  const apply = byText(row, '应用更新到 1.1.0')
+  const apply = byText(row, '确认并更新到 1.1.0')
   apply.onclick()
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(calls.apply, 0)
@@ -170,8 +141,7 @@ function setup(overrides = {}) {
     applyUpdate: async () => { throw new Error('版本冲突') },
   })
   renderSkillUpdateOffer(host, row, message)
-  byText(row, '单独确认删除 1 个文件').onclick()
-  const apply = byText(row, '应用更新到 1.1.0')
+  const apply = byText(row, '确认并更新到 1.1.0')
   apply.onclick()
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(apply.disabled, false)
@@ -181,70 +151,15 @@ function setup(overrides = {}) {
 }
 
 {
-  const { host, calls, message, row } = setup({ versions: [oldVersion] })
-  renderSkillUpdateOffer(host, row, message)
-  const restore = byText(row, '恢复 1.0.0')
-  restore.onclick()
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.equal(calls.prepareRestore, 1)
-  assert.equal(calls.restore, 0, '第一次点击只能预检，不能恢复')
-  assert.equal(restore.text, '确认恢复到 1.0.0')
-  assert.equal(restore.disabled, false)
-  restore.onclick()
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.equal(calls.restore, 1)
-  assert.equal(calls.persist, 1)
-  assert.equal(calls.rerender, 1)
-  assert.equal(message.skillUpdateOffer.restored.restoredVersion, '1.0.0')
-  console.log('  ✓ 历史恢复使用两次确认并在成功后落盘')
-}
-
-{
-  const { host, calls, message, row } = setup({
-    versions: [oldVersion],
-    prepareRestore: async () => { throw new Error('快照损坏') },
-  })
-  renderSkillUpdateOffer(host, row, message)
-  const restore = byText(row, '恢复 1.0.0')
-  restore.onclick()
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  assert.equal(restore.disabled, false)
-  assert.equal(restore.text, '恢复 1.0.0')
-  assert.equal(calls.persist, 0)
-  assert.ok(calls.notices.some((notice) => notice === '恢复失败：快照损坏'))
-  console.log('  ✓ 恢复预检失败后恢复可点且不改状态')
-}
-
-{
   const { host, message, row } = setup()
   message.skillUpdateOffer.applied = {
-    snapshotId: oldVersion.snapshotId,
     previousVersion: '1.0.0',
     nextVersion: '1.1.0',
   }
   renderSkillUpdateOffer(host, row, message)
   assert.ok(byText(row, '✅ 已更新到 1.1.0'))
-  assert.ok(!byText(row, '应用更新到 1.1.0'))
+  assert.ok(!byText(row, '确认并更新到 1.1.0'))
   console.log('  ✓ 已更新卡不再重复提供应用按钮')
-}
-
-{
-  const { host, message, row } = setup()
-  message.skillUpdateOffer.applied = {
-    snapshotId: oldVersion.snapshotId,
-    previousVersion: '1.0.0',
-    nextVersion: '1.1.0',
-  }
-  message.skillUpdateOffer.restored = {
-    safetySnapshotId: 'safe',
-    restoredSnapshotId: oldVersion.snapshotId,
-    restoredVersion: '1.0.0',
-  }
-  renderSkillUpdateOffer(host, row, message)
-  assert.ok(byText(row, '✅ 已恢复到 1.0.0'))
-  assert.ok(!byText(row, '✅ 已更新到 1.1.0'), '恢复成功后不能继续显示已经失效的新版本')
-  assert.ok(!byText(row, '应用更新到 1.1.0'), '旧确认预览恢复后已经过期，不能直接重放')
-  console.log('  ✓ 恢复状态优先于旧更新回执，卡片不会谎报当前版本')
 }
 
 console.log('[test-skill-update-card] 全部通过')

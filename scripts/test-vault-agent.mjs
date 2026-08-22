@@ -232,10 +232,30 @@ assert.equal(core.VAULT_NOTE_WRITE_MAX_CHARS, 30000)
 const vaultAgentSource = readFileSync(new URL('../src/vault-agent.ts', import.meta.url), 'utf8')
 assert.match(
   vaultAgentSource,
+  /preferredFolders[\s\S]*readPolicy\.fallbackToWholeVault[\s\S]*searchedScope = 'whole-vault-fallback'/,
+  '整库权限的 Skill 必须先搜用户指定文件夹，无命中才扩到整个 Vault',
+)
+assert.match(
+  vaultAgentSource,
+  /readPolicy\?\.scope === 'current-note'[\s\S]{0,120}readPolicy\?\.scope === 'user-specified-files'[\s\S]{0,180}不能搜索整个 Vault/,
+  '只读当前材料的 Skill 必须在工具执行层拒绝扩大检索',
+)
+assert.match(
+  vaultAgentSource,
+  /readScope && readScope !== 'whole-vault'[\s\S]{0,120}只有 whole-vault Skill 才能调用/,
+  '非整库 Skill 不得借最近文档工具绕过读取范围',
+)
+assert.match(
+  vaultAgentSource,
   /客户档案父目录不存在/,
   '官方咨询闭环必须在确认卡前拦截猜测的客户库目录',
 )
 const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
+assert.match(
+  mainSource,
+  /localSkillReadPolicy\?\.scope === 'whole-vault'[\s\S]*localSkillContext\.allowedReadFolders = \[folder\.path\]/,
+  '主对话必须把用户说出的优先文件夹锁定到 Skill 本轮上下文',
+)
 assert.match(
   mainSource,
   /consultation-preload-client-library/,

@@ -1,6 +1,7 @@
 import { App, TFile, TFolder, normalizePath, parseYaml } from 'obsidian'
 import { isLocalSearchExtension } from './local-document-text'
 import { LocalVaultSearch } from './vault-search'
+import { isPathInsideFolder } from './vault-search-core'
 import {
   collectOrganizePlanProblems,
   isProtectedVaultPath,
@@ -188,6 +189,69 @@ export class LocalVaultAgent {
 
   private protected(path: string): boolean {
     return isProtectedVaultPath(path, this.localSkillsRoot())
+  }
+
+  private remainingSkillReadFiles(skillContext: ActiveLocalSkillContext | undefined): number {
+    const maxFiles = skillContext?.runtimePolicy?.vaultRead.maxFiles
+    if (!maxFiles) return Number.POSITIVE_INFINITY
+    return Math.max(0, maxFiles - skillContext.vaultReadPaths.length)
+  }
+
+  private recordSkillVaultRead(
+    path: string,
+    skillContext: ActiveLocalSkillContext | undefined,
+  ): void {
+    if (!skillContext || skillContext.vaultReadPaths.includes(path)) return
+    if (this.remainingSkillReadFiles(skillContext) <= 0) {
+      throw new Error(
+        `这套 Skill 本轮最多读取 ${skillContext.runtimePolicy?.vaultRead.maxFiles ?? 0} 份 Vault 正文，已达到上限。`,
+      )
+    }
+    skillContext.vaultReadPaths.push(path)
+  }
+
+  private assertSkillReadPathAllowed(
+    path: string,
+    skillContext: ActiveLocalSkillContext | undefined,
+  ): void {
+    const policy = skillContext?.runtimePolicy?.vaultRead
+    if (!policy) return
+    if (policy.scope === 'current-note' || policy.scope === 'user-specified-files') {
+      throw new Error('这套 Skill 只允许读取发送时锁定的指定材料，不能扩大到 Vault 工具')
+    }
+    if (
+      policy.scope === 'user-specified-folder' &&
+      !skillContext?.allowedReadFolders?.some((folder) => isPathInsideFolder(path, folder))
+    ) {
+      throw new Error(`这套 Skill 只允许读取已锁定文件夹：${skillContext?.allowedReadFolders?.join('、') || '尚未指定'}`)
+    }
+  }
+
+  resolveUserSpecifiedFolder(question: string):
+    | { kind: 'matched'; path: string }
+    | { kind: 'ambiguous'; paths: string[] }
+    | { kind: 'missing' } {
+    const normalized = question.normalize('NFKC').toLocaleLowerCase().replace(/[\\／]+/gu, '/')
+    const candidates = this.app.vault.getAllFolders()
+      .filter((folder) => folder.path && !this.protected(folder.path))
+      .map((folder) => {
+        const path = folder.path.normalize('NFKC').toLocaleLowerCase()
+        const name = folder.name.normalize('NFKC').toLocaleLowerCase()
+        const normalizedName = normalizeFolderKey(name)
+        const exactPath = path.length >= 3 && normalized.includes(path)
+        const exactName = normalizedName.length >= 2 && normalizeFolderKey(normalized).includes(normalizedName)
+        return {
+          path: folder.path,
+          score: exactPath ? 1_000 + path.length : exactName ? 100 + normalizedName.length : 0,
+        }
+      })
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path, 'zh-CN'))
+    if (candidates.length === 0) return { kind: 'missing' }
+    const top = candidates.filter((candidate) => candidate.score === candidates[0].score)
+    return top.length === 1
+      ? { kind: 'matched', path: top[0].path }
+      : { kind: 'ambiguous', paths: top.map((candidate) => candidate.path).slice(0, 8) }
   }
 
   /** 整夹移入回收站前确认没有裹挟受保护文件（Skills 根目录、开发辅助文件等）。 */
@@ -428,15 +492,50 @@ export class LocalVaultAgent {
     if (call.name === 'vault_search') {
       const query = toolText(call.arguments.query, 240)
       if (!query) throw new Error('vault_search 缺少 query')
-      const maxResults = clampInt(call.arguments.maxResults, 8, 1, 8)
-      const response = await this.search.searchForAgent(query, {
+      const readPolicy = skillContext?.runtimePolicy?.vaultRead
+      if (readPolicy?.scope === 'current-note' || readPolicy?.scope === 'user-specified-files') {
+        throw new Error('这套 Skill 只允许读取发送时锁定的指定材料，不能搜索整个 Vault')
+      }
+      if (
+        readPolicy?.scope === 'user-specified-folder' &&
+        !skillContext?.allowedReadFolders?.length
+      ) {
+        throw new Error('这套 Skill 尚未锁定用户指定文件夹，不能开始检索')
+      }
+      const remaining = this.remainingSkillReadFiles(skillContext)
+      if (remaining <= 0) throw new Error('这套 Skill 已达到本轮 Vault 正文读取上限')
+      const maxResults = Math.min(clampInt(call.arguments.maxResults, 8, 1, 8), remaining)
+      const preferredFolders = readPolicy?.scope === 'user-specified-folder' ||
+        (readPolicy?.scope === 'whole-vault' && readPolicy.preferUserScope)
+        ? skillContext?.allowedReadFolders
+        : undefined
+      let searchedScope: 'specified-folder' | 'whole-vault' | 'whole-vault-fallback' =
+        preferredFolders?.length ? 'specified-folder' : 'whole-vault'
+      let response = await this.search.searchForAgent(query, {
         maxSources: maxResults,
         maxExcerptChars: 2_400,
         maxTotalChars: 12_000,
         excludedFolders: [this.localSkillsRoot()],
+        includedFolders: preferredFolders,
       })
+      if (
+        response.results.length === 0 &&
+        !response.fact &&
+        preferredFolders?.length &&
+        readPolicy?.scope === 'whole-vault' &&
+        readPolicy.fallbackToWholeVault
+      ) {
+        response = await this.search.searchForAgent(query, {
+          maxSources: maxResults,
+          maxExcerptChars: 2_400,
+          maxTotalChars: 12_000,
+          excludedFolders: [this.localSkillsRoot()],
+        })
+        searchedScope = 'whole-vault-fallback'
+      }
       const safeResults = response.results.filter((result) => !this.protected(result.path))
       for (const result of safeResults) {
+        this.recordSkillVaultRead(result.path, skillContext)
         sources.push({
           sourceId: call.id,
           filename: result.filename,
@@ -445,6 +544,16 @@ export class LocalVaultAgent {
       }
       return {
         query,
+        searchedScope,
+        index: response.indexStatus
+          ? {
+              ...response.indexStatus,
+              complete: response.indexStatus.pending === 0,
+              note: response.indexStatus.pending > 0
+                ? '本机索引仍在增量建立；当前无命中时不能断言 Vault 中不存在，请结合文件夹/文件名缩小范围或稍后重试。'
+                : '本机索引已覆盖当前可检索文件。',
+            }
+          : undefined,
         fact: response.fact
           ? {
               filename: response.fact.filename,
@@ -510,6 +619,7 @@ export class LocalVaultAgent {
             : `没有找到文件夹：${path || '/'}`,
         )
       }
+      this.assertSkillReadPathAllowed(root.path, skillContext)
       const entries: Array<{
         path: string
         type: 'folder' | 'file'
@@ -572,6 +682,10 @@ export class LocalVaultAgent {
     }
 
     if (call.name === 'read_recent_documents') {
+      const readScope = skillContext?.runtimePolicy?.vaultRead.scope
+      if (readScope && readScope !== 'whole-vault') {
+        throw new Error('只有 whole-vault Skill 才能调用全 Vault 的 read_recent_documents')
+      }
       const sinceDays = clampInt(call.arguments.sinceDays, 7, 1, 31)
       const offset = clampInt(call.arguments.offset, 0, 0, LIST_FOLDER_SCAN_MAX_ENTRIES)
       const firstCharOffset = clampInt(call.arguments.charOffset, 0, 0, 8_000_000)
@@ -712,6 +826,13 @@ export class LocalVaultAgent {
           continue
         }
         try {
+          if (this.remainingSkillReadFiles(skillContext) <= 0) {
+            skipped.push({
+              path: file.path,
+              reason: `已达到 Skill 本轮最多 ${skillContext?.runtimePolicy?.vaultRead.maxFiles ?? 0} 份正文的读取上限`,
+            })
+            break
+          }
           const remaining = Math.max(1, maxChars - usedChars - file.path.length - 180)
           if (documents.length > 0 && remaining < 1_000) break
           const result = await this.search.readPathForRecentBatch(
@@ -731,6 +852,7 @@ export class LocalVaultAgent {
             content: result.text,
             nextOffset: result.nextOffset,
           })
+          this.recordSkillVaultRead(file.path, skillContext)
           if (result.nextOffset !== null) {
             nextCharOffset = result.nextOffset
             usedChars += estimated
@@ -788,9 +910,11 @@ export class LocalVaultAgent {
       const path = normalizeVaultRelativePath(call.arguments.path)
       if (!path) throw new Error('read_note 缺少合法 path')
       if (this.protected(path)) throw new Error('该文件属于插件保护范围，不能读取')
+      this.assertSkillReadPathAllowed(path, skillContext)
       const offset = clampInt(call.arguments.offset, 0, 0, 120_000)
       const maxChars = clampInt(call.arguments.maxChars, 12_000, 500, READ_NOTE_MAX_CHARS)
       const result = await this.search.readPath(path, { offset, maxChars })
+      this.recordSkillVaultRead(path, skillContext)
       sources.push({ sourceId: call.id, filename: result.filename, path })
       return result
     }
