@@ -6,13 +6,15 @@ AI Linzi connects Alina's business coaching services to your local knowledge Vau
 
 - Chat with AI Linzi in a sidebar. When the request explicitly refers to the current note, the plugin reads that one note for the task.
 - Search Markdown, TXT, text-based PDF, DOCX, HTML, PPTX, and XLSX files locally before sending only a few relevant excerpts to the service.
+- For a whole-Vault workspace or directory review, send one bounded metadata-only inventory (paths, types, sizes, modification times, and counts) before reading only the few documents whose content is needed.
 - Create and edit content, process long documents, and save results back to the Vault.
+- Generate a confirmed HTML, DOCX, PDF, or PPTX deliverable, or create an editable Markdown workspace that refreshes locally when Vault files change.
 - Generate or revise article illustrations and save successful images locally.
 - Format WeChat articles and send them to a configured WeChat draft box.
 
 ## Privacy and network access
 
-AI Linzi only sends the active note when the request explicitly refers to it, documents the user selected, or small locally matched excerpts needed for a requested Vault task. It does not upload the whole Vault and does not include third-party analytics. An AI Linzi account and connection key are required for cloud features. Notes and generated images remain in the user's Vault unless the user explicitly sends content to AI Linzi or WeChat services.
+AI Linzi only sends the active note when the request explicitly refers to it, documents the user selected, or small locally matched excerpts needed for a requested Vault task. For a user-requested whole-Vault workspace, dashboard, or structural review, it may also send one bounded metadata-only inventory containing up to 240 folder paths, aggregate file-type and size counts, and up to 40 recent file paths with sizes and timestamps. This inventory contains no file content and is excluded from cloud chat history. AI Linzi does not upload the whole Vault's contents and does not include third-party analytics. An AI Linzi account and connection key are required for cloud features. Notes and generated images remain in the user's Vault unless the user explicitly sends content to AI Linzi or WeChat services.
 
 This public plugin is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration are not included in this repository.
 
@@ -22,7 +24,7 @@ This public plugin is a thin client. Private prompts, model routing, billing, ac
 
 ## 功能路线
 
-- **当前本地开发候选（尚未发布）**：文件检索在第一次真正调用搜索/读取工具后，才在本机建立可持久化的轻量索引，之后随 Vault 文件事件增量更新；索引只存路径/时间/大小与紧凑的词项位图，不存原文、不上传。用户可在主对话直接说“修改/优化某个 Skill”；插件锁定已安装的目标，展示全部差异后只确认一次。新版不再生成 Skill 历史副本，写入中途失败只用本轮内存原内容自动回滚。
+- **v0.7.79**：主对话是否进入文件引擎由 Luna 按“最终是否要在 Vault 留下文件/工作台/成品”判断，不再依赖固定词汇；全库工作台先取得一次有上限的目录元数据快照（路径、类型、大小、修改时间与统计，不含正文），具体内容确实影响结果时才读取少量目标文件。新增一次确认生成 HTML/DOCX/PDF/PPTX 成品，以及可直接编辑 JSON、随 Vault 新建/修改/删除/重命名自动刷新的 Markdown 动态工作台；工作台只在本机读取元数据、不执行生成脚本、不覆盖同名文件。原有 Skill 更新、版本锁定、完整预览和失败回滚边界不变。
 - **v0.7.74 历史候选记录（当时尚未发布）**：插件对话可手工改名、清空后回退首条问题，并用更新时间与 `null` tombstone 在本机和插件云端收敛；离线改名先保存在本机，后续成功对话自动重试。标题只作为历史元数据，不进入模型上下文；本条只记录当时状态，不代表当前生产版本。
 - **v0.7.73 历史实现记录**：该版曾引入 Skill 安全更新、完整差异/删除预览、确认前全树 SHA-256 复核和失败回滚。其中插件自建历史版本的设计已在当前本地开发候选中废止；旧 Vault 如已存在 `ai-linzi-versions`，新版不读写也不自动删除。
 - **v0.7.65**：客户档案同步 CRM 的字段名固定下来了。此前 AI 每次自拟属性名（客户姓名／客户昵称／称呼…），写成「客户姓名」就匹配不上，同步弹窗里只剩一行。现在：① AI 新建客户档案时固定写入 CRM 对应的 14 个属性（客户称呼、客户编号、微信号、渠道来源、客户阶段、精准度、意向产品、职业背景、核心痛点、备注、推荐人、加微信日期、约咨询日期、咨询日期），点「同步到 CRM」就能一次带全；② 这 14 个是**下限不是上限**，AI 会按你的业务再加自定义属性（做健康管理就加「宝宝月龄」，做留学就加「目标院校」），你自己手动加的属性也一律保留；③ 材料里没有的字段一律留空，不会追问、更不会因为信息不全就不给建档，缺的以后在 CRM 里补；④ 老档案和手写档案有别名兜底（「客户姓名」「客户昵称」「客户微信」「当前阶段」等常见写法都认）。
@@ -217,7 +219,7 @@ npm run check:marketplace # Obsidian 官方 lint 阻断项 + 市场包安全检�
 - **许可证**：本仓库中的公开插件薄客户端采用 [MIT License](LICENSE)。AI霖子名称与品牌素材、私有服务端、提示词、模型编排、计费系统、账号数据、知识库和课程内容不包含在本仓库中，也不因插件代码采用 MIT 而获得授权。
 - **账号与联网**：核心功能需要 AI霖子账号和连接密钥。只有用户主动发起对话、调用技能、喂入知识库、生成配图或发布公众号时，插件才会把该次操作所需的内容发送到 `https://chat.alinalinzi.com` 或相应的微信官方接口。
 - **账号权益**：部分 AI 功能需要有效的 AI霖子账号权益；账户状态与使用记录在 AI霖子网页版统一管理，插件界面不展示模型供应商或单次价格。
-- **本地文件访问**：用户明确要求查找、读取、统计、整理或移动 Vault 文件时，插件才会按需在本机使用受限工具，并只发送回答所需的少量结果；普通闲聊不会预扫 Vault，不上传整个 Vault，也不建立云端全文索引。第一次真正文件检索后，插件会在本机保存文件元数据与紧凑词项位图，之后自动增量更新；不保存原文，结果仍从 Vault 重读校验。用户明确点名“当前笔记/这篇文章”时，插件只读取并提示当时锁定的一篇；多文档整篇授权仍由用户主动选择。写入任务会展示完整变更集并二次确认，锁定已有目标的版本；一组中途失败时回滚已完成的本轮写入，不留部分成品。覆盖图片和发布公众号仍需明确确认。
+- **本地文件访问**：用户明确要求查找、读取、统计、整理或移动 Vault 文件时，插件才会按需在本机使用受限工具，并只发送回答所需的少量结果；普通闲聊不会预扫 Vault，不上传整个 Vault 正文，也不建立云端全文索引。用户要求全库工作台、看板或结构诊断时，可额外发送一次有上限的纯元数据快照：最多 240 个文件夹路径、文件类型/体积汇总，以及最多 40 个最近文件的路径、大小和时间；不含任何正文、不写入云端聊天历史，仅供当次工具循环使用。第一次真正文件检索后，插件会在本机保存文件元数据与紧凑词项位图，之后自动增量更新；不保存原文，结果仍从 Vault 重读校验。用户明确点名“当前笔记/这篇文章”时，插件只读取并提示当时锁定的一篇；多文档整篇授权仍由用户主动选择。写入任务会展示完整变更集并二次确认，锁定已有目标的版本；一组中途失败时回滚已完成的本轮写入，不留部分成品。覆盖图片和发布公众号仍需明确确认。
 - **本地 Skill 执行**：运行电脑程序默认关闭。用户主动开启后，Skill 每一步都必须展示程序、参数、工作目录、是否联网、预计输出，以及本步终端输出是否会临时交给 AI，并单独确认；终端输出默认不上传且不写入云端对话历史。只开放 Node.js、Python、FFmpeg、FFprobe，不接受 Shell/PowerShell 命令字符串，不允许内联代码、远程 FFmpeg 输入或覆盖已存在输出。脚本仍与 Obsidian 拥有相同的系统权限，因此只应运行可信 Skill。未被后续修改的本次生成文件可以移到系统废纸篓/回收站恢复。
 - **数据与遥测**：插件不加入第三方客户端行为追踪或广告 SDK。账号、积分、知识库和主对话记录按 AI霖子服务的数据规则保存；用户笔记与配图默认留在自己的 Vault。隐私说明见 [AI霖子隐私政策](https://chat.alinalinzi.com/privacy)。
 

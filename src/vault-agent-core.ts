@@ -32,6 +32,7 @@ export const VAULT_NOTE_WRITE_MAX_FILES = 12
 export type VaultAgentToolName =
   | 'vault_search'
   | 'list_folder'
+  | 'vault_inventory'
   | 'read_recent_documents'
   | 'read_note'
   | 'read_skill_file'
@@ -341,6 +342,7 @@ const PLAN_BLOCK_RE =
 const TOOL_NAMES = new Set<VaultAgentToolName>([
   'vault_search',
   'list_folder',
+  'vault_inventory',
   'read_recent_documents',
   'read_note',
   'read_skill_file',
@@ -840,6 +842,23 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
   return null
 }
 
+export function parseVaultOrganizePlanPayload(value: unknown): VaultOrganizePlan | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const parsed = value as Record<string, unknown>
+  const rawOperations = Array.isArray(parsed.operations) ? parsed.operations : null
+  if (!rawOperations || rawOperations.length > VAULT_AGENT_MAX_PLAN_OPERATIONS) return null
+  const operations = rawOperations
+    .map(parsePlanOperation)
+    .filter((operation): operation is VaultOrganizeOperation => Boolean(operation))
+  if (operations.length !== rawOperations.length || operations.length === 0) return null
+  const title = shortText(parsed.title, 80) || 'Vault 整理方案'
+  const summary = shortText(parsed.summary, 800)
+  const notes = Array.isArray(parsed.notes)
+    ? parsed.notes.map((note) => shortText(note, 240)).filter(Boolean).slice(0, 8)
+    : []
+  return { title, summary, operations, notes }
+}
+
 export function extractVaultOrganizePlan(text: string): VaultPlanExtraction {
   let plan: VaultOrganizePlan | undefined
   let invalid = false
@@ -851,24 +870,12 @@ export function extractVaultOrganizePlan(text: string): VaultPlanExtraction {
       return ''
     }
     const parsed = safeJsonObject(rawJson)
-    const rawOperations = parsed && Array.isArray(parsed.operations) ? parsed.operations : null
-    if (!parsed || !rawOperations || rawOperations.length > VAULT_AGENT_MAX_PLAN_OPERATIONS) {
+    const parsedPlan = parseVaultOrganizePlanPayload(parsed)
+    if (!parsedPlan) {
       invalid = true
       return ''
     }
-    const operations = rawOperations
-      .map(parsePlanOperation)
-      .filter((operation): operation is VaultOrganizeOperation => Boolean(operation))
-    if (operations.length !== rawOperations.length || operations.length === 0) {
-      invalid = true
-      return ''
-    }
-    const title = shortText(parsed.title, 80) || 'Vault 整理方案'
-    const summary = shortText(parsed.summary, 800)
-    const notes = Array.isArray(parsed.notes)
-      ? parsed.notes.map((note) => shortText(note, 240)).filter(Boolean).slice(0, 8)
-      : []
-    plan = { title, summary, operations, notes }
+    plan = parsedPlan
     return ''
   })
   if (text.includes('<<<VAULT_ORGANIZE_PLAN>>>') && !sawBlock) invalid = true
@@ -1069,6 +1076,13 @@ function isActionAnnouncementSentence(sentence: string): boolean {
  * 长回答仍只看收尾句：正文里的「我现在把内容整理如下：」是真交付的开场白。
  */
 export function isTrailingActionAnnouncement(answer: string): boolean {
+  const english = answer.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase()
+  // Luna 偶尔会在中文承诺后用英文 "a moment" 收尾。它不是结果，而是把本轮
+  // 工作推迟到一个并不存在的后台任务；同样拦住第一人称的英文后续承诺。
+  if (
+    /(?:^|[,，。.!?]\s*)(?:a|one) moment(?: please)?[.!…]*$/.test(english) ||
+    /(?:^|[.!?]\s+)(?:i(?:'ll| will| am going to)|let me)\s+(?:now\s+)?(?:continue|check|read|scan|organize|generate|create|update|write|review)\b[^.!?]*[.!?]*$/.test(english)
+  ) return true
   const normalized = answer.normalize('NFKC').replace(/\s+/g, '').trim()
   const sentences = normalized.split(/[。！？!?；;]/).filter(Boolean)
   const last = sentences.at(-1)

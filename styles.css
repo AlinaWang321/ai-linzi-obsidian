@@ -4086,3 +4086,146 @@ button.ai-linzi-vault-source-link:focus-visible {
 .ai-linzi-hidden-file-input {
   display: none;
 }
+
+/* 动态 Vault 工作台（Markdown 代码块 ai-linzi-dashboard） */
+.ai-linzi-dynamic-dashboard {
+  --alz-dashboard-navy: #293857;
+  --alz-dashboard-jade: #4f927b;
+  padding: 20px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(250, 246, 240, 0.9), var(--background-primary));
+}
+.theme-dark .ai-linzi-dynamic-dashboard {
+  --alz-dashboard-navy: #a6b6d4;
+  --alz-dashboard-jade: #77bba4;
+  background: linear-gradient(145deg, rgba(92, 123, 176, 0.09), var(--background-primary));
+}
+.ai-linzi-dynamic-dashboard-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.ai-linzi-dynamic-dashboard-title-group h2 {
+  margin: 0;
+  color: var(--alz-dashboard-navy);
+}
+.ai-linzi-dynamic-dashboard-title-group p {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+.ai-linzi-dynamic-dashboard-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--alz-dashboard-jade) 12%, transparent);
+  color: var(--alz-dashboard-jade);
+  font-size: var(--font-ui-smaller);
+}
+.ai-linzi-dynamic-dashboard-status-icon .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+.ai-linzi-dynamic-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 14px;
+}
+.ai-linzi-dynamic-dashboard-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  background: var(--background-primary);
+  box-shadow: 0 8px 24px rgba(41, 56, 87, 0.06);
+}
+.ai-linzi-dynamic-dashboard-card h3 {
+  margin: 0 0 12px;
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+}
+.ai-linzi-dynamic-dashboard-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+.ai-linzi-dynamic-dashboard-metric {
+  padding: 11px;
+  border-radius: 11px;
+  background: var(--background-secondary);
+}
+.ai-linzi-dynamic-dashboard-metric-value {
+  overflow: hidden;
+  color: var(--alz-dashboard-navy);
+  font-size: 1.25em;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-linzi-dynamic-dashboard-metric-label,
+.ai-linzi-dynamic-dashboard-row-detail,
+.ai-linzi-dynamic-dashboard-empty {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.ai-linzi-dynamic-dashboard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ai-linzi-dynamic-dashboard .ai-linzi-dynamic-dashboard-list button.ai-linzi-dynamic-dashboard-row {
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-normal);
+  font-family: inherit;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+}
+.ai-linzi-dynamic-dashboard .ai-linzi-dynamic-dashboard-list button.ai-linzi-dynamic-dashboard-row:hover {
+  background: var(--background-modifier-hover);
+}
+.ai-linzi-dynamic-dashboard-row-copy {
+  min-width: 0;
+}
+.ai-linzi-dynamic-dashboard-row-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-linzi-dynamic-dashboard-row-detail {
+  margin-top: 2px;
+}
+.ai-linzi-dynamic-dashboard-row-icon {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+.ai-linzi-dynamic-dashboard-row-icon .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+@media (max-width: 560px) {
+  .ai-linzi-dynamic-dashboard {
+    padding: 14px;
+  }
+  .ai-linzi-dynamic-dashboard-header {
+    flex-direction: column;
+  }
+}

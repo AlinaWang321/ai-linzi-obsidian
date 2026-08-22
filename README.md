@@ -8,6 +8,7 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 
 - Chat with AI Linzi in a sidebar. A current-note request reads only a Markdown tab that is still open; closing the tab revokes that access.
 - Search Markdown, TXT, text-based PDF, DOCX, HTML, PPTX, and XLSX files locally.
+- Ask for a whole-Vault workspace or directory review. The plugin sends the model one bounded metadata-only inventory (folder paths, file-type counts, sizes, modification times, and a short recent-file list), then reads only the few documents whose content is actually needed.
 - Add `.xlsx` workbooks to the main chat from the Vault or directly from the computer. Computer workbooks are converted to bounded worksheet text on-device; the original file is never uploaded or saved in chat history. Legacy `.xls` files must first be saved as `.xlsx`.
 - Pull images embedded in a .docx handout into the generated deck, placed where they appear in the source (parsed and compressed on-device).
 - Build a presentable HTML slide deck from one explicitly selected Markdown, TXT, text-based PDF, or DOCX note: the server returns only a structured outline, the plugin assembles fixed local templates, and images are embedded on-device (three color themes; print to PDF from the browser).
@@ -24,6 +25,7 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 - Review a local four-platform publishing matrix, five-stage creation pipeline, account growth, and per-post performance for WeChat, Xiaohongshu, Channels, and Douyin. Platform screenshots are analyzed only after an explicit selection and require confirmation before local metrics are saved.
 - Review local content activity and authorized account data in the one-person-company cockpit.
 - Create, test, import, export, and update portable personal Skills in **Skill Studio** or by asking in the main chat. Every update locks one installed Skill, shows all text changes and deletions, and writes only after one confirmation. The plugin does not create a separate Skill version history; if a write fails mid-update, it restores the affected files from an in-memory copy. Existing Skills can progressively read referenced files and—when the user separately enables local execution—request per-step confirmation for Node.js, Python, FFmpeg, or FFprobe actions. Shell command strings are not accepted.
+- Generate a new HTML, DOCX, PDF, or PPTX deliverable through the same preview-and-confirm flow, or create an editable Markdown workspace whose cards refresh locally when Vault files change. Dynamic workspaces use metadata only, run no generated scripts, and never overwrite an existing file.
 
 ## Installation
 
@@ -38,7 +40,7 @@ AI Linzi is currently desktop-only and requires Obsidian 1.11.4 or later.
 
 ## Privacy and network access
 
-Local search remains dormant until a user request actually invokes a file-search or read tool. At that point the plugin builds a local, persistent search index and keeps it current from Obsidian Vault events. The index stores file metadata and a compact term-membership bitset, not document text, and is never uploaded. Search hits are re-read from the Vault before use. For a normal chat request, the plugin sends only an explicitly requested still-open note, explicitly authorized documents, or a bounded set of locally matched excerpts. It never uploads the whole Vault, and the model never receives direct filesystem access.
+Local search remains dormant until a user request actually invokes a file-search or read tool. At that point the plugin builds a local, persistent search index and keeps it current from Obsidian Vault events. The index stores file metadata and a compact term-membership bitset, not document text, and is never uploaded. Search hits are re-read from the Vault before use. For a normal chat request, the plugin sends only an explicitly requested still-open note, explicitly authorized documents, or a bounded set of locally matched excerpts. When the user requests a whole-Vault workspace, dashboard, or structural review, the plugin may additionally send one bounded metadata-only inventory: up to 240 folder paths, aggregate file-type/size counts, and up to 40 recently modified file paths with sizes and timestamps. The inventory contains no file content, is excluded from cloud chat history, and is used only for that tool loop. The plugin never uploads the whole Vault's contents, and the model never receives direct filesystem access.
 
 The only supported file read outside the Vault is an `.xlsx` workbook that the user explicitly selects or drops into the chat. It is converted to bounded worksheet text on-device; the original workbook is not uploaded, copied into the Vault, or stored in chat history.
 
@@ -56,6 +58,7 @@ An installed Skill update uses one complete preview and one confirmation. The pl
 
 - The public repository is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration remain on the AI Linzi service.
 - Vault enumeration powers user-enabled local search and bounded read-tool results. Tool calls and local paths are excluded from cloud chat history.
+- Dynamic workspace rendering and refresh run entirely inside Obsidian from a fixed, validated JSON specification. The generated Markdown cannot execute scripts, load remote code, or bypass the normal confirmation and no-overwrite checks.
 - Clipboard access occurs only after an explicit user copy action.
 - PDF.js is bundled for local extraction of text-based PDFs. Runtime code compilation is disabled during the production build, so PDF.js uses its built-in interpreter; the release scan requires zero dynamic `<script>`, `eval`, or `new Function` findings. No remote script or CDN is used.
 - Streaming chat uses `fetch` because Obsidian's `requestUrl` API buffers the complete response and does not expose the response stream.

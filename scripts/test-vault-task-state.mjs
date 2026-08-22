@@ -169,6 +169,14 @@ console.log('[test-vault-task-state]')
     core.isTrailingActionAnnouncement('需要的话我可以继续帮你补充更多标题。'),
     false,
   )
+  assert.equal(
+    core.isTrailingActionAnnouncement('仓库结构已经核对完了。我继续读取现有看板，a moment.'),
+    true,
+  )
+  assert.equal(
+    core.isTrailingActionAnnouncement("I'll continue checking the Vault structure now."),
+    true,
+  )
   console.log('  ✓ 8. 收尾句宣告「我继续读取/整理」不能作为终态')
 }
 
@@ -260,8 +268,8 @@ console.log('[test-vault-task-state]')
   const mainSource = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
   assert.match(
     mainSource,
-    /nativeEligible[\s\S]{0,400}mutationAsk \|\| \(taskContinuation && this\.pendingVaultTask\?\.intent === 'organize'\)/,
-    '原生通道只接管整理类回合的 gating 被改动',
+    /const nativeAvailable[\s\S]{0,320}const nativeFastPath = nativeAvailable[\s\S]{0,180}mutationAsk[\s\S]{0,120}taskContinuation/,
+    '原生通道的模型自主切换与本地快路径没有正确拆分',
   )
   assert.match(
     mainSource,
@@ -280,7 +288,7 @@ console.log('[test-vault-task-state]')
   )
   assert.match(
     mainSource,
-    /name !== 'vault_search' && name !== 'list_folder' && name !== 'read_note'/,
+    /name !== 'vault_search'[\s\S]{0,120}name !== 'list_folder'[\s\S]{0,120}name !== 'vault_inventory'[\s\S]{0,120}name !== 'read_note'/,
     '原生工具名白名单校验被移除',
   )
   assert.match(
@@ -288,6 +296,8 @@ console.log('[test-vault-task-state]')
     /propose_organize_plan/,
     '方案提交工具的客户端处理缺失（Luna 会声称缺少整理能力）',
   )
+  assert.match(mainSource, /propose_artifact/, '通用成品工具的客户端处理缺失')
+  assert.match(mainSource, /propose_dynamic_dashboard/, '动态工作台工具的客户端处理缺失')
   console.log('  ✓ 10. 原生通道：整理回合 gating + 端点 + 白名单 + 方案工具 + 回退保险丝')
 }
 

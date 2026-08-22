@@ -39,6 +39,7 @@ import {
   type WeeklyBusinessFileFingerprint,
   type WeeklyBusinessScanState,
 } from './weekly-business-cache'
+import { buildVaultInventory } from './vault-inventory-core'
 
 const TOOL_OUTPUT_MAX_CHARS = 20_000
 const RECENT_DOCUMENT_OUTPUT_MAX_CHARS = 180_000
@@ -665,6 +666,53 @@ export class LocalVaultAgent {
         scanTruncated,
         entries: page,
       }
+    }
+
+    if (call.name === 'vault_inventory') {
+      const readPolicy = skillContext?.runtimePolicy?.vaultRead
+      if (readPolicy?.scope === 'current-note' || readPolicy?.scope === 'user-specified-files') {
+        throw new Error('这套 Skill 只允许读取发送时锁定的指定材料，不能查看全库目录概览')
+      }
+      const rawRoot = toolText(call.arguments.root, 240)
+      let root = rawRoot ? (normalizeVaultRelativePath(rawRoot) ?? '') : ''
+      if (rawRoot && !root) throw new Error('目录概览的 root 路径不合法')
+      if (root && this.protected(root)) throw new Error('该目录属于插件保护范围，不能读取')
+      if (readPolicy?.scope === 'user-specified-folder') {
+        const allowed = skillContext?.allowedReadFolders ?? []
+        if (allowed.length === 0) throw new Error('这套 Skill 尚未锁定用户指定文件夹')
+        if (!root && allowed.length === 1) root = allowed[0]
+        if (!root || !allowed.some((folder) => isPathInsideFolder(root, folder))) {
+          throw new Error(`目录概览只能查看已锁定文件夹：${allowed.join('、')}`)
+        }
+      }
+      if (root) {
+        let item = this.app.vault.getAbstractFileByPath(root)
+        if (!(item instanceof TFolder)) {
+          const matches = matchFoldersByName(this.app.vault.getRoot(), root)
+          if (matches.length === 1) {
+            item = matches[0]
+            root = item.path
+          }
+        }
+        if (!(item instanceof TFolder)) throw new Error(`没有找到文件夹：${root}`)
+      }
+      const depth = clampInt(call.arguments.depth, 4, 1, 8)
+      const maxFolders = clampInt(call.arguments.maxFolders, 120, 10, 240)
+      const recentLimit = clampInt(call.arguments.recentLimit, 16, 1, 40)
+      return buildVaultInventory(
+        this.app.vault.getFiles()
+          .filter((file) => !this.protected(file.path))
+          .map((file) => ({
+            path: file.path,
+            extension: file.extension,
+            size: file.stat.size,
+            mtime: file.stat.mtime,
+          })),
+        this.app.vault.getAllFolders()
+          .filter((folder) => folder.path && !this.protected(folder.path))
+          .map((folder) => ({ path: folder.path })),
+        { root, depth, maxFolders, recentLimit },
+      )
     }
 
     if (call.name === 'read_recent_documents') {

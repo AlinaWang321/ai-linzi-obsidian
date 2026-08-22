@@ -151,6 +151,11 @@ import {
 } from './content-dashboard'
 import { CockpitView, VIEW_TYPE_COCKPIT } from './cockpit-view'
 import {
+  DYNAMIC_DASHBOARD_CODE_BLOCK,
+  dynamicDashboardPlanFromToolArguments,
+} from './dynamic-dashboard-core'
+import { renderDynamicDashboardBlock } from './dynamic-dashboard'
+import {
   AuthorizedContentModal,
   type AuthorizedContentLimits,
 } from './content-selector'
@@ -197,6 +202,7 @@ import {
   isVaultTaskExpired,
   namespaceVaultToolCalls,
   operationLabel,
+  parseVaultOrganizePlanPayload,
   resolveVaultPlanPaths,
   upgradeVaultIntent,
   vaultAutoAnswerRetryReason,
@@ -1327,6 +1333,32 @@ export default class AiLinziPlugin extends Plugin {
     this.registerView(VIEW_TYPE_CHAT, (leaf) => new ChatView(leaf, this))
     this.registerView(VIEW_TYPE_CONTENT_DASHBOARD, (leaf) => new ContentDashboardView(leaf, this))
     this.registerView(VIEW_TYPE_COCKPIT, (leaf) => new CockpitView(leaf, this))
+    this.registerMarkdownCodeBlockProcessor(
+      DYNAMIC_DASHBOARD_CODE_BLOCK,
+      (source, el, context) => {
+        const component = renderDynamicDashboardBlock(
+          this.app,
+          {
+            isProtectedPath: (path) => isProtectedVaultPath(path, this.settings.localSkillsFolder),
+            openPath: async (path) => {
+              if (isProtectedVaultPath(path, this.settings.localSkillsFolder)) {
+                new Notice('该路径属于插件保护范围，不能从动态工作台打开')
+                return
+              }
+              const item = this.app.vault.getAbstractFileByPath(path)
+              if (item instanceof TFile) {
+                await this.app.workspace.getLeaf(true).openFile(item)
+                return
+              }
+              new Notice(item instanceof TFolder ? `文件夹：${item.path}` : `路径已经移动或删除：${path}`)
+            },
+          },
+          source,
+          el,
+        )
+        if (component) context.addChild(component)
+      },
+    )
 
     // 三个入口共用 AI霖子 Q 版色板，但保持头像/内容看板/经营驾驶舱各自可辨认。
     addIcon(AI_LINZI_RIBBON_ICON_ID, AI_LINZI_RIBBON_ICON_SVG)
@@ -5245,13 +5277,22 @@ class ChatView extends ItemView {
     // 0.7.54：引擎失败通常是网络/服务端原因，短时间内重试大概率同样失败。
     // 记住失败，标记路径不再把同一个引擎整轮重跑一遍（白等一次超时+白扣积分）。
     let nativeChannelFailed = false
-    const nativeEligible = Boolean(input.resumeQuestion) || (
+    // “引擎能否使用”和“是否走本地词表快路径”必须分开。
+    // 旧实现把二者绑在 mutationAsk 上：Luna 即使在判断轮明确输出
+    // VAULT_NATIVE_TURN，客户端也会因本地词表没命中“做个工作台”等自然说法
+    // 而拒绝切换，语义判断名存实亡。现在纯文字、已授权 Vault 的普通对话都允许
+    // 模型自主切换；只有明确词表命中/任务承接才跳过判断轮直接进引擎。
+    const nativeAvailable = Boolean(input.resumeQuestion) || (
       input.vaultAccess &&
       !input.localSkill &&
       !input.localSkillContext &&
       !input.noteEdit &&
-      !input.noteImageIntent &&
-      (mutationAsk || (taskContinuation && this.pendingVaultTask?.intent === 'organize'))
+      !input.noteImageIntent
+    )
+    const nativeFastPath = nativeAvailable && (
+      Boolean(input.resumeQuestion) ||
+      mutationAsk ||
+      (taskContinuation && this.pendingVaultTask?.intent === 'organize')
     )
     // 抽成闭包函数：词表命中的快路径与「模型自主切换标记」（0.7.52）共用同一引擎。
     const runNativeChannel = async (): Promise<string | null> => {
@@ -5326,17 +5367,69 @@ class ChatView extends ItemView {
             // 诚实地声称「缺少整理能力」——把方案提交纳入它的行动空间才符合原生
             // 工具心理学）。收到即合成方案块，走与散文协议同一套预检/确认卡。
             const propose = nativeCalls.find(
-              (item) => item.name === 'propose_organize_plan',
+              (item) =>
+                item.name === 'propose_organize_plan' ||
+                item.name === 'propose_artifact' ||
+                item.name === 'propose_dynamic_dashboard',
             )
             if (propose) {
-              this.activityStep('📋 已生成整理方案，等待你确认', null)
               const record = propose
               const args = isUnknownRecord(record.arguments) ? record.arguments : {}
-              const planPayload = {
-                title: typeof args.title === 'string' ? args.title : '整理方案',
-                summary: typeof args.summary === 'string' ? args.summary : '',
-                operations: Array.isArray(args.operations) ? args.operations : [],
-                notes: Array.isArray(args.notes) ? args.notes : [],
+              if (
+                record.name === 'propose_dynamic_dashboard' &&
+                !toolResults.some((result) => result.name === 'vault_inventory' && result.ok)
+              ) {
+                const callId = typeof record.callId === 'string' ? record.callId : ''
+                if (!callId) throw new Error('native: invalid dynamic dashboard call')
+                nextBody = {
+                  question: input.question,
+                  round: Math.min(requestRound + 1, VAULT_AGENT_MAX_ROUNDS - 1),
+                  sessionId: this.sessionId,
+                  previousResponseId,
+                  toolOutputs: [{
+                    callId,
+                    output:
+                      '动态工作台必须先调用 vault_inventory 核实真实结构；这次方案尚未展示。' +
+                      '请先取得全库或目标目录的元数据快照，再提交工作台。',
+                  }],
+                }
+                continue
+              }
+              this.activityStep('📋 已生成整理方案，等待你确认', null)
+              const dashboardPlan = record.name === 'propose_dynamic_dashboard'
+                ? dynamicDashboardPlanFromToolArguments(args)
+                : null
+              if (record.name === 'propose_dynamic_dashboard' && !dashboardPlan) {
+                throw new Error('native: invalid dynamic dashboard plan')
+              }
+              const planPayload = dashboardPlan ?? parseVaultOrganizePlanPayload(
+                record.name === 'propose_artifact'
+                  ? {
+                      title: typeof args.planTitle === 'string' ? args.planTitle : '生成成品',
+                      summary: typeof args.summary === 'string'
+                        ? args.summary
+                        : '确认后插件会在本机生成一个新成品，不会覆盖同名文件。',
+                      operations: [{
+                        type: 'create_artifact',
+                        path: args.path,
+                        format: args.format,
+                        title: args.title,
+                        content: args.content,
+                        theme: args.theme,
+                        layout: args.layout,
+                        reason: args.reason,
+                      }],
+                      notes: ['确认后才在本机生成；同名文件存在时停止。'],
+                    }
+                  : {
+                      title: typeof args.title === 'string' ? args.title : '整理方案',
+                      summary: typeof args.summary === 'string' ? args.summary : '',
+                      operations: Array.isArray(args.operations) ? args.operations : [],
+                      notes: Array.isArray(args.notes) ? args.notes : [],
+                    }
+              )
+              if (!planPayload) {
+                throw new Error('native: invalid organize plan')
               }
               return [
                 '已按核实的结构生成待确认方案，点确认后插件才会执行：',
@@ -5349,7 +5442,12 @@ class ChatView extends ItemView {
             for (const item of nativeCalls.slice(0, VAULT_AGENT_MAX_CALLS_PER_ROUND)) {
               const record = item
               const name = record.name
-              if (name !== 'vault_search' && name !== 'list_folder' && name !== 'read_note') {
+              if (
+                name !== 'vault_search' &&
+                name !== 'list_folder' &&
+                name !== 'vault_inventory' &&
+                name !== 'read_note'
+              ) {
                 throw new Error(`native: unsupported tool ${String(name)}`)
               }
               const callId = typeof record.callId === 'string' ? record.callId : ''
@@ -5397,6 +5495,10 @@ class ChatView extends ItemView {
                     ? call.arguments.path.trim()
                     : 'Vault 根目录'
                 this.activityStep(`📁 查看 ${folder}`)
+              }
+              if (call.name === 'vault_inventory') {
+                updateTask({ type: 'search', candidatePaths: [] })
+                this.activityStep('🗺️ 建立全库结构快照（只含目录元数据）')
               }
             }
             sources.push(...executed.sources)
@@ -5457,7 +5559,7 @@ class ChatView extends ItemView {
         return null
       }
     }
-    if (nativeEligible) {
+    if (nativeFastPath) {
       pendingNativeText = await runNativeChannel()
     }
     for (let round = 0; round < VAULT_AGENT_MAX_ROUNDS; round++) {
@@ -5649,7 +5751,7 @@ class ChatView extends ItemView {
       // “只读当前/指定文件”的 Skill 已被本机收窄为无 Vault 搜索权限。
       // 模型若仍输出切换原生文件引擎的标记，不能把标记展示给用户，更不能
       // 进入那个不携带 Skill 权限上下文的通道；要求它在现有材料内重做。
-      if (!nativeEligible && isVaultNativeTurnRequest(lastText)) {
+      if (!nativeAvailable && isVaultNativeTurnRequest(lastText)) {
         if (round >= VAULT_AGENT_MAX_ROUNDS - 1) {
           throw new Error('Skill 仍试图扩大读取范围，已被本机停止。请在创建 Skill 时进一步缩小输入。')
         }
@@ -5661,7 +5763,7 @@ class ChatView extends ItemView {
       // 判断轮（全推理）认定本句要动文件时输出标记，插件立即转入原生引擎；
       // 引擎失败则回到散文协议并强制工具纠正，绝不接受口头承诺。
       if (
-        nativeEligible &&
+        nativeAvailable &&
         round === 0 &&
         intent === 'auto' &&
         !nativeChannelFailed &&
@@ -6132,6 +6234,10 @@ class ChatView extends ItemView {
               ? call.arguments.path.trim()
               : 'Vault 根目录'
           this.activityStep(`📁 查看 ${folder}`)
+        }
+        if (call.name === 'vault_inventory') {
+          updateTask({ type: 'search', candidatePaths: [] })
+          this.activityStep('🗺️ 建立全库结构快照（只含目录元数据）')
         }
         if (call.name === 'read_recent_documents') {
           const hitPaths = executed.sources

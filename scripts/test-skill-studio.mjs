@@ -612,11 +612,11 @@ assert.match(mainSource, /scopedLocalSkillInputContext\(text, localSkill\.name\)
 assert.match(mainSource, /localSkillCurrentOnly \|\| skillUpdaterTurn\s*\? undefined\s*:\s*await this\.authorizedContentContext/)
 assert.match(
   mainSource,
-  /nativeEligible &&\s*round === 0[\s\S]{0,180}isVaultNativeTurnRequest\(lastText\)/,
+  /nativeAvailable &&\s*round === 0[\s\S]{0,180}isVaultNativeTurnRequest\(lastText\)/,
 )
 assert.match(
   mainSource,
-  /!nativeEligible && isVaultNativeTurnRequest\(lastText\)[\s\S]{0,260}pendingRetryReason = 'missing_tool_use'/,
+  /!nativeAvailable && isVaultNativeTurnRequest\(lastText\)[\s\S]{0,260}pendingRetryReason = 'missing_tool_use'/,
 )
 assert.match(mainSource, /consultationWorkflowTaskOriginId: message\.id/)
 assert.match(mainSource, /consultationWorkflowTaskTurn \|\| localSkill\?\.name === CONSULTATION_WORKFLOW_SKILL_NAME/)

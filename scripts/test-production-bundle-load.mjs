@@ -22,11 +22,16 @@ class EmptyComponent {
   }
 }
 
+const registeredMarkdownProcessors = []
+
 class PluginMock extends EmptyComponent {
   async loadData() { return {} }
   async saveData() {}
   registerEvent() {}
   registerView() {}
+  registerMarkdownCodeBlockProcessor(language, processor) {
+    registeredMarkdownProcessors.push({ language, processor })
+  }
   addRibbonIcon() {}
   addCommand() {}
   addSettingTab() {}
@@ -109,6 +114,13 @@ try {
   assert.equal(typeof loaded.default, 'function', '生产 main.js 必须导出插件类')
   const plugin = new loaded.default(app, { id: 'ai-linzi', version: 'test' })
   await plugin.onload()
+  assert.equal(
+    registeredMarkdownProcessors.some(
+      ({ language, processor }) => language === 'ai-linzi-dashboard' && typeof processor === 'function',
+    ),
+    true,
+    '插件启动必须注册 ai-linzi-dashboard Markdown 渲染器',
+  )
   assert.equal(
     warnings.some((warning) => /DOMMatrix|ImageData|Path2D|activeWindow/i.test(warning)),
     false,
