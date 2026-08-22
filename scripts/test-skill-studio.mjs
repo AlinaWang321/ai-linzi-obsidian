@@ -155,6 +155,13 @@ assert.match(weeklyDashboard.block.content, /追完文件分页和长文字符�
 console.log('  ✓ 2 个真实业务官方模板可移植、权限透明、引用可达且不含脚本')
 
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('帮我创建一个客户跟进 Skill'), true)
+assert.equal(
+  studioCore.isExplicitLocalSkillCreationIntent(
+    '请把我前几天跑通的“客户咨询逐字稿交付流程”做成一个新的 Skill。输入里会更新现有客户档案。',
+  ),
+  true,
+  '创建 Skill 的正文即使描述“更新客户档案”，整句仍必须判定为新建',
+)
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('Skill 是什么？'), false)
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('列出我的 Skills'), false)
 assert.equal(
@@ -638,8 +645,13 @@ const runSendTurnSource =
 assert.match(runSendTurnSource, /let skillCreatorTurn = false/)
 assert.match(
   runSendTurnSource,
-  /skillCreatorTurn =\s*!pendingVaultQuestion\s*&&\s*!skillUpdaterTurn\s*&&[\s\S]{0,300}isExplicitLocalSkillCreationIntent\(text\)/,
-  '统一发送函数仍必须按待续问答与显式创建意图判定 Skill Creator 轮次',
+  /const explicitSkillCreation = isExplicitLocalSkillCreationIntent\(text\)/,
+  '统一发送函数必须先判定新建意图',
+)
+assert.match(
+  runSendTurnSource,
+  /skillCreatorTurn =\s*!pendingVaultQuestion\s*&&\s*!skillUpdaterTurn\s*&&[\s\S]{0,300}pendingSkillCreatorInterview \|\| explicitSkillCreation/,
+  'Skill Creator 路由必须复用同一个新建意图结果',
 )
 assert.match(
   runSendTurnSource,
@@ -655,7 +667,11 @@ assert.match(studioSource, /addOption\('update', '更新已经安装的 Skill'\)
 assert.match(studioSource, /onUpdateWithAi\(skill, this\.updateInstruction\)/)
 assert.match(
   runSendTurnSource,
-  /const pendingSkillUpdatePath = this\.recentPendingSkillUpdatePath\(\)[\s\S]{0,900}skillUpdateTargetPath = options\.skillUpdatePath \?\? pendingSkillUpdatePath/,
+  /const pendingSkillUpdatePath = this\.recentPendingSkillUpdatePath\(\)/,
+)
+assert.match(
+  runSendTurnSource,
+  /skillUpdateTargetPath = options\.skillUpdatePath \?\? pendingSkillUpdatePath/,
 )
 assert.match(runSendTurnSource, /buildSkillUpdateSource\(this\.skillUpdateHost, skillUpdateRoot, skillUpdateTarget\.name\)/)
 assert.match(runSendTurnSource, /skillUpdaterTurn && imageAttachments\.length > 0/)

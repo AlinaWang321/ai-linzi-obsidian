@@ -324,8 +324,13 @@ assert.match(
 )
 assert.match(
   __mainForMenu,
-  /isExplicitLocalSkillUpdateIntent\(text\)[\s\S]{0,180}this\.localSkills\.resolveUpdate\(text\)/,
-  '主对话必须在 Skill Creator 之前识别自然语言更新目标',
+  /const explicitSkillCreation = isExplicitLocalSkillCreationIntent\(text\)[\s\S]{0,220}!explicitSkillCreation[\s\S]{0,120}isExplicitLocalSkillUpdateIntent\(text\)[\s\S]{0,180}this\.localSkills\.resolveUpdate\(text\)/,
+  '主对话必须让新建 Skill 意图优先于正文里的业务更新词',
+)
+assert.match(
+  __mainForMenu,
+  /pendingSkillCreatorInterview \|\| explicitSkillCreation/,
+  'Skill Creator 必须复用已判定的新建意图，不能再次猜测',
 )
 assert.match(
   __mainForMenu,

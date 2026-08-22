@@ -3821,7 +3821,13 @@ class ChatView extends ItemView {
       const pendingVaultQuestion = this.recentPendingVaultQuestion()
       const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
       const pendingSkillUpdatePath = this.recentPendingSkillUpdatePath()
+      // 先判断整句是不是在创建一套新工作流。创建说明里经常会描述“更新客户档案”
+      // “修改方法论”等业务步骤；这些词不能抢在“做成一个新的 Skill”前面，把
+      // 新建请求误送进已有 Skill 更新器。未命中本机明确路由的自然说法继续交给
+      // 主对话模型按整句语义判断，模型仍只能返回待确认卡，不能直接写入 Vault。
+      const explicitSkillCreation = isExplicitLocalSkillCreationIntent(text)
       const naturalSkillUpdate = !options.skillUpdatePath && !pendingSkillUpdatePath &&
+        !explicitSkillCreation &&
         isExplicitLocalSkillUpdateIntent(text)
         ? await this.localSkills.resolveUpdate(text)
         : undefined
@@ -3890,7 +3896,7 @@ class ChatView extends ItemView {
           (
             !explicitLocalSkillRun &&
             !explicitInstalledLocalSkill &&
-            (pendingSkillCreatorInterview || isExplicitLocalSkillCreationIntent(text))
+            (pendingSkillCreatorInterview || explicitSkillCreation)
           )
         )
       consultationWorkflowTaskTurn = Boolean(options.consultationWorkflowTaskOriginId)
