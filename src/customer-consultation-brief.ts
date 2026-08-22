@@ -72,7 +72,7 @@ function structuredTableCards(table: HTMLTableElement): HTMLElement | null {
   const headings = Array.from(table.querySelectorAll('thead th')).map((cell) => cell.textContent?.trim() ?? '')
   const rows = Array.from(table.querySelectorAll('tbody tr'))
   if (rows.length === 0) return null
-  const grid = document.createElement('div')
+  const grid = createDiv()
   grid.className = 'ai-linzi-consultation-structured-grid'
   for (const row of rows) {
     const values = Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent?.trim() ?? '')
@@ -80,21 +80,21 @@ function structuredTableCards(table: HTMLTableElement): HTMLElement | null {
       const index = headings.findIndex((heading) => label.test(heading))
       return values[index >= 0 ? index : fallbackIndex] ?? ''
     }
-    const card = document.createElement('div')
+    const card = createDiv()
     card.className = 'ai-linzi-consultation-structured-card'
-    const layer = document.createElement('div')
+    const layer = createDiv()
     layer.className = 'ai-linzi-consultation-layer'
     layer.textContent = value(/层级|阶段/u, 0)
-    const title = document.createElement('div')
+    const title = createDiv()
     title.className = 'ai-linzi-consultation-structured-title'
     title.textContent = value(/标题|动作|产品/u, 1)
     const price = value(/价格/u, 2)
-    const description = document.createElement('div')
+    const description = createDiv()
     description.className = 'ai-linzi-consultation-structured-description'
     description.textContent = value(/说明/u, headings.length >= 4 ? 3 : 2)
     card.append(layer, title)
     if (price && price !== '-') {
-      const priceEl = document.createElement('div')
+      const priceEl = createDiv()
       priceEl.className = 'ai-linzi-consultation-price'
       priceEl.textContent = price
       card.append(priceEl)
@@ -110,9 +110,9 @@ function decorateConsultationCard(card: HTMLElement, body: HTMLElement, coachNam
   const meta = title?.nextElementSibling?.tagName === 'BLOCKQUOTE'
     ? title.nextElementSibling
     : null
-  const header = document.createElement('div')
+  const header = createDiv()
   header.className = 'ai-linzi-consultation-header'
-  const label = document.createElement('div')
+  const label = createDiv()
   label.className = 'ai-linzi-consultation-header-label'
   label.textContent = 'AI-GENERATED · CONSULTATION BRIEF'
   header.append(label)
@@ -125,7 +125,7 @@ function decorateConsultationCard(card: HTMLElement, body: HTMLElement, coachNam
     if (element.tagName === 'H2') {
       section = element.textContent?.trim() ?? ''
       const decoration = sectionIcon(section)
-      const icon = document.createElement('span')
+      const icon = createSpan()
       icon.className = `ai-linzi-consultation-section-icon is-${decoration.kind}`
       icon.textContent = decoration.icon
       element.prepend(icon)
@@ -139,7 +139,7 @@ function decorateConsultationCard(card: HTMLElement, body: HTMLElement, coachNam
           : 'ai-linzi-consultation-summary',
       )
       if (coachName) {
-        const signature = document.createElement('div')
+        const signature = createDiv()
         signature.className = 'ai-linzi-consultation-signature'
         signature.textContent = `—— ${coachName}`
         element.append(signature)
@@ -155,15 +155,15 @@ function decorateConsultationCard(card: HTMLElement, body: HTMLElement, coachNam
     }
   }
 
-  const footer = document.createElement('div')
+  const footer = createDiv()
   footer.className = 'ai-linzi-consultation-footer'
-  const brand = document.createElement('span')
+  const brand = createSpan()
   brand.textContent = '由 AI 霖子生成'
-  const site = document.createElement('span')
+  const site = createSpan()
   site.className = 'ai-linzi-consultation-footer-site'
   site.textContent = ' · chat.alinalinzi.com'
   brand.append(site)
-  const date = document.createElement('span')
+  const date = createSpan()
   date.className = 'ai-linzi-consultation-footer-date'
   date.textContent = new Date().toLocaleDateString('zh-CN', {
     year: 'numeric',

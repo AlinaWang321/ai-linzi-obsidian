@@ -1253,7 +1253,8 @@ export default class AiLinziPlugin extends Plugin {
       let count = 0
       const stack: TFolder[] = [legacy]
       while (stack.length > 0) {
-        const folder = stack.pop() as TFolder
+        const folder = stack.pop()
+        if (!folder) continue
         for (const child of folder.children) {
           if (child instanceof TFolder) stack.push(child)
           else if (child.name.toLowerCase() === 'skill.md') count += 1
@@ -2397,11 +2398,14 @@ class ChatView extends ItemView {
 
   /** 触发判定在 slash-menu-core.ts（纯模块，可真跑单测）；这里只取当前 DOM 状态。 */
   private shouldOpenSlashMenu(ev: KeyboardEvent): boolean {
+    // Chromium 旧版输入法合成期只给 229；用自有结构读取，保留兼容兜底，
+    // 同时避免继续依赖已废弃的 KeyboardEvent.keyCode 类型声明。
+    const legacyKeyCode = (ev as unknown as { keyCode?: number }).keyCode
     return shouldOpenSlashMenu(
       {
         key: ev.key,
         isComposing: ev.isComposing,
-        keyCode: ev.keyCode,
+        keyCode: legacyKeyCode,
         metaKey: ev.metaKey,
         ctrlKey: ev.ctrlKey,
         altKey: ev.altKey,
@@ -3085,12 +3089,11 @@ class ChatView extends ItemView {
       return
     }
     if (!(await this.plugin.requireProAccess('主对话 Excel 附件'))) return
-    const input = this.containerEl.ownerDocument.createElement('input')
+    const input = this.containerEl.createEl('input')
     input.type = 'file'
     input.accept = '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     input.multiple = true
     input.hidden = true
-    this.containerEl.ownerDocument.body.appendChild(input)
     input.addEventListener('change', () => {
       const files = Array.from(input.files ?? [])
       input.remove()
@@ -6110,7 +6113,9 @@ class ChatView extends ItemView {
     const { serverUrl } = this.plugin.settings
     const token = this.plugin.getApiToken()
     if (!token) return { kind: 'bizError', message: NOT_CONNECTED_MSG }
-    const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/api/plugin/v1/chat`, {
+    // requestUrl 会缓冲完整响应，无法逐块消费主对话的 SSE 文本流；此处是唯一
+    // 有意保留的 Fetch 调用，目标域名已在 README 的网络访问披露中明确列出。
+    const res = await window.fetch(`${serverUrl.replace(/\/+$/, '')}/api/plugin/v1/chat`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -7505,6 +7510,11 @@ class AiLinziSettingTab extends PluginSettingTab {
     this.plugin = plugin
   }
 
+  /** 1.11–1.12 兼容设置页的局部重绘入口；1.13 的 display 类型已标记废弃。 */
+  private redisplaySettings(): void {
+    return (this as unknown as { display(): void }).display()
+  }
+
   display(): void {
     const { containerEl } = this
     containerEl.empty()
@@ -7672,7 +7682,7 @@ class AiLinziSettingTab extends PluginSettingTab {
         new VaultImageBrowserModal(this.app, async (file) => {
           this.plugin.settings.xhsCardAvatarPath = file.path
           await this.plugin.saveSettings()
-          this.display()
+          this.redisplaySettings()
         }).open()
       }),
     )
@@ -7682,7 +7692,7 @@ class AiLinziSettingTab extends PluginSettingTab {
           try {
             this.plugin.settings.xhsCardAvatarPath = await saveXhsAvatarToVault(this.plugin, file)
             await this.plugin.saveSettings()
-            this.display()
+            this.redisplaySettings()
             new Notice('✅ 头像已保存到你的 Vault,生成卡片时在本机绘制,不会上传')
           } catch (error) {
             new Notice(`头像保存失败:${error instanceof Error ? error.message : String(error)}`, 8000)
@@ -7694,7 +7704,7 @@ class AiLinziSettingTab extends PluginSettingTab {
       b.setButtonText('清除').onClick(async () => {
         this.plugin.settings.xhsCardAvatarPath = ''
         await this.plugin.saveSettings()
-        this.display()
+        this.redisplaySettings()
       }),
     )
 

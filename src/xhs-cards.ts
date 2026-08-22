@@ -201,7 +201,7 @@ export async function generateXhsCardPackage(
 
   const styleId: XhsCardStyleId = input.style ?? 'classic'
   const palette = paletteForStyle(styleId)
-  const measureCanvas = window.document.createElement('canvas')
+  const measureCanvas = createEl('canvas')
   const measure = measureCanvas.getContext('2d')
   if (!measure) throw new Error('当前环境不支持 Canvas，无法生成卡片')
   let renderPage: (context: CanvasRenderingContext2D, index: number) => void
@@ -283,7 +283,7 @@ export async function generateXhsCardPackage(
   const zipEntries: Record<string, Uint8Array> = {}
 
   for (let index = 0; index < total; index++) {
-    const canvas = window.document.createElement('canvas')
+    const canvas = createEl('canvas')
     canvas.width = CARD_WIDTH
     canvas.height = CARD_HEIGHT
     const context = canvas.getContext('2d')

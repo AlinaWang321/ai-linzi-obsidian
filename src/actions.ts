@@ -112,7 +112,7 @@ async function callImageApi<T>(
       if (!isRetryableImageTransportError(lastError) || attempt >= IMAGE_API_ATTEMPTS) {
         throw new Error(imageFailureMessage(lastError))
       }
-      await new Promise((resolve) => setTimeout(resolve, attempt * 800))
+      await new Promise((resolve) => window.setTimeout(resolve, attempt * 800))
     }
   }
   throw new Error(imageFailureMessage(lastError))

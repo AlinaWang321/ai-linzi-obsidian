@@ -104,7 +104,7 @@ async function imageBytesToDeckDataUrl(bytes: Uint8Array): Promise<string | null
         image.src = url
       })
       const scale = Math.min(1, DECK_IMAGE_MAX_WIDTH / Math.max(1, image.naturalWidth))
-      const canvas = document.createElement('canvas')
+      const canvas = createEl('canvas')
       canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
       canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
       const context = canvas.getContext('2d')

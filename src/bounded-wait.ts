@@ -7,7 +7,7 @@
 export function boundedWait<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false
-    const timer = globalThis.setTimeout(() => {
+    const timer = window.setTimeout(() => {
       if (settled) return
       settled = true
       reject(new Error(timeoutMessage))
@@ -17,13 +17,13 @@ export function boundedWait<T>(promise: Promise<T>, timeoutMs: number, timeoutMe
       (value) => {
         if (settled) return
         settled = true
-        globalThis.clearTimeout(timer)
+        window.clearTimeout(timer)
         resolve(value)
       },
       (error: unknown) => {
         if (settled) return
         settled = true
-        globalThis.clearTimeout(timer)
+        window.clearTimeout(timer)
         reject(error instanceof Error ? error : new Error(String(error)))
       },
     )

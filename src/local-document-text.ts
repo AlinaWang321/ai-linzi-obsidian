@@ -432,10 +432,7 @@ export async function extractPdfText(data: Uint8Array, maxChars: number): Promis
   ])
   // Community plugins ship as one main.js, so expose the bundled worker handler
   // as a local fake worker. No CDN, remote script or server is involved.
-  const runtimeWindow = (
-    globalThis as typeof globalThis & { activeWindow?: Window; window?: Window }
-  ).activeWindow ?? globalThis.window
-  if (!runtimeWindow) throw new Error('当前 Obsidian 窗口尚未就绪，请稍后重试读取 PDF')
+  const runtimeWindow = activeWindow
   const pdfjsWindow = runtimeWindow as Window & {
     pdfjsWorker?: { WorkerMessageHandler: typeof WorkerMessageHandler }
   }

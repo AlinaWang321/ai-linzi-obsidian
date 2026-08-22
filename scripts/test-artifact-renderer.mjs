@@ -94,23 +94,21 @@ const fakeContext = {
   fillRect() {}, fillText() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
   measureText(text) { return { width: Array.from(text).length * 26 } },
 }
-globalThis.window = {
-  document: {
-    createElement(name) {
-      assert.equal(name, 'canvas')
-      return {
-        width: 0,
-        height: 0,
-        getContext(kind) { assert.equal(kind, '2d'); return fakeContext },
-        toBlob(callback) { callback(new Blob([transparentPng], { type: 'image/png' })) },
-      }
-    },
-  },
+globalThis.window = { document: {} }
+globalThis.createEl = (name) => {
+  assert.equal(name, 'canvas')
+  return {
+    width: 0,
+    height: 0,
+    getContext(kind) { assert.equal(kind, '2d'); return fakeContext },
+    toBlob(callback) { callback(new Blob([transparentPng], { type: 'image/png' })) },
+  }
 }
 const pdf = await renderArtifact(operation('pdf'))
 assert.equal(pdf.binary, true)
 assert.equal(Buffer.from(pdf.data).subarray(0, 5).toString(), '%PDF-')
 delete globalThis.window
+delete globalThis.createEl
 
 if (process.env.ARTIFACT_FIXTURE_DIR) {
   await mkdir(process.env.ARTIFACT_FIXTURE_DIR, { recursive: true })

@@ -296,7 +296,7 @@ class CustomerCrmSyncModal extends Modal {
       })
     }
 
-    const diff = contentEl.createEl('div', { cls: 'ai-linzi-vault-write-preview' })
+    const diff = contentEl.createDiv({ cls: 'ai-linzi-vault-write-preview' })
     let changed = 0
     for (const [key, next] of Object.entries(this.profile.fields)) {
       const previous = existing ? (existing as unknown as Record<string, unknown>)[key] : undefined

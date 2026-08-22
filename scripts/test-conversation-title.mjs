@@ -23,6 +23,7 @@ const boundedBundle = await build({
 const { boundedWait } = await import(
   `data:text/javascript;base64,${Buffer.from(boundedBundle.outputFiles[0].text).toString('base64')}`
 )
+globalThis.window ??= globalThis
 
 const user = (text) => ({ role: 'user', parts: [{ text }] })
 const messages = [user('自动生成的第一条问题'), { role: 'assistant', parts: [{ text: '回答' }] }]

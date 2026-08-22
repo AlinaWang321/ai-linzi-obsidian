@@ -640,7 +640,7 @@ async function artifactPdf(artifactDocument: ArtifactDocument, theme: 'brand' | 
   let y = 0
 
   const newPage = (first = false) => {
-    canvas = window.document.createElement('canvas')
+    canvas = createEl('canvas')
     canvas.width = pageWidth
     canvas.height = pageHeight
     const next = canvas.getContext('2d')
