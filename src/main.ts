@@ -1576,7 +1576,7 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   async setApiToken(value: string): Promise<void> {
-    this.writeSecretOrExplain(DEFAULT_TOKEN_SECRET_ID, value.trim(), '连接密钥')
+    this.writeSecretOrExplain(DEFAULT_TOKEN_SECRET_ID, value.trim(), 'AI霖子账号连接凭证')
     this.settings.tokenSecretId = DEFAULT_TOKEN_SECRET_ID
     this.capabilitiesCache = null // 换密钥=换账号,旧权益缓存立即作废
     await this.saveSettings()
@@ -7604,7 +7604,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('AI霖子连接密钥')
-      .setDesc('在 AI霖子网页「我的 → 连接中心」生成后，直接粘贴到这里。无需填写密钥名称或 ID。')
+      .setDesc('这是登录 AI霖子网页后生成的账号连接凭证，不是大模型 API Key，无需填写密钥名称或 ID。插件不要求、也不会保存任何模型厂商密钥；该凭证按 Obsidian 官方 SecretStorage 规则保存在当前设备。')
       .addText((input) => {
         input.inputEl.type = 'password'
         input.inputEl.autocomplete = 'off'
@@ -7831,7 +7831,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('公众号 AppSecret')
-      .setDesc('从公众号后台复制后直接粘贴到这里，无需填写密钥名称或 ID。密钥只保存在当前设备的 Obsidian 安全存储中。')
+      .setDesc('仅使用“发到公众号草稿箱”时需要；不用该功能可留空。从公众号后台复制后直接粘贴，按 Obsidian 官方 SecretStorage 规则保存在当前设备。')
       .addText((input) => {
         input.inputEl.type = 'password'
         input.inputEl.autocomplete = 'off'

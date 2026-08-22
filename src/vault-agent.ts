@@ -12,6 +12,7 @@ import {
   type VaultOrganizePlan,
   type VaultWriteSnapshot,
   normalizeFolderKey,
+  resolveUserSpecifiedFolderPath,
   applyRecentListFilter,
   isRecentListRequest,
   resolveVaultPlanPaths,
@@ -231,27 +232,12 @@ export class LocalVaultAgent {
     | { kind: 'matched'; path: string }
     | { kind: 'ambiguous'; paths: string[] }
     | { kind: 'missing' } {
-    const normalized = question.normalize('NFKC').toLocaleLowerCase().replace(/[\\／]+/gu, '/')
-    const candidates = this.app.vault.getAllFolders()
-      .filter((folder) => folder.path && !this.protected(folder.path))
-      .map((folder) => {
-        const path = folder.path.normalize('NFKC').toLocaleLowerCase()
-        const name = folder.name.normalize('NFKC').toLocaleLowerCase()
-        const normalizedName = normalizeFolderKey(name)
-        const exactPath = path.length >= 3 && normalized.includes(path)
-        const exactName = normalizedName.length >= 2 && normalizeFolderKey(normalized).includes(normalizedName)
-        return {
-          path: folder.path,
-          score: exactPath ? 1_000 + path.length : exactName ? 100 + normalizedName.length : 0,
-        }
-      })
-      .filter((candidate) => candidate.score > 0)
-      .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path, 'zh-CN'))
-    if (candidates.length === 0) return { kind: 'missing' }
-    const top = candidates.filter((candidate) => candidate.score === candidates[0].score)
-    return top.length === 1
-      ? { kind: 'matched', path: top[0].path }
-      : { kind: 'ambiguous', paths: top.map((candidate) => candidate.path).slice(0, 8) }
+    return resolveUserSpecifiedFolderPath(
+      question,
+      this.app.vault.getAllFolders()
+        .filter((folder) => folder.path && !this.protected(folder.path))
+        .map((folder) => ({ path: folder.path, name: folder.name })),
+    )
   }
 
   /** 整夹移入回收站前确认没有裹挟受保护文件（Skills 根目录、开发辅助文件等）。 */

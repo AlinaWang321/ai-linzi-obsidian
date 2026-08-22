@@ -12,6 +12,26 @@ const bundled = await build({
 const source = bundled.outputFiles[0].text
 const core = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 
+const folderFixtures = [
+  { path: '01_Raw', name: '01_Raw' },
+  { path: '01_Raw/课程逐字稿', name: '课程逐字稿' },
+  { path: '01_Raw/销售逐字稿', name: '销售逐字稿' },
+  { path: '06_Archive/课程逐字稿', name: '课程逐字稿' },
+]
+assert.deepEqual(
+  core.resolveUserSpecifiedFolderPath(
+    '用经验萃取 Skill 搜索 01_Raw/课程逐字稿 文件夹里关于 Obsidian 的资料，列出真实文件路径，先不要写入。',
+    folderFixtures,
+  ),
+  { kind: 'matched', path: '01_Raw/课程逐字稿' },
+  '用户写出完整目录时必须锁定该目录，即使 Vault 里有同名目录',
+)
+assert.deepEqual(
+  core.resolveUserSpecifiedFolderPath('搜索课程逐字稿文件夹', folderFixtures),
+  { kind: 'ambiguous', paths: ['01_Raw/课程逐字稿', '06_Archive/课程逐字稿'] },
+  '只写重名目录时必须列候选，不得猜路径',
+)
+
 const calls = core.extractVaultToolCalls(`准备继续查找。
 <<<VAULT_TOOL_CALLS>>>
 {"calls":[{"id":"search-1","name":"vault_search","arguments":{"query":"高客单产品"}},{"id":"read-1","name":"read_note","arguments":{"path":"wiki/产品.md","maxChars":12000}}]}

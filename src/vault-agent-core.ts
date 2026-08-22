@@ -1167,6 +1167,42 @@ export function normalizeFolderKey(name: string): string {
     .replace(/[\s_\-.]/g, '')
 }
 
+export type UserSpecifiedFolderMatch =
+  | { kind: 'matched'; path: string }
+  | { kind: 'ambiguous'; paths: string[] }
+  | { kind: 'missing' }
+
+/**
+ * 从用户原话中确定性锁定一个真实文件夹。完整 Vault 路径优先；只说文件夹名
+ * 时必须唯一，重名就返回候选而不是猜。这里只比较目录元数据，不读取正文。
+ */
+export function resolveUserSpecifiedFolderPath(
+  question: string,
+  folders: Array<{ path: string; name: string }>,
+): UserSpecifiedFolderMatch {
+  const normalized = question.normalize('NFKC').toLocaleLowerCase().replace(/[\\／]+/gu, '/')
+  const normalizedQuestionKey = normalizeFolderKey(normalized)
+  const candidates = folders
+    .filter((folder) => Boolean(folder.path))
+    .map((folder) => {
+      const path = folder.path.normalize('NFKC').toLocaleLowerCase()
+      const normalizedName = normalizeFolderKey(folder.name)
+      const exactPath = path.length >= 3 && normalized.includes(path)
+      const exactName = normalizedName.length >= 2 && normalizedQuestionKey.includes(normalizedName)
+      return {
+        path: folder.path,
+        score: exactPath ? 1_000 + path.length : exactName ? 100 + normalizedName.length : 0,
+      }
+    })
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path, 'zh-CN'))
+  if (candidates.length === 0) return { kind: 'missing' }
+  const top = candidates.filter((candidate) => candidate.score === candidates[0].score)
+  return top.length === 1
+    ? { kind: 'matched', path: top[0].path }
+    : { kind: 'ambiguous', paths: top.map((candidate) => candidate.path).slice(0, 8) }
+}
+
 /** list_folder 的时间查询模式（0.7.60）。 */
 export interface RecentListOptions {
   sortBy?: string
