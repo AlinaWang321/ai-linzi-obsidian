@@ -221,23 +221,421 @@ export interface PendingVaultTask {
   goal: string
   intent: 'answer' | 'organize'
   stage: 'searching' | 'searched' | 'source_read' | 'target_read' | 'previewed'
-  /** 搜索命中的候选路径（≤120，仅本机使用，不进云端历史）。 */
+  /** 搜索命中的候选路径（仅本机使用，不进云端历史）。 */
   candidatePaths: string[]
   /** 已读取来源的版本快照；恢复时 mtime/size 变化必须重读。 */
   sourcePaths: VaultWriteSnapshot[]
   targetPath?: string
   /** 用户确认执行后本机失败的原因；下一轮开场作为合成工具结果一次性交回模型。 */
   lastExecuteError?: { planTitle: string; message: string; at: number }
+  /**
+   * 明确批量任务的本机检查点。只保存路径、文件指纹和失败摘要，不保存原文、
+   * 搜索片段或模型工具结果；关闭窗口/重启 Obsidian 后仍能知道处理到了哪里。
+   */
+  batch?: VaultBatchCheckpoint
   createdAt: number
   updatedAt: number
 }
 
 export const VAULT_TASK_MAX_AGE_MS = 30 * 60 * 1000
+/** 批量任务允许跨窗口/重启续跑；超过 7 天按新任务重新核对，避免陈旧清单误用。 */
+export const VAULT_BATCH_TASK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 /**
- * 跨轮任务只保存路径与 mtime/size，不保存正文。批量 Skill 默认可读 120 份，
- * 这里也必须能记住同等规模的已读清单，否则停止/续跑后只剩最后 12 份。
+ * 跨轮任务只保存路径与 mtime/size，不保存正文。普通跨轮任务继续保持
+ * 120 份边界；批量任务可用断点分多轮消化，因此单独放宽到 500 份。
  */
 export const VAULT_TASK_MAX_CANDIDATES = 120
+export const VAULT_BATCH_TASK_MAX_CANDIDATES = 500
+
+export type VaultBatchPauseReason = 'user' | 'round-limit' | 'tool-budget' | 'restart' | 'error'
+
+export interface VaultBatchReadProgress extends VaultWriteSnapshot {
+  /** 下一段应从这里继续；0 代表尚未完整读完第一段。 */
+  nextOffset: number
+  totalChars?: number
+}
+
+export interface VaultBatchFailure {
+  path: string
+  message: string
+  attempts: number
+}
+
+export interface VaultBatchFolderProgress {
+  path: string
+  depth: number
+  nextOffset: number
+  maxEntries: number
+}
+
+export interface VaultBatchCheckpoint {
+  version: 1
+  status: 'running' | 'paused' | 'ready' | 'previewed'
+  pauseReason?: VaultBatchPauseReason
+  /** 已完整读到文件末尾的来源。 */
+  completedPaths: VaultWriteSnapshot[]
+  /** 已读了一部分、续跑时需要从 nextOffset 接上的长文件。 */
+  readProgress: VaultBatchReadProgress[]
+  /** 读取失败的真实路径与最小错误摘要；再次成功读取后自动移除。 */
+  failures: VaultBatchFailure[]
+  /** list_folder 尚未翻完的目录页；续跑不能把第一页当成全部。 */
+  folderProgress: VaultBatchFolderProgress[]
+  checkpointSeq: number
+  resumeCount: number
+  updatedAt: number
+}
+
+export interface VaultBatchProgressSummary {
+  total: number
+  completed: number
+  inProgress: number
+  failed: number
+  pendingFolders: number
+  remainingPaths: string[]
+}
+
+export function createVaultBatchCheckpoint(now: number): VaultBatchCheckpoint {
+  return {
+    version: 1,
+    status: 'running',
+    completedPaths: [],
+    readProgress: [],
+    failures: [],
+    folderProgress: [],
+    checkpointSeq: 0,
+    resumeCount: 0,
+    updatedAt: now,
+  }
+}
+
+function storedVaultSnapshot(value: unknown): VaultWriteSnapshot | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const path = normalizeVaultRelativePath(raw.path)
+  const mtime = typeof raw.mtime === 'number' && Number.isFinite(raw.mtime) ? raw.mtime : -1
+  const size = typeof raw.size === 'number' && Number.isFinite(raw.size) ? raw.size : -1
+  if (!path || mtime < 0 || size < 0) return null
+  return { path, mtime, size }
+}
+
+function storedVaultSnapshots(value: unknown, maxCandidates = VAULT_TASK_MAX_CANDIDATES): VaultWriteSnapshot[] {
+  if (!Array.isArray(value)) return []
+  const byPath = new Map<string, VaultWriteSnapshot>()
+  for (const item of value.slice(-maxCandidates)) {
+    const snapshot = storedVaultSnapshot(item)
+    if (snapshot) byPath.set(snapshot.path, snapshot)
+  }
+  return [...byPath.values()].slice(-maxCandidates)
+}
+
+/** 从 data.json 恢复任务时的唯一校验入口；任何正文型字段都会被丢弃。 */
+export function storedPendingVaultTask(value: unknown): PendingVaultTask | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const id = typeof raw.id === 'string' ? raw.id.trim().slice(0, 160) : ''
+  const goal = typeof raw.goal === 'string' ? raw.goal.trim().slice(0, 300) : ''
+  const intent = raw.intent === 'organize' ? 'organize' : raw.intent === 'answer' ? 'answer' : null
+  const stage =
+    raw.stage === 'searching' || raw.stage === 'searched' || raw.stage === 'source_read' ||
+    raw.stage === 'target_read' || raw.stage === 'previewed'
+      ? raw.stage
+      : null
+  const createdAt = typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt) ? raw.createdAt : 0
+  const updatedAt = typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0
+  if (!id || !goal || !intent || !stage || createdAt <= 0 || updatedAt <= 0) return null
+  const hasBatch = Boolean(raw.batch && typeof raw.batch === 'object' && !Array.isArray(raw.batch))
+  const maxCandidates = hasBatch ? VAULT_BATCH_TASK_MAX_CANDIDATES : VAULT_TASK_MAX_CANDIDATES
+  const candidatePaths = Array.isArray(raw.candidatePaths)
+    ? [...new Set(raw.candidatePaths
+        .map((item) => normalizeVaultRelativePath(item))
+        .filter((item): item is string => Boolean(item)))]
+        .slice(0, maxCandidates)
+    : []
+  const sourcePaths = storedVaultSnapshots(raw.sourcePaths, maxCandidates)
+  const targetPath = normalizeVaultRelativePath(raw.targetPath) ?? undefined
+  let lastExecuteError: PendingVaultTask['lastExecuteError']
+  if (raw.lastExecuteError && typeof raw.lastExecuteError === 'object' && !Array.isArray(raw.lastExecuteError)) {
+    const failure = raw.lastExecuteError as Record<string, unknown>
+    const planTitle = typeof failure.planTitle === 'string' ? failure.planTitle.trim().slice(0, 160) : ''
+    const message = typeof failure.message === 'string' ? failure.message.trim().slice(0, 500) : ''
+    const at = typeof failure.at === 'number' && Number.isFinite(failure.at) ? failure.at : 0
+    if (planTitle && message && at > 0) lastExecuteError = { planTitle, message, at }
+  }
+  let batch: VaultBatchCheckpoint | undefined
+  if (raw.batch && typeof raw.batch === 'object' && !Array.isArray(raw.batch)) {
+    const stored = raw.batch as Record<string, unknown>
+    const status =
+      stored.status === 'running' || stored.status === 'paused' ||
+      stored.status === 'ready' || stored.status === 'previewed'
+        ? stored.status
+        : 'paused'
+    const pauseReason =
+      stored.pauseReason === 'user' || stored.pauseReason === 'round-limit' ||
+      stored.pauseReason === 'tool-budget' || stored.pauseReason === 'restart' ||
+      stored.pauseReason === 'error'
+        ? stored.pauseReason
+        : undefined
+    const completedPaths = storedVaultSnapshots(stored.completedPaths, maxCandidates)
+    const readProgress = Array.isArray(stored.readProgress)
+      ? stored.readProgress
+          .map((item): VaultBatchReadProgress | null => {
+            const snapshot = storedVaultSnapshot(item)
+            if (!snapshot || !item || typeof item !== 'object' || Array.isArray(item)) return null
+            const progress = item as Record<string, unknown>
+            const nextOffset = typeof progress.nextOffset === 'number' && Number.isFinite(progress.nextOffset)
+              ? Math.max(0, Math.trunc(progress.nextOffset))
+              : -1
+            const totalChars = typeof progress.totalChars === 'number' && Number.isFinite(progress.totalChars)
+              ? Math.max(0, Math.trunc(progress.totalChars))
+              : undefined
+            return nextOffset < 0 ? null : { ...snapshot, nextOffset, totalChars }
+          })
+          .filter((item): item is VaultBatchReadProgress => Boolean(item))
+          .slice(-maxCandidates)
+      : []
+    const failures = Array.isArray(stored.failures)
+      ? stored.failures
+          .map((item): VaultBatchFailure | null => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+            const failure = item as Record<string, unknown>
+            const path = normalizeVaultRelativePath(failure.path)
+            const message = typeof failure.message === 'string' ? failure.message.trim().slice(0, 300) : ''
+            const attempts = typeof failure.attempts === 'number' && Number.isFinite(failure.attempts)
+              ? Math.max(1, Math.min(9, Math.trunc(failure.attempts)))
+              : 1
+            return path && message ? { path, message, attempts } : null
+          })
+          .filter((item): item is VaultBatchFailure => Boolean(item))
+          .slice(-maxCandidates)
+      : []
+    const folderProgress = Array.isArray(stored.folderProgress)
+      ? stored.folderProgress
+          .map((item): VaultBatchFolderProgress | null => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+            const folder = item as Record<string, unknown>
+            const path = folder.path === '' ? '' : normalizeVaultRelativePath(folder.path)
+            const depth = typeof folder.depth === 'number' && Number.isFinite(folder.depth)
+              ? Math.max(1, Math.min(12, Math.trunc(folder.depth)))
+              : 1
+            const nextOffset = typeof folder.nextOffset === 'number' && Number.isFinite(folder.nextOffset)
+              ? Math.max(0, Math.trunc(folder.nextOffset))
+              : -1
+            const maxEntries = typeof folder.maxEntries === 'number' && Number.isFinite(folder.maxEntries)
+              ? Math.max(1, Math.min(160, Math.trunc(folder.maxEntries)))
+              : 80
+            return path !== null && nextOffset >= 0
+              ? { path, depth, nextOffset, maxEntries }
+              : null
+          })
+          .filter((item): item is VaultBatchFolderProgress => Boolean(item))
+          .slice(-24)
+      : []
+    batch = {
+      version: 1,
+      // 进程退出时不可能还有真实执行中的请求；恢复后统一显示“已暂停”。
+      status: status === 'running' ? 'paused' : status,
+      ...(status === 'running' ? { pauseReason: 'restart' as const } : pauseReason ? { pauseReason } : {}),
+      completedPaths,
+      readProgress,
+      failures,
+      folderProgress,
+      checkpointSeq: typeof stored.checkpointSeq === 'number' && Number.isFinite(stored.checkpointSeq)
+        ? Math.max(0, Math.trunc(stored.checkpointSeq))
+        : 0,
+      resumeCount: typeof stored.resumeCount === 'number' && Number.isFinite(stored.resumeCount)
+        ? Math.max(0, Math.trunc(stored.resumeCount))
+        : 0,
+      updatedAt: typeof stored.updatedAt === 'number' && Number.isFinite(stored.updatedAt)
+        ? stored.updatedAt
+        : updatedAt,
+    }
+  }
+  return {
+    id,
+    goal,
+    intent,
+    stage,
+    candidatePaths,
+    sourcePaths,
+    ...(targetPath ? { targetPath } : {}),
+    ...(lastExecuteError ? { lastExecuteError } : {}),
+    ...(batch ? { batch } : {}),
+    createdAt,
+    updatedAt,
+  }
+}
+
+export function vaultBatchProgress(task: PendingVaultTask): VaultBatchProgressSummary | null {
+  if (!task.batch) return null
+  const completed = new Set(task.batch.completedPaths.map((item) => item.path))
+  const inProgress = new Set(task.batch.readProgress.map((item) => item.path))
+  const failed = new Set(task.batch.failures.map((item) => item.path))
+  const remainingPaths = task.candidatePaths.filter(
+    (path) => !completed.has(path) && !inProgress.has(path) && !failed.has(path),
+  )
+  return {
+    total: task.candidatePaths.length,
+    completed: completed.size,
+    inProgress: inProgress.size,
+    failed: failed.size,
+    pendingFolders: task.batch.folderProgress.length,
+    remainingPaths,
+  }
+}
+
+export function resumeVaultBatchTask(task: PendingVaultTask, now: number): PendingVaultTask {
+  if (!task.batch) return task
+  return {
+    ...task,
+    updatedAt: now,
+    batch: {
+      ...task.batch,
+      status: 'running',
+      pauseReason: undefined,
+      checkpointSeq: task.batch.checkpointSeq + 1,
+      resumeCount: task.batch.resumeCount + 1,
+      updatedAt: now,
+    },
+  }
+}
+
+export function pauseVaultBatchTask(
+  task: PendingVaultTask,
+  reason: VaultBatchPauseReason,
+  now: number,
+): PendingVaultTask {
+  if (!task.batch) return task
+  return {
+    ...task,
+    updatedAt: now,
+    batch: {
+      ...task.batch,
+      status: 'paused',
+      pauseReason: reason,
+      checkpointSeq: task.batch.checkpointSeq + 1,
+      updatedAt: now,
+    },
+  }
+}
+
+/**
+ * Obsidian 重启后模型上下文不再拥有上次读到的正文。保留候选清单、
+ * 失败项和目录分页，但把之前的“已读/读取中”统一退回 offset=0，
+ * 下一轮会按准确路径重读，不会用空上下文伪造综合结果。
+ */
+export function resetVaultBatchForColdResume(
+  task: PendingVaultTask,
+  now: number,
+): PendingVaultTask {
+  if (!task.batch) return task
+  const byPath = new Map<string, VaultBatchReadProgress>()
+  for (const snapshot of task.batch.completedPaths) {
+    byPath.set(snapshot.path, { ...snapshot, nextOffset: 0 })
+  }
+  for (const progress of task.batch.readProgress) {
+    byPath.set(progress.path, { ...progress, nextOffset: 0 })
+  }
+  return {
+    ...task,
+    updatedAt: now,
+    batch: {
+      ...task.batch,
+      status: 'running',
+      pauseReason: undefined,
+      completedPaths: [],
+      readProgress: [...byPath.values()].slice(-VAULT_BATCH_TASK_MAX_CANDIDATES),
+      checkpointSeq: task.batch.checkpointSeq + 1,
+      updatedAt: now,
+    },
+  }
+}
+
+export function markVaultBatchRead(
+  task: PendingVaultTask,
+  input: { snapshot: VaultWriteSnapshot; nextOffset: number | null; totalChars?: number },
+  now: number,
+): PendingVaultTask {
+  if (!task.batch) return task
+  const path = input.snapshot.path
+  const failures = task.batch.failures.filter((item) => item.path !== path)
+  const completedPaths = task.batch.completedPaths.filter((item) => item.path !== path)
+  const readProgress = task.batch.readProgress.filter((item) => item.path !== path)
+  if (input.nextOffset === null) completedPaths.push(input.snapshot)
+  else readProgress.push({ ...input.snapshot, nextOffset: input.nextOffset, totalChars: input.totalChars })
+  const nextBatch: VaultBatchCheckpoint = {
+    ...task.batch,
+    status: 'running',
+    pauseReason: undefined,
+    completedPaths: completedPaths.slice(-VAULT_BATCH_TASK_MAX_CANDIDATES),
+    readProgress: readProgress.slice(-VAULT_BATCH_TASK_MAX_CANDIDATES),
+    failures,
+    checkpointSeq: task.batch.checkpointSeq + 1,
+    updatedAt: now,
+  }
+  return { ...task, batch: nextBatch, updatedAt: now }
+}
+
+export function markVaultBatchFailure(
+  task: PendingVaultTask,
+  path: string,
+  message: string,
+  now: number,
+): PendingVaultTask {
+  if (!task.batch) return task
+  const normalized = normalizeVaultRelativePath(path)
+  if (!normalized) return task
+  const previous = task.batch.failures.find((item) => item.path === normalized)
+  const failures = task.batch.failures.filter((item) => item.path !== normalized)
+  failures.push({
+    path: normalized,
+    message: message.trim().slice(0, 300) || '读取失败',
+    attempts: Math.min(9, (previous?.attempts ?? 0) + 1),
+  })
+  return {
+    ...task,
+    updatedAt: now,
+    batch: {
+      ...task.batch,
+      completedPaths: task.batch.completedPaths.filter((item) => item.path !== normalized),
+      readProgress: task.batch.readProgress.filter((item) => item.path !== normalized),
+      failures: failures.slice(-VAULT_BATCH_TASK_MAX_CANDIDATES),
+      checkpointSeq: task.batch.checkpointSeq + 1,
+      updatedAt: now,
+    },
+  }
+}
+
+export function markVaultBatchFolderPage(
+  task: PendingVaultTask,
+  input: { path: string; depth: number; maxEntries: number; nextOffset: number | null },
+  now: number,
+): PendingVaultTask {
+  if (!task.batch) return task
+  const path = input.path === '' ? '' : normalizeVaultRelativePath(input.path)
+  if (path === null) return task
+  const key = `${path}\n${input.depth}`
+  const folderProgress = task.batch.folderProgress.filter(
+    (item) => `${item.path}\n${item.depth}` !== key,
+  )
+  if (input.nextOffset !== null) {
+    folderProgress.push({
+      path,
+      depth: Math.max(1, Math.min(12, Math.trunc(input.depth))),
+      nextOffset: Math.max(0, Math.trunc(input.nextOffset)),
+      maxEntries: Math.max(1, Math.min(160, Math.trunc(input.maxEntries))),
+    })
+  }
+  return {
+    ...task,
+    updatedAt: now,
+    batch: {
+      ...task.batch,
+      folderProgress: folderProgress.slice(-24),
+      checkpointSeq: task.batch.checkpointSeq + 1,
+      updatedAt: now,
+    },
+  }
+}
 
 const VAULT_TASK_STAGE_ORDER: Record<PendingVaultTask['stage'], number> = {
   searching: 0,
@@ -266,15 +664,18 @@ export function advanceVaultTask(
   now: number,
 ): PendingVaultTask {
   const next: PendingVaultTask = { ...task, updatedAt: now }
+  const maxCandidates = task.batch
+    ? VAULT_BATCH_TASK_MAX_CANDIDATES
+    : VAULT_TASK_MAX_CANDIDATES
   if (event.type === 'search') {
     const merged = [...new Set([...task.candidatePaths, ...event.candidatePaths])]
-    next.candidatePaths = merged.slice(0, VAULT_TASK_MAX_CANDIDATES)
+    next.candidatePaths = merged.slice(0, maxCandidates)
     if (!vaultTaskStageAtLeast(task.stage, 'searched')) next.stage = 'searched'
     return next
   }
   if (event.type === 'read') {
     const rest = task.sourcePaths.filter((item) => item.path !== event.snapshot.path)
-    next.sourcePaths = [...rest, event.snapshot].slice(-VAULT_TASK_MAX_CANDIDATES)
+    next.sourcePaths = [...rest, event.snapshot].slice(-maxCandidates)
     if (event.isTarget) {
       next.targetPath = event.snapshot.path
       if (!vaultTaskStageAtLeast(task.stage, 'target_read')) next.stage = 'target_read'
@@ -289,7 +690,7 @@ export function advanceVaultTask(
 }
 
 export function isVaultTaskExpired(task: PendingVaultTask, now: number): boolean {
-  return now - task.updatedAt > VAULT_TASK_MAX_AGE_MS
+  return now - task.updatedAt > (task.batch ? VAULT_BATCH_TASK_MAX_AGE_MS : VAULT_TASK_MAX_AGE_MS)
 }
 
 /**

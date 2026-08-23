@@ -140,7 +140,143 @@ console.log('[test-vault-task-state]')
   const task = newTask()
   assert.equal(core.isVaultTaskExpired(task, NOW + core.VAULT_TASK_MAX_AGE_MS - 1), false)
   assert.equal(core.isVaultTaskExpired(task, NOW + core.VAULT_TASK_MAX_AGE_MS + 1), true)
+  const batch = newTask({ batch: core.createVaultBatchCheckpoint(NOW) })
+  assert.equal(core.isVaultTaskExpired(batch, NOW + core.VAULT_TASK_MAX_AGE_MS + 1), false)
+  assert.equal(core.isVaultTaskExpired(batch, NOW + core.VAULT_BATCH_TASK_MAX_AGE_MS + 1), true)
   console.log('  ✓ 7. 任务超时自动作废')
+}
+
+// ── 7b. 批量任务检查点：清单、分页、失败、停止与恢复 ──
+{
+  let task = newTask({ batch: core.createVaultBatchCheckpoint(NOW) })
+  task = core.advanceVaultTask(task, {
+    type: 'search',
+    candidatePaths: ['01_Raw/a.txt', '01_Raw/b.txt', '01_Raw/c.txt'],
+  }, NOW + 1)
+  task = core.markVaultBatchRead(task, {
+    snapshot: { path: '01_Raw/a.txt', mtime: 1, size: 100 },
+    nextOffset: 16_000,
+    totalChars: 20_000,
+  }, NOW + 2)
+  let progress = core.vaultBatchProgress(task)
+  assert.deepEqual(progress, {
+    total: 3,
+    completed: 0,
+    inProgress: 1,
+    failed: 0,
+    pendingFolders: 0,
+    remainingPaths: ['01_Raw/b.txt', '01_Raw/c.txt'],
+  })
+  task = core.markVaultBatchRead(task, {
+    snapshot: { path: '01_Raw/a.txt', mtime: 1, size: 100 },
+    nextOffset: null,
+    totalChars: 20_000,
+  }, NOW + 3)
+  task = core.markVaultBatchFailure(task, '01_Raw/b.txt', '暂时无法解析', NOW + 4)
+  progress = core.vaultBatchProgress(task)
+  assert.equal(progress.completed, 1)
+  assert.equal(progress.inProgress, 0)
+  assert.equal(progress.failed, 1)
+  assert.deepEqual(progress.remainingPaths, ['01_Raw/c.txt'])
+  task = core.pauseVaultBatchTask(task, 'user', NOW + 5)
+  assert.equal(task.batch.status, 'paused')
+  assert.equal(task.batch.pauseReason, 'user')
+  task = core.resumeVaultBatchTask(task, NOW + 6)
+  assert.equal(task.batch.status, 'running')
+  assert.equal(task.batch.resumeCount, 1)
+  assert.equal(task.batch.pauseReason, undefined)
+  // 同一路径重试成功后，失败项必须自动消失。
+  task = core.markVaultBatchRead(task, {
+    snapshot: { path: '01_Raw/b.txt', mtime: 2, size: 120 },
+    nextOffset: null,
+  }, NOW + 7)
+  assert.equal(task.batch.failures.length, 0)
+  assert.equal(core.vaultBatchProgress(task).completed, 2)
+  task = core.markVaultBatchFolderPage(task, {
+    path: '01_Raw', depth: 2, maxEntries: 80, nextOffset: 80,
+  }, NOW + 8)
+  assert.equal(core.vaultBatchProgress(task).pendingFolders, 1)
+  assert.deepEqual(task.batch.folderProgress[0], {
+    path: '01_Raw', depth: 2, maxEntries: 80, nextOffset: 80,
+  })
+  task = core.markVaultBatchFolderPage(task, {
+    path: '01_Raw', depth: 2, maxEntries: 80, nextOffset: null,
+  }, NOW + 9)
+  assert.equal(core.vaultBatchProgress(task).pendingFolders, 0)
+  const coldResume = core.resetVaultBatchForColdResume(task, NOW + 10)
+  assert.equal(coldResume.batch.completedPaths.length, 0)
+  assert.deepEqual(
+    coldResume.batch.readProgress.map((item) => ({ path: item.path, nextOffset: item.nextOffset })),
+    [
+      { path: '01_Raw/a.txt', nextOffset: 0 },
+      { path: '01_Raw/b.txt', nextOffset: 0 },
+    ],
+  )
+  assert.equal(coldResume.batch.failures.length, 0)
+  console.log('  ✓ 7b. 批量任务按真实文件游标保存、暂停并续跑')
+}
+
+// ── 7b-2. 批量清单与普通跨轮任务分开限额 ──
+{
+  const paths = Array.from({ length: 520 }, (_, index) => `01_Raw/${String(index).padStart(3, '0')}.txt`)
+  const normal = core.advanceVaultTask(newTask(), { type: 'search', candidatePaths: paths }, NOW + 1)
+  const batch = core.advanceVaultTask(
+    newTask({ batch: core.createVaultBatchCheckpoint(NOW) }),
+    { type: 'search', candidatePaths: paths },
+    NOW + 1,
+  )
+  assert.equal(normal.candidatePaths.length, 120)
+  assert.equal(batch.candidatePaths.length, 500)
+  console.log('  ✓ 7b-2. 批量任务最多保存 500 份路径，普通对话仍为 120')
+}
+
+// ── 7c. data.json 恢复只接受路径元数据；运行中任务按重启暂停 ──
+{
+  const stored = core.storedPendingVaultTask({
+    ...newTask(),
+    candidatePaths: ['01_Raw/a.txt', '/absolute/evil.txt', '../escape.md'],
+    sourcePaths: [{ path: '01_Raw/a.txt', mtime: 1, size: 100, content: '不能落盘' }],
+    batch: {
+      ...core.createVaultBatchCheckpoint(NOW),
+      status: 'running',
+      completedPaths: [{ path: '01_Raw/a.txt', mtime: 1, size: 100, text: '不能落盘' }],
+      readProgress: [{ path: '01_Raw/b.txt', mtime: 2, size: 200, nextOffset: 12000, content: '不能落盘' }],
+      failures: [{ path: '01_Raw/c.txt', message: '失败摘要', attempts: 2, raw: '不能落盘' }],
+      folderProgress: [{ path: '01_Raw', depth: 2, nextOffset: 80, maxEntries: 80, content: '不能落盘' }],
+    },
+    secretContent: '绝不能保留',
+  })
+  assert.ok(stored)
+  assert.deepEqual(stored.candidatePaths, ['01_Raw/a.txt'])
+  assert.equal(stored.batch.status, 'paused')
+  assert.equal(stored.batch.pauseReason, 'restart')
+  assert.deepEqual(stored.batch.completedPaths[0], { path: '01_Raw/a.txt', mtime: 1, size: 100 })
+  assert.deepEqual(stored.batch.readProgress[0], {
+    path: '01_Raw/b.txt', mtime: 2, size: 200, nextOffset: 12000, totalChars: undefined,
+  })
+  assert.equal('secretContent' in stored, false)
+  assert.equal('content' in stored.batch.completedPaths[0], false)
+  assert.deepEqual(stored.batch.folderProgress[0], {
+    path: '01_Raw', depth: 2, nextOffset: 80, maxEntries: 80,
+  })
+  console.log('  ✓ 7c. 批量断点不保存原文；重启后安全进入暂停态')
+}
+
+// ── 7d. UI 接线哨兵：会话持久化、停止与恢复不可被重构漏掉 ──
+{
+  const mainSource = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
+  assert.match(mainSource, /pendingVaultTask\?: PendingVaultTask/)
+  assert.match(mainSource, /pendingVaultTask: this\.pendingVaultTask \?\? undefined/)
+  assert.match(mainSource, /this\.pendingVaultTask = storedPendingVaultTask\(c\.pendingVaultTask\)/)
+  assert.match(mainSource, /pauseVaultBatchTask\(this\.pendingVaultTask, 'user', Date\.now\(\)\)/)
+  assert.match(mainSource, /markVaultBatchFolderPage/)
+  assert.match(mainSource, /resetVaultBatchForColdResume/)
+  assert.match(mainSource, /cachedBatchResults\.length === 0/)
+  assert.match(mainSource, /this\.vaultBatchToolResults\.size > 4/)
+  assert.match(mainSource, /批量结果不包含 \$\{failedBatchPaths\.length\} 份读取失败的文件/)
+  assert.match(mainSource, /batchCheckpoint: batchCheckpointForApi\(\)/)
+  assert.match(mainSource, /await this\.persistNow\(\)/)
+  console.log('  ✓ 7d. 会话保存、停止按钮与 API 检查点接线完整')
 }
 
 // ── 8. 收尾句宣告后续动作 = 未完成（真实 Luna E2E 中捕获的逃逸措辞）──

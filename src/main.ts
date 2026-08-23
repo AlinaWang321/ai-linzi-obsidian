@@ -206,6 +206,7 @@ import {
   advanceVaultTask,
   appendToolResultsWithinBudget,
   buildVaultExecuteFailureToolResult,
+  createVaultBatchCheckpoint,
   detectVaultAgentIntent,
   extractVaultOrganizePlan,
   extractVaultToolCalls,
@@ -224,14 +225,22 @@ import {
   isVaultTaskContinuation,
   isVaultTaskExpired,
   namespaceVaultToolCalls,
+  markVaultBatchFailure,
+  markVaultBatchFolderPage,
+  markVaultBatchRead,
   operationLabel,
+  pauseVaultBatchTask,
   parseVaultOrganizePlanPayload,
+  resetVaultBatchForColdResume,
   resolveVaultPlanPaths,
   resolveVaultBoundPath,
+  resumeVaultBatchTask,
+  storedPendingVaultTask,
   upgradeVaultIntent,
   vaultAutoAnswerRetryReason,
   vaultAnswerRetryReason,
   vaultToolCallSignature,
+  vaultBatchProgress,
   vaultWriteFlowRetryReason,
   type PendingVaultTask,
   type VaultAnswerRetryReason,
@@ -674,6 +683,8 @@ interface SavedConvo {
   titleSyncPending?: boolean
   updatedAt: number
   messages: WireMessage[]
+  /** 批量 Vault 任务的本机断点；只含路径/指纹/状态，不含任何文件正文。 */
+  pendingVaultTask?: PendingVaultTask
 }
 
 interface AiLinziPluginData extends LegacyAiLinziSettings {
@@ -1238,6 +1249,16 @@ function throwIfAborted(signal?: AbortSignal): void {
   throw error
 }
 
+function batchStoppedMessage(task: PendingVaultTask): string {
+  const progress = vaultBatchProgress(task)
+  if (!progress) return '⏹️ 已停止当前任务。'
+  return [
+    '⏹️ 已暂停这项批量任务，并保存了本机断点。',
+    `已完整读取 ${progress.completed}/${progress.total} 份，读取中 ${progress.inProgress} 份，失败 ${progress.failed} 份，待翻目录 ${progress.pendingFolders} 个。`,
+    '回到本对话说“继续”即可从未完成清单接着处理，不需要重新指定文件夹。',
+  ].join('\n\n')
+}
+
 /**
  * 解析缓冲后的 UIMessage SSE 流(访谈写作路由用):只取 text-delta 正文,
  * 跳过 reasoning-delta(V4 Pro 思考过程,不该给用户看),error 事件透传。
@@ -1725,6 +1746,7 @@ export default class AiLinziPlugin extends Plugin {
     return this.savedConversations.map((convo) => applyConversationTitleState({
       ...convo,
       id: normalizePluginSessionId(convo.id),
+      pendingVaultTask: storedPendingVaultTask(convo.pendingVaultTask) ?? undefined,
     }, savedConversationTitleState(convo)))
   }
 
@@ -1742,6 +1764,7 @@ export default class AiLinziPlugin extends Plugin {
       const normalized = applyConversationTitleState({
         ...convo,
         id: normalizePluginSessionId(convo.id),
+        pendingVaultTask: storedPendingVaultTask(convo.pendingVaultTask) ?? undefined,
       }, savedConversationTitleState(convo))
       const list = this.savedConversations
         .map((saved) => applyConversationTitleState({
@@ -2384,6 +2407,20 @@ class ChatView extends ItemView {
    * 工具输出只驻留进程内存；确认卡被执行/取消、任务正常收尾或超时后清空。
    */
   private pendingVaultTask: PendingVaultTask | null = null
+  /**
+   * 同一 Obsidian 进程内的批量工具结果缓存。停止/切换对话后可直接续跑；
+   * 不写 data.json，重启后只凭路径检查点安全重读，避免把用户正文长期落盘。
+   */
+  private vaultBatchToolResults = new Map<string, VaultAgentToolResult[]>()
+  private rememberVaultBatchToolResults(taskId: string, results: VaultAgentToolResult[]): void {
+    this.vaultBatchToolResults.delete(taskId)
+    this.vaultBatchToolResults.set(taskId, [...results])
+    while (this.vaultBatchToolResults.size > 4) {
+      const oldest = this.vaultBatchToolResults.keys().next().value
+      if (!oldest) break
+      this.vaultBatchToolResults.delete(oldest)
+    }
+  }
   /** chat=日常对话;interview=访谈写作(多轮采访→成稿) */
   private mode: 'chat' | 'interview' = 'chat'
   private interviewBar!: HTMLElement
@@ -2622,6 +2659,12 @@ class ChatView extends ItemView {
   private stopCurrentTurn(): void {
     if (!this.sending || !this.activeTurnAbort || this.activeTurnAbort.signal.aborted) return
     this.sendBtn.disabled = true
+    if (this.pendingVaultTask?.batch) {
+      this.pendingVaultTask = pauseVaultBatchTask(this.pendingVaultTask, 'user', Date.now())
+      // 先把断点落到本机会话，再终止网络轮；失败时 runSendTurn 的 finally/catch
+      // 仍会再次保存，二者任一成功都不会让“停止”退化成“丢任务”。
+      void this.persistNow()
+    }
     this.activeTurnAbort.abort()
     this.activityEnd('error', '已停止当前任务')
     new Notice('已停止后续处理。已经发出的这一轮可能已产生少量积分。', 6000)
@@ -2902,8 +2945,10 @@ class ChatView extends ItemView {
   }
 
   private resetConversationIdentity(sessionId = newPluginSessionId()): void {
+    if (this.pendingVaultTask) this.vaultBatchToolResults.delete(this.pendingVaultTask.id)
     this.messages = []
     this.sessionId = normalizePluginSessionId(sessionId)
+    this.pendingVaultTask = null
     this.applyActiveConversationTitleState(undefined)
   }
 
@@ -2973,6 +3018,7 @@ class ChatView extends ItemView {
         : {}),
       updatedAt: Date.now(),
       messages: this.messages,
+      pendingVaultTask: this.pendingVaultTask ?? undefined,
     })
   }
 
@@ -3009,7 +3055,11 @@ class ChatView extends ItemView {
           message.aiImageResult || message.imageResult || (message.vaultSources?.length ?? 0) > 0,
         ),
       )
-      if (cloud?.messages.length && (!local || (!localHasRichCards && cloud.updatedAt > local.updatedAt))) {
+      const localHasPendingVaultTask = Boolean(storedPendingVaultTask(local?.pendingVaultTask))
+      if (
+        cloud?.messages.length &&
+        (!local || (!localHasRichCards && !localHasPendingVaultTask && cloud.updatedAt > local.updatedAt))
+      ) {
         selected = cloud
       }
     } catch {
@@ -3039,6 +3089,7 @@ class ChatView extends ItemView {
       const localHasVaultSources = Boolean(
         latestLocal?.messages.some((message) => (message.vaultSources?.length ?? 0) > 0),
       )
+      const localHasPendingVaultTask = Boolean(storedPendingVaultTask(latestLocal?.pendingVaultTask))
       const latestCloudTitleState = latestCloudSummary
         ? cloudConversationTitleState(latestCloudSummary)
         : undefined
@@ -3062,7 +3113,9 @@ class ChatView extends ItemView {
         latestLocal = applyConversationTitleState(latestLocal, mergedTitleState)
         await this.plugin.saveConvo(latestLocal)
       }
-      const preserveRicherLocalCopy = sameSession && (localHasImageCards || localHasVaultSources)
+      const preserveRicherLocalCopy = sameSession && (
+        localHasImageCards || localHasVaultSources || localHasPendingVaultTask
+      )
       if (
         latestCloudSummary &&
         (
@@ -3087,6 +3140,16 @@ class ChatView extends ItemView {
     this.clearAuthorizedContent()
     this.messages = c.messages
     this.sessionId = normalizePluginSessionId(c.id)
+    this.pendingVaultTask = storedPendingVaultTask(c.pendingVaultTask)
+    if (this.pendingVaultTask?.batch?.status === 'paused') {
+      const progress = vaultBatchProgress(this.pendingVaultTask)
+      new Notice(
+        progress
+          ? `这条对话有一项可续跑批量任务：已完成 ${progress.completed}/${progress.total} 份。直接说“继续”即可。`
+          : '这条对话有一项可续跑批量任务。直接说“继续”即可。',
+        6000,
+      )
+    }
     this.applyActiveConversationTitleState(savedConversationTitleState(c))
     if (c.mode === 'interview' && this.mode !== 'interview') {
       this.mode = 'interview'
@@ -4944,6 +5007,13 @@ class ChatView extends ItemView {
     } catch (e) {
       const stopped = isAbortError(e)
       const msg = e instanceof Error ? e.message : String(e)
+      if (this.pendingVaultTask?.batch) {
+        this.pendingVaultTask = pauseVaultBatchTask(
+          this.pendingVaultTask,
+          stopped ? 'user' : 'error',
+          Date.now(),
+        )
+      }
       if (!stopped && !options.localSkillChoiceOfferId) new Notice(`AI霖子:${msg}`, 6000)
       // 失败的那条用户消息保留在输入历史里,方便重试
       if (stopped) {
@@ -4952,7 +5022,9 @@ class ChatView extends ItemView {
           role: 'assistant',
           parts: [{
             type: 'text',
-            text: '⏹️ 已停止当前任务。已经发出的这一轮可能已产生少量积分，后续请求和批次不会继续。',
+            text: this.pendingVaultTask?.batch
+              ? `${batchStoppedMessage(this.pendingVaultTask)}\n\n已经发出的这一轮可能已产生少量积分。`
+              : '⏹️ 已停止当前任务。已经发出的这一轮可能已产生少量积分，后续请求和批次不会继续。',
           }],
         })
         await this.persistNow()
@@ -4964,6 +5036,7 @@ class ChatView extends ItemView {
           skillCreatorPending: skillCreatorTurn || undefined,
           skillUpdatePendingPath: skillUpdaterTurn ? skillUpdateTargetPath : undefined,
         })
+        if (this.pendingVaultTask?.batch) await this.persistNow()
       }
       if (options.consultationWorkflowTaskOriginId) {
         const origin = this.messages.find(
@@ -5522,10 +5595,14 @@ class ChatView extends ItemView {
     weeklyBusinessScan?: WeeklyBusinessScanState
   }> {
     throwIfAborted(input.signal)
-    const batchMode = isVaultBatchTask([
+    const requestedBatchMode = isVaultBatchTask([
       input.question,
       input.resumeQuestion?.goal ?? '',
     ].join('\n'))
+    const continuingStoredBatch = Boolean(
+      this.pendingVaultTask?.batch && isVaultTaskContinuation(input.question),
+    )
+    const batchMode = requestedBatchMode || continuingStoredBatch
     const maxRounds = batchMode ? VAULT_AGENT_BATCH_MAX_ROUNDS : VAULT_AGENT_MAX_ROUNDS
     let toolResults: VaultAgentToolResult[] = []
     const sources: VaultMessageSource[] = []
@@ -5549,12 +5626,67 @@ class ChatView extends ItemView {
             : undefined,
       )
       toolResults = merged.results
+      if (this.pendingVaultTask?.batch) {
+        this.rememberVaultBatchToolResults(this.pendingVaultTask.id, toolResults)
+      }
       if (merged.exhausted && !toolBudgetExhausted) {
         toolBudgetExhausted = true
         this.activityStep('📦 本次读取量较大，将基于已读内容收尾')
         new Notice('本次任务读取量较大，AI霖子将基于已读内容收尾；更多材料建议分批处理。', 6000)
       }
     }
+    const batchCheckpointForApi = () => {
+      if (!this.pendingVaultTask?.batch) return undefined
+      const progress = vaultBatchProgress(this.pendingVaultTask)
+      if (!progress) return undefined
+      return {
+        status: this.pendingVaultTask.batch.status,
+        total: progress.total,
+        completed: progress.completed,
+        inProgress: progress.inProgress,
+        failed: progress.failed,
+        pendingFolderCount: progress.pendingFolders,
+        resumeCount: this.pendingVaultTask.batch.resumeCount,
+        remainingFilenames: progress.remainingPaths
+          .map((path) => path.split('/').at(-1) ?? path)
+          .slice(0, 24),
+        partialFilenames: this.pendingVaultTask.batch.readProgress
+          .map((item) => item.path.split('/').at(-1) ?? item.path)
+          .slice(0, 12),
+        failedFilenames: this.pendingVaultTask.batch.failures
+          .map((item) => item.path.split('/').at(-1) ?? item.path)
+          .slice(0, 12),
+        remainingPaths: progress.remainingPaths.slice(0, 24),
+        partialReads: this.pendingVaultTask.batch.readProgress
+          .map((item) => ({ path: item.path, nextOffset: item.nextOffset }))
+          .slice(0, 24),
+        failedPaths: this.pendingVaultTask.batch.failures
+          .map((item) => item.path)
+          .slice(0, 24),
+        pendingFolders: this.pendingVaultTask.batch.folderProgress
+          .map((item) => ({ ...item }))
+          .slice(0, 12),
+      }
+    }
+    const pauseBatch = async (
+      reason: 'user' | 'round-limit' | 'tool-budget' | 'restart' | 'error',
+    ) => {
+      if (!this.pendingVaultTask?.batch) return
+      this.pendingVaultTask = pauseVaultBatchTask(this.pendingVaultTask, reason, Date.now())
+      await this.persistNow()
+    }
+    const batchPauseText = () => {
+      if (!this.pendingVaultTask?.batch) return '批量任务已保存断点，回到本对话说“继续”即可接着处理。'
+      const progress = vaultBatchProgress(this.pendingVaultTask)
+      return [
+        '⏸️ 这次批量处理已保存本机断点，没有把部分结果冒充全部完成。',
+        progress
+          ? `当前清单：已完整读取 ${progress.completed}/${progress.total} 份，读取中 ${progress.inProgress} 份，失败 ${progress.failed} 份，待翻目录 ${progress.pendingFolders} 个。`
+          : '',
+        '回到本对话直接说“继续”，AI霖子会从未完成清单接着跑；不需要重新指定文件夹。',
+      ].filter(Boolean).join('\n\n')
+    }
+    const batchPauseMarker = '<<<AI_LINZI_BATCH_PAUSED>>>'
     // 官方咨询闭环的前置条件是固定且完全本机的：工作流规则和
     // 用户的客户库目录元数据。若全部交给模型逐轮请求，
     // 实测会在找到真实目录后才撞满 12 轮。用户显式调用该 Skill 时，
@@ -5685,12 +5817,16 @@ class ChatView extends ItemView {
     }
     // 阶段 A：intent 只允许 auto → organize 单向升级；跨轮任务状态在会话上保存。
     if (this.pendingVaultTask && isVaultTaskExpired(this.pendingVaultTask, Date.now())) {
+      this.vaultBatchToolResults.delete(this.pendingVaultTask.id)
       this.pendingVaultTask = null
     }
     // 「对/继续」这类短确认才完整承接旧任务；较长的新消息只携带元数据，
     // intent 不继承，避免旧写入任务把无关新话题拖进 organize 强制流程。
     const taskContinuation =
       Boolean(this.pendingVaultTask) && isVaultTaskContinuation(input.question)
+    if (this.pendingVaultTask?.batch && taskContinuation) {
+      this.pendingVaultTask = resumeVaultBatchTask(this.pendingVaultTask, Date.now())
+    }
     // 用户措辞本身就是整理/移动/删除/写入类请求（含否定与只读豁免判定）。
     // round 0 仍走 auto 保留自主反问空间，但这类请求：①任务标记为 organize，
     // 合法反问收尾后任务保留，「全部整理/继续」能承接升级；②绝不允许零工具、
@@ -5703,14 +5839,57 @@ class ChatView extends ItemView {
     })
     // 承接上一轮未完成任务：按受控路径重新读取本地文件重建工具结果（不落盘正文）。
     if (this.pendingVaultTask && input.vaultAccess && taskContinuation) {
-      const task = this.pendingVaultTask
+      let task = this.pendingVaultTask
+      if (task.batch) {
+        let changed = false
+        for (const stored of [...task.batch.completedPaths, ...task.batch.readProgress]) {
+          const current = this.plugin.vaultFileStat(stored.path)
+          if (!current) {
+            task = markVaultBatchFailure(task, stored.path, '文件已移动或删除', Date.now())
+            changed = true
+          } else if (current.mtime !== stored.mtime || current.size !== stored.size) {
+            // 文件内容已变，旧“已完成”不能继续复用；从头重读这一份，避免新旧内容混合。
+            task = markVaultBatchRead(
+              task,
+              { snapshot: current, nextOffset: 0, totalChars: current.size },
+              Date.now(),
+            )
+            changed = true
+          }
+        }
+        if (changed) {
+          this.pendingVaultTask = task
+          this.vaultBatchToolResults.delete(task.id)
+          await this.persistNow()
+          new Notice('续跑前发现部分文件已变化，已自动把它们退回待处理清单。', 5000)
+        }
+      }
+      const cachedBatchResults = task.batch
+        ? this.vaultBatchToolResults.get(task.id) ?? []
+        : []
+      // 同一 Obsidian 进程内可复用内存里的真实工具结果。重启后只剩路径
+      // 与指纹，不能把“上次已读”冒充为本轮模型仍拥有正文；因此把这些
+      // 路径退回待读游标，由下一轮按准确路径重读。清单和文件夹分页仍保留。
+      if (
+        task.batch &&
+        cachedBatchResults.length === 0 &&
+        (task.batch.completedPaths.length > 0 || task.batch.readProgress.length > 0)
+      ) {
+        task = resetVaultBatchForColdResume(task, Date.now())
+        this.pendingVaultTask = task
+        await this.persistNow()
+        new Notice('应用重启后已恢复批量清单；为避免遗漏，已按原路径安全重读正文。', 6000)
+      }
+      if (cachedBatchResults.length > 0) appendToolResults(cachedBatchResults)
       const rehydratePaths = [
         ...new Set([
-          ...task.sourcePaths.map((item) => item.path),
+          ...(!task.batch ? task.sourcePaths.map((item) => item.path) : []),
           ...(task.targetPath ? [task.targetPath] : []),
         ]),
       ].slice(0, 6)
-      if (rehydratePaths.length > 0) {
+      // 普通（非批量）任务重启后仍按旧逻辑重建少量工具结果。批量任务
+      // 由上面的持久化清单与精确游标驱动，避免一次重读太多正文。
+      if (rehydratePaths.length > 0 && cachedBatchResults.length === 0) {
         const rehydrated = await this.plugin.vaultAgent.executeReadCalls(
           rehydratePaths.map((path, index) => ({
             id: `task-rehydrate-${index + 1}`,
@@ -5745,12 +5924,104 @@ class ChatView extends ItemView {
           stage: 'searching',
           candidatePaths: [],
           sourcePaths: [],
+          ...(batchMode ? { batch: createVaultBatchCheckpoint(now) } : {}),
           createdAt: now,
+          updatedAt: now,
+        }
+      } else if (batchMode && !this.pendingVaultTask.batch) {
+        this.pendingVaultTask = {
+          ...this.pendingVaultTask,
+          batch: createVaultBatchCheckpoint(now),
           updatedAt: now,
         }
       }
       this.pendingVaultTask = advanceVaultTask(this.pendingVaultTask, event, now)
       if (intent === 'organize' || mutationAsk) this.pendingVaultTask.intent = 'organize'
+    }
+    const checkpointBatchTool = (
+      call: VaultAgentToolCall,
+      result: VaultAgentToolResult | undefined,
+      callSources: VaultMessageSource[],
+    ) => {
+      if (!batchMode || !result) return
+      const now = Date.now()
+      if (call.name === 'vault_search') {
+        const paths = callSources.map((source) => source.path)
+        if (paths.length > 0) updateTask({ type: 'search', candidatePaths: paths })
+        return
+      }
+      if (call.name === 'list_folder' && result.ok) {
+        let paths: string[] = []
+        let nextOffset: number | null = null
+        try {
+          const parsed = JSON.parse(result.output) as { entries?: unknown; nextOffset?: unknown }
+          nextOffset = Number.isInteger(parsed.nextOffset) ? Number(parsed.nextOffset) : null
+          if (Array.isArray(parsed.entries)) {
+            paths = parsed.entries
+              .filter((entry): entry is Record<string, unknown> =>
+                Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry),
+              )
+              .filter((entry) => entry.type === 'file' && entry.readable !== false)
+              .map((entry) => typeof entry.path === 'string' ? entry.path : '')
+              .filter(Boolean)
+          }
+        } catch {
+          paths = []
+        }
+        updateTask({ type: 'search', candidatePaths: paths })
+        if (this.pendingVaultTask?.batch) {
+          const path = typeof call.arguments.path === 'string' ? call.arguments.path.trim() : ''
+          const depth = typeof call.arguments.depth === 'number' ? call.arguments.depth : 1
+          const maxEntries = typeof call.arguments.maxEntries === 'number' ? call.arguments.maxEntries : 80
+          this.pendingVaultTask = markVaultBatchFolderPage(
+            this.pendingVaultTask,
+            { path, depth, maxEntries, nextOffset },
+            now,
+          )
+        }
+        return
+      }
+      if (call.name !== 'read_note' || typeof call.arguments.path !== 'string') return
+      const path = call.arguments.path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+      if (!path) return
+      // 即使第一份读取就失败，也要先把准确路径纳入清单，断点才能如实展示失败项。
+      updateTask({ type: 'search', candidatePaths: [path] })
+      if (!this.pendingVaultTask?.batch) return
+      if (!result.ok) {
+        this.pendingVaultTask = markVaultBatchFailure(
+          this.pendingVaultTask,
+          path,
+          result.output,
+          now,
+        )
+        return
+      }
+      const snapshot = this.plugin.vaultFileStat(path)
+      if (!snapshot) {
+        this.pendingVaultTask = markVaultBatchFailure(
+          this.pendingVaultTask,
+          path,
+          '文件在读取后已移动或删除',
+          now,
+        )
+        return
+      }
+      let nextOffset: number | null = null
+      let totalChars: number | undefined
+      try {
+        const parsed = JSON.parse(result.output) as { nextOffset?: unknown; totalChars?: unknown }
+        nextOffset = Number.isInteger(parsed.nextOffset) ? Number(parsed.nextOffset) : null
+        totalChars = typeof parsed.totalChars === 'number' && Number.isFinite(parsed.totalChars)
+          ? parsed.totalChars
+          : undefined
+      } catch {
+        // 旧执行器若未返回游标，成功结果按完整文件处理；不会把失败当成功。
+      }
+      this.pendingVaultTask = markVaultBatchRead(
+        this.pendingVaultTask,
+        { snapshot, nextOffset, totalChars },
+        now,
+      )
     }
 
     // 删除当前笔记不需要模型搜索：noteContext 已在发送瞬间锁定了准确路径。
@@ -5859,6 +6130,7 @@ class ChatView extends ItemView {
             batchMode,
             sessionId: this.sessionId,
             pendingTaskGoal: taskContinuation ? this.pendingVaultTask?.goal : undefined,
+            batchCheckpoint: batchCheckpointForApi(),
           }
           const requestRound = typeof requestBody.round === 'number' ? requestBody.round : 0
           const data = await this.plugin.api('/api/plugin/v1/vault-native/step', {
@@ -6046,6 +6318,9 @@ class ChatView extends ItemView {
               toolBudgetExhausted ||= merged.exhausted
               toolResults.length = 0
               toolResults.push(...merged.results)
+              if (this.pendingVaultTask?.batch) {
+                this.rememberVaultBatchToolResults(this.pendingVaultTask.id, toolResults)
+              }
               nextBody = {
                 question: input.question,
                 round: Math.min(requestRound + 1, maxRounds - 1),
@@ -6081,6 +6356,13 @@ class ChatView extends ItemView {
             executed.results.push(...duplicateResults, ...limitedCalls.deferredResults)
             for (const call of limitedCalls.executable) {
               const result = executed.results.find((item) => item.callId === call.id)
+              if (freshCalls.some((fresh) => fresh.id === call.id)) {
+                checkpointBatchTool(
+                  call,
+                  result,
+                  executed.sources.filter((source) => source.sourceId === call.id),
+                )
+              }
               if (!result?.ok) continue
               if (call.name === 'read_note' && typeof call.arguments.path === 'string') {
                 const path = call.arguments.path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
@@ -6121,11 +6403,15 @@ class ChatView extends ItemView {
                 this.activityStep('🗺️ 建立全库结构快照（只含目录元数据）')
               }
             }
+            if (batchMode && this.pendingVaultTask?.batch) await this.persistNow()
             sources.push(...executed.sources)
             const merged = appendToolResultsWithinBudget(toolResults, executed.results)
             toolBudgetExhausted ||= merged.exhausted
             toolResults.length = 0
             toolResults.push(...merged.results)
+            if (this.pendingVaultTask?.batch) {
+              this.rememberVaultBatchToolResults(this.pendingVaultTask.id, toolResults)
+            }
             nextBody = {
               question: input.question,
               round: Math.min(requestRound + 1, maxRounds - 1),
@@ -6174,6 +6460,10 @@ class ChatView extends ItemView {
           }
           throw new Error('native: empty step')
         }
+        if (batchMode && this.pendingVaultTask?.batch) {
+          await pauseBatch(toolBudgetExhausted ? 'tool-budget' : 'round-limit')
+          return `${batchPauseMarker}\n${batchPauseText()}`
+        }
         throw new Error('native: no final text')
       } catch (error) {
         if (isAbortError(error)) throw error
@@ -6184,6 +6474,13 @@ class ChatView extends ItemView {
     }
     if (nativeFastPath) {
       pendingNativeText = await runNativeChannel()
+      if (pendingNativeText?.startsWith(batchPauseMarker)) {
+        return {
+          text: pendingNativeText.slice(batchPauseMarker.length).trim(),
+          sources,
+          localSkillRunIds,
+        }
+      }
     }
     for (let round = 0; round < maxRounds; round++) {
       throwIfAborted(input.signal)
@@ -6232,6 +6529,7 @@ class ChatView extends ItemView {
               candidateFilenames: this.pendingVaultTask.candidatePaths
                 .map((path) => path.split('/').at(-1) ?? path)
                 .slice(0, 8),
+              batchCheckpoint: batchCheckpointForApi(),
             }
           : undefined,
       }
@@ -6433,6 +6731,29 @@ class ChatView extends ItemView {
             throw new Error('AI 没有在安全轮次内生成可执行的 Vault 方案，请缩小范围后重试')
           }
           pendingRetryReason = 'invalid_plan'
+          continue
+        }
+        const batchProgress = this.pendingVaultTask?.batch
+          ? vaultBatchProgress(this.pendingVaultTask)
+          : null
+        const batchStillReading = Boolean(
+          batchProgress &&
+          (
+            (
+              batchProgress.total > 0 &&
+              (batchProgress.remainingPaths.length > 0 || batchProgress.inProgress > 0)
+            ) ||
+            batchProgress.pendingFolders > 0
+          ),
+        )
+        // 批量任务不能在清单尚未读完时提前交“综合结果”或写入方案。这个判定
+        // 只看本机游标与文件指纹，不相信模型说了“全部完成”。
+        if (batchStillReading) {
+          if (round >= maxRounds - 1 || toolBudgetExhausted) {
+            await pauseBatch(toolBudgetExhausted ? 'tool-budget' : 'round-limit')
+            return { text: batchPauseText(), sources, localSkillRunIds }
+          }
+          pendingRetryReason = 'deferred_answer'
           continue
         }
         // create-note Skill 的服务端兼容协议会返回 <<<新建笔记>>> 确认卡。
@@ -6651,6 +6972,7 @@ class ChatView extends ItemView {
         }
         // 合法终态：产出通过预检的方案卡 → 任务停在 previewed 等用户确认；
         // 纯问答正常收尾 → 任务结清。两种情况都不把中间状态带进下一轮新话题。
+        const failedBatchPaths = this.pendingVaultTask?.batch?.failures.map((item) => item.path) ?? []
         if (plan.plan) {
           const planTarget = plan.plan.operations.length === 1 &&
             (plan.plan.operations[0].type === 'append_note' ||
@@ -6660,6 +6982,20 @@ class ChatView extends ItemView {
             ? plan.plan.operations[0].path
             : undefined
           if (planTarget) updateTask({ type: 'previewed', targetPath: planTarget })
+          if (this.pendingVaultTask?.batch) {
+            const now = Date.now()
+            this.pendingVaultTask = {
+              ...this.pendingVaultTask,
+              updatedAt: now,
+              batch: {
+                ...this.pendingVaultTask.batch,
+                status: 'previewed',
+                pauseReason: undefined,
+                checkpointSeq: this.pendingVaultTask.batch.checkpointSeq + 1,
+                updatedAt: now,
+              },
+            }
+          }
         } else {
           if (
             this.pendingVaultTask &&
@@ -6671,6 +7007,9 @@ class ChatView extends ItemView {
             // 补齐 intent 与上下文。此前这里无条件清空，导致续跑轮失忆、空承诺
             // 循环（阿正 No.153 案，工单第七节 08-18 追记）。
           } else {
+            if (this.pendingVaultTask) {
+              this.vaultBatchToolResults.delete(this.pendingVaultTask.id)
+            }
             if (
               this.pendingVaultTask &&
               !taskContinuation &&
@@ -6685,9 +7024,20 @@ class ChatView extends ItemView {
             this.pendingVaultTask = null
           }
         }
+        if (failedBatchPaths.length > 0) {
+          const shown = failedBatchPaths.slice(0, 8)
+          lastText = [
+            lastText,
+            `> ⚠️ **批量结果不包含 ${failedBatchPaths.length} 份读取失败的文件：** ${shown.join('、')}${failedBatchPaths.length > shown.length ? '等' : ''}。插件没有把它们算作已完成。`,
+          ].join('\n\n')
+        }
         return { text: lastText, sources, localSkillRunIds }
       }
       if (round >= maxRounds - 1) {
+        if (batchMode && this.pendingVaultTask?.batch) {
+          await pauseBatch('round-limit')
+          return { text: batchPauseText(), sources, localSkillRunIds }
+        }
         throw new Error('本次翻阅已达到安全轮次上限，请缩小范围后再试')
       }
       const forbidden = toolRequest.calls.find((call) =>
@@ -6894,6 +7244,13 @@ class ChatView extends ItemView {
       // 用户可见的真实进度：每个动作实时滚动进对话区活动流(0.7.53)。
       for (const call of readCalls) {
         const result = executed.results.find((item) => item.callId === call.id)
+        if (freshReadCalls.some((fresh) => fresh.id === call.id)) {
+          checkpointBatchTool(
+            call,
+            result,
+            executed.sources.filter((source) => source.sourceId === call.id),
+          )
+        }
         if (!result?.ok) continue
         if (call.name === 'read_note' && typeof call.arguments.path === 'string') {
           const path = call.arguments.path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
@@ -6948,6 +7305,7 @@ class ChatView extends ItemView {
           this.activityStep(`🧩 读取技能文件 ${call.arguments.path.split('/').at(-1)}`)
         }
       }
+      if (batchMode && this.pendingVaultTask?.batch) await this.persistNow()
       pendingRetryReason = undefined
       appendToolResults(executed.results)
       sources.push(...executed.sources)
@@ -7649,6 +8007,9 @@ class ChatView extends ItemView {
             new Notice('看板已生成；没有找到对应的本机扫描快照，下次会安全地重新全量扫描。', 7000)
           }
           // 确认卡已执行 → 跨轮任务结清；下一句「继续」不再重新进入旧写入流程。
+          if (this.pendingVaultTask) {
+            this.vaultBatchToolResults.delete(this.pendingVaultTask.id)
+          }
           this.pendingVaultTask = null
           const writtenPaths = [
             ...(applied.createdNotes ?? []),
