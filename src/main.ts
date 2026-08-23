@@ -175,6 +175,10 @@ import {
   isConsultationTranscriptPath,
 } from './consultation-workflow-source'
 import {
+  isConsultationBriefRevisionIntent,
+  type CustomerConsultationBriefDraft,
+} from './customer-consultation-brief-core'
+import {
   storedWeeklyBusinessDashboardCache,
   storedWeeklyBusinessScanState,
   type WeeklyBusinessDashboardCache,
@@ -552,6 +556,8 @@ interface WireMessage {
   consultationWorkflowTaskRequestedAt?: number
   /** 该流程卡触发的任务已经真实写入；用于防止成功后再次创建重复任务。 */
   consultationWorkflowTaskCompletedAt?: number
+  /** 客户咨询简报的本机隐藏源稿；只用于自然语言修图，不上传普通主对话 API。 */
+  consultationBriefDraft?: CustomerConsultationBriefDraft
   /** 原生 Vault 引擎的结构化澄清问题；只保存在插件本机，不进入云端普通消息。 */
   vaultQuestion?: PendingVaultQuestion
   /** Skill Studio 创建完成后的推荐试运行指令；只用于本机按钮。 */
@@ -2041,6 +2047,13 @@ export default class AiLinziPlugin extends Plugin {
     return undefined
   }
 
+  /** 咨询简报源稿只进入本机对话历史；不在 Vault 额外生成 Markdown 文件。 */
+  async rememberConsultationBriefDraft(draft: CustomerConsultationBriefDraft): Promise<void> {
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]
+    const view = leaf?.view
+    if (view instanceof ChatView) await view.attachConsultationBriefDraft(draft)
+  }
+
   /** 进入访谈写作模式(SKILL_ACTIONS 菜单入口) */
   async startInterview() {
     await this.activateChatView()
@@ -2173,11 +2186,38 @@ export default class AiLinziPlugin extends Plugin {
    * 调用返回纯文本流的技能路由(toTextStreamResponse)。
    * requestUrl 会把流缓冲成完整文本;错误时这些路由返回 JSON,这里解析出友好文案。
    */
-  async apiText(path: string, body: unknown): Promise<string> {
+  async apiText(path: string, body: unknown, signal?: AbortSignal): Promise<string> {
     const { serverUrl } = this.settings
     const token = this.getApiToken()
     if (!serverUrl || !token) {
       throw new Error(NOT_CONNECTED_MSG)
+    }
+    if (signal) {
+      const response = await window.fetch(`${serverUrl.replace(/\/+$/, '')}${path}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'X-AI-Linzi-Plugin-Version': this.manifest.version,
+        },
+        body: JSON.stringify(body),
+        signal,
+      })
+      const text = await response.text()
+      if (!response.ok) {
+        let msg = `请求失败(${response.status})`
+        try {
+          const data = JSON.parse(text) as { error?: string; requestId?: string }
+          if (typeof data.error === 'string') msg = data.error
+          if (typeof data.requestId === 'string') msg += `（问题编号：${data.requestId}）`
+        } catch {
+          /* 非 JSON 错误体 */
+        }
+        throw new Error(msg)
+      }
+      const normalized = text.trim()
+      if (!normalized) throw new Error('AI 返回了空内容,请稍后重试')
+      return normalized
     }
     const res = await requestUrl({
       url: `${serverUrl.replace(/\/+$/, '')}${path}`,
@@ -3796,6 +3836,26 @@ class ChatView extends ItemView {
     return undefined
   }
 
+  private recentConsultationBriefDraft(): CustomerConsultationBriefDraft | undefined {
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      const draft = this.messages[index].consultationBriefDraft
+      if (draft?.version === 1 && draft.markdown.trim() && draft.pngPath.trim()) return draft
+    }
+    return undefined
+  }
+
+  async attachConsultationBriefDraft(draft: CustomerConsultationBriefDraft): Promise<void> {
+    // 优先绑到刚才那条技能状态，避免为了保存隐藏源稿额外制造一条用户可见消息。
+    // 没有状态消息（例如旧入口）时绑到最近一条 AI 回复，仍只留在本机历史。
+    const target = [...this.messages].reverse().find(
+      (message) => message.role === 'assistant' && message.localSkillStatus,
+    ) ?? [...this.messages].reverse().find((message) => message.role === 'assistant')
+    if (!target) return
+    for (const message of this.messages) delete message.consultationBriefDraft
+    target.consultationBriefDraft = draft
+    await this.persistNow()
+  }
+
   /**
    * 咨询交付闭环在第 1 步锁定了原始逐字稿后，后续 2–5 步必须始终
    * 沿用这一份材料。TXT/PDF/DOCX 无法作为 Obsidian 当前 Markdown 标签页，
@@ -3967,7 +4027,8 @@ class ChatView extends ItemView {
       // 新建请求误送进已有 Skill 更新器。未命中本机明确路由的自然说法继续交给
       // 主对话模型按整句语义判断，模型仍只能返回待确认卡，不能直接写入 Vault。
       const explicitSkillCreation = isExplicitLocalSkillCreationIntent(text)
-      const naturalSkillUpdate = !options.skillUpdatePath && !pendingSkillUpdatePath &&
+      const naturalSkillUpdate = options.skillCreator !== true &&
+        !options.skillUpdatePath && !pendingSkillUpdatePath &&
         !explicitSkillCreation &&
         isPotentialLocalSkillUpdateIntent(text)
         ? await this.localSkills.resolveUpdate(text)
@@ -4096,6 +4157,21 @@ class ChatView extends ItemView {
           role: 'assistant',
           parts: [{ type: 'text', text: formatLocalSkillList(skills, this.localSkills.root()) }],
         })
+        await this.persistNow()
+        return
+      }
+      const recentConsultationBrief = this.recentConsultationBriefDraft()
+      if (
+        recentConsultationBrief &&
+        isConsultationBriefRevisionIntent(text)
+      ) {
+        const { reviseCustomerConsultationBrief } = await import('./customer-consultation-brief')
+        await reviseCustomerConsultationBrief(
+          this.plugin,
+          recentConsultationBrief,
+          text,
+          turnAbort.signal,
+        )
         await this.persistNow()
         return
       }
@@ -4638,6 +4714,7 @@ class ChatView extends ItemView {
         const usedPath = await runCustomerConsultationBrief(
           this.plugin,
           source instanceof TFile ? source : undefined,
+          turnAbort.signal,
         )
         const latest = this.messages.at(-1)
         if (usedPath && latest?.role === 'assistant' && !latest.consultationWorkflowSourcePath) {

@@ -176,6 +176,21 @@ assert.equal(
   undefined,
 )
 assert.equal(
+  core.vaultAutoAnswerRetryReason(
+    '后续的 CRM 同步、任务创建、PNG 生成属于本地工具能力，我这边无法真实执行。',
+    true,
+  ),
+  'missing_tool_use',
+  '已有本机结果时仍声称官方闭环能力不可用，必须被客户端拦下纠正',
+)
+assert.equal(
+  core.vaultAutoAnswerRetryReason(
+    '我这边没有真实写入 Vault、CRM、任务、生成 PNG 的工具能力，需要你在本地完成。',
+    true,
+  ),
+  'missing_tool_use',
+)
+assert.equal(
   core.vaultAnswerRetryReason('合伙人的私教咨询有多少场', '我找到了相关记录。'),
   'missing_count',
 )

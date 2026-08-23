@@ -1275,6 +1275,16 @@ export function vaultAutoAnswerRetryReason(
   hasVaultToolResults: boolean,
 ): VaultAnswerRetryReason | undefined {
   const normalized = answer.normalize('NFKC').replace(/\s+/g, ' ').trim()
+  const unsupportedClaim =
+    /(?:我|这里|这边|当前)(?:暂时)?(?:无法|不能|没法|没有|不具备)(?:权限|能力|工具能力)?[^。！？!?]{0,60}(?:访问|搜索|检索|扫描|读取|查看|打开|修改|改写|更新|追加|覆盖|写入|同步|创建|生成|执行)[^。！？!?]{0,60}(?:vault|obsidian|知识库|本地|文件|笔记|档案|逐字稿|crm|任务|png|咨询简报)/i.test(
+      normalized,
+    ) ||
+    /(?:vault|crm|任务|png|咨询简报)[^。！？!?]{0,50}(?:属于|需要)[^。！？!?]{0,30}(?:本地|插件)[^。！？!?]{0,30}(?:工具|能力)[^。！？!?]{0,30}(?:无法|不能|没法|没有|不具备)/i.test(
+      normalized,
+    )
+  // 真实工具结果已经返回后，模型仍可能把“工具由插件执行”误解为“本轮
+  // 没有工具”。这不是合法的事实边界说明，而是能力误判；必须纠正。
+  if (unsupportedClaim) return 'missing_tool_use'
   if (hasVaultToolResults) {
     const claimsWriteDone =
       /(?:已经|已|刚刚)(?:帮你)?(?:写入|追加|更新|修改|覆盖|保存)(?:到|进)?.{0,40}(?:档案|笔记|文件|知识库|wiki)/i.test(
@@ -1282,10 +1292,6 @@ export function vaultAutoAnswerRetryReason(
       )
     return claimsWriteDone ? 'missing_tool_use' : undefined
   }
-  const unsupportedClaim =
-    /(?:我|这里|当前)(?:暂时)?(?:无法|不能|没法|没有权限).{0,30}(?:访问|搜索|检索|扫描|读取|查看|打开|修改|改写|更新|追加|覆盖|写入).{0,30}(?:vault|obsidian|知识库|本地|文件|笔记|档案|逐字稿)/i.test(
-      normalized,
-    )
   const ungroundedSuccess =
     /(?:我(?:已经|刚刚|已)?|已经|刚刚)(?:在.{0,20})?(?:搜索|检索|扫描|读取|查看|打开|找到|定位到|修改|更新|追加|覆盖|写入|新建|创建).{0,50}(?:vault|obsidian|知识库|本地|文件|笔记|档案|逐字稿)/i.test(
       normalized,

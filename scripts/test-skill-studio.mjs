@@ -1015,6 +1015,11 @@ assert.match(
 )
 assert.match(
   runSendTurnSource,
+  /const naturalSkillUpdate = options\.skillCreator !== true &&/,
+  'Skill Studio 已锁定为新建时必须在自然语言修改解析之前短路，不能被提示词里的“修改/更新”截走',
+)
+assert.match(
+  runSendTurnSource,
   /skillCreatorTurn =\s*!pendingVaultQuestion\s*&&\s*!skillUpdaterTurn\s*&&[\s\S]{0,300}pendingSkillCreatorInterview \|\| explicitSkillCreation/,
   'Skill Creator 路由必须复用同一个新建意图结果',
 )

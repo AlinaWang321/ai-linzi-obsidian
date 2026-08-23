@@ -15,8 +15,10 @@ import {
   CUSTOMER_CONSULTATION_TRANSCRIPT_MAX,
   CUSTOMER_CONSULTATION_TRANSCRIPT_MIN,
   customerConsultationPngBase,
+  consultationBriefRevisionIssue,
   ensureConsultationBriefHeading,
   normalizeConsultationBriefMarkdown,
+  type CustomerConsultationBriefDraft,
   type CustomerConsultationBriefInput,
 } from './customer-consultation-brief-core'
 import { selectTranscriptSource } from './transcript-source'
@@ -280,6 +282,7 @@ class CustomerConsultationBriefModal extends Modal {
 export async function runCustomerConsultationBrief(
   plugin: AiLinziPlugin,
   lockedSourceFile?: TFile,
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
   const source = lockedSourceFile
     ? await (async () => {
@@ -347,7 +350,7 @@ export async function runCustomerConsultationBrief(
       coachName: input.coachName,
       topic: input.topic || undefined,
       sessionInfo: input.sessionInfo || undefined,
-    })
+    }, signal)
     const markdown = ensureConsultationBriefHeading(
       normalizeConsultationBriefMarkdown(response),
       input,
@@ -369,7 +372,22 @@ export async function runCustomerConsultationBrief(
     )
     const file = await plugin.app.vault.createBinary(path, png)
     await plugin.app.workspace.getLeaf('tab').openFile(file)
-    plugin.reportSkillStatus(`✅ 客户咨询简报 PNG 已生成并打开：${path}`, statusId)
+    await plugin.rememberConsultationBriefDraft({
+      version: 1,
+      markdown,
+      sourcePath: sourceFile.path,
+      pngPath: path,
+      clientName: input.clientName,
+      coachName: input.coachName,
+      topic: input.topic,
+      sessionInfo: input.sessionInfo,
+      updatedAt: Date.now(),
+    })
+    plugin.reportSkillStatus(
+      `✅ 客户咨询简报 PNG 已生成并打开：${path}\n` +
+        '想改文字时，直接在主对话说“把刚才的咨询简报里……改成……”，AI霖子会从本机隐藏源稿重新生成新版图片。',
+      statusId,
+    )
     new Notice(`✅ 客户咨询简报 PNG 已生成：${path}`, 8000)
   } catch (error) {
     const message = friendlyErrorMessage(error instanceof Error ? error.message : String(error))
@@ -379,4 +397,72 @@ export async function runCustomerConsultationBrief(
     running.hide()
   }
   return sourceFile.path
+}
+
+/**
+ * 自然语言修改咨询简报：更新本机隐藏源稿后重新渲染一张新 PNG。
+ * 不重读逐字稿、不重跑 CRM/任务、不直接修改旧图片，也不覆盖旧成品。
+ */
+export async function reviseCustomerConsultationBrief(
+  plugin: AiLinziPlugin,
+  draft: CustomerConsultationBriefDraft,
+  instruction: string,
+  signal?: AbortSignal,
+): Promise<CustomerConsultationBriefDraft> {
+  const statusId = plugin.reportSkillStatus(
+    `✏️ 正在按你的要求修改客户咨询简报：${instruction.slice(0, 80)}…`,
+  )
+  const running = new Notice('✏️ AI霖子正在修改咨询简报文字并重新生成 PNG…', 0)
+  try {
+    const response = await plugin.apiText('/api/plugin/v1/skills/consultation-brief', {
+      existingBrief: draft.markdown,
+      revisionInstruction: instruction,
+      clientName: draft.clientName,
+      coachName: draft.coachName,
+      topic: draft.topic || undefined,
+      sessionInfo: draft.sessionInfo || undefined,
+    }, signal)
+    const markdown = ensureConsultationBriefHeading(
+      normalizeConsultationBriefMarkdown(response),
+      draft,
+    )
+    if (!markdown) throw new Error('咨询简报修改结果格式不完整，请换一种说法重试')
+    const revisionIssue = consultationBriefRevisionIssue(draft.markdown, markdown, instruction)
+    if (revisionIssue) throw new Error(`${revisionIssue}，已保留原图，请换一种更明确的说法重试`)
+    const png = await renderConsultationBriefPng(
+      plugin,
+      markdown,
+      draft.sourcePath,
+      draft.coachName,
+    )
+    const root = normalizePath(plugin.settings.outputFolder || 'AI霖子输出')
+    const folder = normalizePath(`${root}/${CUSTOMER_CONSULTATION_OUTPUT_FOLDER}`)
+    await ensureFolder(plugin, folder)
+    const path = uniquePngPath(
+      plugin,
+      folder,
+      customerConsultationPngBase(fileDate(), draft.clientName),
+    )
+    const file = await plugin.app.vault.createBinary(path, png)
+    await plugin.app.workspace.getLeaf('tab').openFile(file)
+    const revised: CustomerConsultationBriefDraft = {
+      ...draft,
+      markdown,
+      pngPath: path,
+      updatedAt: Date.now(),
+    }
+    await plugin.rememberConsultationBriefDraft(revised)
+    plugin.reportSkillStatus(
+      `✅ 咨询简报文字已修改，新版 PNG 已生成并打开：${path}\n旧图片仍保留，没有覆盖。`,
+      statusId,
+    )
+    new Notice(`✅ 咨询简报修改版已生成：${path}`, 8000)
+    return revised
+  } catch (error) {
+    const message = friendlyErrorMessage(error instanceof Error ? error.message : String(error))
+    plugin.reportSkillStatus(`❌ 咨询简报修改失败：${message}`, statusId)
+    throw error
+  } finally {
+    running.hide()
+  }
 }

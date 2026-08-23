@@ -366,7 +366,7 @@ assert.match(
 )
 assert.match(
   __mainForMenu,
-  /const explicitSkillCreation = isExplicitLocalSkillCreationIntent\(text\)[\s\S]{0,220}!explicitSkillCreation[\s\S]{0,120}isPotentialLocalSkillUpdateIntent\(text\)[\s\S]{0,180}this\.localSkills\.resolveUpdate\(text\)/,
+  /const explicitSkillCreation = isExplicitLocalSkillCreationIntent\(text\)[\s\S]{0,240}options\.skillCreator !== true[\s\S]{0,180}!explicitSkillCreation[\s\S]{0,120}isPotentialLocalSkillUpdateIntent\(text\)[\s\S]{0,180}this\.localSkills\.resolveUpdate\(text\)/,
   '主对话必须让新建 Skill 意图优先于正文里的业务更新词',
 )
 assert.match(

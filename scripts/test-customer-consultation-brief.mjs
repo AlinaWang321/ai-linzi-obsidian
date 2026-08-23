@@ -37,6 +37,47 @@ const styleModule = await import(pathToFileURL(styleOutfile).href)
 assert.equal(core.CUSTOMER_CONSULTATION_TRANSCRIPT_MIN, 800)
 assert.equal(core.CUSTOMER_CONSULTATION_TRANSCRIPT_MAX, 100_000)
 assert.equal(core.CUSTOMER_CONSULTATION_OUTPUT_FOLDER, '客户咨询简报')
+assert.equal(core.isConsultationBriefRevisionIntent('把刚才的咨询简报里核心诊断第 2 条改成更直接的说法'), true)
+assert.equal(core.isConsultationBriefRevisionIntent('修改这张简报图片上的标题文字'), true)
+assert.equal(core.isConsultationBriefRevisionIntent('修改咨询简报 Skill 的输出规则'), false)
+assert.equal(core.isConsultationBriefRevisionIntent('帮我生成一份咨询简报'), false)
+const originalBrief = `# 客户 A · 咨询简报
+
+## 核心诊断
+
+${'旧内容'.repeat(80)}
+
+## 下一步行动
+
+${'行动内容'.repeat(40)}`
+assert.equal(
+  core.consultationBriefRevisionIssue(
+    originalBrief,
+    originalBrief.replace('旧内容', '新内容'),
+    '把核心诊断第一处改成新内容',
+  ),
+  undefined,
+)
+assert.equal(
+  core.consultationBriefRevisionIssue(
+    originalBrief,
+    originalBrief.replace('## 核心诊断', '## 商业诊断'),
+    '把核心诊断的标题改成商业诊断',
+  ),
+  undefined,
+)
+assert.match(
+  core.consultationBriefRevisionIssue(
+    originalBrief,
+    '# 客户 A · 咨询简报\n\n## 核心诊断\n\n新内容',
+    '修改一句话',
+  ),
+  /严重缩水/,
+)
+assert.match(
+  core.consultationBriefRevisionIssue(originalBrief, originalBrief, '把标题改一下'),
+  /没有落实/,
+)
 assert.equal(
   core.customerConsultationPngBase('2026.08.15', '客户/A'),
   '2026.08.15_客户 A_客户咨询简报',
@@ -83,12 +124,27 @@ assert.equal(untouched.requested, false)
 assert.equal(untouched.cleanText, ordinaryReply)
 
 const source = await readFile(new URL('../src/customer-consultation-brief.ts', import.meta.url), 'utf8')
+const mainSource = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 const actions = await readFile(new URL('../src/actions.ts', import.meta.url), 'utf8')
 const transcriptSource = await readFile(new URL('../src/transcript-source.ts', import.meta.url), 'utf8')
 assert.match(source, /本次只读取并锁定这一份逐字稿/)
 assert.match(source, /只生成给客户看的 PNG 长图/)
 assert.match(source, /\/api\/plugin\/v1\/skills\/consultation-brief/)
 assert.match(source, /createBinary\(path, png\)/)
+assert.match(source, /existingBrief: draft\.markdown/)
+assert.match(source, /revisionInstruction: instruction/)
+assert.match(source, /consultationBriefRevisionIssue\(draft\.markdown, markdown, instruction\)/)
+assert.match(source, /rememberConsultationBriefDraft\(/)
+assert.match(source, /旧图片仍保留，没有覆盖/)
+assert.match(mainSource, /consultationBriefDraft\?: CustomerConsultationBriefDraft/)
+assert.match(mainSource, /recentConsultationBriefDraft\(\)/)
+assert.match(mainSource, /isConsultationBriefRevisionIntent\(text\)/)
+assert.match(mainSource, /delete message\.consultationBriefDraft/)
+assert.match(
+  mainSource,
+  /messagesForApi\(\): WireMessage\[\][\s\S]*?\.map\(\(\{ id, role, parts \}\) => \(\{ id, role, parts \}\)\)/,
+  '咨询简报隐藏源稿不得上传普通主对话 API',
+)
 assert.match(source, /CUSTOMER_CONSULTATION_OUTPUT_FOLDER/)
 assert.match(source, /selectTranscriptSource\(/)
 assert.match(source, /lockedSourceFile\?: TFile/)

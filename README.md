@@ -13,7 +13,7 @@ AI Linzi connects Alina's business coaching service to a local knowledge Vault. 
 - Add `.xlsx` workbooks to the main chat from the Vault or directly from the computer. Computer workbooks are converted to bounded worksheet text on-device; the original file is never uploaded or saved in chat history. Legacy `.xls` files must first be saved as `.xlsx`.
 - Pull images embedded in a .docx handout into the generated deck, placed where they appear in the source (parsed and compressed on-device).
 - Build a presentable HTML slide deck from one explicitly selected Markdown, TXT, text-based PDF, or DOCX note: the server returns only a structured outline, the plugin assembles fixed local templates, and images are embedded on-device (three color themes; print to PDF from the browser).
-- Run sales reviews and customer consultation briefs from one explicitly selected Markdown, TXT, text-based PDF, or DOCX transcript; the original file stays local.
+- Run sales reviews and customer consultation briefs from one explicitly selected Markdown, TXT, text-based PDF, or DOCX transcript; the original file stays local. After a brief PNG is generated, its text can be revised directly in the main chat. The plugin keeps only the latest structured draft in local conversation data, sends it only to the brief-revision endpoint when requested, creates a new PNG without overwriting the prior image, and does not add a Markdown source file to the Vault.
 - Send only a bounded set of relevant excerpts to the service.
 - Explicitly select complete documents for authorized long-document tasks.
 - Create new notes and folders after an in-app confirmation.
