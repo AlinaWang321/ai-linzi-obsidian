@@ -10,8 +10,8 @@ assert.match(source, /清空全部插件对话/, '清空入口必须明确限定
 assert.match(source, /网页版和微信端对话不会被删除/, '删除确认必须明确跨端安全边界')
 assert.match(
   source,
-  /async deleteConvo\(sessionId: string\)[\s\S]*?filter\(\(convo\) => convo\.id !== targetId\)/,
-  '本地必须支持只删除指定插件会话',
+  /async deleteConvo\(sessionId: string\)[\s\S]*?enqueueConversationMutation[\s\S]*?filter\(\(convo\) => normalizePluginSessionId\(convo\.id\) !== targetId\)/,
+  '本地必须在并行串行队列中只删除指定插件会话',
 )
 assert.match(
   source,

@@ -52,6 +52,15 @@ console.log('[test-vault-task-state]')
 {
   const searchedOnly = newTask({ stage: 'searched', candidatePaths: ['02_Wiki/客户档案/小B.md'] })
   assert.equal(core.vaultWriteFlowRetryReason(searchedOnly, 'organize', false, false), 'stalled_write_flow')
+  const synthesisReady = newTask({
+    stage: 'source_read',
+    sourcePaths: [{ path: '01_Raw/小B咨询1.md', mtime: 1, size: 100 }],
+  })
+  assert.equal(
+    core.vaultWriteFlowRetryReason(synthesisReady, 'organize', false, false),
+    'deferred_answer',
+    '已读来源、尚无现有目标时应继续批读或新建，不得反复要求读不存在的目标原文',
+  )
   const targetRead = newTask({ stage: 'target_read', targetPath: '02_Wiki/客户档案/小B.md' })
   assert.equal(core.vaultWriteFlowRetryReason(targetRead, 'organize', false, false), undefined)
   // 没有任务对象也没有工具调用 → missing_tool_use（手册场景 5）

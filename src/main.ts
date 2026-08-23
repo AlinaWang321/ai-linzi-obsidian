@@ -22,6 +22,7 @@ import {
   Setting,
   TFile,
   TFolder,
+  type ViewStateResult,
   WorkspaceLeaf,
   normalizePath,
   requestUrl,
@@ -82,6 +83,13 @@ import {
 } from './conversation-title-core'
 import { requestConversationTitle } from './conversation-title-modal'
 import { boundedWait } from './bounded-wait'
+import {
+  freshChatViewState,
+  parseChatViewState,
+  persistedChatViewState,
+  type ChatViewState,
+} from './chat-view-state-core'
+import { installMessageTextSelection } from './message-selection-core'
 import {
   AI_LINZI_AVATAR_DATA_URI,
   AI_LINZI_COCKPIT_ICON_ID,
@@ -1275,6 +1283,10 @@ export default class AiLinziPlugin extends Plugin {
   private localSkillExecutorPromise: Promise<LocalSkillExecutor> | null = null
   private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
   private savedConversations: SavedConvo[] = []
+  /** 多对话并行时，对话列表的读-改-写必须串行，否则两个窗口会相互覆盖。 */
+  private conversationMutationQueue: Promise<void> = Promise.resolve()
+  /** Obsidian data.json 是整体快照；所有保存串行化，避免设置与对话同时落盘丢数据。 */
+  private settingsSaveQueue: Promise<void> = Promise.resolve()
   private savedIllustrationJobs: unknown[] = []
   private imageStyleContext: SavedImageStyleContext | null = null
   private vaultActionHistory: VaultActionRecord[] = []
@@ -1412,6 +1424,12 @@ export default class AiLinziPlugin extends Plugin {
       id: 'open-chat',
       name: '打开对话面板',
       callback: () => this.activateChatView(),
+    })
+
+    this.addCommand({
+      id: 'open-parallel-chat',
+      name: '在新标签页开始并行对话',
+      callback: () => this.activateNewChatView(),
     })
 
     this.addCommand({
@@ -1710,40 +1728,71 @@ export default class AiLinziPlugin extends Plugin {
     }, savedConversationTitleState(convo)))
   }
 
+  private enqueueConversationMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.conversationMutationQueue.then(operation, operation)
+    this.conversationMutationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
   async saveConvo(convo: SavedConvo): Promise<void> {
-    const normalized = applyConversationTitleState({
-      ...convo,
-      id: normalizePluginSessionId(convo.id),
-    }, savedConversationTitleState(convo))
-    const list = (await this.loadConvos()).filter((c) => c.id !== normalized.id)
-    list.unshift(normalized)
-    list.sort((a, b) => b.updatedAt - a.updatedAt)
-    this.savedConversations = list.slice(0, MAX_SAVED_CONVOS)
-    await this.saveSettings()
+    await this.enqueueConversationMutation(async () => {
+      const normalized = applyConversationTitleState({
+        ...convo,
+        id: normalizePluginSessionId(convo.id),
+      }, savedConversationTitleState(convo))
+      const list = this.savedConversations
+        .map((saved) => applyConversationTitleState({
+          ...saved,
+          id: normalizePluginSessionId(saved.id),
+        }, savedConversationTitleState(saved)))
+        .filter((saved) => saved.id !== normalized.id)
+      list.unshift(normalized)
+      list.sort((a, b) => b.updatedAt - a.updatedAt)
+      this.savedConversations = list.slice(0, MAX_SAVED_CONVOS)
+      await this.saveSettings()
+    })
   }
 
   async saveConvoTitle(
     sessionId: string,
     state: ConversationTitleState,
   ): Promise<SavedConvo | null> {
-    const targetId = normalizePluginSessionId(sessionId)
-    const existing = (await this.loadConvos()).find((convo) => convo.id === targetId)
-    if (!existing) return null
-    const updated = applyConversationTitleState(existing, state)
-    await this.saveConvo(updated)
-    return updated
+    return this.enqueueConversationMutation(async () => {
+      const targetId = normalizePluginSessionId(sessionId)
+      const existing = this.savedConversations.find(
+        (convo) => normalizePluginSessionId(convo.id) === targetId,
+      )
+      if (!existing) return null
+      const updated = applyConversationTitleState({ ...existing, id: targetId }, state)
+      const list = this.savedConversations.filter(
+        (convo) => normalizePluginSessionId(convo.id) !== targetId,
+      )
+      list.unshift(updated)
+      list.sort((a, b) => b.updatedAt - a.updatedAt)
+      this.savedConversations = list.slice(0, MAX_SAVED_CONVOS)
+      await this.saveSettings()
+      return updated
+    })
   }
 
   async deleteAllConvos(): Promise<void> {
-    this.savedConversations = []
-    await this.saveSettings()
+    await this.enqueueConversationMutation(async () => {
+      this.savedConversations = []
+      await this.saveSettings()
+    })
   }
 
   async deleteConvo(sessionId: string): Promise<void> {
-    const targetId = normalizePluginSessionId(sessionId)
-    const list = (await this.loadConvos()).filter((convo) => convo.id !== targetId)
-    this.savedConversations = list.slice(0, MAX_SAVED_CONVOS)
-    await this.saveSettings()
+    await this.enqueueConversationMutation(async () => {
+      const targetId = normalizePluginSessionId(sessionId)
+      this.savedConversations = this.savedConversations
+        .filter((convo) => normalizePluginSessionId(convo.id) !== targetId)
+        .slice(0, MAX_SAVED_CONVOS)
+      await this.saveSettings()
+    })
   }
 
   getIllustrationJobsData(): unknown[] {
@@ -1959,15 +2008,19 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   async saveSettings() {
-    await this.saveData({
-      ...this.settings,
-      conversations: this.savedConversations,
-      illustrationJobs: this.savedIllustrationJobs,
-      imageStyleContext: this.imageStyleContext ?? undefined,
-      vaultActionHistory: this.vaultActionHistory,
-      localSkillRunHistory: this.localSkillRunHistory,
-      weeklyBusinessDashboardCache: this.weeklyBusinessDashboardCache ?? undefined,
-    } satisfies AiLinziPluginData)
+    const run = this.settingsSaveQueue.then(async () => {
+      await this.saveData({
+        ...this.settings,
+        conversations: this.savedConversations,
+        illustrationJobs: this.savedIllustrationJobs,
+        imageStyleContext: this.imageStyleContext ?? undefined,
+        vaultActionHistory: this.vaultActionHistory,
+        localSkillRunHistory: this.localSkillRunHistory,
+        weeklyBusinessDashboardCache: this.weeklyBusinessDashboardCache ?? undefined,
+      } satisfies AiLinziPluginData)
+    })
+    this.settingsSaveQueue = run.catch(() => undefined)
+    await run
   }
 
   /** 用户确认生成完整看板后，才把本轮指纹提升为下一次增量刷新基线。 */
@@ -2004,6 +2057,34 @@ export default class AiLinziPlugin extends Plugin {
     await workspace.revealLeaf(leaf)
   }
 
+  /** 新建独立叶子：对话、停止信号和会话 ID 都与现有窗口隔离。 */
+  async activateNewChatView() {
+    const { workspace } = this.app
+    const leaf = workspace.getLeaf('tab')
+    await leaf.setViewState({
+      type: VIEW_TYPE_CHAT,
+      active: true,
+      state: freshChatViewState(newPluginSessionId()),
+    })
+    await workspace.revealLeaf(leaf)
+  }
+
+  private activeChatView(): ChatView | null {
+    const active = this.app.workspace.getActiveViewOfType(ChatView)
+    if (active) return active
+    const fallback = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]?.view
+    return fallback instanceof ChatView ? fallback : null
+  }
+
+  chatViewForSession(sessionId: string, except?: ChatView): ChatView | null {
+    const targetId = normalizePluginSessionId(sessionId)
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)) {
+      if (!(leaf.view instanceof ChatView) || leaf.view === except) continue
+      if (leaf.view.conversationSessionId() === targetId) return leaf.view
+    }
+    return null
+  }
+
   async activateContentDashboard() {
     const { workspace } = this.app
     const existing = workspace.getLeavesOfType(VIEW_TYPE_CONTENT_DASHBOARD)
@@ -2034,9 +2115,8 @@ export default class AiLinziPlugin extends Plugin {
    */
   async offerArticleIllustrationEdit(notePath: string, summary: string): Promise<void> {
     await this.activateChatView()
-    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]
-    const view = leaf?.view
-    if (view instanceof ChatView) {
+    const view = this.activeChatView()
+    if (view) {
       await view.addArticleIllustrationEditOffer(notePath, summary)
     }
   }
@@ -2046,26 +2126,22 @@ export default class AiLinziPlugin extends Plugin {
    * 面板没开时退回 Notice。返回消息 id，供后续原地更新同一条状态。
    */
   reportSkillStatus(text: string, replaceId?: string): string | undefined {
-    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]
-    const view = leaf?.view
-    if (view instanceof ChatView) return view.postSkillStatus(text, replaceId)
+    const view = this.activeChatView()
+    if (view) return view.postSkillStatus(text, replaceId)
     new Notice(text, 8000)
     return undefined
   }
 
   /** 咨询简报源稿只进入本机对话历史；不在 Vault 额外生成 Markdown 文件。 */
   async rememberConsultationBriefDraft(draft: CustomerConsultationBriefDraft): Promise<void> {
-    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]
-    const view = leaf?.view
-    if (view instanceof ChatView) await view.attachConsultationBriefDraft(draft)
+    const view = this.activeChatView()
+    if (view) await view.attachConsultationBriefDraft(draft)
   }
 
   /** 进入访谈写作模式(SKILL_ACTIONS 菜单入口) */
   async startInterview() {
     await this.activateChatView()
-    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]
-    const view = leaf?.view
-    if (view instanceof ChatView) view.enterInterviewMode()
+    this.activeChatView()?.enterInterviewMode()
   }
 
   /** 统一 API 调用；可停止请求走 fetch+AbortSignal，其余仍走 requestUrl。 */
@@ -2299,6 +2375,10 @@ class ChatView extends ItemView {
   private longDocumentTask: LongDocumentTaskState | null = null
   private sending = false
   private activeTurnAbort: AbortController | null = null
+  /** 用于取消较旧的异步恢复，避免新建并行对话被“最近会话”覆盖。 */
+  private restoreEpoch = 0
+  private viewReady = false
+  private pendingViewState: ChatViewState | null = null
   /**
    * 跨用户轮次的 Vault 任务状态（阶段 A）。只存任务元数据与路径快照，正文与
    * 工具输出只驻留进程内存；确认卡被执行/取消、任务正常收尾或超时后清空。
@@ -2338,6 +2418,24 @@ class ChatView extends ItemView {
   getIcon() {
     // 标签页图标与 ribbon 共用同一枚 Q 版头像（0.7.71）。
     return AI_LINZI_RIBBON_ICON_ID
+  }
+
+  getState(): Record<string, unknown> {
+    // startFresh 只是启动时的一次性指令；布局持久化只记会话 ID。
+    return persistedChatViewState(this.sessionId)
+  }
+
+  async setState(state: unknown, result: ViewStateResult): Promise<void> {
+    void result
+    const parsed = parseChatViewState(state)
+    this.pendingViewState = parsed
+    if (!this.viewReady) return
+    this.pendingViewState = null
+    await this.applyChatViewState(parsed)
+  }
+
+  conversationSessionId(): string {
+    return normalizePluginSessionId(this.sessionId)
   }
 
   async onOpen() {
@@ -2386,7 +2484,11 @@ class ChatView extends ItemView {
       else {
         this.resetConversationIdentity()
         this.renderMessages()
+        this.app.workspace.requestSaveLayout()
       }
+    })
+    addTopBtn('copy-plus', '并行对话', () => {
+      void this.plugin.activateNewChatView()
     })
     const historyBtn = addTopBtn('history', '历史', () => {
       if (historyBtn.disabled) return
@@ -2509,8 +2611,12 @@ class ChatView extends ItemView {
     }
 
     this.renderMessages()
-    // 恢复最近一次会话(升级/重启后不丢)
-    void this.restoreLatest()
+    this.viewReady = true
+    // 普通首次打开恢复最近会话；并行叶子使用自己的 sessionId，
+    // 即使多个 onOpen 同时执行也不会全部抢同一条历史。
+    const initialState = this.pendingViewState ?? parseChatViewState(this.leaf.getViewState().state)
+    this.pendingViewState = null
+    void this.applyChatViewState(initialState)
   }
 
   private stopCurrentTurn(): void {
@@ -2795,10 +2901,38 @@ class ChatView extends ItemView {
     this.titleSyncPending = explicit?.titleSyncPending === true
   }
 
-  private resetConversationIdentity(): void {
+  private resetConversationIdentity(sessionId = newPluginSessionId()): void {
     this.messages = []
-    this.sessionId = newPluginSessionId()
+    this.sessionId = normalizePluginSessionId(sessionId)
     this.applyActiveConversationTitleState(undefined)
+  }
+
+  private async applyChatViewState(state: ChatViewState): Promise<void> {
+    const epoch = ++this.restoreEpoch
+    if (state.startFresh) {
+      this.activeImageMessageId = ''
+      this.clearAuthorizedContent()
+      if (this.mode === 'interview') this.exitInterviewMode()
+      this.resetConversationIdentity(state.sessionId ?? newPluginSessionId())
+      this.renderMessages()
+      this.app.workspace.requestSaveLayout()
+      return
+    }
+    if (state.sessionId) {
+      const targetId = normalizePluginSessionId(state.sessionId)
+      const duplicate = this.plugin.chatViewForSession(targetId, this)
+      if (duplicate) {
+        // 同一云端 session 不允许被两个窗口同时编辑。布局里若有重复，
+        // 后恢复的叶子自动转为新对话，避免互相覆盖。
+        this.resetConversationIdentity()
+        this.renderMessages()
+        this.app.workspace.requestSaveLayout()
+        return
+      }
+      await this.restoreConversation(targetId, epoch)
+      return
+    }
+    await this.restoreLatest(epoch)
   }
 
   /** 本机先保存的标题在会话首次成功进云端后补同步；失败保留 pending，绝不丢本机标题。 */
@@ -2864,7 +2998,32 @@ class ChatView extends ItemView {
     this.renderMessages()
   }
 
-  private async restoreLatest(): Promise<void> {
+  private async restoreConversation(sessionId: string, epoch: number): Promise<void> {
+    const targetId = normalizePluginSessionId(sessionId)
+    const local = (await this.plugin.loadConvos()).find((convo) => convo.id === targetId)
+    let selected = local
+    try {
+      const cloud = await this.plugin.loadCloudConvo(targetId, savedConversationTitleState(local))
+      const localHasRichCards = Boolean(
+        local?.messages.some((message) =>
+          message.aiImageResult || message.imageResult || (message.vaultSources?.length ?? 0) > 0,
+        ),
+      )
+      if (cloud?.messages.length && (!local || (!localHasRichCards && cloud.updatedAt > local.updatedAt))) {
+        selected = cloud
+      }
+    } catch {
+      // 离线时优先恢复本机副本。
+    }
+    if (epoch !== this.restoreEpoch) return
+    if (selected?.messages.length) this.loadConvo(selected)
+    else {
+      this.resetConversationIdentity(targetId)
+      this.renderMessages()
+    }
+  }
+
+  private async restoreLatest(epoch = ++this.restoreEpoch): Promise<void> {
     if (this.messages.length > 0) return
     let [latestLocal] = await this.plugin.loadConvos()
     try {
@@ -2913,7 +3072,7 @@ class ChatView extends ItemView {
         )
       ) {
         const cloud = await this.plugin.loadCloudConvo(latestCloudSummary.sessionId, mergedTitleState)
-        if (cloud?.messages.length) {
+        if (epoch === this.restoreEpoch && cloud?.messages.length) {
           this.loadConvo(cloud)
           return
         }
@@ -2921,7 +3080,7 @@ class ChatView extends ItemView {
     } catch {
       // 离线或旧服务器尚未部署 v1 历史接口时，继续使用本机缓存。
     }
-    if (latestLocal?.messages.length) this.loadConvo(latestLocal)
+    if (epoch === this.restoreEpoch && latestLocal?.messages.length) this.loadConvo(latestLocal)
   }
 
   private loadConvo(c: SavedConvo): void {
@@ -2939,6 +3098,7 @@ class ChatView extends ItemView {
       this.inputEl.placeholder = CHAT_INPUT_PLACEHOLDER
     }
     this.renderMessages()
+    this.app.workspace.requestSaveLayout()
   }
 
   private async showHistoryMenu(): Promise<void> {
@@ -3018,6 +3178,12 @@ class ChatView extends ItemView {
       items.slice(0, MAX_SAVED_CONVOS),
       this.sessionId,
       async (item) => {
+        const alreadyOpen = this.plugin.chatViewForSession(item.id, this)
+        if (alreadyOpen) {
+          await this.app.workspace.revealLeaf(alreadyOpen.leaf)
+          new Notice('这条对话已在另一个 AI霖子标签页打开，已为你切换过去。', 5000)
+          return
+        }
         if (item.convo?.messages.length) {
           this.loadConvo(item.convo)
           return
@@ -6035,7 +6201,9 @@ class ChatView extends ItemView {
                     : pendingRetryReason === 'unexpected_plan'
                       ? '本轮只读，已退回越界的写入方案'
                       : pendingRetryReason === 'deferred_answer'
-                        ? '拒绝「稍后处理」，要求当场完成'
+                        ? batchMode && this.pendingVaultTask?.stage === 'source_read'
+                          ? '已读取来源，要求继续批读或生成综合方案'
+                          : '拒绝「稍后处理」，要求当场完成'
                         : pendingRetryReason === 'stalled_write_flow'
                           ? '改档案必须先读原文，已退回重做'
                           : '要求补齐缺失信息后再收尾'
@@ -7997,30 +8165,21 @@ class ChatView extends ItemView {
   }
 
   private enableMessageTextSelection(body: HTMLElement): void {
-    // Obsidian 侧边面板会监听拖拽与右键事件。阻止事件继续冒泡，但不 preventDefault，
-    // 浏览器仍会执行原生文字选择；选中文字后提供明确的右键“复制”菜单。
-    body.addEventListener('pointerdown', (event) => event.stopPropagation())
-    body.addEventListener('mousedown', (event) => event.stopPropagation())
-    body.addEventListener('selectstart', (event) => event.stopPropagation())
-    body.addEventListener('contextmenu', (event) => {
-      const selection = window.getSelection()
-      const selectedText = selection?.toString() ?? ''
-      const anchorInside = Boolean(selection?.anchorNode && body.contains(selection.anchorNode))
-      const focusInside = Boolean(selection?.focusNode && body.contains(selection.focusNode))
-      if (!selectedText || (!anchorInside && !focusInside)) return
-      event.preventDefault()
-      event.stopPropagation()
-      const menu = new Menu()
-      menu.addItem((item) =>
-        item
-          .setTitle('复制')
-          .setIcon('copy')
-          .onClick(async () => {
-            await navigator.clipboard.writeText(selectedText)
-            new Notice('已复制选中的文字')
-          }),
-      )
-      menu.showAtMouseEvent(event)
+    installMessageTextSelection(body, {
+      getSelection: () => window.getSelection(),
+      showCopyMenu: (event, selectedText) => {
+        const menu = new Menu()
+        menu.addItem((item) =>
+          item
+            .setTitle('复制')
+            .setIcon('copy')
+            .onClick(async () => {
+              await navigator.clipboard.writeText(selectedText)
+              new Notice('已复制选中的文字')
+            }),
+        )
+        menu.showAtMouseEvent(event)
+      },
     })
   }
 

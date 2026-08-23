@@ -221,7 +221,7 @@ export interface PendingVaultTask {
   goal: string
   intent: 'answer' | 'organize'
   stage: 'searching' | 'searched' | 'source_read' | 'target_read' | 'previewed'
-  /** 搜索命中的候选路径（≤12，仅本机使用，不进云端历史）。 */
+  /** 搜索命中的候选路径（≤120，仅本机使用，不进云端历史）。 */
   candidatePaths: string[]
   /** 已读取来源的版本快照；恢复时 mtime/size 变化必须重读。 */
   sourcePaths: VaultWriteSnapshot[]
@@ -233,7 +233,11 @@ export interface PendingVaultTask {
 }
 
 export const VAULT_TASK_MAX_AGE_MS = 30 * 60 * 1000
-export const VAULT_TASK_MAX_CANDIDATES = 12
+/**
+ * 跨轮任务只保存路径与 mtime/size，不保存正文。批量 Skill 默认可读 120 份，
+ * 这里也必须能记住同等规模的已读清单，否则停止/续跑后只剩最后 12 份。
+ */
+export const VAULT_TASK_MAX_CANDIDATES = 120
 
 const VAULT_TASK_STAGE_ORDER: Record<PendingVaultTask['stage'], number> = {
   searching: 0,
@@ -302,6 +306,13 @@ export function vaultWriteFlowRetryReason(
   if (hasToolCalls || hasPlanCard) return undefined
   if (intent !== 'organize') return undefined
   if (!task) return 'missing_tool_use'
+  // 批量提炼常见终态是「读完多份来源 → 新建一篇方法论」。
+  // 此时根本没有“现有目标原文”可读；继续返回 stalled_write_flow
+  // 会让模型反复寻找一个不存在的目标，直到耗尽 36 轮。已经真实读过
+  // 来源且尚未锁定现有目标时，应要求继续批读或直接交付新建方案。
+  if (vaultTaskStageAtLeast(task.stage, 'source_read') && !task.targetPath) {
+    return 'deferred_answer'
+  }
   if (!vaultTaskStageAtLeast(task.stage, 'target_read')) return 'stalled_write_flow'
   return undefined
 }

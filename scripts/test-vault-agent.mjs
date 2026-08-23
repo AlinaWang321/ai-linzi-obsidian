@@ -542,6 +542,7 @@ assert.equal(core.shouldBlockPlanPath('.trash/x', 'create_folder', '05_System/Sk
 assert.equal(core.VAULT_AGENT_MAX_ROUNDS, 12)
 assert.equal(core.VAULT_AGENT_MAX_TOTAL_RESULT_CHARS, 360_000)
 assert.equal(core.VAULT_AGENT_BATCH_MAX_ROUNDS, 36)
+assert.equal(core.VAULT_TASK_MAX_CANDIDATES, 120)
 assert.equal(core.VAULT_AGENT_BATCH_MAX_TOTAL_RESULT_CHARS, 1_000_000)
 assert.equal(core.isVaultBatchTask('批量总结这个文件夹里的所有逐字稿'), true)
 assert.equal(core.isVaultBatchTask('逐份处理这些客户档案'), true)

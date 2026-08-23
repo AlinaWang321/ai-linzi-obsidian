@@ -59,7 +59,11 @@ assert.equal(core.conversationTitleStatesEqual(custom, cleared), false)
 const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 assert.match(main, /titleOverride\?: string \| null/)
 assert.match(main, /titleSyncPending\?: boolean/)
-assert.match(main, /private resetConversationIdentity\(\): void/)
+assert.match(
+  main,
+  /private resetConversationIdentity\(sessionId = newPluginSessionId\(\)\): void/,
+  '普通新对话仍默认生成新 session，并行叶子可注入已隔离的 session',
+)
 assert.ok((main.match(/this\.resetConversationIdentity\(\)/g) ?? []).length >= 5)
 assert.match(main, /await this\.syncCurrentConversationTitleIfNeeded\(\)/)
 assert.match(main, /mergeConversationTitleStates\(/)
