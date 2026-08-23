@@ -145,15 +145,12 @@ console.log('[test-skill-studio-ui] 自建 Skill 的名称、触发短语和测�
     onOfferBundle: () => {},
   })
   modal.onOpen()
-  assert.equal(
-    setting('默认搜索方式').controls[0].value,
-    'whole-vault',
-  )
+  assert.equal(setting('读取范围').controls.length, 0)
+  assert.match(setting('读取范围').desc, /整个 Vault/)
   assert.equal(
     setting('输入材料说明').controls[0].value,
     '按任务查找相关材料，优先使用用户点名的文件或文件夹',
   )
-  assert.match(setting('默认搜索方式').desc, /不包含电脑其他文件/)
   assert.match(
     all(modal.contentEl).map((el) => el.text).join('\n'),
     /读取权限只到当前 Vault，不能访问电脑其他目录/,
@@ -168,7 +165,7 @@ console.log('[test-skill-studio-ui] 自建 Skill 的名称、触发短语和测�
   assert.match(preview(modal).text, /^⚠️ 显式命中：用 client-follow-up Skill 处理当前笔记/)
 }
 
-console.log('[test-skill-studio-ui] 外部 Skill 导入先选择 Vault 权限，再生成同一张安装确认卡')
+console.log('[test-skill-studio-ui] 外部 Skill 导入默认整个 Vault，不再让新手选安装时文件夹')
 {
   globalThis.__ui.settings = []
   const offered = []
@@ -196,21 +193,16 @@ console.log('[test-skill-studio-ui] 外部 Skill 导入先选择 Vault 权限，
     offered.push({ adapted, sampleInput })
   })
   modal.onOpen()
-  assert.equal(setting('默认搜索方式').controls[0].value, 'whole-vault')
-  assert.deepEqual(Object.keys(setting('默认搜索方式').controls[0].options), [
-    'whole-vault',
-    'user-specified-folder',
-  ])
+  assert.equal(setting('读取范围').controls.length, 0)
+  assert.match(setting('读取范围').desc, /整个 Obsidian Vault/)
   assert.match(all(modal.contentEl).map((el) => el.text).join('\n'), /不能读取 Vault 外的电脑文件/)
   assert.match(all(modal.contentEl).map((el) => el.text).join('\n'), /检测到 1 个脚本/)
-  setting('默认搜索方式').controls[0].trigger('user-specified-folder')
-  setting('优先文件夹').controls[0].trigger('01_Raw/课程逐字稿')
   const submit = [...globalThis.__ui.settings]
     .flatMap((item) => item.controls)
     .find((control) => control.text === '生成安装确认卡')
   submit.click()
   assert.equal(offered.length, 1)
-  assert.equal(offered[0].sampleInput, '用 external-workflow Skill 处理我指定的文件夹')
+  assert.equal(offered[0].sampleInput, '用 external-workflow Skill 在整个 Vault 中完成这项任务')
   const manifest = JSON.parse(
     offered[0].adapted.files.find(
       (file) => file.path === 'references/ai-linzi-skill-manifest.json',
@@ -218,7 +210,7 @@ console.log('[test-skill-studio-ui] 外部 Skill 导入先选择 Vault 权限，
   )
   assert.equal(manifest.schemaVersion, 2)
   assert.equal(manifest.vaultRead.scope, 'whole-vault')
-  assert.equal(manifest.vaultRead.fixedFolder, '$RAW/课程逐字稿')
+  assert.equal(manifest.vaultRead.fixedFolder, undefined)
   assert.equal(manifest.vaultRead.fallbackToWholeVault, true)
   assert.deepEqual(manifest.programs, ['scripts/run.mjs'])
   assert.equal(modal.closed, true)

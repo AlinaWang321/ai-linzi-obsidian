@@ -320,8 +320,8 @@ const folderScopePrompt = studioCore.buildSkillStudioPrompt({
   sampleInput: '用 folder-review Skill 汇总我指定的文件夹',
   version: '1.0.0',
 })
-assert.match(folderScopePrompt, /默认可读取整个 Vault；优先搜索用户指定的文件夹/)
-assert.match(folderScopePrompt, /该范围没有所需材料时，继续在整个 Vault 中搜索相关候选/)
+assert.match(folderScopePrompt, /默认可按需搜索和读取整个 Vault；优先使用用户指定的文件或文件夹/)
+assert.match(folderScopePrompt, /继续搜索整个 Vault 中的任务相关候选/)
 assert.match(folderScopePrompt, /不得把整个 Vault 的正文一次性提交给模型/)
 const fallbackVaultPrompt = studioCore.buildSkillStudioPrompt({
   name: 'vault-fallback-review',
@@ -347,7 +347,7 @@ const explicitSingleNotePrompt = studioCore.buildSkillStudioPrompt({
   version: '1.0.0',
 })
 assert.match(explicitSingleNotePrompt, /"scope":"whole-vault"/)
-assert.match(explicitSingleNotePrompt, /本轮优先处理用户打开或点名的一篇笔记/)
+assert.match(explicitSingleNotePrompt, /默认可按需搜索和读取整个 Vault/)
 assert.match(explicitSingleNotePrompt, /不包含电脑其他目录/)
 assert.match(prompt, /原始素材用 \$RAW\//)
 assert.match(prompt, /知识库用 \$WIKI\//)
@@ -400,6 +400,48 @@ assert.deepEqual(
 assert.deepEqual(normalizedSampleInput.repairs, [
   '已补充试运行输入：用 consultation-client-workflow 处理当前打开的材料',
 ])
+
+const generatedWithIncompleteV2Manifest = {
+  ...consultation.block,
+  files: consultation.block.files.map((file) =>
+    file.path === 'references/ai-linzi-skill-manifest.json'
+      ? {
+          ...file,
+          content: JSON.stringify({
+            schemaVersion: 2,
+            skillVersion: '1.0.0',
+            createdWith: 'AI霖子 Skill Studio',
+            permissions: [],
+            programs: [],
+            sampleInputs: ['用 consultation-client-workflow 处理咨询材料'],
+          }),
+        }
+      : file,
+  ),
+}
+assert.equal(studioCore.skillBlockManifest(generatedWithIncompleteV2Manifest).valid, false)
+const repairedIncompleteV2 = studioCore.normalizeGeneratedSkillManifest(generatedWithIncompleteV2Manifest)
+const repairedIncompleteManifest = JSON.parse(repairedIncompleteV2.block.files.find(
+  (file) => file.path === 'references/ai-linzi-skill-manifest.json',
+).content)
+assert.equal(studioCore.skillBlockManifest(repairedIncompleteV2.block).valid, true)
+assert.deepEqual(repairedIncompleteManifest.vaultRead, {
+  scope: 'whole-vault',
+  metadataDiscovery: true,
+  preferUserScope: true,
+  fallbackToWholeVault: true,
+  maxFiles: 120,
+})
+assert.deepEqual(repairedIncompleteManifest.vaultWrite, {
+  mode: 'create-note',
+  confirmation: 'single-atomic-plan',
+  overwrite: false,
+})
+assert.ok(repairedIncompleteManifest.permissions.some((item) => /整个 Vault/u.test(item)))
+assert.equal(repairedIncompleteManifest.network, 'ai-linzi-only')
+assert.ok(repairedIncompleteV2.repairs.includes('已把读取权限统一为按需搜索整个 Vault'))
+assert.ok(repairedIncompleteV2.repairs.includes('已按 SKILL.md 补充写入权限：create-note'))
+assert.ok(repairedIncompleteV2.repairs.includes('已补充可展示的权限清单'))
 
 const legacySingleNoteWithGenericPermission = {
   ...consultation.block,
@@ -494,6 +536,33 @@ assert.deepEqual(
 )
 assert.ok(adaptedExternal.repairs.some((item) => /默认按需读取整个 Vault/u.test(item)))
 
+const generatedWithoutManifestAndUnlinkedReference = {
+  ...importedWithoutManifest,
+  name: 'business-consultation-proposal',
+  files: [
+    ...importedWithoutManifest.files,
+    {
+      path: 'references/学员商业咨询行动方案模板.md',
+      content: '# 学员商业咨询行动方案模板',
+    },
+  ],
+}
+const repairedMissingManifestAndReference = studioCore.normalizeGeneratedSkillManifest(
+  generatedWithoutManifestAndUnlinkedReference,
+)
+assert.equal(
+  studioCore.skillBlockManifest(repairedMissingManifestAndReference.block).valid,
+  true,
+  '缺 manifest 且遗漏 reference 链接时应一次本机修复，不应要求用户重新生成',
+)
+assert.match(
+  repairedMissingManifestAndReference.block.content,
+  /\[学员商业咨询行动方案模板\.md\]\(references\/学员商业咨询行动方案模板\.md\)/u,
+)
+assert.ok(
+  repairedMissingManifestAndReference.repairs.includes('已补充 1 个遗漏的 reference 链接'),
+)
+
 const unsafeExternalWithoutManifest = {
   ...importedWithoutManifest,
   name: 'external-script-skill',
@@ -551,7 +620,7 @@ assert.equal(
 )
 assert.deepEqual(
   studioCore.IMPORTED_SKILL_READ_SCOPE_OPTIONS.map((option) => option.value),
-  ['whole-vault', 'user-specified-folder'],
+  ['whole-vault'],
 )
 const fixedFolderAdapted = studioCore.adaptImportedSkillReadScope(
   importableExternalScript,
@@ -561,8 +630,9 @@ const fixedFolderAdapted = studioCore.adaptImportedSkillReadScope(
 const fixedFolderManifest = JSON.parse(fixedFolderAdapted.block.files.find(
   (file) => file.path === 'references/ai-linzi-skill-manifest.json',
 ).content)
-assert.equal(fixedFolderManifest.vaultRead.fixedFolder, '$RAW/课程逐字稿')
-console.log('  ✓ 外部脚本 Skill 默认全 Vault；安装界面只保留全库/优先文件夹两项，脚本不自动运行')
+assert.equal(fixedFolderManifest.vaultRead.fixedFolder, undefined)
+assert.equal(fixedFolderManifest.vaultRead.scope, 'whole-vault')
+console.log('  ✓ 外部脚本 Skill 统一适配为整个 Vault，脚本不自动运行')
 const generatedWithoutOutput = {
   ...generatedWithoutSampleInput,
   content: generatedWithoutSampleInput.content.replace(
@@ -838,7 +908,7 @@ assert.throws(
   })),
   /隐藏路径/,
 )
-console.log('  ✓ Skill ZIP 可往返导入、缺 manifest 时先安全修复再按安装选择适配，并拒绝隐藏路径')
+console.log('  ✓ Skill ZIP 可往返导入、缺 manifest 时安全适配为整个 Vault，并拒绝隐藏路径')
 
 const mainSource = await (await import('node:fs/promises')).readFile('src/main.ts', 'utf8')
 const studioSource = await (await import('node:fs/promises')).readFile('src/skill-studio.ts', 'utf8')
@@ -898,6 +968,26 @@ assert.match(mainSource, /consultationWorkflowTaskTurn \|\| localSkill\?\.name =
 assert.match(mainSource, /forceCloudToolsTurn: consultationWorkflowTaskTurn/)
 assert.match(mainSource, /if \(round === 0 && input\.forceCloudToolsTurn\)/)
 assert.match(mainSource, /successfulWriteTools\.includes\('addTask'\)/)
+assert.match(
+  mainSource,
+  /private async consultationWorkflowSourceContext\([\s\S]{0,700}isConsultationTranscriptPath\(lockedPath\)[\s\S]{0,700}readLocalDocumentText\(this\.app, file, maxChars, 'skill'\)/,
+  '闭环后续步骤必须按已锁定路径读取 MD\/TXT\/PDF\/DOCX，不得只读当前 Markdown 标签页',
+)
+assert.match(
+  mainSource,
+  /const currentNoteRequested =\s*!skillCreatorTurn\s*&&\s*!skillUpdaterTurn\s*&&\s*!consultationWorkflowTaskTurn/,
+  '咨询闭环按钮续跑时，不得因指令中的“当前咨询材料”误走当前笔记门禁',
+)
+assert.match(
+  mainSource,
+  /let noteContext = consultationWorkflowTaskTurn\s*\? await this\.consultationWorkflowSourceContext\(consultationWorkflowSourcePath\)/,
+  '第 4 步必须在云端 addTask 前重读第 1 步锁定的原始材料',
+)
+assert.match(
+  mainSource,
+  /sourceId: consultationWorkflowTaskTurn\s*\? `consultation-workflow-source:\$\{noteContext\.path\}`\s*:\s*`current-note:\$\{noteContext\.path\}`/,
+  '闭环原始 TXT 不得伪装成当前 Markdown 笔记，否则下一轮会再次丢失上下文',
+)
 assert.match(
   mainSource,
   /if \(!skillCreatorTurn && !skillUpdaterTurn && isFullCurrentNoteReplaceIntent\(text\)\)/,
@@ -982,8 +1072,13 @@ assert.match(
 )
 assert.match(
   runSendTurnSource,
-  /localSkillTurnPolicy\?\.output === 'update-current-note'[\s\S]{0,320}if \(currentNoteRequested && !noteContext\)/,
+  /const currentNoteRequested =[\s\S]{0,420}localSkillTurnPolicy\?\.output === 'update-current-note'/,
   '只读本轮不能被 Skill 默认的 update-current-note 强行送进改写通道',
+)
+assert.match(
+  runSendTurnSource,
+  /if \(currentNoteRequested && !noteContext\) \{\s*throw new Error\('没有读取到目标笔记/,
+  '只有本轮真正要求当前笔记时，才能触发 Markdown 标签页门禁',
 )
 assert.match(
   mainSource,

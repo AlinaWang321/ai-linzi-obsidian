@@ -556,6 +556,8 @@ interface WireMessage {
   vaultQuestion?: PendingVaultQuestion
   /** Skill Studio 创建完成后的推荐试运行指令；只用于本机按钮。 */
   skillStudioTestInput?: string
+  /** 主对话同时要求创建 Skill 和处理任务时，确认安装后续跑原任务。 */
+  skillCreatorOriginalRequest?: string
   /** Skill Creator 正在等待用户补充；下一轮继续走专用创建路由，不进入 Vault agent。 */
   skillCreatorPending?: boolean
   /** 该回复由 Skill Creator/Studio 生成；本机必须验证版本、权限与引用闭环后才可安装。 */
@@ -3794,6 +3796,29 @@ class ChatView extends ItemView {
     return undefined
   }
 
+  /**
+   * 咨询交付闭环在第 1 步锁定了原始逐字稿后，后续 2–5 步必须始终
+   * 沿用这一份材料。TXT/PDF/DOCX 无法作为 Obsidian 当前 Markdown 标签页，
+   * 所以这里按已锁定的 Vault 路径直接在本机读取；不依赖当前标签页，
+   * 不重新扫描 Vault，也绝不会回退到另一份文件。
+   */
+  private async consultationWorkflowSourceContext(
+    lockedPath: string | undefined,
+  ): Promise<{ filename: string; text: string; path: string } | undefined> {
+    if (!lockedPath || !isConsultationTranscriptPath(lockedPath)) return undefined
+    const file = this.app.vault.getAbstractFileByPath(lockedPath)
+    if (!(file instanceof TFile)) return undefined
+    let maxChars = 20_000
+    try {
+      const capabilities = await this.plugin.getCapabilities()
+      if (capabilities.tier === 'pro' || capabilities.tier === 'business') maxChars = 120_000
+    } catch {
+      // 能力接口短暂不可用时使用 Starter 保守上限；不改换已锁定的源文件。
+    }
+    const result = await readLocalDocumentText(this.app, file, maxChars, 'skill')
+    return { filename: file.name, text: result.text.trim(), path: file.path }
+  }
+
   private recentPendingVaultQuestion(): { message: WireMessage; question: PendingVaultQuestion } | undefined {
     for (let index = this.messages.length - 1; index >= 0; index--) {
       const message = this.messages[index]
@@ -4149,15 +4174,27 @@ class ChatView extends ItemView {
       const currentNoteRequested =
         !skillCreatorTurn &&
         !skillUpdaterTurn &&
+        !consultationWorkflowTaskTurn &&
         (
           explicitCurrentNote ||
           continuingCurrentNote ||
           singleIllustrationIntent ||
           localSkillTurnPolicy?.output === 'update-current-note'
         )
-      let noteContext = currentNoteRequested
-        ? await this.currentNoteContext(continuingCurrentNote ? recentCurrentNotePath : undefined)
+      let consultationWorkflowSourcePath = consultationWorkflowTaskTurn
+        ? options.consultationWorkflowSourcePath ?? this.recentConsultationWorkflowSourcePath()
         : undefined
+      let noteContext = consultationWorkflowTaskTurn
+        ? await this.consultationWorkflowSourceContext(consultationWorkflowSourcePath)
+        : currentNoteRequested
+          ? await this.currentNoteContext(continuingCurrentNote ? recentCurrentNotePath : undefined)
+          : undefined
+      if (consultationWorkflowTaskTurn && !noteContext) {
+        throw new Error(
+          '没有读取到这个咨询闭环第 1 步锁定的原始材料。' +
+            '如果文件已移动或删除，请回到第 1 步重新选择这份逐字稿。',
+        )
+      }
       if (currentNoteRequested && !noteContext) {
         throw new Error('没有读取到目标笔记。请先点开要处理的笔记，再重新发送这条要求。')
       }
@@ -4174,14 +4211,15 @@ class ChatView extends ItemView {
           new Notice(`已按你写出的路径锁定这一份文件：${noteContext.filename}`, 4500)
         }
       }
-      if (noteContext && !scopedSkillInputPath) {
+      if (noteContext && !scopedSkillInputPath && !consultationWorkflowTaskTurn) {
         new Notice(`已把当前笔记作为本轮主要材料：${noteContext.filename}`, 3500)
       }
-      let consultationWorkflowSourcePath = consultationWorkflowTaskTurn
-        ? options.consultationWorkflowSourcePath ?? this.recentConsultationWorkflowSourcePath()
-        : localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME
-          ? noteContext?.path
-          : undefined
+      if (consultationWorkflowTaskTurn && noteContext) {
+        consultationWorkflowSourcePath = noteContext.path
+        new Notice(`已继续使用闭环第 1 步锁定的材料：${noteContext.filename}`, 3500)
+      } else if (localSkill?.name === CONSULTATION_WORKFLOW_SKILL_NAME) {
+        consultationWorkflowSourcePath = noteContext?.path
+      }
       // Skill Studio 的生成提示会把“不覆盖同名文件”写进安全边界；这不是要求
       // 覆盖当前笔记。专用 Skill Creator 回合必须跳过正文替换快捷通道。
       if (!skillCreatorTurn && !skillUpdaterTurn && isFullCurrentNoteReplaceIntent(text)) {
@@ -4344,7 +4382,9 @@ class ChatView extends ItemView {
       let answerSources = [
         ...(noteContext
           ? [{
-              sourceId: `current-note:${noteContext.path}`,
+              sourceId: consultationWorkflowTaskTurn
+                ? `consultation-workflow-source:${noteContext.path}`
+                : `current-note:${noteContext.path}`,
               filename: noteContext.filename,
               path: noteContext.path,
             }]
@@ -4564,6 +4604,10 @@ class ChatView extends ItemView {
         consultationWorkflowTaskCreatedAt,
         vaultQuestion: vaultQuestion.question,
         skillStudioTestInput: skillCreatorTurn ? options.skillStudioTestInput : undefined,
+        skillCreatorOriginalRequest:
+          skillCreatorTurn && !options.skillCreator
+            ? text.slice(0, 4_000)
+            : undefined,
         skillCreatorPending,
         // 用户不必背“创建 Skill”口令：主模型按语义主动返回新建协议时，也把它
         // 当成 Creator 结果走完整 manifest 校验；不完整包只展示问题，绝不给按钮。
@@ -6721,6 +6765,11 @@ class ChatView extends ItemView {
         fillInput: (text) => {
           this.inputEl.value = text
           this.inputEl.focus()
+        },
+        runInput: async (text) => {
+          this.inputEl.value = text
+          this.inputEl.focus()
+          await this.send()
         },
         persist: () => this.persistNow(),
         rerender: () => this.renderMessages(),

@@ -8,7 +8,7 @@ export type LocalSkillVaultReadScope =
 
 export interface LocalSkillVaultReadPolicy {
   scope: LocalSkillVaultReadScope
-  /** 安装时选择的 Vault 相对文件夹；在 whole-vault 下仅作为优先搜索范围。 */
+  /** 旧 manifest 兼容字段；新安装不再保存固定文件夹，运行时点名范围只影响当轮搜索顺序。 */
   fixedFolder?: string
   /** 允许只列出 Vault 路径、类型和修改时间；不允许读取或搜索正文。 */
   metadataDiscovery: boolean
@@ -184,10 +184,11 @@ export function withWholeVaultReadAccess(
   policy: LocalSkillRuntimePolicy | undefined,
 ): LocalSkillRuntimePolicy | undefined {
   if (!policy) return undefined
+  const { fixedFolder: _legacyFixedFolder, ...readPolicy } = policy.vaultRead
   return {
     ...policy,
     vaultRead: {
-      ...policy.vaultRead,
+      ...readPolicy,
       scope: 'whole-vault',
       metadataDiscovery: true,
       preferUserScope: true,

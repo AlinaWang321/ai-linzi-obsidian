@@ -7,13 +7,9 @@ import {
   type CreateLocalSkillBlock,
 } from './create-local-skill'
 import {
-  IMPORTED_SKILL_READ_SCOPE_OPTIONS,
   OFFICIAL_SKILL_TEMPLATES,
-  SKILL_STUDIO_READ_SCOPE_OPTIONS,
   adaptImportedSkillReadScope,
   buildSkillStudioPrompt,
-  importedSkillReadScope,
-  importedSkillFixedFolder,
   previewSkillInvocation,
   previewSkillStudioDraftInvocation,
   skillBlockManifest,
@@ -24,7 +20,6 @@ import {
   type SkillStudioOutput,
 } from './skill-studio-core'
 import type { LocalSkillDescriptor } from './local-skill-core'
-import type { LocalSkillVaultReadScope } from './local-skill-manifest'
 
 export interface SkillStudioOptions {
   onCreateWithAi: (prompt: string, sampleInput: string) => void
@@ -75,62 +70,24 @@ function defaultDraft(): SkillStudioDraft {
 }
 
 export class ImportedSkillPermissionModal extends Modal {
-  private readScope: LocalSkillVaultReadScope
-  private fixedFolder = ''
-
   constructor(
     app: App,
     private readonly block: CreateLocalSkillBlock,
     private readonly onConfirm: (block: CreateLocalSkillBlock, sampleInput: string) => void,
   ) {
     super(app)
-    this.readScope = importedSkillReadScope(block)
-    this.fixedFolder = importedSkillFixedFolder(block) ?? ''
   }
 
   onOpen(): void {
     this.setTitle(`导入 Skill：${this.block.name}`)
     this.contentEl.empty()
     this.contentEl.createDiv({
-      text: '这个 Skill 默认可以按需读取当前整个 Vault。你可以选择一个优先文件夹来加快搜索；无论哪种方式，都不能读取 Vault 外的电脑文件。',
+      text: '这个 Skill 安装后默认可以按需读取当前整个 Vault。你在实际运行时点名某个文件或文件夹，只是让它优先查那里；不会限制后续搜索整个 Vault，也不能读取 Vault 外的电脑文件。',
       cls: 'ai-linzi-skill-studio-intro',
     })
-    const scopeDescription = this.contentEl.createDiv({ cls: 'ai-linzi-skill-studio-intro' })
-    const refreshDescription = () => {
-      const option = IMPORTED_SKILL_READ_SCOPE_OPTIONS.find((item) => item.value === this.readScope)
-      scopeDescription.setText(option?.description ?? '')
-    }
-    const folderSetting = new Setting(this.contentEl)
-      .setName('优先文件夹')
-      .setDesc('安装后先搜索这里；资料不足时仍可继续搜索整个 Vault。')
-    folderSetting.addDropdown((dropdown) => {
-      dropdown.addOption('', '请选择 Vault 文件夹')
-      const folders = this.app.vault.getAllFolders()
-        .filter((folder) => Boolean(folder.path) && !folder.path.startsWith('.'))
-        .sort((left, right) => left.path.localeCompare(right.path, 'zh-CN'))
-      for (const folder of folders) dropdown.addOption(folder.path, folder.path)
-      dropdown.setValue(this.fixedFolder).onChange((value) => {
-        this.fixedFolder = value
-      })
-    })
-    const refreshFolderSetting = () => {
-      folderSetting.settingEl.style.display = this.readScope === 'user-specified-folder' ? '' : 'none'
-    }
     new Setting(this.contentEl)
-      .setName('默认搜索方式')
-      .setDesc('文件夹只是优先范围，不是读取权限墙；真正上限始终是当前 Vault。')
-      .addDropdown((dropdown) => {
-        for (const option of IMPORTED_SKILL_READ_SCOPE_OPTIONS) {
-          dropdown.addOption(option.value, option.label)
-        }
-        dropdown.setValue(this.readScope).onChange((value) => {
-          this.readScope = value as LocalSkillVaultReadScope
-          refreshDescription()
-          refreshFolderSetting()
-        })
-      })
-    refreshDescription()
-    refreshFolderSetting()
+      .setName('读取范围')
+      .setDesc('当前整个 Obsidian Vault（默认）。运行时可用自然语言指定优先文件或文件夹。')
     const scripts = this.block.files.filter((file) => file.path.startsWith('scripts/'))
     const boundary = this.contentEl.createDiv({ cls: 'ai-linzi-skill-permissions' })
     boundary.createEl('strong', { text: '导入边界' })
@@ -147,18 +104,14 @@ export class ImportedSkillPermissionModal extends Modal {
         .setButtonText('生成安装确认卡')
         .setCta()
         .onClick(() => {
-          if (this.readScope === 'user-specified-folder' && !this.fixedFolder) {
-            new Notice('请先选择一个 Vault 文件夹', 5000)
-            return
-          }
-          const adapted = adaptImportedSkillReadScope(this.block, this.readScope, this.fixedFolder)
+          const adapted = adaptImportedSkillReadScope(this.block, 'whole-vault')
           const manifest = skillBlockManifest(adapted.block)
           if (!manifest.valid) {
             new Notice(`Skill 适配后仍未通过校验：${manifest.problems.join('；')}`, 9000)
             return
           }
           this.close()
-          this.onConfirm(adapted.block, skillTestInputForReadScope(adapted.block.name, this.readScope))
+          this.onConfirm(adapted.block, skillTestInputForReadScope(adapted.block.name, 'whole-vault'))
         }))
       .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
   }
@@ -337,17 +290,8 @@ export class SkillStudioModal extends Modal {
         .setValue(this.draft.purpose)
         .onChange((value) => (this.draft.purpose = value.trim())))
     new Setting(this.contentEl)
-      .setName('默认搜索方式')
-      .setDesc('默认可读取整个 Vault；指定文件夹只是优先搜索范围，不包含电脑其他文件。')
-      .addDropdown((dropdown) => {
-        for (const option of SKILL_STUDIO_READ_SCOPE_OPTIONS) {
-          dropdown.addOption(option.value, option.label)
-        }
-        dropdown.setValue(this.draft.readScope ?? 'whole-vault').onChange((value) => {
-          this.draft.readScope = value as LocalSkillVaultReadScope
-          this.render()
-        })
-      })
+      .setName('读取范围')
+      .setDesc('默认可按需读取当前整个 Vault；运行时点名文件或文件夹只用于加快当次搜索。')
     new Setting(this.contentEl)
       .setName('输入材料说明')
       .setDesc('描述要找什么材料、优先看哪里；模型找不到时仍可继续搜索整个 Vault。')

@@ -44,32 +44,18 @@ export const SKILL_STUDIO_READ_SCOPE_OPTIONS: {
 }[] = [
   {
     value: 'whole-vault',
-    label: '整个 Vault（默认）',
-    description: '默认可按需搜索整个知识库；点名文件或文件夹时会优先查那里。',
-  },
-  {
-    value: 'user-specified-folder',
-    label: '优先搜索指定文件夹',
-    description: '先查安装时选择的文件夹；资料不足时仍可继续搜索整个 Vault。',
+    label: '整个 Vault',
+    description: '默认可按需搜索整个知识库；用户在运行时点名文件或文件夹，只是缩小当次搜索范围。',
   },
 ]
 
-/** 外部 Skill 安装只给新手两个明确选择；单篇/多篇属于每次运行的输入，不是安装权限。 */
-export const IMPORTED_SKILL_READ_SCOPE_OPTIONS = SKILL_STUDIO_READ_SCOPE_OPTIONS.filter(
-  (option) => option.value === 'whole-vault' || option.value === 'user-specified-folder',
-).sort((left, right) => left.value === 'whole-vault' ? -1 : right.value === 'whole-vault' ? 1 : 0)
-
-function inferredDraftReadScope(input: string): LocalSkillVaultReadScope {
-  if (/(?:整个|全部|所有|全库|整库|最近|未指定|没找到|未找到|找不到)/iu.test(input)) {
-    return 'whole-vault'
-  }
-  if (/(?:文件夹|目录)/u.test(input)) return 'user-specified-folder'
-  if (/(?:多份|多个|几份|一组|这些文件)/u.test(input)) return 'user-specified-files'
-  return 'current-note'
-}
+/** 外部 Skill 也统一适配为当前整个 Vault；运行时仍可点名文件/文件夹加速。 */
+export const IMPORTED_SKILL_READ_SCOPE_OPTIONS = SKILL_STUDIO_READ_SCOPE_OPTIONS
 
 export function skillStudioReadScope(draft: Pick<SkillStudioDraft, 'readScope' | 'input'>): LocalSkillVaultReadScope {
-  return draft.readScope ?? inferredDraftReadScope(draft.input)
+  // 读取权限不再由新手表单或输入描述缩小；点名范围只影响当次搜索顺序。
+  void draft
+  return 'whole-vault'
 }
 
 export function skillReadScopePermission(scope: LocalSkillVaultReadScope, fixedFolder?: string): string {
@@ -83,7 +69,7 @@ export function skillReadScopePermission(scope: LocalSkillVaultReadScope, fixedF
   return '默认可按需搜索和读取整个 Vault；优先使用用户指定的文件或文件夹'
 }
 
-export function skillReadPolicy(scope: LocalSkillVaultReadScope, _metadataDiscovery = false, fixedFolder?: string): {
+export function skillReadPolicy(_scope: LocalSkillVaultReadScope, _metadataDiscovery = false, _fixedFolder?: string): {
   scope: LocalSkillVaultReadScope
   fixedFolder?: string
   metadataDiscovery: boolean
@@ -93,7 +79,6 @@ export function skillReadPolicy(scope: LocalSkillVaultReadScope, _metadataDiscov
 } {
   return {
     scope: 'whole-vault',
-    ...(scope === 'user-specified-folder' && fixedFolder ? { fixedFolder } : {}),
     metadataDiscovery: true,
     preferUserScope: true,
     fallbackToWholeVault: true,
@@ -530,7 +515,7 @@ export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
     overwrite: false,
   }
   const inputScopeRequirement = readScope === 'user-specified-folder'
-    ? '读取能力默认覆盖当前整个 Vault：先搜索用户在安装时或本轮指定的文件夹；该范围没有所需材料时，继续在整个 Vault 中搜索相关候选，不要直接回答“没有”。搜索和筛选在本机完成，只读取并提交完成任务所必需的文件内容，不得把整个 Vault 的正文一次性提交给模型，也永远不能访问 Vault 外的电脑文件。'
+    ? '读取能力默认覆盖当前整个 Vault：先搜索用户在本轮点名的文件或文件夹；该范围没有所需材料时，继续在整个 Vault 中搜索相关候选，不要直接回答“没有”。搜索和筛选在本机完成，只读取并提交完成任务所必需的文件内容，不得把整个 Vault 的正文一次性提交给模型，也永远不能访问 Vault 外的电脑文件。'
     : '读取能力默认覆盖当前整个 Vault：优先使用用户点名的文件或文件夹；未指定范围，或优先范围没有所需材料时，继续搜索整个 Vault 中的任务相关候选。搜索和筛选在本机完成，只读取并提交完成任务所必需的文件内容，不得把整个 Vault 的正文一次性提交给模型，也永远不能访问 Vault 外的电脑文件。'
   const permissions = [
     inputPermission,
@@ -655,9 +640,22 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
       sampleInputs: [`用 ${workingBlock.name} Skill 处理当前笔记`],
     }
     const manifestLink = `[权限与版本](${SKILL_MANIFEST_PATH})`
-    const skillContent = workingBlock.content.includes(SKILL_MANIFEST_PATH)
+    let skillContent = workingBlock.content.includes(SKILL_MANIFEST_PATH)
       ? workingBlock.content
       : `${workingBlock.content.trim()}\n\n## AI霖子兼容权限\n- ${manifestLink}\n- 默认可按需读取整个 Vault；优先搜索点名范围；写入前一次原子确认；不覆盖未知同名文件。`
+    const unlinkedReferences = workingBlock.files
+      .filter((item) =>
+        item.path.startsWith('references/') &&
+        item.path !== SKILL_MANIFEST_PATH &&
+        !skillContent.includes(item.path),
+      )
+      .map((item) => item.path)
+    if (unlinkedReferences.length > 0) {
+      const links = unlinkedReferences
+        .map((path) => `- [${path.replace(/^references\//u, '')}](${path})`)
+        .join('\n')
+      skillContent = `${skillContent.trim()}\n\n## AI霖子参考文件\n${links}`
+    }
     const files = [
       ...workingBlock.files.map((file) =>
         file.path === 'SKILL.md' ? { ...file, content: skillContent } : file,
@@ -669,6 +667,9 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
       repairs: [
         ...initialRepairs,
         '缺少权限清单，已补充 AI霖子兼容 manifest（默认按需读取整个 Vault）',
+        ...(unlinkedReferences.length > 0
+          ? [`已补充 ${unlinkedReferences.length} 个遗漏的 reference 链接`]
+          : []),
       ],
     }
   }
@@ -703,6 +704,10 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
     }
 
     let skillContent = workingBlock.content
+    if (!skillContent.includes(SKILL_MANIFEST_PATH)) {
+      skillContent = `${skillContent.trim()}\n\n## AI霖子兼容权限\n- [权限与版本](${SKILL_MANIFEST_PATH})`
+      repairs.push('已补充 SKILL.md 中遗漏的权限清单链接')
+    }
     const unlinkedReferences = workingBlock.files
       .filter((item) =>
         item.path.startsWith('references/') &&
@@ -757,6 +762,84 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
       repairs.push(`已补充输出方式：${output}`)
     }
 
+    if (value.schemaVersion === 2) {
+      // Skill Creator 偶尔会生成“看起来是 v2”但缺 vaultRead/vaultWrite
+      // 的半成品。这两项的修复结果是唯一的：读取默认到当前整个
+      // Vault；写入方式从 SKILL.md 已展示的输出声明确定，仍需一次原子确认且不覆盖。
+      const output = localSkillOutputFromMarkdown(skillContent)
+      const expectedVaultRead = skillReadPolicy('whole-vault', true)
+      const currentVaultRead = value.vaultRead && typeof value.vaultRead === 'object' &&
+        !Array.isArray(value.vaultRead)
+        ? value.vaultRead as Record<string, unknown>
+        : undefined
+      if (
+        !currentVaultRead ||
+        currentVaultRead.scope !== 'whole-vault' ||
+        currentVaultRead.metadataDiscovery !== true ||
+        currentVaultRead.preferUserScope !== true ||
+        currentVaultRead.fallbackToWholeVault !== true ||
+        currentVaultRead.maxFiles !== 120 ||
+        currentVaultRead.fixedFolder !== undefined
+      ) {
+        value.vaultRead = expectedVaultRead
+        repairs.push('已把读取权限统一为按需搜索整个 Vault')
+      }
+      const expectedVaultWrite = {
+        mode: output,
+        confirmation: 'single-atomic-plan',
+        overwrite: false,
+      }
+      const currentVaultWrite = value.vaultWrite && typeof value.vaultWrite === 'object' &&
+        !Array.isArray(value.vaultWrite)
+        ? value.vaultWrite as Record<string, unknown>
+        : undefined
+      if (
+        !currentVaultWrite ||
+        currentVaultWrite.mode !== output ||
+        currentVaultWrite.confirmation !== 'single-atomic-plan' ||
+        currentVaultWrite.overwrite !== false
+      ) {
+        value.vaultWrite = expectedVaultWrite
+        repairs.push(`已按 SKILL.md 补充写入权限：${output}`)
+      }
+      const currentPermissions = Array.isArray(value.permissions)
+        ? value.permissions.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+        : []
+      if (currentPermissions.length === 0) {
+        value.permissions = [
+          skillReadScopePermission('whole-vault'),
+          '读取权限仅限当前 Obsidian Vault，不包含电脑其他目录',
+          importedSkillOutputPermission(output),
+          '不运行本机程序',
+          '不额外联网',
+        ]
+        repairs.push('已补充可展示的权限清单')
+      } else if (!currentPermissions.some((item) => /(?:整个|全部|所有|全库|整库).{0,16}(?:Vault|知识库|仓库)/iu.test(item))) {
+        value.permissions = [skillReadScopePermission('whole-vault'), ...currentPermissions]
+        repairs.push('已在权限清单中明确整个 Vault 读取范围')
+      }
+      if (value.network !== 'none' && value.network !== 'ai-linzi-only') {
+        value.network = 'ai-linzi-only'
+        repairs.push('已补充 AI霖子专用网络边界')
+      }
+      const scripts = workingBlock.files.filter((item) => item.path.startsWith('scripts/'))
+      if (!Array.isArray(value.programs) && scripts.length === 0) {
+        value.programs = []
+        repairs.push('已补充空的本机程序清单')
+      }
+      if (value.createdWith !== 'AI霖子 Skill Studio') {
+        if (typeof value.createdWith === 'string' && value.createdWith.trim()) {
+          value.adaptedFrom = value.createdWith.trim()
+        }
+        value.createdWith = 'AI霖子 Skill Studio'
+        repairs.push('已补充 AI霖子 Skill Studio 兼容声明')
+      }
+      if (value.skillVersion === undefined) {
+        value.skillVersion = '1.0.0'
+        repairs.push('已补充 skillVersion：1.0.0')
+      }
+    }
+
     if (value.schemaVersion === 1) {
       const legacy = parseLocalSkillManifest(
         workingBlock.files[manifestIndex].content,
@@ -804,19 +887,13 @@ function importedSkillOutputPermission(output: SkillStudioOutput): string {
   return '确认后只新建 Markdown，不覆盖'
 }
 
-/** 外部 Skill 默认授权当前整个 Vault；已有文件夹只保留为优先搜索范围。 */
-export function importedSkillReadScope(block: CreateLocalSkillBlock): LocalSkillVaultReadScope {
-  return importedSkillFixedFolder(block)
-    ? 'user-specified-folder'
-    : 'whole-vault'
+/** 外部 Skill 默认授权当前整个 Vault；新安装不保留固定文件夹权限。 */
+export function importedSkillReadScope(_block: CreateLocalSkillBlock): LocalSkillVaultReadScope {
+  return 'whole-vault'
 }
 
-export function importedSkillFixedFolder(block: CreateLocalSkillBlock): string | undefined {
-  const normalized = normalizeGeneratedSkillManifest(block).block
-  const file = normalized.files.find((item) => item.path === SKILL_MANIFEST_PATH)
-  if (!file) return undefined
-  const parsed = parseLocalSkillManifest(file.content, localSkillOutputFromMarkdown(normalized.content))
-  return parsed.kind === 'valid' ? parsed.policy.vaultRead.fixedFolder : undefined
+export function importedSkillFixedFolder(_block: CreateLocalSkillBlock): string | undefined {
+  return undefined
 }
 
 function replaceCompatibilitySection(content: string, section: string): string {
@@ -826,15 +903,16 @@ function replaceCompatibilitySection(content: string, section: string): string {
 }
 
 /**
- * 外部 Skill 没有 AI霖子 manifest 时，只有用户在导入弹窗明确选择读取范围后，
- * 才本机生成可见权限合同。即使包内有脚本也只完成安装适配：本地程序总开关
+ * 外部 Skill 没有 AI霖子 manifest 时，本机按整个 Vault 生成可见权限合同。
+ * 即使包内有脚本也只完成安装适配：本地程序总开关
  * 仍默认关闭，运行时仍逐步确认，绝不因导入而执行。
  */
 export function adaptImportedSkillReadScope(
   sourceBlock: CreateLocalSkillBlock,
-  scope: LocalSkillVaultReadScope,
-  fixedFolder?: string,
+  _scope: LocalSkillVaultReadScope,
+  _fixedFolder?: string,
 ): { block: CreateLocalSkillBlock; repairs: string[] } {
+  const scope: LocalSkillVaultReadScope = 'whole-vault'
   const firstPass = normalizeGeneratedSkillManifest(sourceBlock)
   const block = firstPass.block
   const manifestFile = block.files.find((item) => item.path === SKILL_MANIFEST_PATH)
@@ -859,9 +937,7 @@ export function adaptImportedSkillReadScope(
     ? previous.skillVersion
     : '1.0.0'
   const sampleInput = skillTestInputForReadScope(block.name, scope)
-  const normalizedFolder = scope === 'user-specified-folder'
-    ? fixedFolder?.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
-    : undefined
+  const normalizedFolder = undefined
   const permissions = [
     skillReadScopePermission(scope, normalizedFolder),
     '读取权限仅限当前 Obsidian Vault，不包含电脑其他目录',

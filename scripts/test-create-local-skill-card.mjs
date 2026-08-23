@@ -113,6 +113,7 @@ function setup(over = {}) {
   const calls = {
     notices: [],
     filled: [],
+    ran: [],
     persisted: 0,
     rerendered: 0,
     opened: [],
@@ -148,6 +149,7 @@ function setup(over = {}) {
     skillEntryExists: () => over.entryExists ?? true,
     outputFolder: () => '04_Output',
     fillInput: (t) => calls.filled.push(t),
+    runInput: over.runInput ?? (async (t) => { calls.ran.push(t) }),
     persist: async () => { calls.persisted += 1 },
     rerender: () => { calls.rerendered += 1 },
     notify: (t) => calls.notices.push(t),
@@ -257,6 +259,25 @@ console.log('第6组 创建失败：按钮恢复可点、不落盘、不回填')
   assert.equal(message.createdLocalSkill, undefined, '失败不得回填 createdLocalSkill')
   assert.equal(calls.persisted, 0, '失败不得落盘')
   assert.ok(calls.notices.some((n) => n.startsWith('创建失败:')), '缺失败提示')
+}
+
+console.log('第6.5组 主对话同时要求创建与执行：一次确认后用新 Skill 续跑原任务')
+{
+  const { host, calls, row } = setup()
+  const message = {
+    skillCreatorOriginalRequest: '把咨询逐字稿提炼成方法论，并生成咨询前方案',
+  }
+  renderCreateLocalSkillOffers(host, row, [BLOCK], message)
+  const btn = byText(row, '确认创建并运行（2 个文件）')
+  assert.ok(btn, '主对话创建任务应明确告知确认后会立即运行')
+  btn.onclick()
+  await new Promise((r) => setTimeout(r, 0))
+  assert.equal(calls.created.length, 1)
+  assert.equal(calls.persisted, 1)
+  assert.deepEqual(calls.ran, [
+    '用 demo-skill Skill 执行我刚才描述的完整任务：\n\n' +
+      '把咨询逐字稿提炼成方法论，并生成咨询前方案',
+  ])
 }
 
 console.log('第7组 目录设置中途变化：不写入、提示并重绘，等用户按新路径重新确认')

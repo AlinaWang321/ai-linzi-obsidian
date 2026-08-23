@@ -32,6 +32,8 @@ export interface CreateLocalSkillCardMessage {
   createdLocalSkill?: { root: string; entry: string }
   /** 「立即试运行」要填进输入框的示例短语。 */
   skillStudioTestInput?: string
+  /** 主对话中同时要求“创建 Skill + 执行任务”时的原始任务。 */
+  skillCreatorOriginalRequest?: string
 }
 
 /**
@@ -54,6 +56,7 @@ export interface CreateLocalSkillCardHost {
   skillEntryExists(path: string): boolean
   outputFolder(): string
   fillInput(text: string): void
+  runInput(text: string): Promise<void>
   persist(): Promise<void>
   rerender(): void
   notify(message: string, timeoutMs: number): void
@@ -157,8 +160,18 @@ export function renderCreateLocalSkillOffers(
       }
       continue
     }
+    const originalTask = message.skillCreatorOriginalRequest?.trim()
+    const runAfterCreate = originalTask
+      ? `用 ${block.name} Skill 执行我刚才描述的完整任务：\n\n${originalTask}`
+      : undefined
     const createBtn = actionsRow.createEl('button', {
-      text: files.length === 1 ? '创建 SKILL.md' : `创建完整 Skill（${files.length} 个文件）`,
+      text: runAfterCreate
+        ? files.length === 1
+          ? '确认创建并运行'
+          : `确认创建并运行（${files.length} 个文件）`
+        : files.length === 1
+          ? '创建 SKILL.md'
+          : `创建完整 Skill（${files.length} 个文件）`,
     })
     createBtn.onclick = () => {
       // 确认卡出现后，用户仍可能去驾驶舱设置里修改“我的 Skills”目录。
@@ -182,6 +195,16 @@ export function renderCreateLocalSkillOffers(
           await host.persist()
           host.rerender()
           host.notify(`已创建到“我的 Skills”：${skillRoot}/`, 6000)
+          if (runAfterCreate) {
+            try {
+              await host.runInput(runAfterCreate)
+            } catch (error) {
+              host.notify(
+                `Skill 已创建，但自动运行未启动：${error instanceof Error ? error.message : String(error)}`,
+                8000,
+              )
+            }
+          }
         } catch (error) {
           createBtn.disabled = false
           host.notify(`创建失败:${(error as Error).message}`, 7000)

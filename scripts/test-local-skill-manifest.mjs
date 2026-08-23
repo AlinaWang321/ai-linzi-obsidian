@@ -111,7 +111,7 @@ assert.equal(fixedFolder.kind, 'valid')
 assert.equal(fixedFolder.policy.vaultRead.fixedFolder, '01_Raw/课程逐字稿')
 const effectiveFixedFolder = manifest.withWholeVaultReadAccess(fixedFolder.policy)
 assert.equal(effectiveFixedFolder.vaultRead.scope, 'whole-vault')
-assert.equal(effectiveFixedFolder.vaultRead.fixedFolder, '01_Raw/课程逐字稿')
+assert.equal(effectiveFixedFolder.vaultRead.fixedFolder, undefined)
 assert.equal(effectiveFixedFolder.vaultRead.fallbackToWholeVault, true)
 
 const preferredFolder = manifest.parseLocalSkillManifest(JSON.stringify({
@@ -131,6 +131,7 @@ const preferredFolder = manifest.parseLocalSkillManifest(JSON.stringify({
 }), 'chat')
 assert.equal(preferredFolder.kind, 'valid')
 assert.equal(preferredFolder.policy.vaultRead.fixedFolder, '01_Raw/课程逐字稿')
+assert.equal(manifest.withWholeVaultReadAccess(preferredFolder.policy).vaultRead.fixedFolder, undefined)
 
 const escapedFolder = manifest.parseLocalSkillManifest(JSON.stringify({
   schemaVersion: 2,
