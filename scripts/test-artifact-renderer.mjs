@@ -7,7 +7,7 @@ import { strFromU8, unzipSync } from 'fflate'
 const require = createRequire(import.meta.url)
 const bundled = await build({
   stdin: {
-    contents: `export { renderArtifact, renderPresentationPreviewHtml } from './src/artifact-renderer.ts'; export { parseArtifactMarkdown, resolveArtifactPath, estimateArtifactUnits, normalizeArtifactStyle, normalizeArtifactTemplate, normalizePresentationSpec, explicitPresentationSlideCount, presentationSlideCountProblem, presentationContentProblem, artifactStyleSummary } from './src/artifact-renderer-core.ts'`,
+    contents: `export { renderArtifact, renderPresentationPreviewHtml } from './src/artifact-renderer.ts'; export { parseArtifactMarkdown, resolveArtifactPath, estimateArtifactUnits, normalizeArtifactStyle, normalizeArtifactTemplate, normalizeArtifactHtmlDesign, normalizePresentationSpec, explicitPresentationSlideCount, presentationSlideCountProblem, presentationContentProblem, artifactStyleSummary } from './src/artifact-renderer-core.ts'`,
     resolveDir: process.cwd(),
     sourcefile: 'artifact-test-entry.ts',
     loader: 'ts',
@@ -29,6 +29,7 @@ const {
   estimateArtifactUnits,
   normalizeArtifactStyle,
   normalizeArtifactTemplate,
+  normalizeArtifactHtmlDesign,
   normalizePresentationSpec,
   explicitPresentationSlideCount,
   presentationSlideCountProblem,
@@ -69,6 +70,19 @@ assert.equal(resolveArtifactPath('$OUTPUT/文档/方案.docx', 'AI霖子输出')
 assert.ok(estimateArtifactUnits({ type: 'create_artifact', path: '$OUTPUT/方案.pptx', format: 'pptx', title: '方案', content }).count >= 2)
 assert.equal(estimateArtifactUnits({ type: 'create_artifact', path: '$OUTPUT/方案.xlsx', format: 'xlsx', title: '方案', content }).label, '工作表')
 assert.equal(normalizeArtifactTemplate('not-a-template'), 'general')
+assert.deepEqual(
+  normalizeArtifactHtmlDesign({
+    designBrief: '深蓝高级经营驾驶舱',
+    customCss: 'body{background:#071426}.hero{background:#0b2244;color:#fff}@media(max-width:620px){.cards{grid-template-columns:1fr}}',
+  }),
+  {
+    designBrief: '深蓝高级经营驾驶舱',
+    customCss: 'body{background:#071426}.hero{background:#0b2244;color:#fff}@media(max-width:620px){.cards{grid-template-columns:1fr}}',
+  },
+)
+assert.equal(normalizeArtifactHtmlDesign({ customCss: '.hero{background:url(https://example.com/a.png)}' }), undefined)
+assert.equal(normalizeArtifactHtmlDesign({ customCss: '@import "https://example.com/x.css";' }), undefined)
+assert.equal(normalizeArtifactHtmlDesign({ customCss: `body{color:#fff}${' '.repeat(20_001)}` }), undefined)
 assert.deepEqual(
   normalizeArtifactStyle({ bodySizePt: 99, marginMm: 2, accentColor: 'javascript:red', headerText: 'A\u0000B' }, 'course-handout'),
   {
@@ -214,6 +228,17 @@ assert.match(html.data, /<nav class="vault-nav-links">/)
 assert.doesNotMatch(html.data, /<p><nav class="vault-nav-links">/)
 assert.match(html.data, />打开 02_Wiki<\/a>/)
 assert.doesNotMatch(html.data, /href="\.\.\/\.\.\/\.\.\//)
+const customHtmlOperation = {
+  ...operation('html'),
+  layout: 'dashboard',
+  htmlDesign: {
+    designBrief: '深蓝数据驾驶舱',
+    customCss: 'body{background:#071426}.hero{background:#0b2244;color:#fff}.hero h1{color:#7dd3fc}',
+  },
+}
+const customHtml = await renderArtifact(customHtmlOperation)
+assert.match(customHtml.data, /body\{background:#071426\}/)
+assert.match(artifactStyleSummary(customHtmlOperation), /AI 自主 HTML 设计 · 深蓝数据驾驶舱/)
 
 const docx = await renderArtifact(operation('docx'))
 assert.equal(docx.binary, true)

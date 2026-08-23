@@ -30,6 +30,7 @@ import {
 import { validateMarkdownAgainstTemplate } from './skill-template'
 import {
   ARTIFACT_MAX_CONTENT_CHARS,
+  normalizeArtifactHtmlDesign,
   presentationContentProblem,
   resolveArtifactPath,
   type CreateArtifactOperation,
@@ -422,6 +423,9 @@ export class LocalVaultAgent {
     if (!operation.content.trim()) throw new Error('成品文件缺少正文')
     if (operation.content.length > ARTIFACT_MAX_CONTENT_CHARS) {
       throw new Error(`成品正文超过 ${ARTIFACT_MAX_CONTENT_CHARS.toLocaleString()} 字，请拆分后生成`)
+    }
+    if (operation.htmlDesign !== undefined && !normalizeArtifactHtmlDesign(operation.htmlDesign)) {
+      throw new Error('HTML 自定义视觉包含外链、脚本或不安全 CSS，请重新生成纯本地样式')
     }
     const presentationProblem = presentationContentProblem(operation)
     if (presentationProblem) throw new Error(presentationProblem)

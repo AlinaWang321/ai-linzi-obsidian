@@ -88,6 +88,16 @@ assert.notEqual(
   }),
   '不同 offset 是合法分页，不能被误判为重复',
 )
+const nativeBatch = core.limitVaultAgentToolCalls(
+  Array.from({ length: 6 }, (_, index) => ({
+    id: `native-${index + 1}`,
+    name: 'read_note',
+    arguments: { path: `资料/第${index + 1}份.md` },
+  })),
+)
+assert.equal(nativeBatch.executable.length, core.VAULT_AGENT_MAX_CALLS_PER_ROUND)
+assert.deepEqual(nativeBatch.deferredResults.map((item) => item.callId), ['native-5', 'native-6'])
+assert.ok(nativeBatch.deferredResults.every((item) => item.output.includes('本轮未执行')))
 assert.equal(core.detectVaultAgentIntent('请把这篇笔记整理到归档目录'), 'organize')
 assert.equal(core.detectVaultAgentIntent('请把这篇笔记删除'), 'organize')
 assert.equal(core.detectVaultAgentIntent('删除这篇笔记'), 'organize')

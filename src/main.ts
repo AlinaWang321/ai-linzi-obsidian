@@ -40,7 +40,6 @@ import {
   type ParsedNotePatch,
 } from './note-patch'
 import {
-  chooseComputerAiImageReferences,
   chooseVaultAiImageReference,
   feedKnowledge,
   feedKnowledgeWithResult,
@@ -93,6 +92,12 @@ import {
   AI_LINZI_RIBBON_ICON_SVG,
 } from './brand-assets'
 import { dropSummary, planDroppedFiles, type DropCandidate } from './chat-drop-core'
+import {
+  attachmentTurnCount,
+  buildAttachmentOnlyTurnText,
+  type AttachmentTurnSummary,
+} from './chat-attachment-turn'
+import { closestQrOverlayRatio, overlayQrDataUrl } from './qr-overlay'
 import { extractCreateNoteBlocks, type CreateNoteBlock } from './create-note'
 import {
   explicitMemoryContent,
@@ -199,6 +204,7 @@ import {
   isCloudToolsTurnRequest,
   isVaultBatchTask,
   isVaultNativeTurnRequest,
+  limitVaultAgentToolCalls,
   requiresWebSearchNativeRouting,
   stripVaultInternalTurnMarkers,
   isExplicitCurrentNoteTrashRequest,
@@ -2278,6 +2284,8 @@ class ChatView extends ItemView {
   private activeImageMessageId = ''
   /** 只保存用户明确勾选的本地路径；正文不会写入会话历史或插件设置。 */
   private authorizedContentPaths: string[] = []
+  /** 用户明确选中的文件夹范围；只在内存中用于承接「该文件夹」。 */
+  private authorizedContentFolderPaths: string[] = []
   /** 从电脑选择的 .xlsx：原文件本机解析后只保留文字在内存，不写 Vault/历史/设置。 */
   private uploadedSpreadsheetAttachments: Array<{
     id: string
@@ -3164,6 +3172,7 @@ class ChatView extends ItemView {
       this.app,
       this.longDocumentPath ? [this.longDocumentPath] : this.authorizedContentPaths,
       this.authorizedContentLimits(capabilities),
+      this.longDocumentPath ? [] : this.authorizedContentFolderPaths,
     )
     modal.open()
     const selection = await modal.result
@@ -3175,6 +3184,7 @@ class ChatView extends ItemView {
         new Notice('长文任务不能同时带图片，已移除待发送图片')
       }
       this.authorizedContentPaths = []
+      this.authorizedContentFolderPaths = []
       this.uploadedSpreadsheetAttachments = []
       this.authorizedContentChars = 0
       this.longDocumentPath = selection.path
@@ -3184,6 +3194,7 @@ class ChatView extends ItemView {
       this.longDocumentPath = ''
       this.longDocumentChars = 0
       this.authorizedContentPaths = selection.paths
+      this.authorizedContentFolderPaths = selection.folderPaths
       this.authorizedContentChars =
         selection.totalChars +
         this.uploadedSpreadsheetAttachments.reduce((sum, item) => sum + item.text.length, 0)
@@ -3193,6 +3204,7 @@ class ChatView extends ItemView {
 
   private clearAuthorizedContent(): void {
     this.authorizedContentPaths = []
+    this.authorizedContentFolderPaths = []
     this.uploadedSpreadsheetAttachments = []
     this.authorizedContentChars = 0
     this.longDocumentPath = ''
@@ -3210,27 +3222,32 @@ class ChatView extends ItemView {
     const menu = new Menu()
     menu.addItem((item) =>
       item
-        .setTitle('从 Vault 选择文件或文件夹')
+        .setTitle('从 Obsidian 知识库选择')
+        .setIcon('files')
+        .onClick(() => this.openVaultAttachmentMenu(event)),
+    )
+    menu.addItem((item) =>
+      item
+        .setTitle('从电脑临时选择（图片 / Excel）')
+        .setIcon('folder-open')
+        .onClick(() => void this.addComputerAttachments()),
+    )
+    menu.showAtMouseEvent(event)
+  }
+
+  private openVaultAttachmentMenu(event: MouseEvent): void {
+    const menu = new Menu()
+    menu.addItem((item) =>
+      item
+        .setTitle('文件或文件夹')
         .setIcon('files')
         .onClick(() => void this.openAuthorizedContentSelector()),
     )
     menu.addItem((item) =>
       item
-        .setTitle('从 Vault 选择图片')
+        .setTitle('图片')
         .setIcon('image')
         .onClick(() => void this.addVaultChatImage()),
-    )
-    menu.addItem((item) =>
-      item
-        .setTitle('从电脑上传图片')
-        .setIcon('folder-open')
-        .onClick(() => void this.addComputerChatImages()),
-    )
-    menu.addItem((item) =>
-      item
-        .setTitle('从电脑上传 Excel（.xlsx）')
-        .setIcon('sheet')
-        .onClick(() => void this.addComputerSpreadsheets()),
     )
     menu.showAtMouseEvent(event)
   }
@@ -3252,32 +3269,16 @@ class ChatView extends ItemView {
     })
   }
 
-  private async addComputerChatImages(): Promise<void> {
-    if (this.longDocumentPath) {
-      new Notice('长文任务不能同时带图片，请先清除长文任务')
-      return
-    }
-    if (this.chatImageAttachments.length >= 3) {
-      new Notice('主对话单次最多上传 3 张图片')
-      return
-    }
-    if (!(await this.plugin.requireProAccess('主对话图片附件'))) return
-    chooseComputerAiImageReferences(3 - this.chatImageAttachments.length, (references) => {
-      this.chatImageAttachments.push(...references)
-      this.refreshAuthorizedContentUi()
-      this.inputEl.focus()
-    })
-  }
-
-  private async addComputerSpreadsheets(): Promise<void> {
+  /** 电脑侧只弹一次系统选择器；图片和 Excel 由同一条本机校验链分流。 */
+  private async addComputerAttachments(): Promise<void> {
     if (this.longDocumentPath) {
       new Notice('长文任务不能同时带附件，请先清除长文任务')
       return
     }
-    if (!(await this.plugin.requireProAccess('主对话 Excel 附件'))) return
+    if (!(await this.plugin.requireProAccess('主对话附件'))) return
     const input = this.containerEl.createEl('input')
     input.type = 'file'
-    input.accept = '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    input.accept = '.png,.jpg,.jpeg,.webp,.xlsx,image/png,image/jpeg,image/webp,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     input.multiple = true
     input.hidden = true
     input.addEventListener('change', () => {
@@ -3947,8 +3948,10 @@ class ChatView extends ItemView {
   }
 
   private async send(options: SendOptions = {}) {
-    const text = this.inputEl.value.trim()
-    if (!text || this.sending) return
+    const typedText = this.inputEl.value.trim()
+    const attachmentSummary = this.attachmentTurnSummary()
+    const text = typedText || buildAttachmentOnlyTurnText(attachmentSummary)
+    if ((!text && attachmentTurnCount(attachmentSummary) === 0) || this.sending) return
     const imageAttachments = this.chatImageAttachments.slice()
     const userMessage: WireMessage = {
       id: uid(),
@@ -3960,6 +3963,42 @@ class ChatView extends ItemView {
     this.messages.push(userMessage)
     this.inputEl.value = ''
     await this.runSendTurn(text, userMessage.id, imageAttachments, options)
+  }
+
+  private attachmentTurnSummary(): AttachmentTurnSummary {
+    return {
+      imageCount: this.chatImageAttachments.length,
+      vaultFileCount: this.authorizedContentPaths.length,
+      computerSpreadsheetCount: this.uploadedSpreadsheetAttachments.length,
+      longDocumentCount: this.longDocumentPath ? 1 : 0,
+    }
+  }
+
+  /**
+   * 精确路径只放进当前 API 请求，不进 messages / 云端历史。
+   * 优先用户当前选中的文件夹；其次使用本会话最近 30 分钟真实创建过的文件夹。
+   */
+  private localPathContext(): { folderPaths: string[] } | undefined {
+    const paths = this.authorizedContentFolderPaths.filter(Boolean)
+    const cutoff = Date.now() - 30 * 60 * 1000
+    for (let index = this.messages.length - 1; index >= 0 && paths.length < 8; index--) {
+      const actionId = this.messages[index].vaultActionId
+      if (!actionId) continue
+      const record = this.plugin.getVaultActionRecord(actionId)
+      if (!record || record.undoneAt || record.createdAt < cutoff) continue
+      paths.push(...record.createdFolders)
+      for (const path of [
+        ...(record.createdNotes ?? []),
+        ...(record.updatedNotes ?? []),
+        ...(record.createdArtifacts ?? []),
+      ]) {
+        const parent = path.split('/').slice(0, -1).join('/')
+        if (parent) paths.push(parent)
+      }
+      break
+    }
+    const folderPaths = [...new Set(paths.map((path) => normalizePath(path)).filter(Boolean))].slice(0, 8)
+    return folderPaths.length > 0 ? { folderPaths } : undefined
   }
 
   /**
@@ -4576,6 +4615,7 @@ class ChatView extends ItemView {
             body: {
               messages: this.messagesForApi(),
               sessionId: this.sessionId,
+              localPathContext: this.localPathContext(),
               stream: false,
               noteContext,
               authorizedContent,
@@ -5008,6 +5048,64 @@ class ChatView extends ItemView {
       this.renderMessages()
 
       try {
+        if (request.qrOverlay) {
+          const overlay = request.qrOverlay
+          const qrReference = userReferences[overlay.qrAttachmentIndex - 1]
+          if (!qrReference) {
+            throw new Error(`没有找到第 ${overlay.qrAttachmentIndex} 张上传图片中的二维码`)
+          }
+          const previous = overlay.base === 'previous' ? this.latestAiImageResult() : null
+          const baseReference = overlay.base === 'attachment'
+            ? userReferences[(overlay.baseAttachmentIndex ?? 0) - 1]
+            : undefined
+          if (overlay.base === 'previous' && !previous) {
+            throw new Error('当前对话里没有可继续编辑的上一张 AI 图片')
+          }
+          if (overlay.base === 'attachment' && !baseReference) {
+            throw new Error(`没有找到第 ${overlay.baseAttachmentIndex ?? 0} 张上传图片作为底图`)
+          }
+          const baseDataUrl = previous
+            ? await vaultImageToReferenceDataUrl(this.plugin, previous.result.savedPath)
+            : baseReference?.dataUrl ?? ''
+          const combined = await overlayQrDataUrl(
+            baseDataUrl,
+            qrReference.dataUrl,
+            overlay.position,
+            overlay.sizePercent,
+            overlay.frame,
+          )
+          throwIfAborted(signal)
+          const savedPath = await saveAiImageToVault(
+            this.plugin,
+            combined.dataUrl,
+            `${request.label}_${request.instruction}`,
+          )
+          const resultRatio = closestQrOverlayRatio(combined.width, combined.height)
+          progress.aiImageResult = {
+            kind: 'ai-image',
+            imageUrl: combined.dataUrl,
+            savedPath,
+            instruction: request.instruction,
+            ratio: resultRatio,
+            batchId,
+            batchIndex: displayIndex,
+            batchTotal: requests.length,
+            label: request.label,
+          }
+          progress.parts = [{
+            type: 'text',
+            text: '二维码已在本机原样叠加并保存，没有交给图片模型重绘。',
+          }]
+          this.activeImageMessageId = progress.id
+          completed += 1
+          successfulPaths.push(savedPath)
+          if (!styleReference && requests.length > 1) {
+            styleReference = await vaultImageToReferenceDataUrl(this.plugin, savedPath)
+          }
+          await this.persistNow()
+          this.renderMessages()
+          continue
+        }
         const editTarget = request.editPreviousImage
           ? this.directAiImageEditTarget(`上一张图，${request.instruction}`)
           : null
@@ -5724,6 +5822,7 @@ class ChatView extends ItemView {
                         style: args.style,
                         presentation: args.presentation,
                         layout: args.layout,
+                        htmlDesign: args.htmlDesign,
                         reason: args.reason,
                       }],
                       notes: ['确认后才在本机生成；同名文件存在时停止。'],
@@ -5746,7 +5845,7 @@ class ChatView extends ItemView {
               ].join('\n')
             }
             const calls: VaultAgentToolCall[] = []
-            for (const item of nativeCalls.slice(0, VAULT_AGENT_MAX_CALLS_PER_ROUND)) {
+            for (const item of nativeCalls) {
               const record = item
               const name = record.name
               if (
@@ -5765,6 +5864,7 @@ class ChatView extends ItemView {
               if (!callId) throw new Error('native: missing callId')
               calls.push({ id: callId, name, arguments: args })
             }
+            const limitedCalls = limitVaultAgentToolCalls(calls)
             // Web Search 授权本身不等于 Vault 授权。外部研究任务可以进入原生通道，
             // 但若本轮未开放 Vault，任何本机读取调用都只返回拒绝结果，绝不执行。
             if (!input.vaultAccess && calls.length > 0) {
@@ -5795,7 +5895,7 @@ class ChatView extends ItemView {
             }
             const freshCalls: VaultAgentToolCall[] = []
             const duplicateResults: VaultAgentToolResult[] = []
-            for (const call of calls) {
+            for (const call of limitedCalls.executable) {
               const signature = vaultToolCallSignature(call)
               if (seenVaultReadCallSignatures.has(signature)) {
                 duplicateResults.push({
@@ -5812,8 +5912,8 @@ class ChatView extends ItemView {
               freshCalls.push(call)
             }
             const executed = await this.plugin.vaultAgent.executeCalls(freshCalls, undefined)
-            executed.results.push(...duplicateResults)
-            for (const call of calls) {
+            executed.results.push(...duplicateResults, ...limitedCalls.deferredResults)
+            for (const call of limitedCalls.executable) {
               const result = executed.results.find((item) => item.callId === call.id)
               if (!result?.ok) continue
               if (call.name === 'read_note' && typeof call.arguments.path === 'string') {
@@ -5975,6 +6075,7 @@ class ChatView extends ItemView {
           body: {
             messages: this.messagesForApi(),
             sessionId: this.sessionId,
+            localPathContext: this.localPathContext(),
             stream: false,
             noteContext: input.noteContext,
             authorizedContent: input.authorizedContent,
@@ -6032,6 +6133,7 @@ class ChatView extends ItemView {
           body: {
             messages: this.messagesForApi(),
             sessionId: this.sessionId,
+            localPathContext: this.localPathContext(),
             stream: false,
             noteContext: input.noteContext,
             authorizedContent: input.authorizedContent,
@@ -6067,6 +6169,7 @@ class ChatView extends ItemView {
           body: {
             messages: this.messagesForApi(),
             sessionId: this.sessionId,
+            localPathContext: this.localPathContext(),
             stream: false,
             noteContext: input.noteContext,
             authorizedContent: input.authorizedContent,
@@ -6750,6 +6853,7 @@ class ChatView extends ItemView {
       body: JSON.stringify({
         messages: this.messagesForApi(),
         sessionId: this.sessionId,
+        localPathContext: this.localPathContext(),
         stream: 'text',
         noteContext,
         authorizedContent,

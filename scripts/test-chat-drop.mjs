@@ -136,7 +136,8 @@ console.log('第6组 UI 接线契约')
   assert.match(main, /files\.map\(\(file, sourceIndex\)/, '候选附件必须记录稳定来源索引')
   assert.match(main, /files\[candidate\.sourceIndex\]/, '读取时必须按来源索引取原文件，不能按同名查第一份')
   assert.ok(main.includes('uploadedSpreadsheetAttachments'), '电脑 Excel 必须只在当前进程保留解析文字')
-  assert.ok(main.includes('从电脑上传 Excel（.xlsx）'), '附件菜单必须有可发现的 Excel 入口')
+  assert.ok(main.includes('从电脑临时选择'), '附件菜单必须有统一的电脑入口')
+  assert.ok(main.includes('.png,.jpg,.jpeg,.webp,.xlsx'), '统一选择器必须同时接受图片和 Excel')
   assert.ok(main.includes("requireProAccess('主对话图片附件')"), '图片附件仍走 Pro 权限闸')
   assert.ok(
     main.includes("new Notice('长文任务不能同时带附件，请先清除长文任务')"),

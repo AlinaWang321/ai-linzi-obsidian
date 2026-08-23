@@ -42,6 +42,42 @@ const resizeEdit = image.extractChatAiImageRequests(`改成小红书封面。
 <<<AI_LINZI_IMAGE_REQUEST_END>>>`)
 assert.equal(resizeEdit.requests[0].preserveOriginalRatio, false)
 
+const qrOverlay = image.extractChatAiImageRequests(`原样叠加二维码。
+<<<AI_LINZI_IMAGE_REQUEST>>>
+{"requests":[{"label":"带二维码海报","instruction":"在右下角原样叠加用户二维码，其他不变","ratio":"3:4","editPreviousImage":true,"qrOverlay":{"base":"previous","qrAttachmentIndex":1,"position":"bottom-right","sizePercent":18}}]}
+<<<AI_LINZI_IMAGE_REQUEST_END>>>`)
+assert.equal(qrOverlay.invalid, false)
+assert.deepEqual(qrOverlay.requests[0].qrOverlay, {
+  base: 'previous',
+  baseAttachmentIndex: undefined,
+  qrAttachmentIndex: 1,
+  position: 'bottom-right',
+  sizePercent: 18,
+  frame: 'none',
+})
+
+const attachmentQr = image.extractChatAiImageRequests(`叠加。
+<<<AI_LINZI_IMAGE_REQUEST>>>
+{"requests":[{"instruction":"叠加二维码","ratio":"16:9","editPreviousImage":false,"qrOverlay":{"base":"attachment","baseAttachmentIndex":1,"qrAttachmentIndex":2,"position":"top-left","sizePercent":99}}]}
+<<<AI_LINZI_IMAGE_REQUEST_END>>>`)
+assert.equal(attachmentQr.invalid, false)
+assert.equal(attachmentQr.requests[0].qrOverlay.sizePercent, 30, '二维码比例必须收窄到安全范围')
+assert.equal(attachmentQr.requests[0].qrOverlay.position, 'top-left')
+assert.equal(attachmentQr.requests[0].qrOverlay.frame, 'none', '用户没要求时默认无额外白框')
+
+const framedQr = image.extractChatAiImageRequests(`加白底贴纸框。
+<<<AI_LINZI_IMAGE_REQUEST>>>
+{"requests":[{"instruction":"叠加二维码并加白色贴纸框","ratio":"16:9","editPreviousImage":true,"qrOverlay":{"base":"previous","qrAttachmentIndex":1,"frame":"white"}}]}
+<<<AI_LINZI_IMAGE_REQUEST_END>>>`)
+assert.equal(framedQr.invalid, false)
+assert.equal(framedQr.requests[0].qrOverlay.frame, 'white')
+
+const invalidQr = image.extractChatAiImageRequests(`叠加。
+<<<AI_LINZI_IMAGE_REQUEST>>>
+{"requests":[{"instruction":"叠加二维码","ratio":"16:9","qrOverlay":{"base":"attachment","baseAttachmentIndex":1,"qrAttachmentIndex":1}}]}
+<<<AI_LINZI_IMAGE_REQUEST_END>>>`)
+assert.equal(invalidQr.invalid, true, '底图和二维码不能指向同一附件')
+
 const broken = image.extractChatAiImageRequests(
   '正在准备\n<<<AI_LINZI_IMAGE_REQUEST>>>\n{"requests":[',
 )

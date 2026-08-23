@@ -9,6 +9,7 @@ import {
   ARTIFACT_FORMATS,
   ARTIFACT_MAX_CONTENT_CHARS,
   ARTIFACT_MAX_TITLE_CHARS,
+  normalizeArtifactHtmlDesign,
   normalizeArtifactStyle,
   normalizeArtifactTemplate,
   normalizePresentationSpec,
@@ -65,6 +66,27 @@ export interface VaultAgentToolResult {
   name: VaultAgentToolName
   ok: boolean
   output: string
+}
+
+/**
+ * Responses API 要求上一轮的每一个 function_call 都必须有对应输出。
+ * 本机每轮仍只执行前 4 个；超出部分不能直接丢弃，而要回传明确的
+ * 「本轮未执行」结果，让模型下一轮分批继续。
+ */
+export function limitVaultAgentToolCalls(calls: VaultAgentToolCall[]): {
+  executable: VaultAgentToolCall[]
+  deferredResults: VaultAgentToolResult[]
+} {
+  const executable = calls.slice(0, VAULT_AGENT_MAX_CALLS_PER_ROUND)
+  const deferredResults = calls.slice(VAULT_AGENT_MAX_CALLS_PER_ROUND).map((call) => ({
+    callId: call.id,
+    name: call.name,
+    ok: false,
+    output:
+      `本机每轮最多执行 ${VAULT_AGENT_MAX_CALLS_PER_ROUND} 个只读调用；这个调用本轮未执行。` +
+      '请先使用本轮已返回的结果，仍需要时再在下一轮重新调用。',
+  }))
+  return { executable, deferredResults }
 }
 
 export type VaultOrganizeOperation =
@@ -879,17 +901,21 @@ function parsePlanOperation(value: unknown): VaultOrganizeOperation | null {
     const layout = (layoutValue === 'document' || layoutValue === 'dashboard')
       ? layoutValue
       : undefined
+    const htmlDesign = format === 'html'
+      ? normalizeArtifactHtmlDesign(record.htmlDesign)
+      : undefined
     if (
       !path ||
       !ARTIFACT_FORMATS.includes(format) ||
       artifactExtension(path) !== format ||
       !title ||
       !content ||
+      (typeof record.htmlDesign !== 'undefined' && !htmlDesign) ||
       (format === 'pptx' && record.presentation !== undefined && !presentation)
     ) {
       return null
     }
-    return { type, path, format, title, content, theme, template, style, presentation, layout, reason }
+    return { type, path, format, title, content, theme, template, style, presentation, layout, htmlDesign, reason }
   }
   if (type === 'update_note') {
     const path = normalizeVaultRelativePath(record.path)

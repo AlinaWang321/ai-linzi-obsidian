@@ -138,6 +138,19 @@ export type ArtifactLayout = (typeof ARTIFACT_LAYOUTS)[number]
 
 export const ARTIFACT_MAX_CONTENT_CHARS = 60_000
 export const ARTIFACT_MAX_TITLE_CHARS = 160
+export const ARTIFACT_MAX_HTML_CSS_CHARS = 20_000
+
+export interface ArtifactHtmlDesignInput {
+  /** 给用户的可读视觉摘要，不参与执行。 */
+  designBrief?: string
+  /** 只允许覆盖插件生成的语义 DOM；不接受 HTML、脚本或外链资源。 */
+  customCss?: string
+}
+
+export interface ArtifactHtmlDesign {
+  designBrief: string
+  customCss: string
+}
 
 export interface CreateArtifactOperation {
   type: 'create_artifact'
@@ -154,7 +167,49 @@ export interface CreateArtifactOperation {
   /** format=pptx 时可选；缺失时兼容旧版，插件会从 Markdown 确定性分页。 */
   presentation?: PresentationSpecInput
   layout?: ArtifactLayout
+  /** format=html 时可选：模型自主视觉方案，本机严格清洗后覆盖默认样式。 */
+  htmlDesign?: ArtifactHtmlDesignInput
   reason?: string
+}
+
+function htmlDesignText(value: unknown, max: number): string {
+  if (typeof value !== 'string') return ''
+  return Array.from(value)
+    .map((character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return codePoint <= 31 && codePoint !== 9 && codePoint !== 10 && codePoint !== 13
+        ? ' '
+        : character
+    })
+    .join('')
+    .trim()
+    .slice(0, max)
+}
+
+/**
+ * HTML 视觉可交给模型自主设计，但不把任意 HTML/JS 执行权交给模型。
+ * CSS 只能修饰插件本机生成的 DOM；外链、data URL、CSS 脚本表达式、原始标签
+ * 和反斜杠转义全部拒绝，防止绕过关键字检查。
+ */
+export function normalizeArtifactHtmlDesign(value: unknown): ArtifactHtmlDesign | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (
+    typeof record.customCss !== 'string' ||
+    Array.from(record.customCss).length > ARTIFACT_MAX_HTML_CSS_CHARS
+  ) return undefined
+  const designBrief = htmlDesignText(record.designBrief, 240).replace(/\s+/gu, ' ')
+  const customCss = htmlDesignText(record.customCss, ARTIFACT_MAX_HTML_CSS_CHARS)
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .trim()
+  if (!customCss || customCss.length > ARTIFACT_MAX_HTML_CSS_CHARS) return undefined
+  if (
+    /[<>\\]/u.test(customCss) ||
+    /(?:url|image-set|expression)\s*\(/iu.test(customCss) ||
+    /(?:javascript|vbscript|data)\s*:/iu.test(customCss) ||
+    /@(?!media\b|supports\b|keyframes\b)/iu.test(customCss)
+  ) return undefined
+  return { designBrief, customCss }
 }
 
 function presentationText(value: unknown, max: number): string {
@@ -675,6 +730,12 @@ export function artifactTemplateLabel(templateValue: unknown): string {
 }
 
 export function artifactStyleSummary(operation: CreateArtifactOperation): string {
+  const htmlDesign = operation.format === 'html'
+    ? normalizeArtifactHtmlDesign(operation.htmlDesign)
+    : undefined
+  if (htmlDesign) {
+    return `AI 自主 HTML 设计 · ${htmlDesign.designBrief || '自定义视觉与响应式布局'}`
+  }
   const style = normalizeArtifactStyle(operation.style, operation.template, operation.theme ?? 'brand')
   if (operation.format === 'xlsx') return `${artifactTemplateLabel(operation.template)} · ${style.bodySizePt}pt · 冻结表头`
   if (operation.format === 'pptx') return `${artifactTemplateLabel(operation.template)} · 16:9 · ${style.titleSizePt}pt 标题`

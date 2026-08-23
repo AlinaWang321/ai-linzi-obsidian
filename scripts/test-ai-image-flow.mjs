@@ -12,8 +12,17 @@ assert.match(main, /\? 'organize'\s*: 'auto'/)
 assert.match(main, /普通闲聊会在首轮直接回答/)
 assert.doesNotMatch(main, /shouldUseVaultAgent/)
 assert.match(main, /title: '添加文件或图片（Pro）'/)
-assert.match(main, /setTitle\('从 Vault 选择图片'\)/)
-assert.match(main, /setTitle\('从电脑上传图片'\)/)
+assert.match(
+  main,
+  /openAttachmentMenu[\s\S]*?setTitle\('从 Obsidian 知识库选择'\)[\s\S]*?setTitle\('从电脑临时选择（图片 \/ Excel）'\)/,
+  '附件一级入口必须只按来源区分，避免新手先判断文件类型',
+)
+assert.match(
+  main,
+  /openVaultAttachmentMenu[\s\S]*?setTitle\('文件或文件夹'\)[\s\S]*?setTitle\('图片'\)/,
+  'Vault 来源下仍需区分文件/文件夹与图片读取链路',
+)
+assert.doesNotMatch(main, /setTitle\('从 Vault 选择图片'\)|setTitle\('从电脑上传图片'\)/)
 assert.match(main, /requireProAccess\('AI 生图'\)/)
 assert.match(main, /继续修改这张/)
 assert.match(main, /this\.inputEl\.value = '修改这张图：'/)

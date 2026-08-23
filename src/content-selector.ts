@@ -11,7 +11,7 @@ export interface AuthorizedContentLimits {
 }
 
 export type AuthorizedContentSelection =
-  | { mode: 'chat'; paths: string[]; totalChars: number }
+  | { mode: 'chat'; paths: string[]; folderPaths: string[]; totalChars: number }
   | { mode: 'long-document'; path: string; totalChars: number }
 
 /**
@@ -25,6 +25,8 @@ export class AuthorizedContentModal extends Modal {
   private readonly folders: TFolder[]
   private readonly foldersByParent: Map<string, TFolder[]>
   private readonly selected: Set<string>
+  /** 只记录用户明确点过「添加当前文件夹」的范围，供后续解析「该文件夹」。 */
+  private readonly selectedFolderRoots = new Set<string>()
   private readonly expandedFolders = new Set<string>([''])
   private currentFolderPath = ''
   private searchText = ''
@@ -41,6 +43,7 @@ export class AuthorizedContentModal extends Modal {
     app: App,
     initialPaths: string[],
     private readonly limits: AuthorizedContentLimits,
+    initialFolderPaths: string[] = [],
   ) {
     super(app)
     this.files = app.vault
@@ -55,6 +58,12 @@ export class AuthorizedContentModal extends Modal {
     this.foldersByParent = groupFoldersByParent(this.folders)
     const available = new Set(this.files.map((file) => file.path))
     this.selected = new Set(initialPaths.filter((path) => available.has(path)))
+    for (const root of initialFolderPaths.map(normalizeFolderPath)) {
+      const files = this.files.filter((file) => isInsideFolder(file, root))
+      if (files.length > 0 && files.every((file) => this.selected.has(file.path))) {
+        this.selectedFolderRoots.add(root)
+      }
+    }
     this.result = new Promise((resolve) => (this.resolve = resolve))
   }
 
@@ -112,6 +121,7 @@ export class AuthorizedContentModal extends Modal {
     const clearBtn = footer.createEl('button', { text: '清空选择' })
     clearBtn.onclick = () => {
       this.selected.clear()
+      this.selectedFolderRoots.clear()
       this.renderFiles()
     }
     const cancelBtn = footer.createEl('button', { text: '取消' })
@@ -203,6 +213,7 @@ export class AuthorizedContentModal extends Modal {
       return
     }
     for (const file of additions) this.selected.add(file.path)
+    this.selectedFolderRoots.add(this.currentFolderPath)
     new Notice(`已添加「${folderLabel(this.currentFolderPath)}」中的 ${additions.length} 份文件`)
     this.renderFiles()
   }
@@ -248,7 +259,14 @@ export class AuthorizedContentModal extends Modal {
           return
         }
         if (checkbox.checked) this.selected.add(file.path)
-        else this.selected.delete(file.path)
+        else {
+          this.selected.delete(file.path)
+          // 用户手动取消了整夹里的一份文件后，不能再对模型声称
+          // 「该文件夹」是当前完整范围。
+          for (const root of [...this.selectedFolderRoots]) {
+            if (isInsideFolder(file, root)) this.selectedFolderRoots.delete(root)
+          }
+        }
         this.renderFiles()
       }
       const meta = row.createDiv({ cls: 'ai-linzi-content-selector-file-meta' })
@@ -295,7 +313,13 @@ export class AuthorizedContentModal extends Modal {
       return
     }
     this.submitted = true
-    this.resolve({ mode: 'chat', paths: [...this.selected], totalChars })
+    const folderPaths = [...this.selectedFolderRoots]
+      .filter((root) => {
+        const files = this.files.filter((file) => isInsideFolder(file, root))
+        return files.length > 0 && files.every((file) => this.selected.has(file.path))
+      })
+      .slice(0, 8)
+    this.resolve({ mode: 'chat', paths: [...this.selected], folderPaths, totalChars })
     this.close()
   }
 

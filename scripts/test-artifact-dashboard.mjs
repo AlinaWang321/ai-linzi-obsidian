@@ -62,6 +62,7 @@ assert('数据依据可折叠', renderer.includes('<details class="evidence">'))
 assert('优先级/状态自动配色', renderer.includes('function toneOf') && renderer.includes("core ? 'core' : 'optional'"))
 assert('支持深色模式', renderer.includes('prefers-color-scheme:dark'))
 assert('打印时展开数据依据', renderer.includes('@media print') && renderer.includes('beforeprint'))
+assert('模型自主 CSS 在本机默认样式之后注入', renderer.includes('${customCss}\n  </style>'))
 
 console.log('第3组 安全与自包含')
 assert('看板正文仍走转义', renderer.includes('escapeHtml(task.text)'))

@@ -25,6 +25,7 @@ import { strToU8, zipSync } from 'fflate'
 import {
   parseArtifactMarkdown,
   normalizeArtifactStyle,
+  normalizeArtifactHtmlDesign,
   normalizePresentationSpec,
   presentationContentProblem,
   resolveArtifactLayout,
@@ -131,6 +132,7 @@ function artifactHtml(
   document: ArtifactDocument,
   theme: 'brand' | 'clean',
   context: ArtifactRenderContext,
+  customCss = '',
 ): string {
   const blocks = document.blocks.map((block) => {
     if (block.type === 'heading') {
@@ -174,6 +176,7 @@ function artifactHtml(
     footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
     @media(max-width:680px){main{margin:0;width:100%;padding:36px 24px;border-radius:0}h1{font-size:30px}}
     @media print{body{background:#fff}main{width:100%;margin:0;padding:18mm;box-shadow:none}footer{break-inside:avoid}}
+    ${customCss}
   </style>
 </head>
 <body><main><header><h1>${escapeHtml(document.title)}</h1><p>AI霖子 · 智能生成文档</p></header>${blocks}<footer>由 AI霖子生成 · 请在使用前核对关键信息</footer></main></body>
@@ -225,7 +228,11 @@ function dashboardBlockHtml(block: ArtifactBlock): string {
  * 水→木→光渐变（sea → jade → gold）。动效克制：入场轻微上浮、数字滚动、
  * hover 抬起，不炫技。整页自包含、零外部依赖、可离线打开、可直接打印。
  */
-export function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand' | 'clean'): string {
+export function artifactDashboardHtml(
+  document: ArtifactDocument,
+  theme: 'brand' | 'clean',
+  customCss = '',
+): string {
   type DashboardSection = { title: string; level: number; blocks: ArtifactBlock[] }
   type DashboardCard = { title: string; blocks: ArtifactBlock[] }
   const headings = document.blocks.filter(
@@ -552,6 +559,7 @@ export function artifactDashboardHtml(document: ArtifactDocument, theme: 'brand'
     @media(max-width:620px){.shell{width:calc(100% - 20px);margin-top:12px}.hero{padding:24px 21px}.todo-grid,.cards{grid-template-columns:1fr}.rhythm{grid-template-columns:repeat(2,minmax(0,1fr))}.funnel-row{grid-template-columns:1fr}.funnel-row small{padding-left:10px}.funnel-bar{min-width:120px}}
     @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
     @media print{body{background:#fff}.shell{display:block;width:100%;margin:0}.rail,#q{display:none}.hero,.card,.metric,.todo-card,.evidence{box-shadow:none;break-inside:avoid}details .evidence-body{display:block!important}section{break-inside:avoid}}
+    ${customCss}
   </style>
 </head>
 <body>
@@ -1363,11 +1371,12 @@ export async function renderArtifact(
   const document = parseArtifactMarkdown(operation.content, operation.title)
   const theme = operation.theme ?? 'brand'
   const style = normalizeArtifactStyle(operation.style, operation.template, theme)
+  const htmlDesign = normalizeArtifactHtmlDesign(operation.htmlDesign)
   if (operation.format === 'html') {
     // 看板/日报类内容走交互版式；长文继续文档版式（0.7.54）。
     const data = resolveArtifactLayout(operation) === 'dashboard'
-      ? artifactDashboardHtml(document, theme)
-      : artifactHtml(document, theme, context)
+      ? artifactDashboardHtml(document, theme, htmlDesign?.customCss ?? '')
+      : artifactHtml(document, theme, context, htmlDesign?.customCss ?? '')
     return { binary: false, data, mimeType: 'text/html' }
   }
   if (operation.format === 'docx') {

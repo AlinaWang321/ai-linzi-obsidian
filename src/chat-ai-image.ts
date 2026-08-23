@@ -1,5 +1,17 @@
 export type ChatAiImageRatio = '2.35:1' | '16:9' | '3:4' | '1:1'
 
+export interface ChatAiQrOverlayRequest {
+  base: 'previous' | 'attachment'
+  /** 1-based，只在 base=attachment 时使用。 */
+  baseAttachmentIndex?: number
+  /** 1-based，指向用户本轮上传的原始二维码。 */
+  qrAttachmentIndex: number
+  position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+  sizePercent: number
+  /** 默认无额外边框；只有用户明确提出白底/白框时由模型设为 white。 */
+  frame: 'none' | 'white'
+}
+
 export interface ChatAiImageRequest {
   label: string
   instruction: string
@@ -7,6 +19,8 @@ export interface ChatAiImageRequest {
   editPreviousImage: boolean
   /** 修改已有图片时，用户没有明确要求换画幅就保持原比例。 */
   preserveOriginalRatio: boolean
+  /** 确定性本机叠加；绝不让图片模型重绘二维码。 */
+  qrOverlay?: ChatAiQrOverlayRequest
 }
 
 export interface ChatAiImageExtraction {
@@ -27,6 +41,37 @@ function text(value: unknown, max: number): string {
 
 function ratio(value: unknown): ChatAiImageRatio {
   return value === '2.35:1' || value === '3:4' || value === '1:1' ? value : '16:9'
+}
+
+function positiveAttachmentIndex(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' ? Math.trunc(value) : Number.parseInt(String(value), 10)
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 3 ? parsed : undefined
+}
+
+function qrOverlay(value: unknown): ChatAiQrOverlayRequest | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const raw = value as Record<string, unknown>
+  const base = raw.base === 'attachment' ? 'attachment' : raw.base === 'previous' ? 'previous' : undefined
+  const qrAttachmentIndex = positiveAttachmentIndex(raw.qrAttachmentIndex)
+  const baseAttachmentIndex = positiveAttachmentIndex(raw.baseAttachmentIndex)
+  if (!base || !qrAttachmentIndex) return undefined
+  if (base === 'attachment' && (!baseAttachmentIndex || baseAttachmentIndex === qrAttachmentIndex)) {
+    return undefined
+  }
+  const position =
+    raw.position === 'top-left' || raw.position === 'top-right' || raw.position === 'bottom-left'
+      ? raw.position
+      : 'bottom-right'
+  const requestedPercent = typeof raw.sizePercent === 'number' ? raw.sizePercent : 18
+  if (raw.frame !== undefined && raw.frame !== 'none' && raw.frame !== 'white') return undefined
+  return {
+    base,
+    baseAttachmentIndex: base === 'attachment' ? baseAttachmentIndex : undefined,
+    qrAttachmentIndex,
+    position,
+    sizePercent: Math.max(12, Math.min(30, Math.round(requestedPercent))),
+    frame: raw.frame === 'white' ? 'white' : 'none',
+  }
 }
 
 function clean(value: string): string {
@@ -66,6 +111,8 @@ export function extractChatAiImageRequests(value: string): ChatAiImageExtraction
           continue
         }
         const editPreviousImage = item.editPreviousImage === true
+        const requestedQrOverlay = qrOverlay(item.qrOverlay)
+        if (item.qrOverlay !== undefined && !requestedQrOverlay) invalid = true
         requests.push({
           label: text(item.label, 40) || `图片 ${index + 1}`,
           instruction,
@@ -73,6 +120,7 @@ export function extractChatAiImageRequests(value: string): ChatAiImageExtraction
           editPreviousImage,
           preserveOriginalRatio:
             editPreviousImage && item.preserveOriginalRatio !== false,
+          qrOverlay: requestedQrOverlay,
         })
       }
     } catch {
