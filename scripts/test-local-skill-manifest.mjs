@@ -55,6 +55,13 @@ const metadataOnly = manifest.parseLocalSkillManifest(JSON.stringify({
 }), 'create-note')
 assert.equal(metadataOnly.kind, 'valid')
 assert.equal(metadataOnly.policy.vaultRead.metadataDiscovery, true)
+const effectiveMetadataOnly = manifest.withWholeVaultReadAccess(metadataOnly.policy)
+assert.equal(effectiveMetadataOnly.vaultRead.scope, 'whole-vault')
+assert.equal(effectiveMetadataOnly.vaultRead.metadataDiscovery, true)
+assert.equal(effectiveMetadataOnly.vaultRead.preferUserScope, true)
+assert.equal(effectiveMetadataOnly.vaultRead.fallbackToWholeVault, true)
+assert.equal(effectiveMetadataOnly.vaultRead.maxFiles, 120)
+assert.deepEqual(effectiveMetadataOnly.vaultWrite, metadataOnly.policy.vaultWrite)
 
 const invalidCurrent = manifest.parseLocalSkillManifest(JSON.stringify({
   schemaVersion: 2,
@@ -102,6 +109,28 @@ const fixedFolder = manifest.parseLocalSkillManifest(JSON.stringify({
 }), 'chat')
 assert.equal(fixedFolder.kind, 'valid')
 assert.equal(fixedFolder.policy.vaultRead.fixedFolder, '01_Raw/课程逐字稿')
+const effectiveFixedFolder = manifest.withWholeVaultReadAccess(fixedFolder.policy)
+assert.equal(effectiveFixedFolder.vaultRead.scope, 'whole-vault')
+assert.equal(effectiveFixedFolder.vaultRead.fixedFolder, '01_Raw/课程逐字稿')
+assert.equal(effectiveFixedFolder.vaultRead.fallbackToWholeVault, true)
+
+const preferredFolder = manifest.parseLocalSkillManifest(JSON.stringify({
+  schemaVersion: 2,
+  permissions: ['默认可读取整个 Vault，优先搜索课程逐字稿文件夹'],
+  vaultRead: {
+    scope: 'whole-vault',
+    fixedFolder: '01_Raw/课程逐字稿',
+    metadataDiscovery: true,
+    preferUserScope: true,
+    fallbackToWholeVault: true,
+    maxFiles: 120,
+  },
+  vaultWrite: { mode: 'chat', confirmation: 'single-atomic-plan', overwrite: false },
+  network: 'ai-linzi-only',
+  programs: [],
+}), 'chat')
+assert.equal(preferredFolder.kind, 'valid')
+assert.equal(preferredFolder.policy.vaultRead.fixedFolder, '01_Raw/课程逐字稿')
 
 const escapedFolder = manifest.parseLocalSkillManifest(JSON.stringify({
   schemaVersion: 2,

@@ -92,7 +92,7 @@ export class ImportedSkillPermissionModal extends Modal {
     this.setTitle(`导入 Skill：${this.block.name}`)
     this.contentEl.empty()
     this.contentEl.createDiv({
-      text: '先选择这个 Skill 能读取多大范围。权限只在当前 Obsidian Vault 内生效；无论选择哪项，都不能读取 Vault 外的电脑文件。',
+      text: '这个 Skill 默认可以按需读取当前整个 Vault。你可以选择一个优先文件夹来加快搜索；无论哪种方式，都不能读取 Vault 外的电脑文件。',
       cls: 'ai-linzi-skill-studio-intro',
     })
     const scopeDescription = this.contentEl.createDiv({ cls: 'ai-linzi-skill-studio-intro' })
@@ -101,8 +101,8 @@ export class ImportedSkillPermissionModal extends Modal {
       scopeDescription.setText(option?.description ?? '')
     }
     const folderSetting = new Setting(this.contentEl)
-      .setName('指定文件夹')
-      .setDesc('安装后自动锁定这个文件夹，调用 Skill 时不用反复输入路径。')
+      .setName('优先文件夹')
+      .setDesc('安装后先搜索这里；资料不足时仍可继续搜索整个 Vault。')
     folderSetting.addDropdown((dropdown) => {
       dropdown.addOption('', '请选择 Vault 文件夹')
       const folders = this.app.vault.getAllFolders()
@@ -117,8 +117,8 @@ export class ImportedSkillPermissionModal extends Modal {
       folderSetting.settingEl.style.display = this.readScope === 'user-specified-folder' ? '' : 'none'
     }
     new Setting(this.contentEl)
-      .setName('读取范围')
-      .setDesc('这是运行时硬边界，后续也可以在主对话中更新这个 Skill 的范围。')
+      .setName('默认搜索方式')
+      .setDesc('文件夹只是优先范围，不是读取权限墙；真正上限始终是当前 Vault。')
       .addDropdown((dropdown) => {
         for (const option of IMPORTED_SKILL_READ_SCOPE_OPTIONS) {
           dropdown.addOption(option.value, option.label)
@@ -337,8 +337,8 @@ export class SkillStudioModal extends Modal {
         .setValue(this.draft.purpose)
         .onChange((value) => (this.draft.purpose = value.trim())))
     new Setting(this.contentEl)
-      .setName('读取范围')
-      .setDesc('这是运行时硬边界。整个 Vault 也只限当前 Obsidian 仓库，不包含电脑其他文件。')
+      .setName('默认搜索方式')
+      .setDesc('默认可读取整个 Vault；指定文件夹只是优先搜索范围，不包含电脑其他文件。')
       .addDropdown((dropdown) => {
         for (const option of SKILL_STUDIO_READ_SCOPE_OPTIONS) {
           dropdown.addOption(option.value, option.label)
@@ -350,7 +350,7 @@ export class SkillStudioModal extends Modal {
       })
     new Setting(this.contentEl)
       .setName('输入材料说明')
-      .setDesc('描述要找什么材料、优先看哪里；权限以上面的读取范围为准，不再靠关键词猜。')
+      .setDesc('描述要找什么材料、优先看哪里；模型找不到时仍可继续搜索整个 Vault。')
       .addTextArea((input) => input
         .setValue(this.draft.input)
         .onChange((value) => (this.draft.input = value.trim())))

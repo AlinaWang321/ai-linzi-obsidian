@@ -46,7 +46,7 @@ assert.match(
   '右侧栏获得焦点时必须从主编辑区恢复最近使用的 Markdown 标签页',
 )
 assert.match(source, /active\?\.extension\.toLowerCase\(\) === 'md'/, '当前笔记锁定必须排除图片/PDF 等非 Markdown 文件')
-assert.match(source, /本轮只读取当前笔记：\$\{noteContext\.filename\}/, '自动读取时必须明确提示实际附带的笔记')
+assert.match(source, /已把当前笔记作为本轮主要材料：\$\{noteContext\.filename\}/, '自动读取时必须明确提示实际附带的主要笔记')
 assert.match(
   source,
   /if \(currentNoteRequested && !noteContext\)/,

@@ -2261,7 +2261,6 @@ class ChatView extends ItemView {
   private listEl!: HTMLElement
   private inputEl!: HTMLTextAreaElement
   private sendBtn!: HTMLButtonElement
-  private stopBtn!: HTMLButtonElement
   private authorizedContentBtn!: HTMLButtonElement
   private authorizedContentStatusEl!: HTMLElement
   /** composer 上的「技能」按钮，供二级菜单在键盘唤起时定位（0.7.71）。 */
@@ -2454,18 +2453,10 @@ class ChatView extends ItemView {
       },
     })
     setIcon(this.sendBtn, 'arrow-up')
-    this.sendBtn.onclick = () => void this.send()
-    this.stopBtn = tools.createEl('button', {
-      cls: 'ai-linzi-stop',
-      attr: {
-        title: '停止当前任务',
-        'aria-label': '停止当前任务',
-        type: 'button',
-      },
-    })
-    setIcon(this.stopBtn, 'square')
-    this.stopBtn.hidden = true
-    this.stopBtn.onclick = () => this.stopCurrentTurn()
+    this.sendBtn.onclick = () => {
+      if (this.sending) this.stopCurrentTurn()
+      else void this.send()
+    }
 
     this.renderMessages()
     // 恢复最近一次会话(升级/重启后不丢)
@@ -2474,17 +2465,20 @@ class ChatView extends ItemView {
 
   private stopCurrentTurn(): void {
     if (!this.sending || !this.activeTurnAbort || this.activeTurnAbort.signal.aborted) return
-    this.stopBtn.disabled = true
+    this.sendBtn.disabled = true
     this.activeTurnAbort.abort()
     this.activityEnd('error', '已停止当前任务')
     new Notice('已停止后续处理。已经发出的这一轮可能已产生少量积分。', 6000)
   }
 
   private setSendingUi(active: boolean): void {
-    this.sendBtn.disabled = active
-    this.sendBtn.hidden = active
-    this.stopBtn.hidden = !active
-    this.stopBtn.disabled = !active
+    this.sendBtn.empty()
+    setIcon(this.sendBtn, active ? 'square' : 'arrow-up')
+    this.sendBtn.toggleClass('is-stopping', active)
+    this.sendBtn.disabled = false
+    const label = active ? '停止当前任务' : `发送消息，${CHAT_SEND_SHORTCUT_HINT}`
+    this.sendBtn.setAttribute('title', label)
+    this.sendBtn.setAttribute('aria-label', label)
   }
 
   /**
@@ -4136,8 +4130,9 @@ class ChatView extends ItemView {
       const localSkillTurnPolicy = localSkill
         ? resolveLocalSkillTurnPolicy(localSkill.output, text)
         : undefined
-      const localSkillCurrentOnly = Boolean(
+      const localSkillHasPrimaryInput = Boolean(
         localSkill && (
+          localSkill.name === CONSULTATION_WORKFLOW_SKILL_NAME ||
           localSkill.runtimePolicy?.vaultRead.scope === 'current-note' ||
           localSkill.runtimePolicy?.vaultRead.scope === 'user-specified-files' ||
           (!localSkill.runtimePolicy && localSkillForbidsVaultExpansion(localSkill.fullContent))
@@ -4172,7 +4167,7 @@ class ChatView extends ItemView {
         )
       }
       let scopedSkillInputPath: string | undefined
-      if (localSkill && localSkillCurrentOnly && !noteContext) {
+      if (localSkill && localSkillHasPrimaryInput && !noteContext) {
         noteContext = await this.scopedLocalSkillInputContext(text, localSkill.name)
         scopedSkillInputPath = noteContext?.path
         if (noteContext) {
@@ -4180,7 +4175,7 @@ class ChatView extends ItemView {
         }
       }
       if (noteContext && !scopedSkillInputPath) {
-        new Notice(`本轮只读取当前笔记：${noteContext.filename}`, 3500)
+        new Notice(`已把当前笔记作为本轮主要材料：${noteContext.filename}`, 3500)
       }
       let consultationWorkflowSourcePath = consultationWorkflowTaskTurn
         ? options.consultationWorkflowSourcePath ?? this.recentConsultationWorkflowSourcePath()
@@ -4228,7 +4223,7 @@ class ChatView extends ItemView {
       }
       // 受限 Skill 的权限合同是“恰好一份输入”。即使附件栏里还保留着上一轮资料，
       // 本轮也不能顺带发送；附件不清空，下一次普通对话仍可继续使用。
-      const authorizedContent = localSkillCurrentOnly || skillUpdaterTurn
+      const authorizedContent = localSkillHasPrimaryInput || skillUpdaterTurn
         ? undefined
         : await this.authorizedContentContext(noteContext?.path)
       // “修改第一张图片/封面”属于配图修改，不得误送进正文局部补丁协议。
@@ -4251,7 +4246,7 @@ class ChatView extends ItemView {
             localSkillTurnPolicy?.output === 'update-current-note',
         )
       // v0.7.30：不再由客户端关键词决定“这句话像不像 Vault 请求”。所有适合
-      // Luna 判断的纯文字主对话都提供本机工具能力；在模型真正发起 tool call 前，
+      // 纯文字主对话都向当前模型提供本机工具能力；在模型真正发起 tool call 前，
       // 插件不会扫描、读取或上传任何 Vault 内容。图片理解、当前笔记旧补丁协议、
       // 长文专用任务继续走各自已验证的独立通道。
       const modelDecidesVaultUse =
@@ -4264,7 +4259,7 @@ class ChatView extends ItemView {
         !skillUpdaterTurn
       const useVaultAgent = modelDecidesVaultUse
       // 没有手动搜索开关，也没有关键词预扫描。普通闲聊会在首轮直接回答；只有
-      // Luna 判断本轮确实依赖本地资料时，才进入后续本机工具循环。
+      // 当前模型判断本轮确实依赖本地资料时，才进入后续本机工具循环。
       const vaultSearch: {
         context: undefined
         sources: VaultMessageSource[]
@@ -4308,11 +4303,21 @@ class ChatView extends ItemView {
         localSkillReadPolicy?.scope === 'whole-vault' &&
         localSkillReadPolicy.preferUserScope
       ) {
-        const folder = this.plugin.vaultAgent.resolveUserSpecifiedFolder(text)
-        if (folder.kind === 'ambiguous') {
-          throw new Error(`你指定的优先文件夹不唯一，请补充完整路径：${folder.paths.join('、')}`)
+        if (localSkillReadPolicy.fixedFolder) {
+          const preferredFolder = resolveVaultBoundPath(localSkillReadPolicy.fixedFolder, {
+            outputRoot: this.plugin.settings.outputFolder,
+            rawRoot: this.plugin.settings.cockpitSourcesFolder,
+            wikiRoot: this.plugin.settings.cockpitKnowledgeFolder,
+          })
+          const preferred = this.app.vault.getAbstractFileByPath(preferredFolder)
+          if (preferred instanceof TFolder) localSkillContext.allowedReadFolders = [preferred.path]
+        } else {
+          const folder = this.plugin.vaultAgent.resolveUserSpecifiedFolder(text)
+          if (folder.kind === 'ambiguous') {
+            throw new Error(`你指定的优先文件夹不唯一，请补充完整路径：${folder.paths.join('、')}`)
+          }
+          if (folder.kind === 'matched') localSkillContext.allowedReadFolders = [folder.path]
         }
-        if (folder.kind === 'matched') localSkillContext.allowedReadFolders = [folder.path]
       }
       const skillCreatorRequest: SkillCreatorRequest | undefined = skillCreatorTurn
         ? { mode: 'create', source: options.skillCreator ? 'studio' : 'chat' }
@@ -4364,12 +4369,10 @@ class ChatView extends ItemView {
             localSkill: localSkillRequest,
             localSkillContext,
             scopedSkillInputPath,
-            // 已由用户精确勾选的整篇资料可以直接用于回答或生成成品，但这一轮不再
-            // 额外开放整个 Vault 工具，避免“精确授权”被扩大成未选择文件的读取。
-            vaultAccess:
-              this.authorizedContentPaths.length === 0 &&
-              this.uploadedSpreadsheetAttachments.length === 0 &&
-              !localSkillCurrentOnly,
+            // Vault 工具能力属于 AI霖子插件，与 Luna / Terra / GPT 等具体模型无关。
+            // 用户点名文件或文件夹只用于缩小首轮搜索；调用 Skill 时始终可按需
+            // 回退搜索当前整个 Vault，但永远不能越过 Vault 读取电脑其他文件。
+            vaultAccess: true,
             vaultSearch: vaultSearch.context,
             noteEdit,
             noteImageIntent: singleIllustration,

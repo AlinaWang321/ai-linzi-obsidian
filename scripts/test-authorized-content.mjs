@@ -11,10 +11,15 @@ assert.match(main, /requireProAccess\('多笔记与文件夹授权'\)/)
 assert.match(main, /requireProAccess\('主对话图片附件'\)/)
 assert.match(
   main,
-  /authorizedContent = localSkillCurrentOnly \|\| skillUpdaterTurn\s*\?\s*undefined\s*:\s*await this\.authorizedContentContext\(noteContext\?\.path\)/,
-  '单文件受限 Skill 和 Skill 更新专用轮都不能顺带发送附件栏里的其他资料',
+  /authorizedContent = localSkillHasPrimaryInput \|\| skillUpdaterTurn\s*\?\s*undefined\s*:\s*await this\.authorizedContentContext\(noteContext\?\.path\)/,
+  '已有主要输入的 Skill 和 Skill 更新专用轮都不能顺带发送附件栏里的其他资料',
 )
-assert.match(main, /vaultAccess:[\s\S]{0,160}this\.authorizedContentPaths\.length === 0[\s\S]{0,100}this\.uploadedSpreadsheetAttachments\.length === 0/)
+assert.match(main, /vaultAccess: true,/, '主对话的当前模型必须默认获得插件级 Vault 工具能力')
+assert.doesNotMatch(
+  main,
+  /vaultAccess:[\s\S]{0,180}(?:authorizedContentPaths|uploadedSpreadsheetAttachments)/,
+  '用户点名或附加文件只缩小优先范围，不能关闭整个 Vault 的按需搜索能力',
+)
 const modelRouting = main.match(/const modelDecidesVaultUse =[\s\S]*?const useVaultAgent/)?.[0] ?? ''
 assert.doesNotMatch(modelRouting, /authorizedContentPaths/, '精确授权资料仍应能让 Luna 输出只新建的成品方案')
 assert.match(main, /imageAttachments: imageAttachments\.map/)

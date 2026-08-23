@@ -4,7 +4,7 @@ AI Linzi connects Alina's business coaching services to your local knowledge Vau
 
 ## Features
 
-- Chat with AI Linzi in a sidebar. When the request explicitly refers to the current note, the plugin reads that one note for the task.
+- Chat with AI Linzi in a sidebar. Every compatible text turn gives the current model on-demand access to the current Vault; a named note or folder is searched first for speed, not used as a hard read boundary.
 - Search Markdown, TXT, text-based PDF, DOCX, HTML, PPTX, and XLSX files locally before sending only a few relevant excerpts to the service.
 - For a whole-Vault workspace or directory review, send one bounded metadata-only inventory (paths, types, sizes, modification times, and counts) before reading only the few documents whose content is needed.
 - Create and edit content, process long documents, and save results back to the Vault.
@@ -14,7 +14,7 @@ AI Linzi connects Alina's business coaching services to your local knowledge Vau
 
 ## Privacy and network access
 
-AI Linzi only sends the active note when the request explicitly refers to it, documents the user selected, or small locally matched excerpts needed for a requested Vault task. For a user-requested whole-Vault workspace, dashboard, or structural review, it may also send one bounded metadata-only inventory containing up to 240 folder paths, aggregate file-type and size counts, and up to 40 recent file paths with sizes and timestamps. This inventory contains no file content and is excluded from cloud chat history. AI Linzi does not upload the whole Vault's contents and does not include third-party analytics. An AI Linzi account and connection key are required for cloud features. Notes and generated images remain in the user's Vault unless the user explicitly sends content to AI Linzi or WeChat services.
+AI Linzi gives the currently selected model the same on-demand Vault tools, regardless of whether the service uses Luna, Terra, GPT, or another future model. A named note or folder is searched first, while the rest of the current Vault remains available when needed. The plugin only sends the active note, documents the user selected, or small locally matched excerpts needed for the task. For a user-requested whole-Vault workspace, dashboard, or structural review, it may also send one bounded metadata-only inventory containing up to 240 folder paths, aggregate file-type and size counts, and up to 40 recent file paths with sizes and timestamps. This inventory contains no file content and is excluded from cloud chat history. AI Linzi does not upload the whole Vault's contents and does not include third-party analytics. An AI Linzi account and connection key are required for cloud features. Notes and generated images remain in the user's Vault unless the user explicitly sends content to AI Linzi or WeChat services.
 
 This public plugin is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration are not included in this repository.
 
@@ -24,6 +24,7 @@ This public plugin is a thin client. Private prompts, model routing, billing, ac
 
 ## 功能路线
 
+- **v0.7.87**：Vault 读取能力从“某个模型或某个 Skill 的特殊权限”统一为 AI霖子插件能力。Luna、Terra、GPT 或未来其他模型在合适的纯文字主对话中都能按需调用本机搜索与读取工具；用户点名的文件或文件夹只作为首要材料和优先搜索范围，资料不足时继续搜索整个 Vault，但永远不能访问 Vault 外的电脑文件。Skill Studio 与外部 Skill 导入默认整个 Vault，可选一个优先文件夹。输入框右下角合并为一个状态按钮：空闲显示发送箭头，工作时原位变成停止方块。
 - **v0.7.79**：主对话是否进入文件引擎由 Luna 按“最终是否要在 Vault 留下文件/工作台/成品”判断，不再依赖固定词汇；全库工作台先取得一次有上限的目录元数据快照（路径、类型、大小、修改时间与统计，不含正文），具体内容确实影响结果时才读取少量目标文件。新增一次确认生成 HTML/DOCX/PDF/PPTX 成品，以及可直接编辑 JSON、随 Vault 新建/修改/删除/重命名自动刷新的 Markdown 动态工作台；工作台只在本机读取元数据、不执行生成脚本、不覆盖同名文件。原有 Skill 更新、版本锁定、完整预览和失败回滚边界不变。
 - **v0.7.74 历史候选记录（当时尚未发布）**：插件对话可手工改名、清空后回退首条问题，并用更新时间与 `null` tombstone 在本机和插件云端收敛；离线改名先保存在本机，后续成功对话自动重试。标题只作为历史元数据，不进入模型上下文；本条只记录当时状态，不代表当前生产版本。
 - **v0.7.73 历史实现记录**：该版曾引入 Skill 安全更新、完整差异/删除预览、确认前全树 SHA-256 复核和失败回滚。其中插件自建历史版本的设计已在当前本地开发候选中废止；旧 Vault 如已存在 `ai-linzi-versions`，新版不读写也不自动删除。

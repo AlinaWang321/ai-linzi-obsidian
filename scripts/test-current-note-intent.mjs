@@ -96,7 +96,7 @@ assert.doesNotMatch(main, /主对话带上当前笔记/)
 assert.doesNotMatch(main, /默认带上当前笔记/)
 assert.doesNotMatch(main, /attachToggleEl/)
 assert.match(main, /shouldUseCurrentNote/)
-assert.match(main, /本轮只读取当前笔记：/)
+assert.match(main, /已把当前笔记作为本轮主要材料：/)
 assert.match(main, /openMarkdownFile\(lockedPath\)/)
 assert.doesNotMatch(main, /getLastOpenFiles\(\)/, '最近打开记录不能作为当前笔记授权')
 

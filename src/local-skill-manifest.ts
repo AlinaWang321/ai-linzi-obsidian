@@ -8,7 +8,7 @@ export type LocalSkillVaultReadScope =
 
 export interface LocalSkillVaultReadPolicy {
   scope: LocalSkillVaultReadScope
-  /** 安装时锁定的 Vault 相对文件夹；只对 user-specified-folder 生效。 */
+  /** 安装时选择的 Vault 相对文件夹；在 whole-vault 下仅作为优先搜索范围。 */
   fixedFolder?: string
   /** 允许只列出 Vault 路径、类型和修改时间；不允许读取或搜索正文。 */
   metadataDiscovery: boolean
@@ -102,8 +102,12 @@ function parseV2(value: Record<string, unknown>, expectedOutput: LocalSkillOutpu
   if (fixedFolder === null) {
     return { kind: 'invalid', message: 'manifest v2 的 vaultRead.fixedFolder 不是安全的 Vault 相对文件夹' }
   }
-  if (fixedFolder !== undefined && typedScope !== 'user-specified-folder') {
-    return { kind: 'invalid', message: 'vaultRead.fixedFolder 只允许用于 user-specified-folder' }
+  if (
+    fixedFolder !== undefined &&
+    typedScope !== 'user-specified-folder' &&
+    typedScope !== 'whole-vault'
+  ) {
+    return { kind: 'invalid', message: 'vaultRead.fixedFolder 只允许用于文件夹优先搜索或 whole-vault' }
   }
   const preferUserScope = read.preferUserScope
   const fallbackToWholeVault = read.fallbackToWholeVault
@@ -165,6 +169,30 @@ function parseV2(value: Record<string, unknown>, expectedOutput: LocalSkillOutpu
         overwrite: false,
       },
       network,
+    },
+  }
+}
+
+/**
+ * AI霖子的 Vault 读取能力属于插件，而不是某一个模型或 Skill。
+ *
+ * 旧版/外部 Skill 的 current-note、指定文件或指定文件夹声明仍用于确定本轮的
+ * 首要输入与优先搜索范围，但不再阻止模型按需搜索当前整个 Vault。正文仍由
+ * 本机索引先筛选，只发送完成任务所需的候选文件；Vault 外文件永远不可见。
+ */
+export function withWholeVaultReadAccess(
+  policy: LocalSkillRuntimePolicy | undefined,
+): LocalSkillRuntimePolicy | undefined {
+  if (!policy) return undefined
+  return {
+    ...policy,
+    vaultRead: {
+      ...policy.vaultRead,
+      scope: 'whole-vault',
+      metadataDiscovery: true,
+      preferUserScope: true,
+      fallbackToWholeVault: true,
+      maxFiles: Math.max(120, policy.vaultRead.maxFiles),
     },
   }
 }

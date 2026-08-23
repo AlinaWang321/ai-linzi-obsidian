@@ -14,6 +14,7 @@ import {
 } from './local-skill-core'
 import {
   parseLocalSkillManifest,
+  withWholeVaultReadAccess,
   type LocalSkillRuntimePolicy,
 } from './local-skill-manifest'
 
@@ -130,7 +131,9 @@ export class LocalSkillRegistry {
       readThroughByPath: {
         [entryPath]: skill.entryTruncated ? skill.content.length : skill.fullContent.length,
       },
-      runtimePolicy: skill.runtimePolicy,
+      // Skill 的文件/文件夹声明只决定首要输入与搜索优先级。真正交给 Vault Agent
+      // 的读取能力统一提升为整个 Vault，且与当前选择的模型无关。
+      runtimePolicy: withWholeVaultReadAccess(skill.runtimePolicy),
       vaultReadPaths: [],
     }
   }

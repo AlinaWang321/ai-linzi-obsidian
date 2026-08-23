@@ -38,13 +38,13 @@ for (const template of studioCore.OFFICIAL_SKILL_TEMPLATES) {
   assert.deepEqual(manifest.sampleInputs, [template.sampleInput])
   assert.equal(
     manifest.vaultRead.scope,
-    template.id === 'weekly-business-dashboard' ? 'whole-vault' : 'current-note',
-    `${template.id} 必须显式声明真实输入范围，不能被输出目录文案误导`,
+    'whole-vault',
+    `${template.id} 必须默认获得插件级整个 Vault 读取能力`,
   )
   assert.equal(
     manifest.vaultRead.metadataDiscovery,
-    template.id === 'consultation-client-workflow',
-    `${template.id} 的目录元数据权限必须精确声明`,
+    true,
+    `${template.id} 必须能用本机目录和索引先筛选候选`,
   )
   assert.equal(template.block.files.some((file) => file.path.startsWith('scripts/')), false)
   assert.match(template.block.content, /^description: .+$/m)
@@ -70,7 +70,8 @@ assert.match(consultation.block.content, /普通文字“继续”不能代替�
 assert.match(consultation.block.content, /不得把确认客户档案的一次操作同时解释为确认 CRM/)
 assert.match(consultation.block.content, /必须再用 list_folder 真实列出候选父目录/)
 assert.match(consultation.block.content, /客户档案保存到哪个 Vault 文件夹/)
-assert.match(consultation.block.content, /不得读取或搜索其他笔记正文/)
+assert.match(consultation.block.content, /默认可按需搜索整个 Vault/)
+assert.match(consultation.block.content, /不得把整个 Vault 正文一次性提交给 AI/)
 assert.match(consultation.block.content, /不读取其他客户档案正文来模仿格式/)
 const consultationDescriptor = localSkillCore.buildLocalSkillDescriptor(
   '05_System/Skills/consultation-client-workflow/SKILL.md',
@@ -295,7 +296,7 @@ assert.equal(
 )
 assert.equal(localSkillCore.localSkillQuestionNamesInputFile('处理 Raw//销售逐字稿/沈立冬的咨询逐字稿'), true)
 assert.equal(localSkillCore.localSkillQuestionNamesInputFile(`处理下面粘贴的正文：${'正文'.repeat(500)}`), false)
-console.log('  ✓ 受限 Skill 只按路径元数据唯一锁定一份文件，不扩大正文读取范围')
+console.log('  ✓ 点名文件仍能唯一锁定为主要输入，但不再阻断整个 Vault 的按需检索')
 const broadScopePrompt = studioCore.buildSkillStudioPrompt({
   name: 'weekly-review',
   purpose: '做周复盘',
@@ -306,8 +307,8 @@ const broadScopePrompt = studioCore.buildSkillStudioPrompt({
   sampleInput: '生成本周复盘',
   version: '1.0.0',
 })
-assert.match(broadScopePrompt, /允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹/)
-assert.match(broadScopePrompt, /指定范围内没有找到所需材料时，继续在整个 Vault 中搜索任务相关候选/)
+assert.match(broadScopePrompt, /默认可按需搜索和读取整个 Vault；优先使用用户指定的文件或文件夹/)
+assert.match(broadScopePrompt, /优先范围没有所需材料时，继续搜索整个 Vault 中的任务相关候选/)
 assert.match(broadScopePrompt, /不得把整个 Vault 的正文一次性提交给模型/)
 const folderScopePrompt = studioCore.buildSkillStudioPrompt({
   name: 'folder-review',
@@ -319,10 +320,9 @@ const folderScopePrompt = studioCore.buildSkillStudioPrompt({
   sampleInput: '用 folder-review Skill 汇总我指定的文件夹',
   version: '1.0.0',
 })
-assert.match(folderScopePrompt, /只读取用户明确指定的 Vault 文件夹范围/)
-assert.match(folderScopePrompt, /只在该文件夹内按约定的文件类型和筛选条件处理/)
-assert.match(folderScopePrompt, /不得扩大到其他文件夹或整个 Vault/)
-assert.doesNotMatch(folderScopePrompt, /permissions=\["允许按 Skill 规则搜索整个 Vault/)
+assert.match(folderScopePrompt, /默认可读取整个 Vault；优先搜索用户指定的文件夹/)
+assert.match(folderScopePrompt, /该范围没有所需材料时，继续在整个 Vault 中搜索相关候选/)
+assert.match(folderScopePrompt, /不得把整个 Vault 的正文一次性提交给模型/)
 const fallbackVaultPrompt = studioCore.buildSkillStudioPrompt({
   name: 'vault-fallback-review',
   purpose: '在仓库中找到任务材料并汇总',
@@ -333,9 +333,8 @@ const fallbackVaultPrompt = studioCore.buildSkillStudioPrompt({
   sampleInput: '用 vault-fallback-review Skill 汇总相关材料',
   version: '1.0.0',
 })
-assert.match(fallbackVaultPrompt, /允许按 Skill 规则搜索整个 Vault，优先使用用户指定的文件夹/)
-assert.match(fallbackVaultPrompt, /不要直接回答“没有”/)
-assert.doesNotMatch(fallbackVaultPrompt, /只读取用户明确指定的 Vault 文件夹范围/)
+assert.match(fallbackVaultPrompt, /默认可按需搜索和读取整个 Vault；优先使用用户指定的文件或文件夹/)
+assert.match(fallbackVaultPrompt, /继续搜索整个 Vault 中的任务相关候选/)
 const explicitSingleNotePrompt = studioCore.buildSkillStudioPrompt({
   name: 'single-note-review',
   purpose: '只处理一篇笔记',
@@ -347,8 +346,8 @@ const explicitSingleNotePrompt = studioCore.buildSkillStudioPrompt({
   sampleInput: '用 single-note-review Skill 总结当前笔记',
   version: '1.0.0',
 })
-assert.match(explicitSingleNotePrompt, /"scope":"current-note"/)
-assert.doesNotMatch(explicitSingleNotePrompt, /"scope":"whole-vault"/)
+assert.match(explicitSingleNotePrompt, /"scope":"whole-vault"/)
+assert.match(explicitSingleNotePrompt, /本轮优先处理用户打开或点名的一篇笔记/)
 assert.match(explicitSingleNotePrompt, /不包含电脑其他目录/)
 assert.match(prompt, /原始素材用 \$RAW\//)
 assert.match(prompt, /知识库用 \$WIKI\//)
@@ -427,8 +426,8 @@ assert.equal(
   JSON.parse(normalizedLegacySingleNote.block.files.find(
     (file) => file.path === 'references/ai-linzi-skill-manifest.json',
   ).content).vaultRead.scope,
-  'current-note',
-  '旧 manifest 的宽泛权限文案不得覆盖 SKILL.md 已声明的当前单篇边界',
+  'whole-vault',
+  '旧 manifest 的单篇声明只保留为主要输入，不再阻断插件级 Vault 读取能力',
 )
 
 const generatedWithUnlinkedReference = {
@@ -486,13 +485,14 @@ assert.deepEqual(
     (file) => file.path === 'references/ai-linzi-skill-manifest.json',
   ).content).vaultRead,
   {
-    scope: 'current-note',
-    preferUserScope: false,
-    fallbackToWholeVault: false,
-    maxFiles: 1,
+    scope: 'whole-vault',
+    metadataDiscovery: true,
+    preferUserScope: true,
+    fallbackToWholeVault: true,
+    maxFiles: 120,
   },
 )
-assert.ok(adaptedExternal.repairs.some((item) => /最低权限兼容 manifest/u.test(item)))
+assert.ok(adaptedExternal.repairs.some((item) => /默认按需读取整个 Vault/u.test(item)))
 
 const unsafeExternalWithoutManifest = {
   ...importedWithoutManifest,
@@ -536,8 +536,9 @@ for (const scope of ['current-note', 'user-specified-files', 'user-specified-fol
     (file) => file.path === 'references/ai-linzi-skill-manifest.json',
   ).content)
   assert.equal(adaptedManifest.schemaVersion, 2)
-  assert.equal(adaptedManifest.vaultRead.scope, scope)
-  assert.equal(adaptedManifest.vaultRead.fallbackToWholeVault, scope === 'whole-vault')
+  assert.equal(adaptedManifest.vaultRead.scope, 'whole-vault')
+  assert.equal(adaptedManifest.vaultRead.fallbackToWholeVault, true)
+  assert.equal(adaptedManifest.vaultRead.preferUserScope, true)
   assert.deepEqual(adaptedManifest.programs, ['scripts/run.mjs'])
   assert.ok(adaptedManifest.permissions.some((item) => /不包含电脑其他目录/u.test(item)))
   assert.ok(adaptedManifest.permissions.some((item) => /声明联网.*确认卡/u.test(item)))
@@ -561,7 +562,7 @@ const fixedFolderManifest = JSON.parse(fixedFolderAdapted.block.files.find(
   (file) => file.path === 'references/ai-linzi-skill-manifest.json',
 ).content)
 assert.equal(fixedFolderManifest.vaultRead.fixedFolder, '$RAW/课程逐字稿')
-console.log('  ✓ 外部脚本 Skill 默认全 Vault；安装界面只保留全库/锁定文件夹两项，脚本不自动运行')
+console.log('  ✓ 外部脚本 Skill 默认全 Vault；安装界面只保留全库/优先文件夹两项，脚本不自动运行')
 const generatedWithoutOutput = {
   ...generatedWithoutSampleInput,
   content: generatedWithoutSampleInput.content.replace(
@@ -829,7 +830,7 @@ const adaptedWithoutManifestZip = studioCore.normalizeGeneratedSkillManifest(
   importedWithoutManifestZip,
 )
 assert.equal(studioCore.skillBlockManifest(adaptedWithoutManifestZip.block).valid, true)
-assert.ok(adaptedWithoutManifestZip.repairs.some((item) => /最低权限兼容 manifest/u.test(item)))
+assert.ok(adaptedWithoutManifestZip.repairs.some((item) => /默认按需读取整个 Vault/u.test(item)))
 assert.throws(
   () => studioUi.portableBundleFromZip(zipSync({
     'bad-skill/SKILL.md': strToU8('---\nname: bad-skill\ndescription: bad\n---\n# Bad'),
@@ -880,10 +881,10 @@ assert.match(
 assert.match(mainSource, /localSkillForbidsVaultExpansion\(localSkill\.fullContent\)/)
 assert.match(
   mainSource,
-  /uploadedSpreadsheetAttachments\.length === 0 &&\s*!localSkillCurrentOnly/,
+  /vaultAccess: true,/,
 )
 assert.match(mainSource, /scopedLocalSkillInputContext\(text, localSkill\.name\)/)
-assert.match(mainSource, /localSkillCurrentOnly \|\| skillUpdaterTurn\s*\? undefined\s*:\s*await this\.authorizedContentContext/)
+assert.match(mainSource, /localSkillHasPrimaryInput \|\| skillUpdaterTurn\s*\? undefined\s*:\s*await this\.authorizedContentContext/)
 assert.match(
   mainSource,
   /nativeAvailable &&\s*round === 0[\s\S]{0,180}isVaultNativeTurnRequest\(lastText\)/,
