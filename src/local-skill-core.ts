@@ -679,13 +679,19 @@ export function matchLocalSkillInvocation(
 const LOCAL_SKILL_UPDATE_ACTION_PATTERN =
   /(?:修改|更新|调整|优化|改进|重写|补充|删掉|删除|移除|改一下|改成|改为|换成|以后.{0,12}(?:放到|保存到|输出到)|(?:让|允许|授权|开放|放开|限制|收窄|扩大|缩小).{0,32}(?:读取|搜索|访问|权限|范围)|(?:读取|搜索|访问)(?:范围|权限)?.{0,16}(?:开放|放开|限制|收窄|扩大|缩小))/u
 
+const LOCAL_SKILL_NEGATED_UPDATE_ACTION_PATTERN =
+  /(?:不要|别|无需|不需要|不用|禁止|避免|暂不|先不)(?:(?![。！？!?；;\n]).){0,32}(?:修改|更新|调整|优化|改进|重写|补充|删掉|删除|移除|改一下|改成|改为|换成)/gu
+
 /**
  * 候选判断只看“这是一个修改动作”，最终仍必须由已安装 Skill 的精确名称匹配
  * 决定是否进入更新器。这样可以支持“请修改 codex-daily-reflection”这种自然说法，
  * 又不会把“更新客户档案”一类普通业务动作直接当成 Skill 管理。
  */
 export function isPotentialLocalSkillUpdateIntent(message: string): boolean {
-  return LOCAL_SKILL_UPDATE_ACTION_PATTERN.test(message.trim())
+  const actionable = message
+    .trim()
+    .replace(LOCAL_SKILL_NEGATED_UPDATE_ACTION_PATTERN, '')
+  return LOCAL_SKILL_UPDATE_ACTION_PATTERN.test(actionable)
 }
 
 /**

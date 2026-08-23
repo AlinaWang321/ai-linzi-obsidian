@@ -260,6 +260,26 @@ assert.equal(core.isExplicitLocalSkillUpdateIntent('修改“每周经营复盘�
 assert.equal(core.isExplicitLocalSkillUpdateIntent('更新客户档案'), false)
 assert.equal(core.isPotentialLocalSkillUpdateIntent('请修改 codex-daily-reflection'), true)
 assert.equal(
+  core.isPotentialLocalSkillUpdateIntent(
+    '只回答：请同时搜索商业咨询、客户档案和 Skill，不要创建或修改文件。',
+  ),
+  false,
+  '只读检索中的否定式“不要修改文件”不能劫持到 Skill 更新器',
+)
+assert.equal(
+  core.matchLocalSkillUpdateIntent(
+    '请同时在整个 Vault 搜索商业咨询、客户档案、经营看板、Skill、课程逐字稿、销售逐字稿；不要创建或修改文件。',
+    [consultation, portable],
+  ).kind,
+  'none',
+  '真人验收原句只把 Skill 当搜索主题，必须继续进入普通 Vault 检索',
+)
+assert.equal(
+  core.isExplicitLocalSkillUpdateIntent('修改这个 Skill，但确认前不要真的写入。'),
+  true,
+  '确认前不写入不能抵消前面的明确 Skill 修改意图',
+)
+assert.equal(
   core.matchLocalSkillUpdateIntent(
     '你修改“每周经营复盘”的这个技能，以后输出到方法论文件夹',
     [consultation, portable],
