@@ -2,7 +2,8 @@
  * M2 · 四技能「笔记即输入」+ 一键喂库 + 落盘写入规则
  *
  * 写入铁律(整合定稿 §2.2):只写输出文件夹、只新建不覆盖、frontmatter 落标。
- * 输入上限与服务端 lib/input-limits.ts 对齐,超限先截断并明确告知(透明原则)。
+ * 输入上限与服务端 lib/input-limits.ts 对齐。会改变任务语义的长输入不静默截断；
+ * 超限时明确停止并引导用户改用主对话长文档流程。
  */
 import {
   App,
@@ -19,6 +20,7 @@ import { friendlyErrorMessage } from './friendly-error'
 import {
   insertCoverEmbed,
   insertEmbeds,
+  isCompleteWechatArticle,
   prepareWechatArticle,
   stripFrontmatter,
 } from './article-format'
@@ -33,12 +35,12 @@ import { selectTranscriptSource } from './transcript-source'
 // ── 与服务端对齐的常量 ─────────────────────────────
 
 const LIMITS = {
-  WECHAT_MATERIAL_MAX: 10_000,
-  WECHAT_TOPIC_MAX: 5_000,
+  WECHAT_MATERIAL_MAX: 200_000,
+  WECHAT_TOPIC_MAX: 30_000,
   SALES_REVIEW_TRANSCRIPT_MIN: 500,
-  SALES_REVIEW_TRANSCRIPT_MAX: 50_000,
+  SALES_REVIEW_TRANSCRIPT_MAX: 200_000,
   DISTRIBUTE_ARTICLE_MIN: 100,
-  DISTRIBUTE_ARTICLE_MAX: 20_000,
+  DISTRIBUTE_ARTICLE_MAX: 100_000,
   KB_SUGGEST_TEXT_MAX: 8_000,
   KB_APPEND_CONTENT_MAX: 2_000,
 }
@@ -497,11 +499,22 @@ export async function runWechatWriter(plugin: AiLinziPlugin) {
 
   const n = runningNotice('公众号写作')
   try {
+    const topic = input.topic.trim()
+    const material = stripFrontmatter(note.text)
+    if (topic.length > LIMITS.WECHAT_TOPIC_MAX) {
+      throw new Error(`选题要求共 ${topic.length.toLocaleString('zh-CN')} 字，超过 ${LIMITS.WECHAT_TOPIC_MAX.toLocaleString('zh-CN')} 字上限；系统没有截取前半段，请精简后重试`)
+    }
+    if (material.length > LIMITS.WECHAT_MATERIAL_MAX) {
+      throw new Error(`当前笔记共 ${material.length.toLocaleString('zh-CN')} 字，超过 ${LIMITS.WECHAT_MATERIAL_MAX.toLocaleString('zh-CN')} 字上限；系统没有截取前半段冒充全文，请改用主对话长文档处理`)
+    }
     const text = await plugin.apiText('/api/plugin/v1/skills/wechat-writer', {
-      topic: input.topic.trim().slice(0, LIMITS.WECHAT_TOPIC_MAX),
-      material: clip(stripFrontmatter(note.text), LIMITS.WECHAT_MATERIAL_MAX, '笔记素材'),
+      topic,
+      material,
     })
     const article = prepareWechatArticle(text)
+    if (!isCompleteWechatArticle(article)) {
+      throw new Error('文章没有完整生成到正文结尾和一句话摘要，系统没有写入残稿，请重试')
+    }
     const articleFile = await writeOutput(plugin, {
       skill: '公众号写作',
       platform: '公众号',

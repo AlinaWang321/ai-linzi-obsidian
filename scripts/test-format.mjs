@@ -73,6 +73,24 @@ assert.equal(preparedWriter.digest, '这是摘要。')
 assert.match(preparedWriter.body, /\*\*PART 04\*\*\n\n## 低心力客户/)
 assert.doesNotMatch(preparedWriter.body, /标题候选|## 三、摘要/)
 
+const completeWriterOutput = `## 一、5 个爆款标题候选
+
+1. 标题一
+2. 标题二
+3. 标题三
+4. 标题四
+5. 标题五
+
+## 二、正文（约 4000 字）
+
+${'这是完整正文。'.repeat(520)}
+
+## 三、一句话摘要
+
+这是一句完整且可以直接使用的文章摘要。`
+assert.equal(article.isCompleteWechatArticle(article.prepareWechatArticle(completeWriterOutput)), true)
+assert.equal(article.isCompleteWechatArticle(preparedWriter), false, '标题不足、正文过短的残稿不得写入')
+
 const interviewOutput = `## 一、5 个爆款标题候选
 
 1. 访谈标题
