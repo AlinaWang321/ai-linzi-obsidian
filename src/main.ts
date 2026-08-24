@@ -144,7 +144,7 @@ import {
 } from './local-skill-choice-card'
 import { exportSkillBundle, SkillStudioModal } from './skill-studio'
 import {
-  isExplicitLocalSkillCreationIntent,
+  classifyLocalSkillManagementIntent,
   isExplicitLocalSkillRunIntent,
 } from './skill-studio-core'
 import {
@@ -4289,23 +4289,55 @@ class ChatView extends ItemView {
     try {
       const pendingVaultQuestion = this.recentPendingVaultQuestion()
       const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
-      const pendingSkillUpdatePath = this.recentPendingSkillUpdatePath()
+      const skillManagementIntent = options.skillCreator === true
+        ? 'create'
+        : options.skillUpdatePath
+          ? 'update'
+          : classifyLocalSkillManagementIntent(text)
+      // 在更新访谈里，普通补充继续锁定原 Skill；但用户明确回复“创建新的 Skill”
+      // 时必须退出旧更新上下文，不能让 pending 路径反过来劫持新建请求。
+      const pendingSkillUpdatePath = skillManagementIntent === 'create'
+        ? undefined
+        : this.recentPendingSkillUpdatePath()
       // 先判断整句是不是在创建一套新工作流。创建说明里经常会描述“更新客户档案”
       // “修改方法论”等业务步骤；这些词不能抢在“做成一个新的 Skill”前面，把
       // 新建请求误送进已有 Skill 更新器。未命中本机明确路由的自然说法继续交给
       // 主对话模型按整句语义判断，模型仍只能返回待确认卡，不能直接写入 Vault。
-      const explicitSkillCreation = isExplicitLocalSkillCreationIntent(text)
+      const explicitSkillCreation = skillManagementIntent === 'create' ||
+        skillManagementIntent === 'ambiguous'
       const naturalSkillUpdate = options.skillCreator !== true &&
         !options.skillUpdatePath && !pendingSkillUpdatePath &&
-        !explicitSkillCreation &&
+        skillManagementIntent !== 'create' &&
         isPotentialLocalSkillUpdateIntent(text)
         ? await this.localSkills.resolveUpdate(text)
         : undefined
-      if (naturalSkillUpdate?.kind === 'ambiguous') {
-        throw new Error(
-          `你要修改的 Skill 不唯一：${naturalSkillUpdate.skills.map(localSkillMenuTitle).join('、')}。` +
-          '请补充完整名称后重试。',
+      const askSkillManagementQuestion = async (question: string, lockedPath?: string) => {
+        this.messages.push({
+          id: uid(),
+          role: 'assistant',
+          parts: [{ type: 'text', text: question }],
+          skillUpdatePendingPath: lockedPath,
+        })
+        await this.persistNow()
+      }
+      if (skillManagementIntent === 'ambiguous') {
+        const matched = naturalSkillUpdate?.kind === 'matched'
+          ? naturalSkillUpdate.skill
+          : undefined
+        const target = matched ? `“${matched.name}”` : '你提到的 Skill'
+        await askSkillManagementQuestion(
+          `我需要先核对一下：你是想修改已有的 ${target}，还是创建一个新的 Skill？\n\n` +
+          '请直接回复“修改已有 Skill”或“创建新的 Skill”。我确认后再生成完整预览，确认前不会写入。',
+          matched?.path,
         )
+        return
+      }
+      if (naturalSkillUpdate?.kind === 'ambiguous') {
+        await askSkillManagementQuestion(
+          `我找到了多个可能的 Skill：${naturalSkillUpdate.skills.map(localSkillMenuTitle).join('、')}。\n\n` +
+          '请回复要修改的完整 Skill 名称；如果你其实想新建，也可以直接说“创建新的 Skill”。',
+        )
+        return
       }
       if (naturalSkillUpdate?.kind === 'missing') {
         const recentPath = /(?:这个|刚才|当前|它)\s*(?:skill|技能|工作流)/iu.test(text)
@@ -4314,7 +4346,12 @@ class ChatView extends ItemView {
         if (recentPath) skillUpdateTargetPath = recentPath
         else {
           const skills = await this.localSkills.list()
-          throw new Error(`没有找到要修改的 Skill。${formatMissingLocalSkillError(skills, this.localSkills.root())}`)
+          await askSkillManagementQuestion(
+            '我没有在“我的 Skills”中找到你点名的现有 Skill。\n\n' +
+            '你是想创建一个新的 Skill，还是修改下面某个已有 Skill？请回复“创建新的 Skill”，' +
+            `或补充完整名称。${formatMissingLocalSkillError(skills, this.localSkills.root())}`,
+          )
+          return
         }
       } else {
         skillUpdateTargetPath = options.skillUpdatePath ?? pendingSkillUpdatePath ??
@@ -4336,9 +4373,6 @@ class ChatView extends ItemView {
       const skillUpdateSource = skillUpdateTarget && skillUpdateRoot
         ? await buildSkillUpdateSource(this.skillUpdateHost, skillUpdateRoot, skillUpdateTarget.name)
         : undefined
-      if (skillUpdaterTurn && imageAttachments.length > 0) {
-        throw new Error('更新 Skill 时不会顺带发送聊天附件。请先移除附件，再从 Skill Studio 重试。')
-      }
       const forcedLocalSkill = options.forcedLocalSkillPath
         ? await this.localSkills.resolvePath(options.forcedLocalSkillPath)
         : undefined

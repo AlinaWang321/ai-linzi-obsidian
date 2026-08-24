@@ -699,9 +699,16 @@ export function isPotentialLocalSkillUpdateIntent(message: string): boolean {
  * 显式口径仍要求出现 Skill/技能/工作流；省略类型词时只允许后面的强名称匹配放行。
  */
 export function isExplicitLocalSkillUpdateIntent(message: string): boolean {
-  const normalized = message.trim()
-  if (!/(?:skill|技能|工作流)/iu.test(normalized)) return false
-  return isPotentialLocalSkillUpdateIntent(normalized)
+  const clauses = message
+    .normalize('NFKC')
+    .split(/[，,。.!！?？:：；;\n]+/u)
+    .map((clause) => clause.trim())
+    .filter(Boolean)
+  return clauses.some((clause) => {
+    if (!/(?:skill|技能|工作流)/iu.test(clause)) return false
+    const actionable = clause.replace(LOCAL_SKILL_NEGATED_UPDATE_ACTION_PATTERN, '')
+    return LOCAL_SKILL_UPDATE_ACTION_PATTERN.test(actionable)
+  })
 }
 
 function hasStrongUnlabelledSkillReference(message: string, skill: LocalSkillDescriptor): boolean {

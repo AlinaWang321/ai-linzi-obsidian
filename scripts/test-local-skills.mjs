@@ -258,6 +258,20 @@ assert.equal(
 
 assert.equal(core.isExplicitLocalSkillUpdateIntent('修改“每周经营复盘”的这个 Skill'), true)
 assert.equal(core.isExplicitLocalSkillUpdateIntent('更新客户档案'), false)
+assert.equal(
+  core.isExplicitLocalSkillUpdateIntent(
+    '请把这套流程做成一个新的 Skill。输入步骤里会更新客户档案。',
+  ),
+  false,
+  '新建说明中另一小句的业务更新动作不能冒充修改 Skill',
+)
+assert.equal(
+  core.isExplicitLocalSkillUpdateIntent(
+    'b2c-1v1-consultation，这个技能调用后的提示词是否可以修改。之后生成一份咨询方案。',
+  ),
+  true,
+  'Skill 与修改提示词在同一小句时必须判为更新',
+)
 assert.equal(core.isPotentialLocalSkillUpdateIntent('请修改 codex-daily-reflection'), true)
 assert.equal(
   core.isPotentialLocalSkillUpdateIntent(
@@ -386,8 +400,13 @@ assert.match(
 )
 assert.match(
   __mainForMenu,
-  /const explicitSkillCreation = isExplicitLocalSkillCreationIntent\(text\)[\s\S]{0,240}options\.skillCreator !== true[\s\S]{0,180}!explicitSkillCreation[\s\S]{0,120}isPotentialLocalSkillUpdateIntent\(text\)[\s\S]{0,180}this\.localSkills\.resolveUpdate\(text\)/,
-  '主对话必须让新建 Skill 意图优先于正文里的业务更新词',
+  /const skillManagementIntent = options\.skillCreator === true[\s\S]{0,180}classifyLocalSkillManagementIntent\(text\)[\s\S]{0,1200}options\.skillCreator !== true[\s\S]{0,180}skillManagementIntent !== 'create'[\s\S]{0,140}isPotentialLocalSkillUpdateIntent\(text\)[\s\S]{0,180}this\.localSkills\.resolveUpdate\(text\)/,
+  '主对话必须区分新建、修改和冲突语义，再决定是否解析现有 Skill',
+)
+assert.match(
+  __mainForMenu,
+  /你是想创建一个新的 Skill，还是修改下面某个已有 Skill/,
+  '找不到现有目标时必须让用户确认新建还是修改，不能直接报错结束',
 )
 assert.match(
   __mainForMenu,

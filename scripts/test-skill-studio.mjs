@@ -188,6 +188,47 @@ assert.equal(
   true,
   '创建 Skill 的正文即使描述“更新客户档案”，整句仍必须判定为新建',
 )
+assert.equal(
+  studioCore.isExplicitLocalSkillCreationIntent(
+    '把我每次给学员做咨询的方法论和流程提炼成一个 Skill。',
+  ),
+  true,
+  '自然表达“提炼成 Skill”必须进入新建流程',
+)
+const realSkillPromptUpdateRequest =
+  'b2c-1v1-consultation，这个技能调用后的提示词是否可以修改。我的业务场景是，需要选中一个客户问卷，然后调用这个技能生成一份咨询方案。'
+assert.equal(
+  studioCore.isExplicitLocalSkillCreationIntent(realSkillPromptUpdateRequest),
+  false,
+  'Skill 生成的是业务产物时，不能把“生成咨询方案”误判成“生成 Skill”',
+)
+assert.equal(
+  studioCore.classifyLocalSkillManagementIntent(realSkillPromptUpdateRequest),
+  'update',
+  '真实截图原句必须直接进入已安装 Skill 更新器',
+)
+assert.equal(
+  studioCore.classifyLocalSkillManagementIntent(
+    '请创建一个新的 b2c-consultation Skill，同时修改现有的 b2c-1v1-consultation Skill 提示词。',
+  ),
+  'ambiguous',
+  '同一句真的同时要求新建与修改时必须先向用户核对',
+)
+assert.equal(
+  studioCore.classifyLocalSkillManagementIntent('修改已有 Skill'),
+  'update',
+  '用户回答澄清问题后必须继续走已有 Skill 更新',
+)
+assert.equal(
+  studioCore.classifyLocalSkillManagementIntent('创建新的 Skill'),
+  'create',
+  '用户回答澄清问题后必须能退出旧更新上下文并新建 Skill',
+)
+assert.equal(
+  studioCore.isExplicitLocalSkillCreationIntent('在这个 Skill 里创建一个 references 说明文件。'),
+  false,
+  '修改现有 Skill 内部文件不能被反向词序误判为新建 Skill',
+)
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('Skill 是什么？'), false)
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('列出我的 Skills'), false)
 assert.equal(
@@ -1010,13 +1051,18 @@ const runSendTurnSource =
 assert.match(runSendTurnSource, /let skillCreatorTurn = false/)
 assert.match(
   runSendTurnSource,
-  /const explicitSkillCreation = isExplicitLocalSkillCreationIntent\(text\)/,
-  '统一发送函数必须先判定新建意图',
+  /const skillManagementIntent = options\.skillCreator === true[\s\S]{0,120}options\.skillUpdatePath[\s\S]{0,120}classifyLocalSkillManagementIntent\(text\)/,
+  'Studio 已锁定的创建或更新必须优先；自然主对话再做创建、修改、冲突三态判定',
 )
 assert.match(
   runSendTurnSource,
-  /const naturalSkillUpdate = options\.skillCreator !== true &&/,
+  /const naturalSkillUpdate = options\.skillCreator !== true &&[\s\S]{0,160}skillManagementIntent !== 'create'/,
   'Skill Studio 已锁定为新建时必须在自然语言修改解析之前短路，不能被提示词里的“修改/更新”截走',
+)
+assert.match(
+  runSendTurnSource,
+  /你是想修改已有的[\s\S]{0,220}创建一个新的 Skill/,
+  '创建与修改语义同时成立时必须先向用户核对，不能擅自猜测',
 )
 assert.match(
   runSendTurnSource,
@@ -1042,14 +1088,19 @@ assert.match(studioSource, /addOption\('update', '更新已经安装的 Skill'\)
 assert.match(studioSource, /onUpdateWithAi\(skill, this\.updateInstruction\)/)
 assert.match(
   runSendTurnSource,
-  /const pendingSkillUpdatePath = this\.recentPendingSkillUpdatePath\(\)/,
+  /const pendingSkillUpdatePath = skillManagementIntent === 'create'[\s\S]{0,100}this\.recentPendingSkillUpdatePath\(\)/,
+  '用户明确改为创建新 Skill 时必须退出旧更新访谈；其他补充继续锁定原 Skill',
 )
 assert.match(
   runSendTurnSource,
   /skillUpdateTargetPath = options\.skillUpdatePath \?\? pendingSkillUpdatePath/,
 )
 assert.match(runSendTurnSource, /buildSkillUpdateSource\(this\.skillUpdateHost, skillUpdateRoot, skillUpdateTarget\.name\)/)
-assert.match(runSendTurnSource, /skillUpdaterTurn && imageAttachments\.length > 0/)
+assert.doesNotMatch(
+  runSendTurnSource,
+  /更新 Skill 时不会顺带发送聊天附件/,
+  '截图可以作为只读上下文帮助修改 Skill，不能再要求用户先移除附件',
+)
 assert.match(runSendTurnSource, /skillCreator: skillCreatorRequest/)
 assert.match(runSendTurnSource, /extractSkillUpdateProposals\(answer\)/)
 assert.match(runSendTurnSource, /this\.skillUpdateTransaction\.prepare\([\s\S]{0,180}skillUpdateTarget\.path/)

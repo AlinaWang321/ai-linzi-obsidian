@@ -1,6 +1,7 @@
 import type { CreateLocalSkillBlock } from './create-local-skill'
 import {
   buildLocalSkillDescriptor,
+  isExplicitLocalSkillUpdateIntent,
   localSkillOutputFromMarkdown,
   matchLocalSkillInvocation,
 } from './local-skill-core'
@@ -160,7 +161,17 @@ export function previewSkillStudioDraftInvocation(draft: SkillStudioDraft): Skil
 }
 
 const CREATE_SKILL_INTENT =
-  /(?:创建|生成|新建|做|制作|设计|搭建|保存成|沉淀成|固定成|固化成|封装成).{0,18}(?:skill|技能|工作流)|(?:skill|技能|工作流).{0,18}(?:创建|生成|新建|做|制作|设计|搭建|固定|固化|封装)/iu
+  /(?:创建|生成|新建|做|制作|设计|搭建|保存成|沉淀成|提炼成|整理成|转成|转换成|固定成|固化成|封装成)(?:(?![，,。.!！?？:：；;\n]).){0,80}(?:skill|技能|工作流)/iu
+
+function localSkillIntentClauses(text: string): string[] {
+  return text
+    .normalize('NFKC')
+    .split(/[，,。.!！?？:：；;\n]+/u)
+    .map((clause) => clause.trim())
+    .filter(Boolean)
+}
+
+export type LocalSkillManagementIntent = 'create' | 'update' | 'ambiguous' | 'none'
 
 export function isExplicitLocalSkillRunIntent(text: string): boolean {
   return /(?:^|[，,。.!！?？:：]|请|帮我)(?:用|使用|调用|运行|执行|启用)\s*[^\r\n]{1,80}?(?:skill|技能)(?:\s|，|,|来)*(?:处理|整理|生成|制作|运行|执行|分析|改写|更新|创建)(?![^\r\n]{0,18}(?:skill|技能))/iu.test(
@@ -177,7 +188,20 @@ export function isExplicitLocalSkillCreationIntent(text: string): boolean {
   // 新 Skill。这里必须先让显式调用进入本地 Skill 解析器，否则带“生成”二字的
   // 正常调用（例如经营周报）会被 Skill Creator 抢走。
   if (isExplicitLocalSkillRunIntent(normalized)) return false
-  return CREATE_SKILL_INTENT.test(normalized)
+  return localSkillIntentClauses(normalized).some((clause) => CREATE_SKILL_INTENT.test(clause))
+}
+
+/**
+ * 创建和修改必须按同一小句里的直接语义判断，不能把远处的“生成咨询方案”
+ * 与前面的 Skill 拼成“生成 Skill”。真的同时要求新建和修改时交给界面核对。
+ */
+export function classifyLocalSkillManagementIntent(text: string): LocalSkillManagementIntent {
+  const create = isExplicitLocalSkillCreationIntent(text)
+  const update = isExplicitLocalSkillUpdateIntent(text)
+  if (create && update) return 'ambiguous'
+  if (create) return 'create'
+  if (update) return 'update'
+  return 'none'
 }
 
 function manifestFile(
