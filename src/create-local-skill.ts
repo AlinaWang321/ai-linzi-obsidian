@@ -30,12 +30,30 @@ export interface CreateLocalSkillBlock {
 export interface CreateLocalSkillExtraction {
   cleanText: string
   blocks: CreateLocalSkillBlock[]
+  /** 外层协议存在、但整包仍未通过机械校验；渲染层必须显式提示，不能静默吞掉。 */
+  invalidBlocks: number
+  /** 即使整包无效也保留安全名称，供同一对话继续修订未安装草稿。 */
+  candidateNames: string[]
+  /** 仅统计已确定修复的常见子文件起始标记笔误。 */
+  repairedFileMarkers: number
 }
 
 export const CREATE_LOCAL_SKILL_MAX_BLOCKS = 1
 export const CREATE_LOCAL_SKILL_MAX_FILES = 12
 export const CREATE_LOCAL_SKILL_MAX_TOTAL_CHARS = 60_000
 export const PORTABLE_SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+export function shouldContinuePendingSkillDraft(
+  text: string,
+  managementIntent: 'create' | 'update' | 'ambiguous' | 'none',
+  draftName: string | undefined,
+): boolean {
+  if (!draftName || managementIntent !== 'update') return false
+  const normalized = text.normalize('NFKC').toLocaleLowerCase()
+  const namedDraft = normalized.includes(draftName.toLocaleLowerCase())
+  const otherPortableName = normalized.match(/[a-z0-9]+(?:-[a-z0-9]+)+/u)?.[0]
+  return !otherPortableName || namedDraft
+}
 
 const BLOCK_RE =
   /<<<新建Skill\s+name=([^>\n]{1,100})>>>\r?\n?([\s\S]*?)\r?\n?<<<新建Skill结束>>>/giu
@@ -124,12 +142,16 @@ export function parsePortableSkillBundle(
   markerName: string,
   rawContent: string,
 ): CreateLocalSkillBlock | null {
-  if (!/<<<Skill文件/iu.test(rawContent)) {
-    return parsePortableSkillContent(markerName, rawContent)
+  const normalizedContent = rawContent.replace(
+    /<<<新建Skill\s+path=([^>\n]{1,160})>>>/giu,
+    '<<<Skill文件 path=$1>>>',
+  )
+  if (!/<<<Skill文件/iu.test(normalizedContent)) {
+    return parsePortableSkillContent(markerName, normalizedContent)
   }
   const files: { path: string; content: string }[] = []
   let invalidFile = false
-  const remainder = rawContent.replace(FILE_BLOCK_RE, (_match, rawPath: string, rawFile: string) => {
+  const remainder = normalizedContent.replace(FILE_BLOCK_RE, (_match, rawPath: string, rawFile: string) => {
     const path = normalizeSkillBundlePath(rawPath)
     const content = rawFile.replace(/^\uFEFF/, '').trim()
     if (!path || !content || files.some((file) => file.path.toLocaleLowerCase() === path.toLocaleLowerCase())) {
@@ -160,17 +182,26 @@ export function parsePortableSkillBundle(
 
 export function extractCreateLocalSkillBlocks(text: string): CreateLocalSkillExtraction {
   const blocks: CreateLocalSkillBlock[] = []
+  const candidateNames: string[] = []
+  let invalidBlocks = 0
+  let repairedFileMarkers = 0
   const cleanText = text
     .replace(BLOCK_RE, (_match, rawName: string, rawContent: string) => {
+      const name = rawName.trim()
+      if (isPortableSkillName(name) && !candidateNames.includes(name)) candidateNames.push(name)
+      repairedFileMarkers += (rawContent.match(/<<<新建Skill\s+path=[^>\n]{1,160}>>>/giu) ?? []).length
       if (blocks.length < CREATE_LOCAL_SKILL_MAX_BLOCKS) {
         const block = parsePortableSkillBundle(rawName, rawContent)
         if (block) blocks.push(block)
+        else invalidBlocks += 1
+      } else {
+        invalidBlocks += 1
       }
       return ''
     })
     .replace(/\n{3,}/g, '\n\n')
     .trim()
-  return { cleanText, blocks }
+  return { cleanText, blocks, invalidBlocks, candidateNames, repairedFileMarkers }
 }
 
 /** 把本机可信模板或 ZIP 导入结果复用成同一张全文确认卡，不绕过创建审批。 */

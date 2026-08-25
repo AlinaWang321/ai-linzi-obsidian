@@ -13,6 +13,11 @@ const skill = await import(`data:text/javascript;base64,${Buffer.from(source).to
 
 console.log('[test-create-local-skill]')
 
+assert.equal(skill.shouldContinuePendingSkillDraft('OK，更新 skill 吧', 'update', 'course-notes'), true)
+assert.equal(skill.shouldContinuePendingSkillDraft('修改 course-notes Skill', 'update', 'course-notes'), true)
+assert.equal(skill.shouldContinuePendingSkillDraft('修改 another-skill Skill', 'update', 'course-notes'), false)
+assert.equal(skill.shouldContinuePendingSkillDraft('更新 skill 吧', 'none', 'course-notes'), false)
+
 const portable = `---
 name: consultation-brief
 description: 把咨询逐字稿整理成客户可读简报
@@ -102,6 +107,33 @@ description: 提炼访谈背景、核心问题与行动项并输出复盘
 }
 
 {
+  const malformedBundle = `<<<新建Skill name=course-transcript-knowledge>>>
+<<<Skill文件 path=SKILL.md>>>
+---
+name: course-transcript-knowledge
+description: 把课程逐字稿整理成可复用课程笔记
+---
+# 课程逐字稿整理
+
+[模板](references/course-note-template.md)
+<<<Skill文件结束>>>
+<<<新建Skill path=references/course-note-template.md>>>
+# 课程笔记模板
+<<<Skill文件结束>>>
+<<<新建Skill path=references/ai-linzi-skill-manifest.json>>>
+{"schemaVersion":2,"skillVersion":"1.0.0"}
+<<<Skill文件结束>>>
+<<<新建Skill结束>>>`
+  const result = skill.extractCreateLocalSkillBlocks(malformedBundle)
+  assert.equal(result.blocks.length, 1, '生产真实出现的子文件起始标记笔误应确定性修复')
+  assert.equal(result.blocks[0].files.length, 3)
+  assert.equal(result.repairedFileMarkers, 2)
+  assert.equal(result.invalidBlocks, 0)
+  assert.deepEqual(result.candidateNames, ['course-transcript-knowledge'])
+  console.log('  ✓ 常见子文件标记笔误经原路径安全校验后自修复')
+}
+
+{
   const unsafeBundle = `<<<新建Skill name=customer-profile>>>
 <<<Skill文件 path=SKILL.md>>>
 ---
@@ -114,7 +146,9 @@ description: 测试
 越界
 <<<Skill文件结束>>>
 <<<新建Skill结束>>>`
-  assert.equal(skill.extractCreateLocalSkillBlocks(unsafeBundle).blocks.length, 0)
+  const result = skill.extractCreateLocalSkillBlocks(unsafeBundle)
+  assert.equal(result.blocks.length, 0)
+  assert.equal(result.invalidBlocks, 1)
   console.log('  ✓ Skill 子文件越界整包拒绝')
 }
 

@@ -1071,9 +1071,16 @@ assert.match(
 )
 assert.match(
   runSendTurnSource,
-  /const returnedSkillCreatorBlock = extractCreateLocalSkillBlocks\(answer\)\.blocks\.length > 0[\s\S]{0,1600}skillCreatorResult: skillCreatorTurn \|\| returnedSkillCreatorBlock \|\| undefined/,
+  /const skillCreatorExtraction = extractCreateLocalSkillBlocks\(answer\)[\s\S]{0,160}const returnedSkillCreatorBlock = skillCreatorExtraction\.blocks\.length > 0[\s\S]{0,1800}skillCreatorResult: skillCreatorTurn \|\| returnedSkillCreatorBlock \|\| undefined/,
   '主模型按语义返回的新建协议也必须走完整 Creator 校验，非法包不能出现安装按钮',
 )
+assert.match(
+  runSendTurnSource,
+  /const continuePendingSkillDraft = shouldContinuePendingSkillDraft\([\s\S]{0,160}pendingSkillCreatorDraft\?\.name/,
+  '刚生成但尚未安装的草稿必须能在“更新 Skill 吧”之后继续走 Creator，不能误查已安装目录',
+)
+assert.match(runSendTurnSource, /explicitSkillCreation \|\| continuePendingSkillDraft/)
+assert.match(mainSource, /Skill 包格式没有通过本机校验/, '无法修复的 Skill 协议必须显式显示失败卡')
 assert.match(
   runSendTurnSource,
   /const explicitLocalSkillRun = forcedLocalSkill[\s\S]{0,100}isExplicitLocalSkillRunIntent\(text\)[\s\S]{0,520}const explicitInstalledLocalSkill = explicitLocalSkillMatch\?\.kind === 'matched'[\s\S]{0,380}options\.skillCreator === true[\s\S]{0,140}!explicitLocalSkillRun/,

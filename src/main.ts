@@ -122,6 +122,7 @@ import {
 import {
   extractCreateLocalSkillBlocks,
   formatCreateLocalSkillBlock,
+  shouldContinuePendingSkillDraft,
   type CreateLocalSkillBlock,
 } from './create-local-skill'
 import { renderCreateLocalSkillOffers } from './create-local-skill-card'
@@ -296,9 +297,9 @@ import {
   extractConsultationBriefAction,
 } from './official-skill-runtime-core'
 import {
-  isExplicitCurrentNoteIntent,
+  resolveCurrentNoteReference,
   selectCurrentOpenMarkdownPath,
-  shouldUseCurrentNote,
+  shouldSearchVaultBeyondCurrentNote,
 } from './current-note-intent'
 import {
   openCustomerCrmSyncModal,
@@ -589,6 +590,8 @@ interface WireMessage {
   skillCreatorOriginalRequest?: string
   /** Skill Creator 正在等待用户补充；下一轮继续走专用创建路由，不进入 Vault agent。 */
   skillCreatorPending?: boolean
+  /** 最近一次尚未安装的 Skill 草稿名；只用于本机多轮续接。 */
+  skillCreatorDraftName?: string
   /** 该回复由 Skill Creator/Studio 生成；本机必须验证版本、权限与引用闭环后才可安装。 */
   skillCreatorResult?: boolean
   /** 对话确认后已落盘的 Skill；只保存本机相对路径。 */
@@ -1497,15 +1500,6 @@ export default class AiLinziPlugin extends Plugin {
     )
 
     this.addSettingTab(new AiLinziSettingTab(this.app, this))
-  }
-
-  openMarkdownFile(path: string): TFile | null {
-    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
-      if (leaf.view instanceof MarkdownView && leaf.view.file?.path === path) {
-        return leaf.view.file
-      }
-    }
-    return null
   }
 
   rememberCurrentMarkdownFile(): TFile | null {
@@ -3349,10 +3343,16 @@ class ChatView extends ItemView {
   private async currentNoteContext(
     lockedPath?: string,
   ): Promise<{ filename: string; text: string; path: string } | undefined> {
-    // 连续对话必须保持上一轮锁定的同一篇。若文件已移动或删除就停止，绝不能
-    // 悄悄换成用户此刻打开的另一篇笔记；若标签页已关闭，也视为撤销授权。
+    // 第一轮只能读取此刻真正打开的 Markdown；一旦用户已经在本对话授权并
+    // 锁定了来源，后续就按保存的精确路径重读。切换标签页不会丢掉上下文，
+    // 但文件移动、删除或不再是 Markdown 时必须停止，绝不换成另一份材料。
+    const lockedFile = lockedPath
+      ? this.app.vault.getAbstractFileByPath(lockedPath)
+      : undefined
     const file = lockedPath
-      ? this.plugin.openMarkdownFile(lockedPath) ?? undefined
+      ? lockedFile instanceof TFile && lockedFile.extension.toLowerCase() === 'md'
+        ? lockedFile
+        : undefined
       : this.plugin.rememberCurrentMarkdownFile()
     if (!file) return undefined
     const text = await this.app.vault.cachedRead(file)
@@ -4131,6 +4131,20 @@ class ChatView extends ItemView {
     return false
   }
 
+  private recentPendingSkillCreatorDraft(): { name: string; messageId: string } | undefined {
+    for (let index = this.messages.length - 1; index >= Math.max(0, this.messages.length - 20); index--) {
+      const message = this.messages[index]
+      if (message.role !== 'assistant' || message.localSkillStatus) continue
+      const raw = message.parts.map((part) => part.text).join('')
+      const extraction = extractCreateLocalSkillBlocks(raw)
+      const name = message.skillCreatorDraftName ?? extraction.blocks[0]?.name ?? extraction.candidateNames[0]
+      if (!name) continue
+      if (message.createdLocalSkill) return undefined
+      return { name, messageId: message.id }
+    }
+    return undefined
+  }
+
   private recentPendingSkillUpdatePath(): string | undefined {
     for (let index = this.messages.length - 1; index >= 0; index--) {
       const message = this.messages[index]
@@ -4289,6 +4303,7 @@ class ChatView extends ItemView {
     try {
       const pendingVaultQuestion = this.recentPendingVaultQuestion()
       const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
+      const pendingSkillCreatorDraft = this.recentPendingSkillCreatorDraft()
       const skillManagementIntent = options.skillCreator === true
         ? 'create'
         : options.skillUpdatePath
@@ -4305,8 +4320,16 @@ class ChatView extends ItemView {
       // 主对话模型按整句语义判断，模型仍只能返回待确认卡，不能直接写入 Vault。
       const explicitSkillCreation = skillManagementIntent === 'create' ||
         skillManagementIntent === 'ambiguous'
+      // “更新 Skill 吧”在刚生成但尚未安装的草稿之后，意思是继续修订草稿，
+      // 不是去已安装目录里寻找一个不存在的同名 Skill。
+      const continuePendingSkillDraft = shouldContinuePendingSkillDraft(
+        text,
+        skillManagementIntent,
+        pendingSkillCreatorDraft?.name,
+      )
       const naturalSkillUpdate = options.skillCreator !== true &&
         !options.skillUpdatePath && !pendingSkillUpdatePath &&
+        !continuePendingSkillDraft &&
         skillManagementIntent !== 'create' &&
         isPotentialLocalSkillUpdateIntent(text)
         ? await this.localSkills.resolveUpdate(text)
@@ -4400,7 +4423,7 @@ class ChatView extends ItemView {
           (
             !explicitLocalSkillRun &&
             !explicitInstalledLocalSkill &&
-            (pendingSkillCreatorInterview || explicitSkillCreation)
+            (pendingSkillCreatorInterview || explicitSkillCreation || continuePendingSkillDraft)
           )
         )
       consultationWorkflowTaskTurn = Boolean(options.consultationWorkflowTaskOriginId)
@@ -4544,18 +4567,13 @@ class ChatView extends ItemView {
       const illustrationEdit = isArticleIllustrationEditIntent(text)
       const singleIllustrationIntent = isSingleArticleIllustrationIntent(text)
       const recentCurrentNotePath = this.recentCurrentNotePath()
-      const explicitCurrentNote = isExplicitCurrentNoteIntent(text)
-      const continuingCurrentNote =
-        !explicitCurrentNote &&
-        Boolean(recentCurrentNotePath) &&
-        shouldUseCurrentNote(text, true)
+      const currentNoteReference = resolveCurrentNoteReference(text, Boolean(recentCurrentNotePath))
       const currentNoteRequested =
         !skillCreatorTurn &&
         !skillUpdaterTurn &&
         !consultationWorkflowTaskTurn &&
         (
-          explicitCurrentNote ||
-          continuingCurrentNote ||
+          currentNoteReference !== 'none' ||
           singleIllustrationIntent ||
           localSkillTurnPolicy?.output === 'update-current-note'
         )
@@ -4565,7 +4583,7 @@ class ChatView extends ItemView {
       let noteContext = consultationWorkflowTaskTurn
         ? await this.consultationWorkflowSourceContext(consultationWorkflowSourcePath)
         : currentNoteRequested
-          ? await this.currentNoteContext(continuingCurrentNote ? recentCurrentNotePath : undefined)
+          ? await this.currentNoteContext(currentNoteReference === 'locked' ? recentCurrentNotePath : undefined)
           : undefined
       if (consultationWorkflowTaskTurn && !noteContext) {
         throw new Error(
@@ -4659,14 +4677,32 @@ class ChatView extends ItemView {
           noteContext &&
             !illustrationEdit &&
             !singleIllustration &&
-            localSkillTurnPolicy?.output === 'update-current-note',
+          localSkillTurnPolicy?.output === 'update-current-note',
         )
+      // “处理这篇笔记”已经锁定了正文来源。若本轮只需要在聊天中回答，
+      // 直接把锁定正文交给模型；不能再让全库文件引擎按标题/关键词搜索，
+      // 否则同名候选会反过来覆盖用户刚刚指明的来源。只有用户明确要求
+      // 结合知识库、目录或其他资料时才扩大到 Vault 工具循环。
+      const currentNoteOnlyTurn = Boolean(
+        noteContext &&
+          currentNoteReference !== 'none' &&
+          !consultationWorkflowTaskTurn &&
+          !shouldSearchVaultBeyondCurrentNote(text) &&
+          (
+            !localSkill ||
+            (
+              localSkillTurnPolicy?.forceOrganize !== true &&
+              (localSkillTurnPolicy?.output ?? localSkill.output ?? 'chat') === 'chat'
+            )
+          ),
+      )
       // v0.7.30：不再由客户端关键词决定“这句话像不像 Vault 请求”。所有适合
       // 纯文字主对话都向当前模型提供本机工具能力；在模型真正发起 tool call 前，
       // 插件不会扫描、读取或上传任何 Vault 内容。图片理解、当前笔记旧补丁协议、
       // 长文专用任务继续走各自已验证的独立通道。
       const modelDecidesVaultUse =
         !noteEdit &&
+        !currentNoteOnlyTurn &&
         !this.longDocumentPath &&
         !singleIllustration &&
         !illustrationEdit &&
@@ -4955,7 +4991,8 @@ class ChatView extends ItemView {
       const visibleAnswer = [aiImageRequest.cleanText, imageProtocolWarning]
         .filter(Boolean)
         .join('\n\n') || '我已经理解图片要求，正在准备生成。'
-      const returnedSkillCreatorBlock = extractCreateLocalSkillBlocks(answer).blocks.length > 0
+      const skillCreatorExtraction = extractCreateLocalSkillBlocks(answer)
+      const returnedSkillCreatorBlock = skillCreatorExtraction.blocks.length > 0
       const skillCreatorPending = skillCreatorTurn &&
         !answer.startsWith('⚠️') &&
         !returnedSkillCreatorBlock
@@ -4988,6 +5025,9 @@ class ChatView extends ItemView {
             ? text.slice(0, 4_000)
             : undefined,
         skillCreatorPending,
+        skillCreatorDraftName: skillCreatorTurn
+          ? skillCreatorExtraction.blocks[0]?.name ?? skillCreatorExtraction.candidateNames[0]
+          : undefined,
         // 用户不必背“创建 Skill”口令：主模型按语义主动返回新建协议时，也把它
         // 当成 Creator 结果走完整 manifest 校验；不完整包只展示问题，绝不给按钮。
         skillCreatorResult: skillCreatorTurn || returnedSkillCreatorBlock || undefined,
@@ -8413,6 +8453,13 @@ class ChatView extends ItemView {
         if ((m.localSkillRunIds?.length ?? 0) > 0) this.renderLocalSkillRunOffer(row, m)
         if (localSkillCreateResult.blocks.length > 0) {
           this.renderCreateLocalSkillOffers(row, localSkillCreateResult.blocks, m)
+        }
+        if (localSkillCreateResult.invalidBlocks > 0) {
+          const invalidCard = row.createDiv({ cls: 'ai-linzi-create-note-card' })
+          invalidCard.createDiv({
+            text: '⚠️ Skill 包格式没有通过本机校验，本次没有写入任何文件。请让 AI霖子重新生成完整 Skill 包；不要只回复“确认”。',
+            cls: 'ai-linzi-create-note-preview',
+          })
         }
         if (createResult.blocks.length > 0) this.renderCreateNoteOffers(row, createResult.blocks)
         if (folderResult.invalidStructurePlan) {

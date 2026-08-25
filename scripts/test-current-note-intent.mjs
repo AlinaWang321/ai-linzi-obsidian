@@ -47,6 +47,19 @@ assert.equal(core.shouldUseCurrentNote('再短一点', true), true)
 assert.equal(core.shouldUseCurrentNote('再短一点', false), false)
 assert.equal(core.shouldUseCurrentNote('谢谢', true), false)
 
+assert.equal(core.resolveCurrentNoteReference('处理这篇笔记', true), 'locked')
+assert.equal(core.resolveCurrentNoteReference('处理这篇笔记', false), 'active')
+assert.equal(core.resolveCurrentNoteReference('处理当前笔记', true), 'active')
+assert.equal(core.resolveCurrentNoteReference('就是完整版的呀，你为什么读不了', true), 'locked')
+assert.equal(core.resolveCurrentNoteReference('你读错笔记了，重新读这篇', true), 'locked')
+assert.equal(core.resolveCurrentNoteReference('谢谢', true), 'none')
+
+assert.equal(core.shouldSearchVaultBeyondCurrentNote('处理这篇笔记，只回答唯一代号'), false)
+assert.equal(core.shouldSearchVaultBeyondCurrentNote('在这篇笔记里查找唯一代号'), false)
+assert.equal(core.shouldSearchVaultBeyondCurrentNote('结合整个知识库的相关资料处理这篇笔记'), true)
+assert.equal(core.shouldSearchVaultBeyondCurrentNote('去 Vault 里搜索相关资料，再处理当前笔记'), true)
+assert.equal(core.shouldSearchVaultBeyondCurrentNote('参考其他笔记补充这篇内容'), true)
+
 assert.equal(
   core.selectCurrentOpenMarkdownPath({
     activePath: '02_Wiki/正在看的笔记.md',
@@ -95,9 +108,14 @@ const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 assert.doesNotMatch(main, /主对话带上当前笔记/)
 assert.doesNotMatch(main, /默认带上当前笔记/)
 assert.doesNotMatch(main, /attachToggleEl/)
-assert.match(main, /shouldUseCurrentNote/)
+assert.match(main, /resolveCurrentNoteReference/)
+assert.match(main, /const currentNoteOnlyTurn = Boolean/)
+assert.match(main, /!currentNoteOnlyTurn/)
+assert.match(main, /shouldSearchVaultBeyondCurrentNote\(text\)/)
 assert.match(main, /已把当前笔记作为本轮主要材料：/)
-assert.match(main, /openMarkdownFile\(lockedPath\)/)
+assert.match(main, /getAbstractFileByPath\(lockedPath\)/)
+assert.match(main, /lockedFile\.extension\.toLowerCase\(\) === 'md'/)
+assert.doesNotMatch(main, /openMarkdownFile\(lockedPath\)/)
 assert.doesNotMatch(main, /getLastOpenFiles\(\)/, '最近打开记录不能作为当前笔记授权')
 
 console.log('automatic current note intent tests passed')

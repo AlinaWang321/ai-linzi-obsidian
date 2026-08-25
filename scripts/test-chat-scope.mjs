@@ -53,7 +53,11 @@ assert.match(
   '明确要求当前笔记但读取失败时必须阻止请求，不能让模型猜测',
 )
 assert.match(source, /sourceId: `current-note:\$\{noteContext\.path\}`/, '当前笔记来源必须只保留路径标记供连续对话锁定')
-assert.match(source, /若文件已移动或删除就停止/, '连续对话的锁定笔记失效时不得静默改读当前其他笔记')
+assert.match(
+  source,
+  /文件移动、删除或不再是 Markdown 时必须停止，绝不换成另一份材料/,
+  '连续对话的锁定笔记失效时不得静默改读当前其他笔记',
+)
 assert.doesNotMatch(source, /private attachNote:/, '主对话不应继续保留长期当前笔记开关')
 
 const unsafeAssignments = [...source.matchAll(/this\.sessionId = uid\(\)/g)]
