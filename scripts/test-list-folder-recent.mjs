@@ -78,7 +78,11 @@ console.log('第5组 接线契约')
   assert.match(coreSource, /\| 'read_recent_documents'/, '协议白名单必须包含批读工具')
   assert.match(coreSource, /WEEKLY_BUSINESS_DASHBOARD_MAX_RESULT_CHARS = 1_000_000/, '全量预算只给官方周报 Skill')
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
-  assert.match(main, /read_recent_documents.*-auto-/s, '官方周报必须由插件自动追完分页')
+  assert.match(
+    main,
+    /runWeeklyBusinessDashboard[\s\S]*\/api\/plugin\/v1\/weekly-business/,
+    '官方周报必须进入本机摘要断点管道，而不是把分页原文反复加入聊天上下文',
+  )
 }
 
 console.log('list_folder recent query tests: ok')

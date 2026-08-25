@@ -199,9 +199,23 @@ import {
 import {
   storedWeeklyBusinessDashboardCache,
   storedWeeklyBusinessScanState,
+  type WeeklyBusinessFileFingerprint,
   type WeeklyBusinessDashboardCache,
   type WeeklyBusinessScanState,
 } from './weekly-business-cache'
+import {
+  WEEKLY_BUSINESS_INDEX_VERSION,
+  WEEKLY_BUSINESS_MAP_BATCH_CHARS,
+  WEEKLY_BUSINESS_MAP_SEGMENT_CHARS,
+  groupWeeklyBusinessSummaries,
+  isWeeklyBusinessRecordComplete,
+  nextWeeklyBusinessOffset,
+  selectWeeklyBusinessIndexWork,
+  weeklyBusinessSummaryItems,
+  weeklyBusinessTaskId,
+  type WeeklyBusinessSummaryRecord,
+} from './weekly-business-index-core'
+import { WeeklyBusinessIndex } from './weekly-business-index-store'
 import {
   VAULT_AGENT_BATCH_MAX_ROUNDS,
   VAULT_AGENT_BATCH_MAX_TOTAL_RESULT_CHARS,
@@ -1299,6 +1313,7 @@ export default class AiLinziPlugin extends Plugin {
     () => [this.settings.localSkillsFolder],
   )
   private weeklyBusinessDashboardCache: WeeklyBusinessDashboardCache | null = null
+  readonly weeklyBusinessIndex = new WeeklyBusinessIndex(this.app)
   readonly vaultAgent = new LocalVaultAgent(
     this.app,
     this.vaultSearch,
@@ -1368,6 +1383,7 @@ export default class AiLinziPlugin extends Plugin {
       this.rememberCurrentMarkdownFile()
       this.warnOrphanLocalSkills()
       void this.vaultSearch.initialize()
+      void this.weeklyBusinessIndex.initialize()
       this.registerEvent(
         this.app.vault.on('create', (file) => {
           if (file instanceof TFile) void this.vaultSearch.handleCreate(file)
@@ -1532,6 +1548,7 @@ export default class AiLinziPlugin extends Plugin {
   onunload(): void {
     // Obsidian 官方规范:卸载时不 detach leaves(用户布局归用户)
     this.vaultSearch.dispose()
+    this.weeklyBusinessIndex.dispose()
   }
 
   async loadSettings() {
@@ -4827,7 +4844,7 @@ class ChatView extends ItemView {
           weeklyBusinessScan?: WeeklyBusinessScanState
         }
         try {
-          agentResult = await this.runVaultAgentLoop({
+          const vaultAgentInput = {
             question: text,
             signal: turnAbort.signal,
             noteContext,
@@ -4849,17 +4866,21 @@ class ChatView extends ItemView {
             // ask_user 是文件任务中的暂停点。用户回答后仍属于同一个写入任务，
             // 必须保持 organize 语义；否则原生通道若临时回退，兼容通道会把它
             // 当普通问答，只输出“请确认吗”的文字而没有可点击确认卡。
-            intent:
+            intent: (
               pendingVaultQuestion ||
               localSkillTurnPolicy?.forceOrganize
                 ? 'organize'
-                : 'auto',
+                : 'auto'
+            ) as VaultAgentIntent,
             resumeQuestion: pendingVaultQuestion?.question,
             // 用户已经点击咨询闭环的“创建跟进任务”，这就是本次云端写入确认。
             // 直接进入 addTask 执行轮；不得再次让模型判断是否要搜 Vault。
             forceCloudToolsTurn: consultationWorkflowTaskTurn,
             contextMode,
-          })
+          }
+          agentResult = localSkill?.name === WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME
+            ? await this.runWeeklyBusinessDashboard(vaultAgentInput)
+            : await this.runVaultAgentLoop(vaultAgentInput)
         } catch (error) {
           // 活动流定格为中断原因后再抛出，交由统一错误气泡处理。
           this.activityEnd('error', error instanceof Error ? error.message : String(error))
@@ -5642,6 +5663,370 @@ class ChatView extends ItemView {
    * 模型无关的 Vault 工具循环：服务端只提出只读调用，本机校验并执行；
    * 工具协议与结果不会加入插件消息，也不会写入云端历史。
    */
+  /**
+   * 经营周报专用的本机 Map → Reduce 管道。
+   *
+   * 原文每批最多约 5.8 万字，云端返回摘要后立即丢弃；IndexedDB 只保存摘要、路径和
+   * 指纹。任务中断后会从尚未完成的文件/分段继续，下一次周报也只重算新增或改动文件。
+   * 这条路径不再把前面已经读过的几十万字作为下一轮聊天上下文反复发送。
+   */
+  private async runWeeklyBusinessDashboard(input: {
+    question: string
+    signal?: AbortSignal
+    localSkillContext: ActiveLocalSkillContext | undefined
+    vaultAccess: boolean
+  }): Promise<{
+    text: string
+    sources: VaultMessageSource[]
+    weeklyBusinessScan: WeeklyBusinessScanState
+  }> {
+    throwIfAborted(input.signal)
+    if (!input.localSkillContext || !input.vaultAccess) {
+      throw new Error('经营周报需要本轮明确授权读取当前 Vault')
+    }
+
+    const now = Date.now()
+    const sinceDays = 7
+    const cutoff = now - sinceDays * 86_400_000
+    const skillRoot = normalizePath(this.plugin.settings.localSkillsFolder)
+    const outputRoot = normalizePath(this.plugin.settings.outputFolder)
+    const recentFiles = this.app.vault
+      .getFiles()
+      .filter((file) =>
+        file.stat.mtime >= cutoff &&
+        !isProtectedVaultPath(file.path, skillRoot) &&
+        file.path !== skillRoot &&
+        !file.path.startsWith(`${skillRoot}/`) &&
+        file.path !== outputRoot &&
+        !file.path.startsWith(`${outputRoot}/`),
+      )
+      .sort(
+        (left, right) =>
+          right.stat.mtime - left.stat.mtime || left.path.localeCompare(right.path, 'zh-CN'),
+      )
+    if (recentFiles.length > 20_000) {
+      throw new Error('最近 7 天改动文件超过 20,000 份，请先缩小 Vault 范围后再生成经营周报')
+    }
+    const fingerprints: WeeklyBusinessFileFingerprint[] = recentFiles.map((file) => ({
+      path: file.path,
+      mtime: file.stat.mtime,
+      size: file.stat.size,
+    }))
+    const scan: WeeklyBusinessScanState = { sinceDays, capturedAt: now, files: fingerprints }
+    const snapshotByPath = new Map(fingerprints.map((file) => [file.path, file]))
+    const stored = await this.plugin.weeklyBusinessIndex.list()
+    const selection = selectWeeklyBusinessIndexWork(fingerprints, stored)
+    const currentPaths = new Set(fingerprints.map((file) => file.path))
+    for (const path of selection.removedPaths) {
+      throwIfAborted(input.signal)
+      await this.plugin.weeklyBusinessIndex.delete(path)
+    }
+    const records = new Map(
+      stored
+        .filter((record) => currentPaths.has(record.path))
+        .map((record) => [record.path, record]),
+    )
+    const taskId = weeklyBusinessTaskId(fingerprints)
+    this.activityStep(
+      `🗂️ 已建立最近 7 天固定清单 → ${fingerprints.length} 份；` +
+      `复用本机摘要 ${selection.reusable.length} 份，待处理 ${selection.pending.length} 份`,
+    )
+
+    // 不支持提取的附件也按指纹记录“跳过”，文件不变时下次无需反复尝试。
+    for (const file of recentFiles) {
+      if (isLocalSearchExtension(file.extension)) continue
+      const existing = records.get(file.path)
+      if (existing && existing.mtime === file.stat.mtime && existing.size === file.stat.size) continue
+      const skipped: WeeklyBusinessSummaryRecord = {
+        version: WEEKLY_BUSINESS_INDEX_VERSION,
+        path: file.path,
+        mtime: file.stat.mtime,
+        size: file.stat.size,
+        totalChars: 0,
+        status: 'skipped',
+        segments: [],
+        skippedReason: '本机暂不支持提取此文件类型的正文',
+        updatedAt: Date.now(),
+      }
+      records.set(file.path, skipped)
+      await this.plugin.weeklyBusinessIndex.put(skipped)
+    }
+
+    let batchNumber = 0
+    while (true) {
+      throwIfAborted(input.signal)
+      const batch: Array<{
+        sourceId: string
+        path: string
+        modified: string
+        segmentIndex: number
+        text: string
+        result: {
+          offset: number
+          nextOffset: number | null
+          totalChars: number
+        }
+      }> = []
+      let batchChars = 0
+      for (const file of recentFiles) {
+        if (!isLocalSearchExtension(file.extension)) continue
+        const existing = records.get(file.path)
+        if (
+          existing &&
+          existing.mtime === file.stat.mtime &&
+          existing.size === file.stat.size &&
+          isWeeklyBusinessRecordComplete(existing)
+        ) continue
+        if (batchChars >= WEEKLY_BUSINESS_MAP_BATCH_CHARS || batch.length >= 24) break
+        const snapshot = snapshotByPath.get(file.path)
+        if (!snapshot || file.stat.mtime !== snapshot.mtime || file.stat.size !== snapshot.size) {
+          throw new Error(`扫描期间文件发生变化，已保存其他文件断点：${file.path}`)
+        }
+        const matchingExisting = Boolean(
+          existing && existing.mtime === snapshot.mtime && existing.size === snapshot.size,
+        )
+        const offset = matchingExisting
+          ? nextWeeklyBusinessOffset(existing)
+          : 0
+        try {
+          const result = await this.plugin.vaultSearch.readPathForRecentBatch(file.path, {
+            offset,
+            maxChars: Math.min(
+              WEEKLY_BUSINESS_MAP_SEGMENT_CHARS,
+              Math.max(1, WEEKLY_BUSINESS_MAP_BATCH_CHARS - batchChars),
+            ),
+          })
+          if (!result.text.trim()) throw new Error('没有提取到可分析文字')
+          const segmentIndex = matchingExisting ? existing?.segments.length ?? 0 : 0
+          batch.push({
+            sourceId: `${file.path}#${segmentIndex}`,
+            path: file.path,
+            modified: new Date(file.stat.mtime).toISOString(),
+            segmentIndex,
+            text: result.text,
+            result: {
+              offset: result.offset,
+              nextOffset: result.nextOffset,
+              totalChars: result.totalChars,
+            },
+          })
+          batchChars += result.text.length + file.path.length + 120
+        } catch (error) {
+          const skipped: WeeklyBusinessSummaryRecord = {
+            version: WEEKLY_BUSINESS_INDEX_VERSION,
+            path: file.path,
+            mtime: file.stat.mtime,
+            size: file.stat.size,
+            totalChars: 0,
+            status: 'skipped',
+            segments: [],
+            skippedReason: error instanceof Error ? error.message : String(error),
+            updatedAt: Date.now(),
+          }
+          records.set(file.path, skipped)
+          await this.plugin.weeklyBusinessIndex.put(skipped)
+        }
+      }
+      if (batch.length === 0) break
+      batchNumber += 1
+      this.activityStep(
+        `📖 分批阅读并压缩 → 第 ${batchNumber} 批，${batch.length} 个片段，` +
+        `${batchChars.toLocaleString('zh-CN')} 字`,
+      )
+      const data = await this.plugin.api('/api/plugin/v1/weekly-business', {
+        method: 'POST',
+        signal: input.signal,
+        body: {
+          phase: 'map',
+          taskId,
+          sessionId: this.sessionId,
+          sources: batch.map(({ result: _result, ...source }) => source),
+        },
+      })
+      const summaries = Array.isArray(data.summaries)
+        ? data.summaries as Array<{ sourceId?: unknown; summary?: unknown }>
+        : []
+      const byId = new Map(
+        summaries
+          .filter((item) => typeof item.sourceId === 'string' && typeof item.summary === 'string')
+          .map((item) => [String(item.sourceId), String(item.summary).trim()]),
+      )
+      for (const source of batch) {
+        const summary = byId.get(source.sourceId)
+        if (!summary) throw new Error(`经营周报第 ${batchNumber} 批缺少片段摘要，已保存此前断点`)
+        const old = records.get(source.path)
+        const segments = old && old.mtime === recentFiles.find((file) => file.path === source.path)?.stat.mtime
+          ? [...old.segments]
+          : []
+        segments[source.segmentIndex] = {
+          index: source.segmentIndex,
+          offset: source.result.offset,
+          nextOffset: source.result.nextOffset,
+          summary,
+        }
+        const file = this.app.vault.getAbstractFileByPath(source.path)
+        if (!(file instanceof TFile)) throw new Error(`分页期间文件已移动或删除：${source.path}`)
+        const snapshot = snapshotByPath.get(source.path)
+        if (!snapshot || file.stat.mtime !== snapshot.mtime || file.stat.size !== snapshot.size) {
+          throw new Error(`摘要返回前文件发生变化，未写入混合版本：${source.path}`)
+        }
+        const record: WeeklyBusinessSummaryRecord = {
+          version: WEEKLY_BUSINESS_INDEX_VERSION,
+          path: source.path,
+          mtime: snapshot.mtime,
+          size: snapshot.size,
+          totalChars: source.result.totalChars,
+          status: 'ready',
+          segments,
+          updatedAt: Date.now(),
+        }
+        records.set(source.path, record)
+        await this.plugin.weeklyBusinessIndex.put(record)
+      }
+    }
+
+    const completed = fingerprints
+      .map((file) => records.get(file.path))
+      .filter((record): record is WeeklyBusinessSummaryRecord =>
+        Boolean(
+          record &&
+          record.mtime === snapshotByPath.get(record.path)?.mtime &&
+          record.size === snapshotByPath.get(record.path)?.size &&
+          isWeeklyBusinessRecordComplete(record),
+        ),
+      )
+    if (completed.length !== fingerprints.length) {
+      throw new Error(`经营周报扫描尚未完成（${completed.length}/${fingerprints.length}），已保存本机断点`)
+    }
+    const readable = completed.filter((record) => record.status === 'ready')
+    const skipped = completed.filter((record) => record.status === 'skipped')
+    let reduceItems = weeklyBusinessSummaryItems(readable)
+    if (reduceItems.length === 0) throw new Error('最近 7 天没有读取到可用于经营周报的正文')
+    let reduceRound = 0
+    while (
+      reduceItems.length > 1 ||
+      reduceItems.reduce((sum, item) => sum + item.path.length + item.summary.length, 0) > 40_000
+    ) {
+      throwIfAborted(input.signal)
+      const groups = groupWeeklyBusinessSummaries(reduceItems)
+      const next: typeof reduceItems = []
+      reduceRound += 1
+      for (let index = 0; index < groups.length; index++) {
+        throwIfAborted(input.signal)
+        this.activityStep(`🧠 合并本机摘要 → 第 ${reduceRound} 层 ${index + 1}/${groups.length}`)
+        const data = await this.plugin.api('/api/plugin/v1/weekly-business', {
+          method: 'POST',
+          signal: input.signal,
+          body: {
+            phase: 'reduce',
+            taskId,
+            sessionId: this.sessionId,
+            round: reduceRound,
+            batchIndex: index,
+            summaries: groups[index],
+          },
+        })
+        const summary = typeof data.summary === 'string' ? data.summary.trim() : ''
+        if (!summary) throw new Error('经营周报摘要合并没有返回有效结果')
+        next.push({
+          sourceId: `reduce-${reduceRound}-${index}`,
+          path: `第 ${reduceRound} 层摘要 ${index + 1}`,
+          summary,
+        })
+      }
+      reduceItems = next
+    }
+
+    this.activityStep('📊 全部材料已读完，正在生成完整经营周报真相源')
+    const finalData = await this.plugin.api('/api/plugin/v1/weekly-business', {
+      method: 'POST',
+      signal: input.signal,
+      body: {
+        phase: 'final',
+        taskId,
+        sessionId: this.sessionId,
+        instruction: input.question,
+        summary: reduceItems[0].summary,
+        stats: {
+          totalFiles: fingerprints.length,
+          changedFiles: selection.pending.length,
+          reusedFiles: selection.reusable.length,
+          readableFiles: readable.length,
+          skippedFiles: skipped.length,
+          sourcePaths: readable.map((record) => record.path).slice(0, 2_000),
+          skipped: skipped.slice(0, 1_000).map((record) => ({
+            path: record.path,
+            reason: record.skippedReason ?? '未读取',
+          })),
+          pathListTruncated: readable.length > 2_000 || skipped.length > 1_000,
+        },
+      },
+    })
+    const content = typeof finalData.text === 'string' ? finalData.text.trim() : ''
+    if (!content) throw new Error('经营周报最终生成没有返回有效内容')
+
+    const date = this.beijingDateStamp()
+    let suffix = 1
+    let symbolicPath = `$OUTPUT/经营周报/${date}_经营周报交互看板.html`
+    while (suffix < 100) {
+      const resolved = resolveVaultBoundPath(symbolicPath, {
+        outputRoot: this.plugin.settings.outputFolder,
+        rawRoot: this.plugin.settings.cockpitSourcesFolder,
+        wikiRoot: this.plugin.settings.cockpitKnowledgeFolder,
+      })
+      if (!this.app.vault.getAbstractFileByPath(resolved)) break
+      suffix += 1
+      symbolicPath = `$OUTPUT/经营周报/${date}_经营周报交互看板_${suffix}.html`
+    }
+    const plan: VaultOrganizePlan = {
+      title: '生成本周经营周报交互看板',
+      summary:
+        `已完整扫描最近 7 天 ${fingerprints.length} 份文件；` +
+        `本次新读/重读 ${selection.pending.length} 份，复用本机摘要 ${selection.reusable.length} 份。`,
+      operations: [{
+        type: 'create_artifact',
+        path: symbolicPath,
+        format: 'html',
+        layout: 'dashboard',
+        title: `${date} 经营周报交互看板`,
+        content,
+        reason: '用户明确调用经营周报 Skill；确认后仅新建这一份本机 HTML 看板',
+      }],
+      notes: [
+        '原始正文未写入本机索引或云端历史；本机索引只保存摘要与文件指纹。',
+        '确认生成后不会修改任何来源文件；同名文件不会覆盖。',
+      ],
+    }
+    const text = [
+      `已读完最近 7 天材料：${readable.length} 份可读正文，${skipped.length} 份跳过。`,
+      `本次复用本机摘要 ${selection.reusable.length} 份；下次只会重读新增或改动文件。确认前不会写入。`,
+      '<<<VAULT_ORGANIZE_PLAN>>>',
+      JSON.stringify(plan),
+      '<<<VAULT_ORGANIZE_PLAN_END>>>',
+    ].join('\n\n')
+    return {
+      text,
+      weeklyBusinessScan: scan,
+      sources: readable.slice(0, 200).map((record, index) => ({
+        sourceId: `weekly-index:${index + 1}`,
+        filename: record.path.split('/').at(-1) ?? record.path,
+        path: record.path,
+      })),
+    }
+  }
+
+  private beijingDateStamp(now = new Date()): string {
+    const parts = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now)
+    const value = (type: Intl.DateTimeFormatPartTypes) =>
+      parts.find((part) => part.type === type)?.value ?? ''
+    return `${value('year')}.${value('month')}.${value('day')}`
+  }
+
   private async runVaultAgentLoop(input: {
     question: string
     signal?: AbortSignal

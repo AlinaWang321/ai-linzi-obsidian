@@ -170,14 +170,16 @@ assert.equal(
   'explicit',
   '空示例应与确认卡一致，检查最终会填入的默认点名句',
 )
-assert.match(weeklyDashboard.block.content, /read_recent_documents/)
+assert.match(weeklyDashboard.block.content, /Map → Reduce/)
 assert.match(weeklyDashboard.block.content, /\$OUTPUT\/经营周报/)
-assert.match(weeklyDashboard.block.content, /固定文件快照/)
-assert.match(weeklyDashboard.block.content, /同一 snapshotId/)
+assert.match(weeklyDashboard.block.content, /固定文件清单/)
+assert.match(weeklyDashboard.block.content, /IndexedDB/)
+assert.match(weeklyDashboard.block.content, /不保存原始正文/)
+assert.match(weeklyDashboard.block.content, /complete=false/)
 assert.match(weeklyDashboard.block.content, /不得改称 03_Dashboard/)
 assert.match(weeklyDashboard.block.content, /不得按扩展名笼统宣称“PDF 不可读”/)
 assert.match(weeklyDashboard.block.content, /layout=dashboard/)
-assert.match(weeklyDashboard.block.content, /追完文件分页和长文字符分页/)
+assert.match(weeklyDashboard.block.content, /从尚未完成的文件\/分段继续/)
 console.log('  ✓ 2 个真实业务官方模板可移植、权限透明、引用可达且不含脚本')
 
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('帮我创建一个客户跟进 Skill'), true)
@@ -1050,9 +1052,15 @@ assert.match(
 )
 assert.match(
   mainSource,
-  /input\.localSkill\?\.name === WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME[\s\S]{0,500}id: 'weekly-dashboard-preload'[\s\S]{0,300}name: 'read_recent_documents'/,
-  '官方经营周报必须由本机预读最近文档，不能等待模型自行决定是否扫描',
+  /localSkill\?\.name === WEEKLY_BUSINESS_DASHBOARD_SKILL_NAME\s*\? await this\.runWeeklyBusinessDashboard\(vaultAgentInput\)/,
+  '官方经营周报必须进入本机断点摘要专用管道，不能落回重复大上下文循环',
 )
+assert.match(mainSource, /private async runWeeklyBusinessDashboard/)
+assert.match(mainSource, /\/api\/plugin\/v1\/weekly-business/)
+assert.match(mainSource, /weeklyBusinessIndex\.put\(record\)/)
+assert.match(mainSource, /phase: 'map'/)
+assert.match(mainSource, /phase: 'reduce'/)
+assert.match(mainSource, /phase: 'final'/)
 assert.match(
   cardSource,
   // 同上：已随渲染一起搬到 create-local-skill-card.ts，宿主能力改为回调注入。
