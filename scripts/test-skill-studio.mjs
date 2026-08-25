@@ -60,6 +60,20 @@ for (const template of studioCore.OFFICIAL_SKILL_TEMPLATES) {
     assert.ok(template.block.content.includes(file.path), `${template.id} 必须在 SKILL.md 指向 ${file.path}`)
   }
 }
+const officialContextModes = Object.fromEntries(
+  studioCore.OFFICIAL_SKILL_TEMPLATES.map((template) => {
+    const manifest = JSON.parse(
+      template.block.files.find((file) =>
+        file.path === 'references/ai-linzi-skill-manifest.json'
+      ).content,
+    )
+    return [template.id, manifest.context?.mode]
+  }),
+)
+assert.deepEqual(officialContextModes, {
+  'consultation-client-workflow': 'source-only',
+  'weekly-business-dashboard': 'vault-data',
+})
 const consultation = studioCore.OFFICIAL_SKILL_TEMPLATES.find(
   (item) => item.id === 'consultation-client-workflow',
 )

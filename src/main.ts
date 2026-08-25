@@ -149,6 +149,10 @@ import {
   isExplicitLocalSkillRunIntent,
 } from './skill-studio-core'
 import {
+  pluginContextModeForTurn,
+  type PluginContextMode,
+} from './plugin-context-policy'
+import {
   extractVaultQuestion,
   formatVaultQuestionMarker,
   type PendingVaultQuestion,
@@ -4696,6 +4700,14 @@ class ChatView extends ItemView {
             )
           ),
       )
+      const contextMode = pluginContextModeForTurn({
+        currentNoteOnly: currentNoteOnlyTurn,
+        skillManagement: skillCreatorTurn || skillUpdaterTurn,
+        localSkillText: localSkill
+          ? `${localSkill.description}\n${localSkill.fullContent}`
+          : undefined,
+        manifestMode: localSkill?.runtimePolicy?.contextMode,
+      })
       // v0.7.30：不再由客户端关键词决定“这句话像不像 Vault 请求”。所有适合
       // 纯文字主对话都向当前模型提供本机工具能力；在模型真正发起 tool call 前，
       // 插件不会扫描、读取或上传任何 Vault 内容。图片理解、当前笔记旧补丁协议、
@@ -4846,6 +4858,7 @@ class ChatView extends ItemView {
             // 用户已经点击咨询闭环的“创建跟进任务”，这就是本次云端写入确认。
             // 直接进入 addTask 执行轮；不得再次让模型判断是否要搜 Vault。
             forceCloudToolsTurn: consultationWorkflowTaskTurn,
+            contextMode,
           })
         } catch (error) {
           // 活动流定格为中断原因后再抛出，交由统一错误气泡处理。
@@ -4897,6 +4910,7 @@ class ChatView extends ItemView {
             singleIllustration,
             undefined,
             skillCreatorRequest,
+            contextMode,
             turnAbort.signal,
           )
         } catch (error) {
@@ -4928,6 +4942,7 @@ class ChatView extends ItemView {
               noteImageIntent: singleIllustration,
               localSkill: localSkillRequest,
               skillCreator: skillCreatorRequest,
+              contextMode,
             },
           })
           answer = typeof data.text === 'string' ? data.text : '(空响应)'
@@ -5659,6 +5674,8 @@ class ChatView extends ItemView {
     intent: VaultAgentIntent
     /** 已由专用确认按钮授权的云端写入，跳过首轮路由判断。 */
     forceCloudToolsTurn?: boolean
+    /** 只控制云端预加载上下文，不改变 Vault 工具权限。 */
+    contextMode?: PluginContextMode
     /** 上一轮原生 ask_user 的本机续接信息；回答作为同一个 Responses 调用继续。 */
     resumeQuestion?: PendingVaultQuestion
   }): Promise<{
@@ -6622,6 +6639,7 @@ class ChatView extends ItemView {
             noteEdit: input.noteEdit,
             noteImageIntent: input.noteImageIntent,
             vaultAgent: { ...vaultAgentRequest, cloudToolsTurn: true },
+            contextMode: input.contextMode,
           },
         })
         const cloudText = typeof data.text === 'string' ? data.text.trim() : ''
@@ -6662,6 +6680,7 @@ class ChatView extends ItemView {
           input.noteImageIntent,
           vaultAgentRequest,
           undefined,
+          input.contextMode,
           input.signal,
         )
         if (streamed.kind === 'bizError') throw new Error(streamed.message)
@@ -6682,6 +6701,7 @@ class ChatView extends ItemView {
             noteImageIntent: input.noteImageIntent,
             localSkill: input.localSkill,
             vaultAgent: vaultAgentRequest,
+            contextMode: input.contextMode,
           },
         })
         lastText = typeof data.text === 'string' ? data.text : ''
@@ -6717,6 +6737,7 @@ class ChatView extends ItemView {
             noteImageIntent: input.noteImageIntent,
             localSkill: input.localSkill,
             vaultAgent: { ...vaultAgentRequest, cloudToolsTurn: true },
+            contextMode: input.contextMode,
           },
         })
         const cloudText = typeof data.text === 'string' ? data.text.trim() : ''
@@ -7436,6 +7457,7 @@ class ChatView extends ItemView {
       cloudToolsTurn?: boolean
     },
     skillCreator?: SkillCreatorRequest,
+    contextMode?: PluginContextMode,
     signal?: AbortSignal,
   ): Promise<{ kind: 'ok'; text: string } | { kind: 'bizError'; message: string }> {
     const { serverUrl } = this.plugin.settings
@@ -7468,6 +7490,7 @@ class ChatView extends ItemView {
         localSkill,
         vaultAgent,
         skillCreator,
+        contextMode,
       }),
       signal,
     })

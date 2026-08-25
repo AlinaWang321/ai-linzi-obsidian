@@ -31,6 +31,7 @@ const wholeVault = manifest.parseLocalSkillManifest(JSON.stringify({
     confirmation: 'single-atomic-plan',
     overwrite: false,
   },
+  context: { mode: 'personalized-content' },
   network: 'ai-linzi-only',
   programs: [],
 }), 'create-note')
@@ -38,6 +39,24 @@ assert.equal(wholeVault.kind, 'valid')
 assert.equal(wholeVault.policy.vaultRead.scope, 'whole-vault')
 assert.equal(wholeVault.policy.vaultRead.fallbackToWholeVault, true)
 assert.equal(wholeVault.policy.vaultRead.metadataDiscovery, false)
+assert.equal(wholeVault.policy.contextMode, 'personalized-content')
+
+const invalidContext = manifest.parseLocalSkillManifest(JSON.stringify({
+  schemaVersion: 2,
+  permissions: ['读取整个 Vault'],
+  vaultRead: {
+    scope: 'whole-vault',
+    metadataDiscovery: true,
+    preferUserScope: true,
+    fallbackToWholeVault: true,
+    maxFiles: 120,
+  },
+  vaultWrite: { mode: 'chat', confirmation: 'single-atomic-plan', overwrite: false },
+  context: { mode: 'everything-everywhere' },
+  network: 'ai-linzi-only',
+  programs: [],
+}), 'chat')
+assert.equal(invalidContext.kind, 'invalid')
 
 const metadataOnly = manifest.parseLocalSkillManifest(JSON.stringify({
   schemaVersion: 2,

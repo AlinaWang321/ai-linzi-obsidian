@@ -1,4 +1,5 @@
 import type { LocalSkillOutput } from './local-skill-core'
+import type { PluginContextMode } from './plugin-context-policy'
 
 export type LocalSkillVaultReadScope =
   | 'current-note'
@@ -32,6 +33,8 @@ export interface LocalSkillRuntimePolicy {
   vaultRead: LocalSkillVaultReadPolicy
   vaultWrite: LocalSkillVaultWritePolicy
   network: 'none' | 'ai-linzi-only'
+  /** 控制服务端预加载哪些个人上下文；不改变本机 Vault 读取权限。 */
+  contextMode?: PluginContextMode
 }
 
 export type LocalSkillManifestResult =
@@ -47,6 +50,9 @@ const READ_SCOPES = new Set<LocalSkillVaultReadScope>([
 ])
 const WRITE_MODES = new Set<LocalSkillVaultWritePolicy['mode']>([
   'none', 'chat', 'create-note', 'update-current-note', 'create-artifact',
+])
+const CONTEXT_MODES = new Set<PluginContextMode>([
+  'source-only', 'personalized-content', 'business-coach', 'vault-data',
 ])
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -150,6 +156,17 @@ function parseV2(value: Record<string, unknown>, expectedOutput: LocalSkillOutpu
   if (permissions(value).length === 0 || !Array.isArray(value.programs)) {
     return { kind: 'invalid', message: 'manifest v2 缺少可展示权限或 programs 清单' }
   }
+  const context = value.context === undefined ? null : record(value.context)
+  if (value.context !== undefined && !context) {
+    return { kind: 'invalid', message: 'manifest v2 的 context 必须是对象' }
+  }
+  const contextMode = context?.mode
+  if (
+    contextMode !== undefined &&
+    (typeof contextMode !== 'string' || !CONTEXT_MODES.has(contextMode as PluginContextMode))
+  ) {
+    return { kind: 'invalid', message: 'manifest v2 的 context.mode 无效' }
+  }
   return {
     kind: 'valid',
     policy: {
@@ -169,6 +186,7 @@ function parseV2(value: Record<string, unknown>, expectedOutput: LocalSkillOutpu
         overwrite: false,
       },
       network,
+      ...(contextMode ? { contextMode: contextMode as PluginContextMode } : {}),
     },
   }
 }

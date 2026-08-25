@@ -9,6 +9,10 @@ import {
   parseLocalSkillManifest,
   type LocalSkillVaultReadScope,
 } from './local-skill-manifest'
+import {
+  inferPluginSkillContextMode,
+  type PluginContextMode,
+} from './plugin-context-policy'
 
 export type SkillStudioOutput =
   | 'chat'
@@ -68,6 +72,13 @@ export function skillReadScopePermission(scope: LocalSkillVaultReadScope, fixedF
       : '默认可读取整个 Vault；优先搜索用户指定的文件夹'
   }
   return '默认可按需搜索和读取整个 Vault；优先使用用户指定的文件或文件夹'
+}
+
+export function skillContextPermission(mode: PluginContextMode): string {
+  if (mode === 'personalized-content') return '生成内容时可使用相关个人知识、写作风格与少量相关记忆'
+  if (mode === 'business-coach') return '商业教练任务可使用完整个人档案、知识库、方法论与相关记忆'
+  if (mode === 'vault-data') return '只使用本轮 Vault 检索结果和任务指令，不混入个人记忆或教练人设'
+  return '只使用本轮指定资料和 Skill 指令，不混入个人记忆、方法论检索或教练人设'
 }
 
 export function skillReadPolicy(_scope: LocalSkillVaultReadScope, _metadataDiscovery = false, _fixedFolder?: string): {
@@ -212,6 +223,7 @@ function manifestFile(
   entry: string,
   explicitReadScope?: LocalSkillVaultReadScope,
   metadataDiscovery = false,
+  explicitContextMode?: PluginContextMode,
 ): { path: string; content: string } {
   const joined = permissions.join('\n').normalize('NFKC')
   // 官方模板必须显式声明输入权限。不能从整段产品文案猜：例如咨询模板会把
@@ -227,6 +239,8 @@ function manifestFile(
           : 'user-specified-files'
   )
   const output = localSkillOutputFromMarkdown(entry)
+  const contextMode = explicitContextMode ??
+    inferPluginSkillContextMode(`${entry}\n${permissions.join('\n')}`)
   return {
     path: 'references/ai-linzi-skill-manifest.json',
     content: JSON.stringify(
@@ -242,6 +256,7 @@ function manifestFile(
           confirmation: 'single-atomic-plan',
           overwrite: false,
         },
+        context: { mode: contextMode },
         network: 'ai-linzi-only',
         programs: [],
         sampleInputs: [sampleInput],
@@ -261,24 +276,34 @@ function makeTemplate(input: {
   entry: string
   vaultReadScope?: LocalSkillVaultReadScope
   metadataDiscovery?: boolean
+  contextMode?: PluginContextMode
   references?: { path: string; content: string }[]
 }): SkillStudioTemplate {
+  const contextMode = input.contextMode ?? inferPluginSkillContextMode(
+    `${input.entry}\n${input.permissions.join('\n')}`,
+  )
+  const permissions = [
+    ...input.permissions,
+    skillContextPermission(contextMode),
+  ]
   const files = [
     { path: 'SKILL.md', content: input.entry },
     ...(input.references ?? []),
     manifestFile(
       input.id,
       '1.1.0',
-      input.permissions,
+      permissions,
       input.sampleInput,
       input.entry,
       input.vaultReadScope,
       input.metadataDiscovery,
+      contextMode,
     ),
   ]
   const name = /^name:\s*([^\r\n]+)/m.exec(input.entry)?.[1]?.trim() ?? input.id
   return {
     ...input,
+    permissions,
     block: {
       name,
       description: input.description,
@@ -305,6 +330,7 @@ export const OFFICIAL_SKILL_TEMPLATES: SkillStudioTemplate[] = [
     ],
     vaultReadScope: 'whole-vault',
     metadataDiscovery: true,
+    contextMode: 'source-only',
     entry: `---
 name: consultation-client-workflow
 description: 把当前一份咨询逐字稿处理成客户档案，确认后分步写入 AI霖子 CRM、创建跟进任务，并生成客户可见的咨询简报 PNG。用于销售咨询、商业咨询或交付咨询结束后的完整沉淀。
@@ -424,6 +450,7 @@ create-note`,
       '不会修改源文件、运行本机脚本或访问无关网站',
     ],
     vaultReadScope: 'whole-vault',
+    contextMode: 'vault-data',
     entry: `---
 name: weekly-business-dashboard
 description: 批量读取 Obsidian 最近 7 天内改动的文档内容，单独突出昨天进展并结合 AI霖子当前任务，生成可搜索、可勾选、带进度统计的 HTML 经营周报看板。
@@ -538,12 +565,20 @@ export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
     confirmation: 'single-atomic-plan',
     overwrite: false,
   }
+  const contextMode = inferPluginSkillContextMode([
+    draft.purpose,
+    draft.input,
+    draft.steps,
+    draft.triggers.join('\n'),
+    draft.sampleInput,
+  ].join('\n'))
   const inputScopeRequirement = readScope === 'user-specified-folder'
     ? '读取能力默认覆盖当前整个 Vault：先搜索用户在本轮点名的文件或文件夹；该范围没有所需材料时，继续在整个 Vault 中搜索相关候选，不要直接回答“没有”。搜索和筛选在本机完成，只读取并提交完成任务所必需的文件内容，不得把整个 Vault 的正文一次性提交给模型，也永远不能访问 Vault 外的电脑文件。'
     : '读取能力默认覆盖当前整个 Vault：优先使用用户点名的文件或文件夹；未指定范围，或优先范围没有所需材料时，继续搜索整个 Vault 中的任务相关候选。搜索和筛选在本机完成，只读取并提交完成任务所必需的文件内容，不得把整个 Vault 的正文一次性提交给模型，也永远不能访问 Vault 外的电脑文件。'
   const permissions = [
     inputPermission,
     '读取权限仅限当前 Obsidian Vault，不包含电脑其他目录',
+    skillContextPermission(contextMode),
     draft.output === 'chat'
       ? '只在聊天中输出，不写文件'
       : draft.output === 'create-note'
@@ -569,7 +604,7 @@ export function buildSkillStudioPrompt(draft: SkillStudioDraft): string {
 要求：
 1. SKILL.md 必须把何时使用、输入、步骤、输出、事实边界和验收标准写清楚；复杂规范拆到 references/，且 SKILL.md 必须用相对链接指向每个会用到的 reference。
 2. 自动触发必须使用上面给出的完整动作短语，不要只写名词。
-3. 同时生成 references/ai-linzi-skill-manifest.json，内容必须是合法 JSON，包含 schemaVersion=2、"skillVersion":${JSON.stringify(draft.version)}、createdWith="AI霖子 Skill Studio"、permissions=${JSON.stringify(permissions)}、vaultRead=${JSON.stringify(vaultRead)}、vaultWrite=${JSON.stringify(vaultWrite)}、network="ai-linzi-only"、programs=[]、sampleInputs=${JSON.stringify([draft.sampleInput || `用 ${draft.name} 处理一份测试材料`])}。skillVersion 必须是上面这种带双引号的 JSON 字符串，绝不能写成 {"major":1,"minor":0,"patch":0} 对象。SKILL.md 必须链接该 manifest，并在正文重复“读取只限当前 Vault、按需读取相关内容、写入一次原子确认、不覆盖”的关键边界，不能只把安全规则放在 manifest。
+3. 同时生成 references/ai-linzi-skill-manifest.json，内容必须是合法 JSON，包含 schemaVersion=2、"skillVersion":${JSON.stringify(draft.version)}、createdWith="AI霖子 Skill Studio"、permissions=${JSON.stringify(permissions)}、vaultRead=${JSON.stringify(vaultRead)}、vaultWrite=${JSON.stringify(vaultWrite)}、context=${JSON.stringify({ mode: contextMode })}、network="ai-linzi-only"、programs=[]、sampleInputs=${JSON.stringify([draft.sampleInput || `用 ${draft.name} 处理一份测试材料`])}。context 只控制服务端预加载哪些个人上下文，不缩小 Vault 权限。skillVersion 必须是上面这种带双引号的 JSON 字符串，绝不能写成 {"major":1,"minor":0,"patch":0} 对象。SKILL.md 必须链接该 manifest，并在正文重复“读取只限当前 Vault、按需读取相关内容、写入一次原子确认、不覆盖”的关键边界，不能只把安全规则放在 manifest。
 4. ${inputScopeRequirement}
 5. 本版禁止生成 scripts；材料不足时先通过对话说明缺什么，不得猜测。所有 Vault 路径必须可移植：原始素材用 $RAW/，知识库用 $WIKI/，AI 产出用 $OUTPUT/；不要把 raw/wiki/output 或 01_Raw/02_Wiki/04_Output 写成固定字面目录。create-artifact 只用于 HTML/DOCX/PDF/PPTX/XLSX 成品，路径必须使用 $OUTPUT/ 开头并由用户确认。
 6. 只输出一个 <<<新建Skill>>> 文件夹协议，等待我确认，不要改动任何现有文件。`
@@ -659,6 +694,7 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
         confirmation: 'single-atomic-plan',
         overwrite: false,
       },
+      context: { mode: inferPluginSkillContextMode(workingBlock.content) },
       network: 'ai-linzi-only',
       programs: [],
       sampleInputs: [`用 ${workingBlock.name} Skill 处理当前笔记`],
@@ -883,6 +919,7 @@ export function normalizeGeneratedSkillManifest(block: CreateLocalSkillBlock): {
         )
         value.vaultWrite = legacy.policy.vaultWrite
         value.network = legacy.policy.network
+        value.context = { mode: inferPluginSkillContextMode(skillContent) }
         repairs.push('已把旧版文字权限清单升级为机器可读权限合同')
       }
     }
@@ -965,6 +1002,7 @@ export function adaptImportedSkillReadScope(
   const permissions = [
     skillReadScopePermission(scope, normalizedFolder),
     '读取权限仅限当前 Obsidian Vault，不包含电脑其他目录',
+    skillContextPermission(inferPluginSkillContextMode(`${block.content}\n${block.description}`)),
     importedSkillOutputPermission(output),
     scripts.length > 0
       ? `包含 ${scripts.length} 个本机脚本；导入时不执行，开启本地程序后每一步仍需确认`
@@ -987,6 +1025,7 @@ export function adaptImportedSkillReadScope(
       confirmation: 'single-atomic-plan',
       overwrite: false,
     },
+    context: { mode: inferPluginSkillContextMode(`${block.content}\n${block.description}`) },
     network: 'ai-linzi-only',
     programs: scripts,
     sampleInputs: [sampleInput],
