@@ -20,7 +20,10 @@ function assert(name, condition) {
 }
 
 console.log('第1组 活动流基建（逻辑已抽到 activity-feed-core.ts，行为由 test-activity-feed-core.mjs 真跑验证）')
-assert('postSkillStatus 支持 thinking 参数(更新时保留思考指示)', /postSkillStatus\(text: string, replaceId\?: string, thinking = false\)/.test(main))
+assert(
+  'postSkillStatus 支持 thinking 参数(更新时保留思考指示)',
+  /postSkillStatus\([\s\S]*?thinking = false,[\s\S]*?\): string \{/.test(main),
+)
 assert('UI 层接线到纯逻辑模块', main.includes('new ActivityFeed({'))
 assert('渲染回调回传消息 id 供原地更新', /render: \(text, id, thinking\) => \{/.test(main))
 assert('渲染后滚到底部', main.includes('this.listEl.scrollTop = this.listEl.scrollHeight'))

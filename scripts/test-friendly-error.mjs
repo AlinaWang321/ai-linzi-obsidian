@@ -1,6 +1,7 @@
 // 报错文案：只给操作建议，绝不外露技术错误码，绝不提计费/积分（2026-08-18 全产品铁律）
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+await import('./test-local-skill-status.mjs')
 const src = readFileSync(new URL('../src/friendly-error.ts', import.meta.url), 'utf8')
 const body = /export function friendlyErrorMessage\(raw: string\): string \{([\s\S]*?)\n\}/.exec(src)
 assert.ok(body, 'friendlyErrorMessage 必须存在')

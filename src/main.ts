@@ -65,6 +65,10 @@ import {
   fileToReferenceDataUrl,
 } from './actions'
 import { ActivityFeed, parseFinishedActivityFeed } from './activity-feed-core'
+import {
+  recoverLocalSkillStatus,
+  type LocalSkillRunState,
+} from './local-skill-status'
 import { shouldOpenSlashMenu } from './slash-menu-core'
 import {
   deriveConversationTitle,
@@ -570,6 +574,8 @@ interface WireMessage {
   vaultSources?: VaultMessageSource[]
   /** 调用技能的进度状态条（锁定/生成中/完成/失败）；只存本机历史，不发给主对话 API。 */
   localSkillStatus?: boolean
+  /** 可恢复的本机技能执行状态；重载后用于把孤儿“生成中”收口为明确失败。 */
+  localSkillRun?: LocalSkillRunState
   /** 只保留用户本轮上传的图片名称；图片数据不写本机或云端历史。 */
   imageAttachmentNames?: string[]
   /** 本地整理方案的执行日志 ID；方案正文仍在 parts 的本机副本中。 */
@@ -1334,6 +1340,8 @@ export default class AiLinziPlugin extends Plugin {
   private imageStyleContext: SavedImageStyleContext | null = null
   private vaultActionHistory: VaultActionRecord[] = []
   private localSkillRunHistory: LocalSkillRunRecord[] = []
+  /** 当前 JS 生命周期里仍在执行的本机技能状态；插件重载后会自然清空。 */
+  private readonly activeLocalSkillStatusIds = new Set<string>()
   /**
    * 最近一次激活且仍然打开的笔记。它只用于侧边面板获得焦点后的界面衔接，
    * 不能把已经关闭的标签页或 Obsidian“最近打开记录”重新解释为读取授权。
@@ -2163,11 +2171,27 @@ export default class AiLinziPlugin extends Plugin {
    * 技能进度桥：聊天面板打开时把技能状态写进对话区（仅本机历史），
    * 面板没开时退回 Notice。返回消息 id，供后续原地更新同一条状态。
    */
-  reportSkillStatus(text: string, replaceId?: string): string | undefined {
+  reportSkillStatus(
+    text: string,
+    replaceId?: string,
+    run?: LocalSkillRunState,
+  ): string | undefined {
     const view = this.activeChatView()
-    if (view) return view.postSkillStatus(text, replaceId)
+    if (view) {
+      const id = view.postSkillStatus(text, replaceId, false, run)
+      if (run?.state === 'running') this.activeLocalSkillStatusIds.add(id)
+      else if (run) this.activeLocalSkillStatusIds.delete(id)
+      return id
+    }
+    if (replaceId && run && run.state !== 'running') {
+      this.activeLocalSkillStatusIds.delete(replaceId)
+    }
     new Notice(text, 8000)
     return undefined
+  }
+
+  isLocalSkillStatusActive(id: string): boolean {
+    return this.activeLocalSkillStatusIds.has(id)
   }
 
   /** 咨询简报源稿只进入本机对话历史；不在 Vault 额外生成 Markdown 文件。 */
@@ -3153,7 +3177,23 @@ class ChatView extends ItemView {
 
   private loadConvo(c: SavedConvo): void {
     this.clearAuthorizedContent()
-    this.messages = c.messages
+    let repairedInterruptedStatus = false
+    this.messages = c.messages.map((message) => {
+      if (!message.localSkillStatus) return message
+      const text = message.parts.find((part) => part.type === 'text')?.text ?? ''
+      const recovered = recoverLocalSkillStatus(
+        text,
+        message.localSkillRun,
+        this.plugin.isLocalSkillStatusActive(message.id),
+      )
+      if (!recovered.recovered) return message
+      repairedInterruptedStatus = true
+      return {
+        ...message,
+        parts: [{ type: 'text' as const, text: recovered.text }],
+        localSkillRun: recovered.run,
+      }
+    })
     this.sessionId = normalizePluginSessionId(c.id)
     this.pendingVaultTask = storedPendingVaultTask(c.pendingVaultTask)
     if (this.pendingVaultTask?.batch?.status === 'paused') {
@@ -3176,6 +3216,7 @@ class ChatView extends ItemView {
       this.inputEl.placeholder = CHAT_INPUT_PLACEHOLDER
     }
     this.renderMessages()
+    if (repairedInterruptedStatus) void this.persistNow()
     this.app.workspace.requestSaveLayout()
   }
 
@@ -4002,18 +4043,25 @@ class ChatView extends ItemView {
    * 对话区，错误不再只靠 9 秒 Notice（2026-08-18 Alina 反馈：销售复盘选完
    * 文件后“毫无反应”——实为本机报错只闪了一条 toast）。传 replaceId 原地更新。
    */
-  postSkillStatus(text: string, replaceId?: string, thinking = false): string {
+  postSkillStatus(
+    text: string,
+    replaceId?: string,
+    thinking = false,
+    localSkillRun?: LocalSkillRunState,
+  ): string {
     const existing = replaceId
       ? this.messages.find((message) => message.id === replaceId && message.localSkillStatus)
       : undefined
     if (existing) {
       existing.parts = [{ type: 'text', text }]
+      existing.localSkillRun = localSkillRun
     } else {
       this.messages.push({
         id: uid(),
         role: 'assistant',
         parts: [{ type: 'text', text }],
         localSkillStatus: true,
+        localSkillRun,
       })
     }
     void this.persistNow()

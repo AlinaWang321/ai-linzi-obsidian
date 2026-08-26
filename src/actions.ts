@@ -31,6 +31,7 @@ import { VaultImageBrowserModal } from './vault-image-browser'
 import { generateXhsCardPackage, XhsCardGalleryModal } from './xhs-cards'
 import { pickXhsCardStyle } from './xhs-style-picker'
 import { selectTranscriptSource } from './transcript-source'
+import type { LocalSkillRunState } from './local-skill-status'
 
 // ── 与服务端对齐的常量 ─────────────────────────────
 
@@ -44,6 +45,9 @@ const LIMITS = {
   KB_SUGGEST_TEXT_MAX: 8_000,
   KB_APPEND_CONTENT_MAX: 2_000,
 }
+
+// 服务端 6 分钟主动收口；插件多留 30 秒接收错误体，之后不再无限显示处理中。
+const SALES_REVIEW_CLIENT_TIMEOUT_MS = 390_000
 
 /** 知识库 9 个可建议章节(writing_style 由专门技能生成,不进列表) */
 const KB_SECTIONS: { key: string; title: string }[] = [
@@ -714,16 +718,30 @@ export async function runSalesReview(plugin: AiLinziPlugin) {
     return
   }
 
+  const startedAt = Date.now()
+  const runningState: LocalSkillRunState = {
+    kind: 'sales-review',
+    state: 'running',
+    startedAt,
+    updatedAt: startedAt,
+  }
   plugin.reportSkillStatus(
     `🤖 正在生成谈单诊断：《${source.file.basename}》…约 1 分钟，完成后会自动打开报告，请勿关闭 Obsidian。`,
     statusId,
+    runningState,
   )
   const n = runningNotice('谈单复盘')
+  const controller = new AbortController()
+  let didTimeout = false
+  const timeout = window.setTimeout(() => {
+    didTimeout = true
+    controller.abort()
+  }, SALES_REVIEW_CLIENT_TIMEOUT_MS)
   try {
     const text = await plugin.apiText('/api/plugin/v1/skills/sales-review', {
       transcript,
       background: input.background.trim() || undefined,
-    })
+    }, controller.signal)
     const report = await writeOutput(plugin, {
       skill: '谈单复盘',
       platform: '内部',
@@ -734,13 +752,21 @@ export async function runSalesReview(plugin: AiLinziPlugin) {
     plugin.reportSkillStatus(
       `✅ 谈单诊断报告已生成并打开：《${report.basename}》（保存在 ${report.parent?.path ?? ''}）。`,
       statusId,
+      { ...runningState, state: 'completed', updatedAt: Date.now() },
     )
     new Notice('✅ 谈单诊断报告已落盘')
   } catch (e) {
-    const message = friendlyErrorMessage(e instanceof Error ? e.message : String(e))
-    plugin.reportSkillStatus(`❌ 谈单复盘失败：${message}`, statusId)
+    const message = didTimeout
+      ? '这次处理时间太长被中断了。逐字稿很长时建议拆成两段分别处理'
+      : friendlyErrorMessage(e instanceof Error ? e.message : String(e))
+    plugin.reportSkillStatus(
+      `❌ 谈单复盘失败：${message}`,
+      statusId,
+      { ...runningState, state: 'failed', updatedAt: Date.now() },
+    )
     new Notice(`❌ 谈单复盘:${message}`, 8000)
   } finally {
+    window.clearTimeout(timeout)
     n.hide()
   }
 }
