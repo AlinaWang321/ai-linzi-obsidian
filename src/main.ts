@@ -4370,6 +4370,7 @@ class ChatView extends ItemView {
     let skillUpdaterTurn = false
     let skillUpdateTargetPath: string | undefined
     let consultationWorkflowTaskTurn = false
+    let activeLocalSkillPath: string | undefined
     try {
       const pendingVaultQuestion = this.recentPendingVaultQuestion()
       const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
@@ -4379,9 +4380,23 @@ class ChatView extends ItemView {
         : options.skillUpdatePath
           ? 'update'
           : classifyLocalSkillManagementIntent(text)
+      // “用 Article to Video 处理当前文章，并限制本次只读当前文章”同时包含
+      // “用……处理”的运行语义和“限制读取范围”的权限词。旧顺序先跑宽松的
+      // 更新候选器，后者会抢走已经明确点名的 Skill，错误生成“更新 Skill”卡。
+      // 先用真正的调用解析器锁定显式运行；只有用户明确说修改/更新 Skill 时，
+      // 才允许进入更新器。显式运行也应退出上一轮未完成的 Skill 更新上下文。
+      const requestedLocalSkillInvocation =
+        options.skillCreator !== true &&
+        !options.skillUpdatePath &&
+        !options.forcedLocalSkillPath
+          ? await this.localSkills.resolve(text, { allowAutomatic: false })
+          : undefined
+      const explicitLocalSkillInvocation = Boolean(options.forcedLocalSkillPath) || Boolean(
+        requestedLocalSkillInvocation && requestedLocalSkillInvocation.kind !== 'none',
+      )
       // 在更新访谈里，普通补充继续锁定原 Skill；但用户明确回复“创建新的 Skill”
       // 时必须退出旧更新上下文，不能让 pending 路径反过来劫持新建请求。
-      const pendingSkillUpdatePath = skillManagementIntent === 'create'
+      const pendingSkillUpdatePath = skillManagementIntent === 'create' || explicitLocalSkillInvocation
         ? undefined
         : this.recentPendingSkillUpdatePath()
       // 先判断整句是不是在创建一套新工作流。创建说明里经常会描述“更新客户档案”
@@ -4399,6 +4414,7 @@ class ChatView extends ItemView {
       )
       const naturalSkillUpdate = options.skillCreator !== true &&
         !options.skillUpdatePath && !pendingSkillUpdatePath &&
+        !explicitLocalSkillInvocation &&
         !continuePendingSkillDraft &&
         skillManagementIntent !== 'create' &&
         isPotentialLocalSkillUpdateIntent(text)
@@ -4474,14 +4490,14 @@ class ChatView extends ItemView {
       }
       const explicitLocalSkillRun = forcedLocalSkill
         ? true
-        : isExplicitLocalSkillRunIntent(text)
+        : explicitLocalSkillInvocation || isExplicitLocalSkillRunIntent(text)
       // 先在本机确认“调用 + 已安装 Skill 名称”是否真实存在。多候选卡恢复时
       // 已按精确路径重新 resolvePath，本轮不再按显示名做第二次匹配。
       const explicitLocalSkillMatch = forcedLocalSkill
         ? { kind: 'matched' as const, skill: forcedLocalSkill }
-        : explicitLocalSkillRun
+        : requestedLocalSkillInvocation ?? (explicitLocalSkillRun
           ? await this.localSkills.resolve(text, { allowAutomatic: false })
-          : undefined
+          : undefined)
       const explicitInstalledLocalSkill = explicitLocalSkillMatch?.kind === 'matched'
       // 原生 ask_user 的回答必须先续接同一个文件任务。回答正文可能恰好描述
       // “课后让学员创建 Skill”等业务内容，不能因此被重新分流到 Skill Creator。
@@ -4619,6 +4635,7 @@ class ChatView extends ItemView {
       }
       const localSkill =
         localSkillMatch.kind === 'matched' ? localSkillMatch.skill : undefined
+      activeLocalSkillPath = localSkill?.path
       const automaticLocalSkill =
         localSkillMatch.kind === 'matched' && localSkillMatch.automatic === true
       // Skill 的输出方式是默认值；用户本轮明确说“只读取/先不要写入”时，
@@ -5185,6 +5202,7 @@ class ChatView extends ItemView {
               ? `${batchStoppedMessage(this.pendingVaultTask)}\n\n已经发出的这一轮可能已产生少量积分。`
               : '⏹️ 已停止当前任务。已经发出的这一轮可能已产生少量积分，后续请求和批次不会继续。',
           }],
+          localSkillPath: activeLocalSkillPath,
         })
         await this.persistNow()
       } else if (!this.longDocumentTask && !options.localSkillChoiceOfferId) {
@@ -5192,6 +5210,7 @@ class ChatView extends ItemView {
           id: uid(),
           role: 'assistant',
           parts: [{ type: 'text', text: `⚠️ ${msg}` }],
+          localSkillPath: activeLocalSkillPath,
           skillCreatorPending: skillCreatorTurn || undefined,
           skillUpdatePendingPath: skillUpdaterTurn ? skillUpdateTargetPath : undefined,
         })
@@ -7183,6 +7202,9 @@ class ChatView extends ItemView {
         throw new Error('native: no final text')
       } catch (error) {
         if (isAbortError(error)) throw error
+        // 本地 Skill 已进入原生工具通道后，失败必须如实结束；不能静默掉回
+        // 没有 read_skill_file/propose_skill_action 的散文兼容通道，再声称“无工具”。
+        if (input.localSkillContext) throw error
         // 静默回退散文协议；已获得的工具结果保留在 toolResults 里继续可用。
         nativeChannelFailed = true
         return null

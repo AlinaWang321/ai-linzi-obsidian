@@ -423,8 +423,8 @@ console.log('[test-vault-task-state]')
   )
   assert.match(
     mainSource,
-    /catch \(error\) \{\s*if \(isAbortError\(error\)\) throw error[\s\S]{0,180}nativeChannelFailed = true\s*return null/,
-    '用户停止必须向上传播；其他原生通道失败仍静默回退散文协议（回滚保险丝）',
+    /catch \(error\) \{\s*if \(isAbortError\(error\)\) throw error[\s\S]{0,180}if \(input\.localSkillContext\) throw error[\s\S]{0,180}nativeChannelFailed = true\s*return null/,
+    '用户停止和本地 Skill 原生错误必须向上传播；普通原生通道失败仍保留兼容回退',
   )
   assert.match(
     mainSource,

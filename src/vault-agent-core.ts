@@ -1496,7 +1496,7 @@ function isDraftOnlyWriteIntent(normalized: string): boolean {
 const NEGATED_MUTATION_VERBS =
   '整理|归类|归档|分类|移动|移入回收站|移到|移进|挪到|放到|放进|放入|归到|收进|重命名|改名|删除|删掉|写入|写进|追加|保存|新建|创建|更新'
 const NEGATED_MUTATION_RE = new RegExp(
-  `(?:不要|不用|无需|别|勿)[^。，,！!？?；;]{0,16}?(?:${NEGATED_MUTATION_VERBS})`,
+  `(?:不要|不得|不用|无需|别|勿|禁止|不允许)[^。！!？?；;\n]{0,64}?(?:${NEGATED_MUTATION_VERBS})`,
 )
 
 export function isNegatedVaultMutation(text: string): boolean {
@@ -1582,14 +1582,13 @@ export function isStructuredNoteWriteIntent(text: string): boolean {
  */
 export function isExplicitCurrentNoteTrashRequest(text: string): boolean {
   const normalized = text.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, '')
-  if (detectVaultAgentIntent(text) !== 'organize') return false
-  const trashAction = /(?:删除|删掉|移入(?:废纸篓|回收站)|放入(?:废纸篓|回收站)|丢到(?:废纸篓|回收站)|\b(?:delete|trash)\b)/.test(
-    normalized,
+  if (detectVaultAgentIntent(text) !== 'organize' || !isExplicitVaultTrashIntent(text)) return false
+  const trashAction = '(?:删除|删掉|移入(?:废纸篓|回收站)|放入(?:废纸篓|回收站)|丢到(?:废纸篓|回收站)|delete|trash)'
+  const currentTarget = '(?:当前|这篇|本篇|这份|这个|正在打开|刚打开|打开的).{0,10}(?:笔记|文章|文件)'
+  const explicitCurrentTrash = new RegExp(
+    `(?:把|将)?${currentTarget}.{0,16}${trashAction}|${trashAction}.{0,16}${currentTarget}|(?:把|将)(?:它|这篇|这个|这份).{0,8}${trashAction}`,
   )
-  const currentTarget = /(?:当前|这篇|本篇|这份|这个|正在打开|刚打开|打开的).{0,10}(?:笔记|文章|文件)|(?:把|将)(?:它|这篇|这个|这份)(?:删除|删掉|移入|放入|丢到)/.test(
-    normalized,
-  )
-  return trashAction && currentTarget
+  return explicitCurrentTrash.test(normalized)
 }
 
 function isVaultCountQuestion(text: string): boolean {

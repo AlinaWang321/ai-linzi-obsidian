@@ -130,6 +130,18 @@ assert.equal(core.isExplicitCurrentNoteTrashRequest('删除这篇笔记'), true)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('把它移入回收站'), true)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('删除知识库里的重复笔记'), false)
 assert.equal(core.isExplicitCurrentNoteTrashRequest('不要删除这篇笔记'), false)
+assert.equal(
+  core.isExplicitCurrentNoteTrashRequest(
+    '用 Article to Video 处理当前打开的文章；不得搜索、读取、修改、覆盖、移动或删除 Vault 中任何其他文件。',
+  ),
+  false,
+  '安全边界中的“不得删除”不能生成删除当前笔记确认卡',
+)
+assert.equal(
+  core.isExplicitVaultTrashIntent('不得搜索、读取、修改、覆盖、移动或删除 Vault 中任何其他文件。'),
+  false,
+  '逗号分隔的否定动作清单仍应阻断回收站授权',
+)
 assert.equal(core.isVaultMutationExplicitlyDenied('先不要写入，只生成一份草稿'), true)
 assert.equal(core.isVaultMutationExplicitlyDenied('只读取并告诉我有哪些档案'), true)
 assert.equal(

@@ -386,6 +386,32 @@ assert.equal(
   '用户用引号精确点名中文 Skill 时可以省略类型词',
 )
 
+const articleToVideo = core.buildLocalSkillDescriptor(
+  '05_System/Skills/article-to-video/SKILL.md',
+  { name: 'article-to-video', description: '把当前文章制作成极简信息图短视频' },
+  '# 文章转短视频\n\n## AI霖子自动调用\n\n- 用 Article to Video 制作当前笔记\n',
+)
+assert.ok(articleToVideo)
+const boundedArticleVideoRun =
+  '用 Article to Video 处理当前文章。严格限制本次范围：只读取当前文章和 05_System/Skills/article-to-video 内明确引用的文件；不得修改其他文件。'
+assert.equal(
+  core.matchLocalSkillInvocation(boundedArticleVideoRun, [articleToVideo]).kind,
+  'matched',
+  '显式运行 Article to Video 时，附加本轮读取边界仍必须先命中运行入口',
+)
+assert.equal(
+  core.matchLocalSkillUpdateIntent(boundedArticleVideoRun, [articleToVideo]).kind,
+  'matched',
+  '该真人原句会同时命中宽松更新候选器，主对话必须显式解决这项路由冲突',
+)
+assert.equal(
+  core.isExplicitLocalSkillUpdateIntent(
+    '用 Article to Video 处理当前文章；不得修改 05_System/Skills/article-to-video 以外的文件。',
+  ),
+  false,
+  '“不得修改其他文件”是本轮安全边界，不能被解释成修改 Skill',
+)
+
 // 0.7.64:点技能菜单时优先用 Skill 自己声明的触发短语(不同技能处理对象不同,
 // 统一填「处理当前笔记」会误导——知识库日报看板处理的是整个知识库)。
 import { readFileSync as __readMainForMenu } from 'node:fs'
@@ -400,8 +426,18 @@ assert.match(
 )
 assert.match(
   __mainForMenu,
-  /const skillManagementIntent = options\.skillCreator === true[\s\S]{0,180}classifyLocalSkillManagementIntent\(text\)[\s\S]{0,1200}options\.skillCreator !== true[\s\S]{0,180}skillManagementIntent !== 'create'[\s\S]{0,140}isPotentialLocalSkillUpdateIntent\(text\)[\s\S]{0,180}this\.localSkills\.resolveUpdate\(text\)/,
-  '主对话必须区分新建、修改和冲突语义，再决定是否解析现有 Skill',
+  /const requestedLocalSkillInvocation =[\s\S]{0,460}!options\.forcedLocalSkillPath[\s\S]{0,120}this\.localSkills\.resolve\(text, \{ allowAutomatic: false \}\)[\s\S]{0,420}const explicitLocalSkillInvocation =[\s\S]{0,1200}!explicitLocalSkillInvocation[\s\S]{0,260}this\.localSkills\.resolveUpdate\(text\)/,
+  '主对话必须让明确运行优先于宽松更新候选器，避免“限制本次读取范围”生成 Skill 更新卡',
+)
+assert.match(
+  __mainForMenu,
+  /if \(input\.localSkillContext\) throw error/,
+  '本地 Skill 原生工具通道失败时不得静默掉回无工具的散文兼容通道',
+)
+assert.match(
+  __mainForMenu,
+  /localSkillPath: activeLocalSkillPath/,
+  '停止或失败后必须保留当前 Skill 路径，支持下一句继续',
 )
 assert.match(
   __mainForMenu,
