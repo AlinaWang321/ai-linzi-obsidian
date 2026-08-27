@@ -494,6 +494,21 @@ assert.match(
 )
 assert.match(
   mainSource,
+  /nativeAvailable = Boolean\(input\.resumeQuestion\) \|\| Boolean\(input\.localSkillContext\)/,
+  '明确调用的本地 Skill 必须进入原生函数工具通道，不能继续只靠散文标记协议',
+)
+assert.match(
+  mainSource,
+  /runLocalSkillAction[\s\S]*localSkillCalls[\s\S]*read_skill_file[\s\S]*propose_skill_action/,
+  '原生通道必须真实执行 Skill 文件读取与逐步确认动作',
+)
+assert.match(
+  mainSource,
+  /readCalls\.length > 0[\s\S]{0,180}retryHint: 'local_skill_tool_required'/,
+  '只读 Skill 文件后必须继续原生工具轮，禁止用普通文字假确认',
+)
+assert.match(
+  mainSource,
   /answer = stripVaultInternalTurnMarkers\(answer\)/,
   '所有主对话出口都必须剥离内部路由标记',
 )
@@ -592,6 +607,30 @@ assert.equal(
 assert.equal(
   core.isVaultAgentToolAllowed('propose_skill_action', { vault: false, localSkill: true }),
   true,
+)
+assert.equal(
+  core.localSkillAnswerRetryReason('当前环境没有 read_skill_file，也无法调用 propose_skill_action。'),
+  'missing_tool_use',
+)
+assert.equal(
+  core.localSkillAnswerRetryReason('我先检查环境，接下来再生成分镜。'),
+  'deferred_answer',
+)
+assert.equal(
+  core.localSkillAnswerRetryReason('当前环境检查需要调用本机 node 运行检测脚本。请确认执行环境检查。'),
+  'missing_tool_use',
+)
+assert.equal(
+  core.localSkillAnswerRetryReason('当前环境检查需要运行本地检测脚本，但我这边没有可用的本地执行入口。'),
+  'missing_tool_use',
+)
+assert.equal(
+  core.localSkillAnswerRetryReason('按流程，下一步应执行 node scripts/doctor.mjs --json。'),
+  'deferred_answer',
+)
+assert.equal(
+  core.localSkillAnswerRetryReason('下面是 6 幕分镜，请确认文字、时长和品牌配色。'),
+  undefined,
 )
 
 const skillRead = core.extractVaultToolCalls(`<<<VAULT_TOOL_CALLS>>>

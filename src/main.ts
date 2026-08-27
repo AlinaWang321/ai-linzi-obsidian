@@ -237,6 +237,7 @@ import {
   isVaultBatchTask,
   isVaultNativeTurnRequest,
   limitVaultAgentToolCalls,
+  localSkillAnswerRetryReason,
   requiresWebSearchNativeRouting,
   stripVaultInternalTurnMarkers,
   isExplicitCurrentNoteTrashRequest,
@@ -6607,8 +6608,110 @@ class ChatView extends ItemView {
     // VAULT_NATIVE_TURN，客户端也会因本地词表没命中“做个工作台”等自然说法
     // 而拒绝切换，语义判断名存实亡。现在纯文字、已授权 Vault 的普通对话都允许
     // 模型自主切换；只有明确词表命中/任务承接才跳过判断轮直接进引擎。
+    const runLocalSkillAction = async (
+      call: VaultAgentToolCall,
+    ): Promise<VaultAgentToolResult> => {
+      if (!input.localSkillContext) throw new Error('本轮没有正在执行的 Skill，不能运行本地动作')
+      if (!this.plugin.settings.localSkillExecutionEnabled) {
+        return {
+          callId: call.id,
+          name: call.name,
+          ok: false,
+          output: JSON.stringify({
+            status: 'disabled',
+            message: '用户未在 AI霖子设置中开启“允许我的 Skills 运行程序”',
+          }),
+        }
+      }
+      const localSkillExecutor = await this.plugin.getLocalSkillExecutor()
+      const prepared = localSkillExecutor.prepare(call.arguments)
+      if (!prepared.ok) throw new Error(`AI 提出的本地动作不安全：${prepared.error}`)
+      const action = prepared.action
+      const ok = await confirmLocalSkillAction(
+        this.app,
+        input.localSkill?.name ?? '我的 Skill',
+        action,
+      )
+      if (!ok) {
+        const record = localSkillExecutor.cancelledRecord(
+          input.localSkill?.name ?? '我的 Skill',
+          action,
+        )
+        await this.plugin.recordLocalSkillRun(record)
+        localSkillRunIds.push(record.id)
+        return {
+          callId: call.id,
+          name: call.name,
+          ok: false,
+          output: JSON.stringify({ status: 'cancelled', message: '用户取消了这一步' }),
+        }
+      }
+      this.activityStep(`🧩 本地动作：${action.label}`, `正在本机执行：${action.label}…`)
+      const notice = new Notice(`正在本机执行：${action.label}…`, 0)
+      try {
+        try {
+          const executed = await localSkillExecutor.run(
+            input.localSkill?.name ?? '我的 Skill',
+            action,
+            input.localSkillContext,
+          )
+          this.plugin.vaultSearch.clear()
+          await this.plugin.recordLocalSkillRun(executed.record)
+          localSkillRunIds.push(executed.record.id)
+          new Notice(
+            executed.record.status === 'success'
+              ? `✅ 本地动作完成：${action.label}`
+              : `⚠️ 本地动作未完成：${action.label}`,
+            6000,
+          )
+          return {
+            callId: call.id,
+            name: call.name,
+            ok: executed.record.status === 'success',
+            output: executed.output,
+          }
+        } catch (error) {
+          const failed = localSkillExecutor.failedRecord(
+            input.localSkill?.name ?? '我的 Skill',
+            action,
+          )
+          await this.plugin.recordLocalSkillRun(failed)
+          localSkillRunIds.push(failed.id)
+          const safeError = localSkillExecutor.safeError(error, input.localSkillContext)
+          new Notice(`本地动作失败：${safeError}`, 9000)
+          return {
+            callId: call.id,
+            name: call.name,
+            ok: false,
+            output: JSON.stringify({ status: 'failed', message: safeError }),
+          }
+        }
+      } finally {
+        notice.hide()
+      }
+    }
+    const nativeLocalSkillRequest = input.localSkill && input.localSkillContext
+      ? {
+          vaultAccess: input.vaultAccess,
+          localSkill: {
+            name: input.localSkill.name,
+            description: input.localSkill.description,
+            content: input.localSkill.content,
+            entryTruncated: input.localSkill.entryTruncated,
+            localExecutionEnabled: this.plugin.settings.localSkillExecutionEnabled,
+            ...(input.noteContext
+              ? {
+                  source: {
+                    filename: input.noteContext.filename,
+                    text: input.noteContext.text,
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}
     const webSearchNativeRouting = requiresWebSearchNativeRouting(input.question)
-    const nativeAvailable = Boolean(input.resumeQuestion) || webSearchNativeRouting || (
+    const nativeAvailable = Boolean(input.resumeQuestion) || Boolean(input.localSkillContext) || webSearchNativeRouting || (
       input.vaultAccess &&
       !input.localSkill &&
       !input.localSkillContext &&
@@ -6617,6 +6720,7 @@ class ChatView extends ItemView {
     )
     const nativeFastPath = nativeAvailable && (
       Boolean(input.resumeQuestion) ||
+      Boolean(input.localSkillContext) ||
       mutationAsk ||
       webSearchNativeRouting ||
       (taskContinuation && this.pendingVaultTask?.intent === 'organize')
@@ -6648,13 +6752,16 @@ class ChatView extends ItemView {
               ? '文件操作引擎启动，正在核对相关文件…'
               : `${batchMode ? '批量文件引擎' : '文件引擎'} 第 ${step + 1}/${maxRounds} 步 · 继续执行…`,
           )
-          const requestBody = nextBody ?? {
-            question: input.question,
-            round: 0,
-            batchMode,
-            sessionId: this.sessionId,
-            pendingTaskGoal: taskContinuation ? this.pendingVaultTask?.goal : undefined,
-            batchCheckpoint: batchCheckpointForApi(),
+          const requestBody: Record<string, unknown> = {
+            ...(nextBody ?? {
+              question: input.question,
+              round: 0,
+              batchMode,
+              sessionId: this.sessionId,
+              pendingTaskGoal: taskContinuation ? this.pendingVaultTask?.goal : undefined,
+              batchCheckpoint: batchCheckpointForApi(),
+            }),
+            ...nativeLocalSkillRequest,
           }
           const requestRound = typeof requestBody.round === 'number' ? requestBody.round : 0
           const data = await this.plugin.api('/api/plugin/v1/vault-native/step', {
@@ -6670,6 +6777,76 @@ class ChatView extends ItemView {
           if (!responseId) throw new Error('native: missing responseId')
           previousResponseId = responseId
           if (nativeCalls.length > 0) {
+            const localSkillCalls = nativeCalls.filter(
+              (item) => item.name === 'read_skill_file' || item.name === 'propose_skill_action',
+            )
+            if (localSkillCalls.length > 0) {
+              if (!input.localSkillContext || localSkillCalls.length !== nativeCalls.length) {
+                throw new Error('native: mixed or unauthorized local Skill tools')
+              }
+              const calls: VaultAgentToolCall[] = localSkillCalls.map((record) => {
+                const callId = typeof record.callId === 'string' ? record.callId : ''
+                const name = record.name
+                const args = isUnknownRecord(record.arguments) ? record.arguments : {}
+                if (!callId || (name !== 'read_skill_file' && name !== 'propose_skill_action')) {
+                  throw new Error('native: invalid local Skill call')
+                }
+                return { id: callId, name, arguments: args }
+              })
+              const actionCalls = calls.filter((call) => call.name === 'propose_skill_action')
+              const readCalls = calls.filter((call) => call.name === 'read_skill_file')
+              if (actionCalls.length > 1 || (actionCalls.length > 0 && readCalls.length > 0)) {
+                throw new Error('native: local Skill reads and actions must use separate rounds')
+              }
+              const executedResults: VaultAgentToolResult[] = []
+              if (actionCalls.length === 1) {
+                executedResults.push(await runLocalSkillAction(actionCalls[0]))
+              } else {
+                const freshCalls: VaultAgentToolCall[] = []
+                for (const call of readCalls) {
+                  const signature = vaultToolCallSignature(call)
+                  if (seenVaultReadCallSignatures.has(signature)) {
+                    executedResults.push({
+                      callId: call.id,
+                      name: call.name,
+                      ok: false,
+                      output:
+                        '本轮已经用完全相同的参数读取过这个 Skill 文件。请使用之前的真实结果；' +
+                        '需要下一段时改用新的 offset。',
+                    })
+                    continue
+                  }
+                  seenVaultReadCallSignatures.add(signature)
+                  freshCalls.push(call)
+                }
+                const executed = await this.plugin.vaultAgent.executeCalls(
+                  freshCalls,
+                  input.localSkillContext,
+                )
+                executedResults.push(...executed.results)
+                for (const call of freshCalls) {
+                  if (call.name === 'read_skill_file' && typeof call.arguments.path === 'string') {
+                    this.activityStep(`🧩 读取技能文件 ${call.arguments.path.split('/').at(-1)}`)
+                  }
+                }
+              }
+              appendToolResults(executedResults)
+              nextBody = {
+                question: input.question,
+                round: Math.min(requestRound + 1, maxRounds - 1),
+                batchMode,
+                sessionId: this.sessionId,
+                previousResponseId,
+                toolOutputs: executedResults.map((result) => ({
+                  callId: result.callId,
+                  output: result.output.slice(0, 18_000),
+                })),
+                ...(readCalls.length > 0
+                  ? { retryHint: 'local_skill_tool_required' }
+                  : {}),
+              }
+              continue
+            }
             const webSearchRequest = nativeCalls.find(
               (item) => item.name === 'request_web_search',
             )
@@ -6951,6 +7128,21 @@ class ChatView extends ItemView {
             continue
           }
           if (text) {
+            const localRetryReason = input.localSkillContext
+              ? localSkillAnswerRetryReason(text)
+              : undefined
+            if (localRetryReason && step + 1 < maxRounds) {
+              nextBody = {
+                question: input.question,
+                round: Math.min(requestRound + 1, maxRounds - 1),
+                batchMode,
+                sessionId: this.sessionId,
+                previousResponseId,
+                toolOutputs: [],
+                retryHint: 'local_skill_tool_required',
+              }
+              continue
+            }
             // 整理任务收尾必须有方案或明确缺口：给一次结构化纠正机会，仍不产出则
             // 把文本交给下方共用收尾管线（方案预检/确认卡/任务状态与散文协议同款）。
             const planProbe = extractVaultOrganizePlan(text)
@@ -7253,6 +7445,20 @@ class ChatView extends ItemView {
       }
       if (toolRequest.invalid) throw new Error('AI 返回的 Vault 工具请求格式不安全，请重试')
       if (toolRequest.calls.length === 0) {
+        const localSkillRetry = input.localSkillContext
+          ? localSkillAnswerRetryReason(lastText)
+          : undefined
+        if (localSkillRetry) {
+          if (round >= maxRounds - 1) {
+            throw new Error(
+              localSkillRetry === 'missing_tool_use'
+                ? 'AI 连续错误声称没有本地 Skill 工具，已停止这次任务；请重试'
+                : 'AI 只说明了接下来会做什么，却没有真正推进本地 Skill；请重试',
+            )
+          }
+          pendingRetryReason = localSkillRetry
+          continue
+        }
         const plan = extractVaultOrganizePlan(lastText)
         if (plan.invalid) {
           if (round >= maxRounds - 1) {

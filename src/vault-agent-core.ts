@@ -1744,6 +1744,40 @@ export function vaultAutoAnswerRetryReason(
 }
 
 /**
+ * 本地 Skill 原生工具完成门槛：模型不能把已经挂载的工具误报成不存在。
+ * 这里只拦能力误判与口头推迟；到 Skill 自己规定的分镜/预览确认点时，
+ * 正常的用户可见说明仍可直接收尾。
+ */
+export function localSkillAnswerRetryReason(
+  answer: string,
+): VaultAnswerRetryReason | undefined {
+  const normalized = answer.normalize('NFKC').replace(/\s+/g, ' ').trim()
+  const namesLocalTools = /(?:read_skill_file|propose_skill_action|本地\s*skill\s*工具|本机\s*skill\s*工具|本地执行入口|本机执行入口|本地执行工具|本机执行工具)/i.test(
+    normalized,
+  )
+  const deniesCapability =
+    /(?:没有|缺少|无法|不能|没法|不具备|未提供|不可用|看不到|调用不了).{0,80}(?:read_skill_file|propose_skill_action|本地\s*skill\s*工具|本机\s*skill\s*工具|本地执行入口|本机执行入口|本地执行工具|本机执行工具)/i.test(
+      normalized,
+    ) ||
+    /(?:read_skill_file|propose_skill_action|本地\s*skill\s*工具|本机\s*skill\s*工具|本地执行入口|本机执行入口|本地执行工具|本机执行工具).{0,80}(?:没有|缺少|无法|不能|没法|不具备|未提供|不可用|看不到|调用不了)/i.test(
+      normalized,
+    )
+  if (namesLocalTools && deniesCapability) return 'missing_tool_use'
+  const requestsProgramConfirmation =
+    /(?:请|需要|麻烦|先).{0,16}确认.{0,80}(?:执行|运行|调用本机|环境检查|体检|脚本|node|python|ffmpeg|ffprobe|配音|渲染|生成音频)/i.test(
+      normalized,
+    ) ||
+    /(?:执行|运行|调用本机|环境检查|体检|脚本|node|python|ffmpeg|ffprobe|配音|渲染|生成音频).{0,80}(?:请|需要|麻烦|先).{0,16}确认/i.test(
+      normalized,
+    )
+  if (requestsProgramConfirmation) return 'missing_tool_use'
+  if (/(?:下一步|接下来|按流程).{0,40}(?:应|需要|将).{0,20}(?:执行|运行).{0,100}(?:node|python|ffmpeg|ffprobe|脚本)/i.test(normalized)) {
+    return 'deferred_answer'
+  }
+  return isTrailingActionAnnouncement(answer) ? 'deferred_answer' : undefined
+}
+
+/**
  * 文件夹名的宽松匹配（0.7.59）。
  *
  * 用户口语里的目录名和磁盘上的真实目录名经常对不上：说「output」真实叫「03 output」，
