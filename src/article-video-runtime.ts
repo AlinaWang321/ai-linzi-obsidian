@@ -15,7 +15,6 @@ import {
 } from 'obsidian'
 import {
   ARTICLE_VIDEO_DISPLAY_NAME,
-  ARTICLE_VIDEO_DURATIONS,
   articleVideoDurationFromText,
   parseArticleVideoStoryboard,
   safeArticleVideoName,
@@ -70,7 +69,8 @@ export interface ArticleVideoEnvironmentReport {
 }
 
 interface ArticleVideoRunOptions {
-  duration: ArticleVideoDuration
+  draftTarget: ArticleVideoDuration
+  storyboard: ArticleVideoStoryboard
   apiKey: string
   voiceId: string
   model: 's2.1-pro-free' | 's2.1-pro'
@@ -320,7 +320,46 @@ async function installArticleVideoEnvironment(
   }
 }
 
-class ArticleVideoConfirmModal extends Modal {
+const ARTICLE_VIDEO_SCENE_TYPE_LABELS: Record<ArticleVideoScene['type'], string> = {
+  hook: '开场钩子',
+  quote: '金句',
+  number: '数字重点',
+  comparison: '对比',
+  flow: '流程',
+  steps: '步骤',
+  timeline: '时间线',
+  summary: '总结',
+}
+
+function cloneStoryboard(storyboard: ArticleVideoStoryboard): ArticleVideoStoryboard {
+  return JSON.parse(JSON.stringify(storyboard)) as ArticleVideoStoryboard
+}
+
+function storyboardFingerprint(storyboard: ArticleVideoStoryboard): string {
+  return createHash('sha256').update(JSON.stringify(storyboard)).digest('hex')
+}
+
+function editableItems(scene: ArticleVideoScene): string {
+  return (scene.items ?? [])
+    .map((entry) => `${entry.title}${entry.detail ? `｜${entry.detail}` : ''}`)
+    .join('\n')
+}
+
+function updateEditableItems(scene: ArticleVideoScene, value: string): void {
+  const items = value.split(/\r?\n/gu)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 4)
+    .map((line) => {
+      const [title, ...detailParts] = line.split('｜')
+      const detail = detailParts.join('｜').trim().slice(0, 52)
+      return { title: title.trim().slice(0, 36), ...(detail ? { detail } : {}) }
+    })
+    .filter((entry) => Boolean(entry.title))
+  scene.items = items
+}
+
+class ArticleVideoScriptModal extends Modal {
   private resolvePromise: (value: ArticleVideoRunOptions | null) => void = () => undefined
   private submitted = false
   private readonly options: ArticleVideoRunOptions
@@ -329,25 +368,152 @@ class ArticleVideoConfirmModal extends Modal {
   constructor(
     app: App,
     private readonly sourceName: string,
-    duration: ArticleVideoDuration,
+    storyboard: ArticleVideoStoryboard,
     apiKey: string,
     voiceId: string,
     model: 's2.1-pro-free' | 's2.1-pro',
     private readonly environment: ArticleVideoEnvironmentReport,
   ) {
     super(app)
-    this.options = { duration, apiKey, voiceId, model, installMissing: false }
+    this.options = {
+      draftTarget: storyboard.durationTarget,
+      storyboard: cloneStoryboard(storyboard),
+      apiKey,
+      voiceId,
+      model,
+      installMissing: false,
+    }
     this.result = new Promise((resolvePromise) => { this.resolvePromise = resolvePromise })
   }
 
   onOpen(): void {
     const { contentEl } = this
     contentEl.empty()
+    this.modalEl.addClass('ai-linzi-article-video-script-modal')
     contentEl.createEl('h2', { text: ARTICLE_VIDEO_DISPLAY_NAME })
     contentEl.createEl('p', {
-      text: `已锁定当前文章《${this.sourceName}》。确认后会自动完成分镜、Fish Audio 配音、字幕、HTML 动效、MP4 渲染和技术核验，中途不再反复提问。`,
+      text: `已锁定当前文章《${this.sourceName}》，下面是 AI 起草的完整视频脚本。请直接修改；字幕会按你确认后的旁白自动生成。`,
       cls: 'setting-item-description',
     })
+    const countEl = contentEl.createEl('p', { cls: 'setting-item-description' })
+    const refreshCount = () => {
+      const count = this.options.storyboard.scenes
+        .reduce((sum, scene) => sum + scene.voiceover.replace(/\s/gu, '').length, 0)
+      countEl.setText(
+        `起草目标：约 ${this.options.draftTarget} 秒 · 当前旁白：${count} 字。最终成片不强行拉伸到目标时长，而是跟随这版旁白的真实 Fish Audio 音频。`,
+      )
+    }
+    refreshCount()
+
+    new Setting(contentEl)
+      .setName('视频标题')
+      .setDesc('成片底部只保留这个标题，不显示 Article to Video 或 AI霖子水印。')
+      .addText((input) => {
+        input.inputEl.maxLength = 40
+        input.setValue(this.options.storyboard.title)
+          .onChange((value) => { this.options.storyboard.title = value.trim() })
+      })
+
+    const scriptEl = contentEl.createDiv({ cls: 'ai-linzi-article-video-script' })
+    this.options.storyboard.scenes.forEach((scene, index) => {
+      const sceneEl = scriptEl.createEl('details', { cls: 'ai-linzi-article-video-scene' })
+      sceneEl.open = index === 0
+      const summaryEl = sceneEl.createEl('summary', {
+        text: `第 ${index + 1} 幕 · ${ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type]} · ${scene.headline}`,
+      })
+      const refreshSummary = () => summaryEl.setText(
+        `第 ${index + 1} 幕 · ${ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type]} · ${scene.headline || '请填写画面标题'}`,
+      )
+      new Setting(sceneEl)
+        .setName('画面标题')
+        .addText((input) => {
+          input.inputEl.maxLength = 36
+          input.setValue(scene.headline)
+            .onChange((value) => {
+            scene.headline = value.trim()
+            refreshSummary()
+            })
+        })
+      new Setting(sceneEl)
+        .setName('辅助文案')
+        .setDesc('可留空；用于标题下面的一行解释。')
+        .addText((input) => {
+          input.inputEl.maxLength = 72
+          input.setValue(scene.support ?? '')
+            .onChange((value) => { scene.support = value.trim() || undefined })
+        })
+
+      if (scene.type === 'number') {
+        new Setting(sceneEl)
+          .setName('画面数字')
+          .addText((input) => {
+            input.inputEl.maxLength = 24
+            input.setValue(scene.number ?? '')
+              .onChange((value) => { scene.number = value.trim() })
+          })
+          .addText((input) => {
+            input.inputEl.maxLength = 16
+            input.setPlaceholder('单位')
+              .setValue(scene.unit ?? '')
+              .onChange((value) => { scene.unit = value.trim() || undefined })
+          })
+      }
+      if (scene.type === 'comparison') {
+        new Setting(sceneEl)
+          .setName('左侧对比')
+          .addText((input) => {
+            input.inputEl.maxLength = 20
+            input.setPlaceholder('标签')
+              .setValue(scene.left?.label ?? '')
+              .onChange((value) => { scene.left = { label: value.trim(), value: scene.left?.value ?? '' } })
+          })
+          .addText((input) => {
+            input.inputEl.maxLength = 44
+            input.setPlaceholder('内容')
+              .setValue(scene.left?.value ?? '')
+              .onChange((value) => { scene.left = { label: scene.left?.label ?? '', value: value.trim() } })
+          })
+        new Setting(sceneEl)
+          .setName('右侧对比')
+          .addText((input) => {
+            input.inputEl.maxLength = 20
+            input.setPlaceholder('标签')
+              .setValue(scene.right?.label ?? '')
+              .onChange((value) => { scene.right = { label: value.trim(), value: scene.right?.value ?? '' } })
+          })
+          .addText((input) => {
+            input.inputEl.maxLength = 44
+            input.setPlaceholder('内容')
+              .setValue(scene.right?.value ?? '')
+              .onChange((value) => { scene.right = { label: scene.right?.label ?? '', value: value.trim() } })
+          })
+      }
+      if (['flow', 'steps', 'timeline', 'summary'].includes(scene.type)) {
+        new Setting(sceneEl)
+          .setName('画面要点')
+          .setDesc('每行一个；需要补充说明时写成“要点｜说明”。')
+          .addTextArea((input) => {
+            input.inputEl.rows = 4
+            input.inputEl.maxLength = 400
+            input.setValue(editableItems(scene))
+              .onChange((value) => { updateEditableItems(scene, value) })
+          })
+      }
+      new Setting(sceneEl)
+        .setName('本幕旁白')
+        .setDesc('这段文字会直接用于 Fish Audio 配音，也是自动字幕的唯一来源。')
+        .addTextArea((input) => {
+          input.inputEl.rows = 6
+          input.inputEl.maxLength = 360
+          input.setValue(scene.voiceover)
+            .onChange((value) => {
+              scene.voiceover = value.trim()
+              refreshCount()
+            })
+        })
+    })
+
+    contentEl.createEl('h3', { text: '生成设置' })
     const checks = [
       ['Node.js 22+', this.environment.node],
       ['FFmpeg', this.environment.ffmpeg],
@@ -365,7 +531,7 @@ class ArticleVideoConfirmModal extends Modal {
         .map((item) => item === 'node' ? 'Node.js 22+' : 'FFmpeg / FFprobe')
       contentEl.createEl('p', {
         text: this.environment.installer.canAutoInstall
-          ? `AI霖子已检测出缺少：${missingLabels.join('、')}。点击一次“同意安装环境并继续”，系统会安装、复检并接着生成，不会再问第二次。`
+          ? `AI霖子已检测出缺少：${missingLabels.join('、')}。点击一次“确认脚本、安装环境并生成”，系统会安装、复检并接着生成，不会再问第二次。`
           : `AI霖子已检测出缺少：${missingLabels.join('、')}。这台电脑还没有可用的 Homebrew（Mac）或 WinGet（Windows），为避免越权，不能静默安装系统包管理器。请先使用下面的官方入口安装。`,
         cls: 'setting-item-description',
       })
@@ -384,16 +550,6 @@ class ArticleVideoConfirmModal extends Modal {
           }))
       }
     }
-
-    new Setting(contentEl)
-      .setName('视频时长')
-      .setDesc('默认 60 秒；如果原指令写了 30/90/120 秒，会自动带入。')
-      .addDropdown((dropdown) => {
-        for (const value of ARTICLE_VIDEO_DURATIONS) dropdown.addOption(`${value}`, `${value} 秒`)
-        dropdown.setValue(`${this.options.duration}`).onChange((value) => {
-          this.options.duration = Number(value) as ArticleVideoDuration
-        })
-      })
 
     new Setting(contentEl)
       .setName('Fish Audio API Key')
@@ -434,7 +590,7 @@ class ArticleVideoConfirmModal extends Modal {
       .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
       .addButton((button) => {
         button.setCta().setButtonText(
-          this.environment.ok ? '确认并生成 MP4' : '同意安装环境并继续',
+          this.environment.ok ? '确认脚本并生成视频' : '确认脚本、安装环境并生成',
         )
         button.setDisabled(!this.environment.ok && !this.environment.installer.canAutoInstall)
         button.onClick(() => {
@@ -442,6 +598,15 @@ class ArticleVideoConfirmModal extends Modal {
             new Notice('请先填写 Fish Audio API Key 和音色 ID；只需在这个窗口填一次。', 7000)
             return
           }
+          const approved = parseArticleVideoStoryboard(
+            JSON.stringify(this.options.storyboard),
+            this.options.draftTarget,
+          )
+          if (!approved) {
+            new Notice('脚本还不完整：请检查标题、每幕画面标题、旁白，以及数字/对比/步骤场景的必填内容。', 8000)
+            return
+          }
+          this.options.storyboard = approved
           this.options.installMissing = !this.environment.ok
           this.submitted = true
           this.resolvePromise({ ...this.options })
@@ -734,13 +899,13 @@ async function buildProjectHtml(
   })
   const sceneHtml = storyboard.scenes.map((scene, index) => {
     const timing = timings.scenes[index]
-    return `<section id="scene-${index + 1}" class="clip scene scene-${scene.type}" data-start="${timing.start.toFixed(3)}" data-duration="${timing.duration.toFixed(3)}" data-track-index="1"><div class="grid"></div><header><span>ARTICLE TO VIDEO</span><b>${String(index + 1).padStart(2, '0')} / ${String(storyboard.scenes.length).padStart(2, '0')}</b></header><main>${sceneBody(scene)}</main><footer><span>${escapeHtml(storyboard.brand.name)}</span><i></i><span>${escapeHtml(storyboard.title)}</span></footer></section>`
+    return `<section id="scene-${index + 1}" class="clip scene scene-${scene.type}" data-start="${timing.start.toFixed(3)}" data-duration="${timing.duration.toFixed(3)}" data-track-index="1"><div class="grid"></div><header><b>${String(index + 1).padStart(2, '0')} / ${String(storyboard.scenes.length).padStart(2, '0')}</b></header><main>${sceneBody(scene)}</main><footer><span>${escapeHtml(storyboard.title)}</span></footer></section>`
   }).join('\n')
   const captionHtml = captions.map((caption, index) => `<div id="caption-${index + 1}" class="clip caption" data-start="${caption.start.toFixed(3)}" data-duration="${Math.max(0.2, caption.end - caption.start - 0.02).toFixed(3)}" data-track-index="2"><span>${escapeHtml(caption.text)}</span></div>`).join('\n')
   const brand = storyboard.brand
   const html = `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=1080,height=1440"><title>${escapeHtml(storyboard.title)}</title><style>
 @font-face{font-family:InfoSans;src:local("PingFang SC"),local("Microsoft YaHei"),local("Noto Sans CJK SC")}@font-face{font-family:InfoSerif;src:local("Songti SC"),local("STSong")}
-:root{--bg:${brand.background};--ink:${brand.primary};--accent:${brand.accent}}*{box-sizing:border-box;margin:0;padding:0}html,body,#root{width:1080px;height:1440px;overflow:hidden;background:var(--bg);color:var(--ink);font-family:InfoSans,sans-serif}.scene{position:absolute;inset:0;background:radial-gradient(circle at 86% 12%,rgba(242,140,40,.13),transparent 24%),var(--bg);overflow:hidden}.grid{position:absolute;inset:0;opacity:.08;background-image:linear-gradient(var(--ink) 1px,transparent 1px),linear-gradient(90deg,var(--ink) 1px,transparent 1px);background-size:72px 72px;mask-image:linear-gradient(to bottom,black,transparent 72%)}header{position:absolute;z-index:2;top:66px;left:78px;right:78px;padding-bottom:22px;border-bottom:2px solid rgba(23,59,108,.18);display:flex;justify-content:space-between;font-size:24px;font-weight:850;letter-spacing:2px}header span{padding:9px 16px;border:2px solid var(--ink);border-radius:999px;background:#fffdf2}main{position:absolute;z-index:2;left:78px;right:78px;top:174px;bottom:250px;display:flex;flex-direction:column;justify-content:center;gap:32px}h1{font-size:84px;line-height:1.18;letter-spacing:-3px;text-wrap:balance}p{font-size:35px;line-height:1.5;font-weight:620;max-width:900px}.accent{width:180px;height:12px;background:var(--accent);transform:skewX(-26deg)}.quote-mark{font-family:InfoSerif,serif;font-size:240px;line-height:.35;color:var(--accent)}h1.quote{font-family:InfoSerif,serif;font-size:78px;line-height:1.34}.number{display:flex;align-items:flex-end;gap:20px;color:var(--accent);font-size:310px;line-height:.8;font-weight:950;letter-spacing:-16px}.number small{font-size:58px;letter-spacing:0;margin-bottom:30px}.compare{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:stretch}.compare article{height:470px;padding:42px 34px;border:3px solid var(--ink);border-radius:26px;display:flex;flex-direction:column;justify-content:center;gap:34px;background:#fffdf5}.compare article.right{background:var(--ink);color:var(--bg);box-shadow:14px 16px 0 var(--accent)}.compare b{font-size:27px;letter-spacing:3px}.compare strong{font-size:48px;line-height:1.36}.compare i{position:absolute;z-index:3;left:50%;top:50%;transform:translate(-50%,-50%);width:88px;height:88px;border:4px solid var(--ink);border-radius:50%;display:grid;place-items:center;background:var(--accent);font-style:normal;font-size:25px;font-weight:950}.items{display:grid;grid-template-columns:1fr 1fr;gap:20px}.items article{min-height:170px;padding:24px;border:2px solid var(--ink);border-radius:18px;background:#fffdf5;display:flex;gap:20px;align-items:center;box-shadow:7px 8px 0 rgba(23,59,108,.12)}.items span{flex:none;width:58px;height:58px;border:2px solid var(--ink);border-radius:12px;display:grid;place-items:center;background:var(--accent);font-weight:900}.items strong{display:block;font-size:34px;line-height:1.22}.items small{display:block;margin-top:8px;font-size:22px;line-height:1.35;opacity:.72}footer{position:absolute;z-index:2;left:78px;right:78px;bottom:54px;display:flex;align-items:center;gap:18px;font-size:19px;font-weight:700;opacity:.62;white-space:nowrap;overflow:hidden}footer i{height:2px;background:var(--ink);flex:1}.caption{position:absolute;z-index:10;left:78px;right:78px;bottom:120px;height:88px;display:flex;align-items:center;justify-content:center;text-align:center}.caption span{max-width:900px;padding:15px 28px;border-radius:14px;background:rgba(23,59,108,.93);color:white;font-size:34px;line-height:1.35;font-weight:800;box-shadow:0 8px 24px rgba(0,0,0,.12)}.scene main>*{animation:rise .7s cubic-bezier(.22,.85,.3,1) both}.scene main>*:nth-child(2){animation-delay:.12s}.scene main>*:nth-child(3){animation-delay:.24s}@keyframes rise{from{opacity:0;transform:translateY(34px)}to{opacity:1;transform:translateY(0)}}
+:root{--bg:${brand.background};--ink:${brand.primary};--accent:${brand.accent}}*{box-sizing:border-box;margin:0;padding:0}html,body,#root{width:1080px;height:1440px;overflow:hidden;background:var(--bg);color:var(--ink);font-family:InfoSans,sans-serif}.scene{position:absolute;inset:0;background:radial-gradient(circle at 86% 12%,rgba(242,140,40,.13),transparent 24%),var(--bg);overflow:hidden}.grid{position:absolute;inset:0;opacity:.08;background-image:linear-gradient(var(--ink) 1px,transparent 1px),linear-gradient(90deg,var(--ink) 1px,transparent 1px);background-size:72px 72px;mask-image:linear-gradient(to bottom,black,transparent 72%)}header{position:absolute;z-index:2;top:66px;left:78px;right:78px;padding-bottom:22px;border-bottom:2px solid rgba(23,59,108,.18);display:flex;justify-content:flex-end;font-size:24px;font-weight:850;letter-spacing:2px}main{position:absolute;z-index:2;left:78px;right:78px;top:174px;bottom:250px;display:flex;flex-direction:column;justify-content:center;gap:32px}h1{font-size:84px;line-height:1.18;letter-spacing:-3px;text-wrap:balance}p{font-size:35px;line-height:1.5;font-weight:620;max-width:900px}.accent{width:180px;height:12px;background:var(--accent);transform:skewX(-26deg)}.quote-mark{font-family:InfoSerif,serif;font-size:240px;line-height:.35;color:var(--accent)}h1.quote{font-family:InfoSerif,serif;font-size:78px;line-height:1.34}.number{display:flex;align-items:flex-end;gap:20px;color:var(--accent);font-size:310px;line-height:.8;font-weight:950;letter-spacing:-16px}.number small{font-size:58px;letter-spacing:0;margin-bottom:30px}.compare{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:stretch}.compare article{height:470px;padding:42px 34px;border:3px solid var(--ink);border-radius:26px;display:flex;flex-direction:column;justify-content:center;gap:34px;background:#fffdf5}.compare article.right{background:var(--ink);color:var(--bg);box-shadow:14px 16px 0 var(--accent)}.compare b{font-size:27px;letter-spacing:3px}.compare strong{font-size:48px;line-height:1.36}.compare i{position:absolute;z-index:3;left:50%;top:50%;transform:translate(-50%,-50%);width:88px;height:88px;border:4px solid var(--ink);border-radius:50%;display:grid;place-items:center;background:var(--accent);font-style:normal;font-size:25px;font-weight:950}.items{display:grid;grid-template-columns:1fr 1fr;gap:20px}.items article{min-height:170px;padding:24px;border:2px solid var(--ink);border-radius:18px;background:#fffdf5;display:flex;gap:20px;align-items:center;box-shadow:7px 8px 0 rgba(23,59,108,.12)}.items span{flex:none;width:58px;height:58px;border:2px solid var(--ink);border-radius:12px;display:grid;place-items:center;background:var(--accent);font-weight:900}.items strong{display:block;font-size:34px;line-height:1.22}.items small{display:block;margin-top:8px;font-size:22px;line-height:1.35;opacity:.72}footer{position:absolute;z-index:2;left:78px;right:78px;bottom:54px;display:flex;justify-content:flex-end;text-align:right;font-size:19px;font-weight:700;opacity:.62;white-space:nowrap;overflow:hidden}.caption{position:absolute;z-index:10;left:78px;right:78px;bottom:120px;height:88px;display:flex;align-items:center;justify-content:center;text-align:center}.caption span{max-width:900px;padding:15px 28px;border-radius:14px;background:rgba(23,59,108,.93);color:white;font-size:34px;line-height:1.35;font-weight:800;box-shadow:0 8px 24px rgba(0,0,0,.12)}.scene main>*{animation:rise .7s cubic-bezier(.22,.85,.3,1) both}.scene main>*:nth-child(2){animation-delay:.12s}.scene main>*:nth-child(3){animation-delay:.24s}@keyframes rise{from{opacity:0;transform:translateY(34px)}to{opacity:1;transform:translateY(0)}}
 </style></head><body><div id="root" data-composition-id="main" data-no-timeline data-width="1080" data-height="1440" data-duration="${timings.totalDuration.toFixed(3)}" data-fps="30">${sceneHtml}${captionHtml}<audio id="narration-audio" src="audio/narration.wav" data-start="0" data-duration="${timings.totalDuration.toFixed(3)}" data-track-index="10" data-volume="1"></audio></div></body></html>`
   await fs.writeFile(join(project, 'index.html'), html, 'utf8')
   await fs.writeFile(
@@ -842,29 +1007,71 @@ export async function runArticleToVideo(
   const sourcePath = current.path
   const sourceName = current.basename
   const requestedDuration = articleVideoDurationFromText(requestText)
+  const sourceHash = createHash('sha256').update(sourceText).digest('hex')
   const statusId = plugin.reportSkillStatus(
-    `🔒 ${ARTICLE_VIDEO_DISPLAY_NAME} · 已锁定当前文章《${sourceName}》，正在自动检查本机环境…`,
+    `🔒 ${ARTICLE_VIDEO_DISPLAY_NAME} · 已锁定当前文章《${sourceName}》，正在起草可修改脚本并自动检测本机环境…`,
   )
-  let environment = await detectArticleVideoEnvironment()
+  const environmentPromise = detectArticleVideoEnvironment()
+  let resumable: Awaited<ReturnType<typeof findResumableProject>> = null
+  let draftStoryboard: ArticleVideoStoryboard
+  let environment: ArticleVideoEnvironmentReport
+  try {
+    resumable = await findResumableProject(
+      plugin,
+      sourcePath,
+      sourceHash,
+      requestedDuration,
+    )
+    if (resumable) {
+      draftStoryboard = resumable.storyboard
+      plugin.reportSkillStatus('♻️ 已恢复上次失败项目的脚本草稿；确认时若没有改动，还会复用已有配音。', statusId)
+    } else {
+      plugin.reportSkillStatus(
+        `📝 正在把《${sourceName}》起草成约 ${requestedDuration} 秒的分镜与旁白；这里只是起草目标，最终时长以你确认后的旁白为准…`,
+        statusId,
+      )
+      const rawStoryboard = await plugin.apiText('/api/plugin/v1/skills/article-to-video', {
+        text: sourceText,
+        sourceTitle: sourceName,
+        duration: requestedDuration,
+        style: 'minimal-infographic',
+      })
+      const parsedStoryboard = parseArticleVideoStoryboard(rawStoryboard, requestedDuration)
+      if (!parsedStoryboard) throw new Error('AI 返回的脚本没有通过结构校验，系统已停止，未创建项目或消耗 Fish Audio 额度。')
+      draftStoryboard = parsedStoryboard
+    }
+    environment = await environmentPromise
+  } catch (error) {
+    const message = userFacingError(error)
+    plugin.reportSkillStatus(
+      `❌ ${ARTICLE_VIDEO_DISPLAY_NAME} 起草脚本失败：${message}\n\n没有创建视频项目，也没有消耗 Fish Audio 额度。`,
+      statusId,
+    )
+    new Notice(`❌ 视频脚本生成失败：${message}`, 10_000)
+    return
+  }
   plugin.reportSkillStatus(
     environment.ok
-      ? `✅ ${ARTICLE_VIDEO_DISPLAY_NAME} · 已锁定《${sourceName}》并完成环境检测。请在弹窗中一次确认，之后自动生成到 MP4。`
-      : `⚠️ ${ARTICLE_VIDEO_DISPLAY_NAME} · 已自动完成环境检测。弹窗会列出缺失项和可用的一键安装方式，不需要你自己运行检测命令。`,
+      ? `✅ 视频脚本草稿与环境检测已完成。请在弹窗直接修改脚本；点击一次确认后才会配音并连续生成 MP4。`
+      : `⚠️ 视频脚本草稿与环境检测已完成。请先修改脚本；确认按钮会同时授权安装缺失环境并继续生成，不需要你自己检测。`,
     statusId,
   )
-  const confirmModal = new ArticleVideoConfirmModal(
+  const scriptModal = new ArticleVideoScriptModal(
     plugin.app,
     sourceName,
-    requestedDuration,
+    draftStoryboard,
     plugin.getFishAudioApiKey(),
     plugin.settings.articleVideoFishVoiceId,
     plugin.settings.articleVideoFishModel,
     environment,
   )
-  confirmModal.open()
-  const options = await confirmModal.result
+  scriptModal.open()
+  const options = await scriptModal.result
   if (!options) {
-    plugin.reportSkillStatus(`已取消“${ARTICLE_VIDEO_DISPLAY_NAME}”，《${sourceName}》没有生成任何新项目。`, statusId)
+    plugin.reportSkillStatus(
+      `已取消“${ARTICLE_VIDEO_DISPLAY_NAME}”。脚本没有定稿，没有创建新项目，也没有消耗 Fish Audio 额度。`,
+      statusId,
+    )
     return
   }
   if (options.installMissing) {
@@ -894,66 +1101,53 @@ export async function runArticleToVideo(
   await plugin.saveSettings()
 
   let project = ''
-  const sourceHash = createHash('sha256').update(sourceText).digest('hex')
   const workflowBase: Omit<WorkflowRecord, 'stage' | 'updatedAt'> = {
     version: 1,
     sourcePath,
     sourceHash,
-    requestedDuration: options.duration,
+    requestedDuration: options.draftTarget,
   }
   try {
-    const resumable = await findResumableProject(
-      plugin,
-      sourcePath,
-      sourceHash,
-      options.duration,
-    )
-    let storyboard: ArticleVideoStoryboard
+    const storyboard = options.storyboard
     let timings: NarrationTimeline
-    if (resumable) {
+    const canReuseNarration = resumable &&
+      storyboardFingerprint(resumable.storyboard) === storyboardFingerprint(storyboard)
+    if (canReuseNarration && resumable) {
       project = resumable.project
-      storyboard = resumable.storyboard
       timings = resumable.timings
       plugin.reportSkillStatus(
-        `♻️ 已找到同一文章、同一时长的失败项目，正在复用已有分镜和 Fish Audio 配音；不会重复调用或消耗配音额度。`,
+        '♻️ 确认后的脚本与上次完全一致，正在复用已有 Fish Audio 配音；不会重复消耗配音额度。',
         statusId,
       )
       await writeWorkflow(project, { ...workflowBase, stage: 'narration', updatedAt: new Date().toISOString() })
     } else {
-      plugin.reportSkillStatus(`🤖 1/4 正在把《${sourceName}》压缩成 ${options.duration} 秒分镜…`, statusId)
-      const rawStoryboard = await plugin.apiText('/api/plugin/v1/skills/article-to-video', {
-        text: sourceText,
-        sourceTitle: sourceName,
-        duration: options.duration,
-        style: 'minimal-infographic',
-      })
-      const parsedStoryboard = parseArticleVideoStoryboard(rawStoryboard, options.duration)
-      if (!parsedStoryboard) throw new Error('AI 返回的分镜没有通过结构校验，系统已停止，未消耗 Fish Audio 额度。')
-      storyboard = parsedStoryboard
       project = await uniqueProjectPath(plugin, storyboard.title || sourceName)
       await fs.mkdir(project, { recursive: false })
       await fs.writeFile(join(project, 'storyboard.json'), `${JSON.stringify(storyboard, null, 2)}\n`, 'utf8')
       await writeWorkflow(project, { ...workflowBase, stage: 'storyboard', updatedAt: new Date().toISOString() })
 
-      plugin.reportSkillStatus(`🎙️ 2/4 分镜已完成，正在用 Fish Audio 生成 ${storyboard.scenes.length} 段配音…`, statusId)
+      plugin.reportSkillStatus(
+        `${resumable ? '✏️ 脚本已经修改，将按定稿重新配音。' : '✅ 脚本已经定稿。'}\n🎙️ 1/3 正在用 Fish Audio 生成 ${storyboard.scenes.length} 段配音…`,
+        statusId,
+      )
       timings = await buildNarration(
         project,
         storyboard,
         environment,
         options,
         (currentIndex, total) => plugin.reportSkillStatus(
-          `🎙️ 2/4 Fish Audio 配音 ${currentIndex}/${total}：《${storyboard.scenes[currentIndex - 1]?.headline ?? ''}》`,
+          `🎙️ 1/3 Fish Audio 配音 ${currentIndex}/${total}：《${storyboard.scenes[currentIndex - 1]?.headline ?? ''}》`,
           statusId,
         ),
       )
       await writeWorkflow(project, { ...workflowBase, stage: 'narration', updatedAt: new Date().toISOString() })
     }
 
-    plugin.reportSkillStatus('🎨 3/4 配音与时间轴已完成，正在本机构建淡黄极简信息图和字幕…', statusId)
+    plugin.reportSkillStatus('🎨 2/3 配音与真实时间轴已完成，正在本机构建无水印的淡黄极简信息图和字幕…', statusId)
     await buildProjectHtml(project, storyboard, timings)
     await writeWorkflow(project, { ...workflowBase, stage: 'build', updatedAt: new Date().toISOString() })
 
-    plugin.reportSkillStatus('🎬 4/4 正在本机渲染 MP4 并核验尺寸、时长和音轨；请保持 Obsidian 打开…', statusId)
+    plugin.reportSkillStatus('🎬 3/3 正在本机渲染 MP4 并核验尺寸、时长和音轨；请保持 Obsidian 打开…', statusId)
     await writeWorkflow(project, { ...workflowBase, stage: 'render', updatedAt: new Date().toISOString() })
     const result = await renderProject(project, environment, timings.totalDuration)
     const outputPath = normalizePath(relative(vaultBasePath(plugin), result.output).replaceAll('\\', '/'))
