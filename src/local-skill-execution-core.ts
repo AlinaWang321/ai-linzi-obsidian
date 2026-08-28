@@ -4,6 +4,7 @@ export type LocalSkillActionProgram = (typeof LOCAL_SKILL_ACTION_PROGRAMS)[numbe
 export const LOCAL_SKILL_ACTION_MIN_TIMEOUT_SECONDS = 5
 export const LOCAL_SKILL_ACTION_MAX_TIMEOUT_SECONDS = 30 * 60
 export const LOCAL_SKILL_ACTION_MAX_ARGS = 48
+export const LOCAL_SKILL_ACTION_MAX_ARG_CHARS = 8_000
 export const LOCAL_SKILL_ACTION_MAX_TOTAL_ARG_CHARS = 8_000
 export const LOCAL_SKILL_ACTION_MAX_OUTPUTS = 20
 
@@ -55,13 +56,22 @@ function portablePath(value: unknown, allowedRoots: string[]): string | null {
   return `$${match[1]}/${parts.join('/')}`
 }
 
-function cleanArgs(value: unknown): string[] | null {
+function cleanArgs(value: unknown, normalizeJsonChunks = false): string[] | null {
   if (!Array.isArray(value) || value.length > LOCAL_SKILL_ACTION_MAX_ARGS) return null
+  const rawItems = value as unknown[]
   const args: string[] = []
   let totalChars = 0
-  for (const item of value) {
-    // eslint-disable-next-line no-control-regex -- 进程参数不能包含 NUL 或换行。
-    if (typeof item !== 'string' || item.length > 1_000 || /[\u0000\r\n]/.test(item)) return null
+  for (let index = 0; index < rawItems.length; index += 1) {
+    const rawItem = rawItems[index]
+    const item = normalizeJsonChunks && rawItems[index - 1] === '--json-chunk' && typeof rawItem === 'string'
+      ? rawItem.replace(/[\r\n]+/g, '')
+      : rawItem
+    if (
+      typeof item !== 'string' ||
+      item.length > LOCAL_SKILL_ACTION_MAX_ARG_CHARS ||
+      // eslint-disable-next-line no-control-regex -- 进程参数不能包含 NUL 或换行。
+      /[\u0000\r\n]/.test(item)
+    ) return null
     totalChars += item.length
     if (totalChars > LOCAL_SKILL_ACTION_MAX_TOTAL_ARG_CHARS) return null
     args.push(item)
@@ -119,7 +129,10 @@ export function prepareLocalSkillAction(raw: unknown): LocalSkillActionPreparati
   const record = raw as Record<string, unknown>
   const label = text(record.label, 80)
   const program = text(record.program, 20) as LocalSkillActionProgram
-  const args = cleanArgs(record.args)
+  // Models often serialize a bounded storyboard as readable multi-line JSON.
+  // Process execution still receives a single line, and every non JSON-chunk
+  // argument keeps the existing hard newline rejection.
+  const args = cleanArgs(record.args, program === 'node')
   const cwd = portablePath(record.cwd ?? '$VAULT', ['SKILL', 'VAULT', 'OUTPUT', 'TEMP'])
   const timeoutRaw = Number(record.timeoutSeconds)
   const timeoutSeconds = Number.isFinite(timeoutRaw)

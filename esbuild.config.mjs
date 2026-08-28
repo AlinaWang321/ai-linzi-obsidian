@@ -84,6 +84,7 @@ const ctx = await esbuild.context({
     'os',
     'path',
     'child_process',
+    'crypto',
     '@codemirror/*',
     '@lezer/*',
   ],

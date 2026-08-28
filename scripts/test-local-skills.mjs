@@ -441,6 +441,32 @@ assert.match(
 )
 assert.match(
   __mainForMenu,
+  /const pendingLocalSkillPath = pendingVaultQuestion\.message\.localSkillPath[\s\S]{0,420}this\.localSkills\.resolvePath\(pendingLocalSkillPath\)[\s\S]{0,700}localSkillMatch = pendingLocalSkill[\s\S]{0,120}\{ kind: 'matched', skill: pendingLocalSkill \}/,
+  '本地 Skill 的 ask_user 回答必须恢复精确 Skill 与本机执行上下文，不能误入普通 Vault 工作流',
+)
+assert.match(
+  __mainForMenu,
+  /const unansweredVaultQuestion = this\.recentUnansweredVaultQuestion\(\)[\s\S]{0,300}isTerminalVaultQuestionAnswer\(text, unansweredVaultQuestion\.question\)[\s\S]{0,700}不会再调用模型或执行本地动作/,
+  '用户选择停止时必须在本机直接结束；即使旧问题超过续跑时限，也不能再发给模型形成澄清循环',
+)
+const __sendStart = __mainForMenu.indexOf('private async send(options: SendOptions = {})')
+const __ordinaryTurnStart = __mainForMenu.indexOf('const attachmentSummary = this.attachmentTurnSummary()', __sendStart)
+const __sendPreamble = __mainForMenu.slice(__sendStart, __ordinaryTurnStart)
+assert.ok(__sendStart >= 0 && __ordinaryTurnStart > __sendStart, '必须能定位主对话发送入口与普通对话入口')
+assert.match(__sendPreamble, /isTerminalVaultQuestionAnswer\(typedText, unansweredVaultQuestion\.question\)/)
+assert.match(__sendPreamble, /不会再调用模型或执行本地动作/)
+assert.match(__sendPreamble, /this\.renderMessages\(\)[\s\S]*?return/)
+assert.ok(
+  __sendPreamble.indexOf('不会再调用模型或执行本地动作') < __sendPreamble.indexOf('isBuiltInArticleVideoIntent(typedText)'),
+  '终止选项必须在新任务快路由前本机收口，避免出现思考中、扣积分或再次追问',
+)
+assert.match(
+  __mainForMenu,
+  /requiredScriptRead\([\s\S]{0,260}status: 'script_read_required'[\s\S]{0,420}confirmLocalSkillAction/,
+  '未读脚本必须在弹出执行确认前路由回读取，不能留下 0ms 假失败记录',
+)
+assert.match(
+  __mainForMenu,
   /你是想创建一个新的 Skill，还是修改下面某个已有 Skill/,
   '找不到现有目标时必须让用户确认新建还是修改，不能直接报错结束',
 )

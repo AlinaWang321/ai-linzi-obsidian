@@ -521,6 +521,11 @@ assert.match(
 )
 assert.match(
   mainSource,
+  /if \(input\.localSkillContext && nextBody && previousResponseId\)[\s\S]{0,900}disableTools: true[\s\S]{0,500}if \(finalText\) return finalText/,
+  '本地 Skill 读满工具轮次后必须禁用工具再收尾一次，不能直接报 no final text',
+)
+assert.match(
+  mainSource,
   /answer = stripVaultInternalTurnMarkers\(answer\)/,
   '所有主对话出口都必须剥离内部路由标记',
 )

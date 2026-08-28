@@ -11,6 +11,37 @@ const EXPLICIT_CURRENT_NOTE =
 const CURRENT_NOTE_ACTION =
   /(?:读|读取|看看|查看|分析|总结|整理|提炼|检查|评价|诊断|建议|判断|回答|规划|设计|生成|变成|转成|转换(?:成|为)|做|写|修改|改写|润色|续写|翻译|压缩|扩写|优化|排版|配图|处理|覆盖|替换全文|整篇替换|写回|更新到|更新进|删除|删掉|移入回收站|移入废纸篓)/u
 
+// 当前笔记正文属于用户材料。提到“当前笔记”不等于授权；只要同一句里明确
+// 说不要读取/使用/附带，否定语义就必须先于上面的关键词命中。这里单独处理
+// 内容来源，不和“不要写入”混用，避免把只读请求误判成“不要读取”。
+const SOURCE_DENIAL = '(?:不要|不得|不用|无需|别|勿|禁止|不允许|不准)'
+const SOURCE_ACTION =
+  '(?:读(?:取)?|使用|参考|查看|分析|处理|带上|附带|载入|上传|发送(?:给模型)?|作为(?:本轮)?(?:主要)?材料|当作(?:本轮)?(?:主要)?材料)'
+const CURRENT_NOTE_SOURCE =
+  '(?:(?:当前|这篇|这份|这个|正在打开的|刚打开的|我打开的|屏幕上的).{0,8}(?:笔记|文档|文件|文章|逐字稿|稿子|内容|记录|会议|周报|日报|复盘)|这段(?:文字|内容)?)'
+const CLAUSE_CHARS = '[^，,。！!？?；;\\n]'
+
+const CURRENT_NOTE_SOURCE_DENIAL = new RegExp(
+  `(?:${SOURCE_DENIAL}(?!只(?:${SOURCE_ACTION}))${CLAUSE_CHARS}{0,24}?${SOURCE_ACTION}${CLAUSE_CHARS}{0,16}?${CURRENT_NOTE_SOURCE}` +
+    `|${SOURCE_DENIAL}${CLAUSE_CHARS}{0,24}?${CURRENT_NOTE_SOURCE}${CLAUSE_CHARS}{0,16}?${SOURCE_ACTION}` +
+    `|${CURRENT_NOTE_SOURCE}${CLAUSE_CHARS}{0,16}?${SOURCE_DENIAL}${CLAUSE_CHARS}{0,16}?${SOURCE_ACTION})`,
+  'u',
+)
+
+const ALL_USER_CONTENT_SOURCE =
+  '(?:(?:(?:任何|全部|所有)(?:我的|本地|业务|用户)?|(?:我的|本地|业务|用户))(?:文件|笔记|文档|文章|材料|内容|正文))'
+const ALL_USER_CONTENT_SOURCE_DENIAL = new RegExp(
+  `(?:${SOURCE_DENIAL}(?!只(?:${SOURCE_ACTION}))${CLAUSE_CHARS}{0,24}?${SOURCE_ACTION}${CLAUSE_CHARS}{0,16}?${ALL_USER_CONTENT_SOURCE}` +
+    `|${ALL_USER_CONTENT_SOURCE}${CLAUSE_CHARS}{0,20}?${SOURCE_DENIAL}${CLAUSE_CHARS}{0,16}?${SOURCE_ACTION})`,
+  'u',
+)
+
+const CURRENT_NOTE_SCOPE_EXPANSION = new RegExp(
+  `${SOURCE_DENIAL}(?:只|仅)${SOURCE_ACTION}${CLAUSE_CHARS}{0,12}?${CURRENT_NOTE_SOURCE}` +
+    `${CLAUSE_CHARS}{0,28}?(?:还要|也要|同时|并且|结合|参考)`,
+  'u',
+)
+
 const CONTINUING_CURRENT_NOTE =
   /^(?:继续|接着|再(?:帮我)?|然后|按这个|基于这个|把它|把这篇|把这段|改成|修改为|再改|再优化|再润色|再短一点|再长一点|同样)/u
 
@@ -55,12 +86,34 @@ export function selectCurrentOpenMarkdownPath(
 
 export function isExplicitCurrentNoteIntent(text: string): boolean {
   const normalized = text.normalize('NFKC').replace(/\s+/g, '')
+  if (
+    isAllUserContentSourceExplicitlyDenied(normalized) ||
+    isCurrentNoteSourceExplicitlyDenied(normalized)
+  ) return false
   if (!EXPLICIT_CURRENT_NOTE.test(normalized)) return false
   return CURRENT_NOTE_ACTION.test(normalized)
 }
 
+/** 明确拒绝读取当前打开/上文锁定的那篇材料。 */
+export function isCurrentNoteSourceExplicitlyDenied(text: string): boolean {
+  const normalized = text.normalize('NFKC').replace(/\s+/g, '')
+  // “不要只读取当前笔记，还要结合其他资料”是在扩大范围，当前笔记仍获授权。
+  if (CURRENT_NOTE_SCOPE_EXPANSION.test(normalized)) return false
+  return CURRENT_NOTE_SOURCE_DENIAL.test(normalized)
+}
+
+/** 明确拒绝读取任何用户/业务正文；Skill 自身的说明和脚本不属于这里。 */
+export function isAllUserContentSourceExplicitlyDenied(text: string): boolean {
+  const normalized = text.normalize('NFKC').replace(/\s+/g, '')
+  return ALL_USER_CONTENT_SOURCE_DENIAL.test(normalized)
+}
+
 export function shouldUseCurrentNote(text: string, continuingCurrentNoteTask = false): boolean {
   const normalized = text.normalize('NFKC').replace(/\s+/g, '')
+  if (
+    isAllUserContentSourceExplicitlyDenied(normalized) ||
+    isCurrentNoteSourceExplicitlyDenied(normalized)
+  ) return false
   if (isExplicitCurrentNoteIntent(normalized)) return true
   return continuingCurrentNoteTask && CONTINUING_CURRENT_NOTE.test(normalized)
 }
@@ -76,6 +129,10 @@ export function resolveCurrentNoteReference(
   hasLockedContext: boolean,
 ): CurrentNoteReference {
   const normalized = text.normalize('NFKC').replace(/\s+/g, '')
+  if (
+    isAllUserContentSourceExplicitlyDenied(normalized) ||
+    isCurrentNoteSourceExplicitlyDenied(normalized)
+  ) return 'none'
   if (isExplicitCurrentNoteIntent(normalized)) {
     if (ACTIVE_CURRENT_NOTE_REFERENCE.test(normalized)) return 'active'
     return hasLockedContext ? 'locked' : 'active'

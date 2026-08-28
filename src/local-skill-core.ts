@@ -240,6 +240,20 @@ export function localSkillQuestionNamesInputFile(question: string): boolean {
   )
 }
 
+/**
+ * 当前笔记被明确排除后，只有用户真的写出了另一份可定位文件，才允许受限 Skill
+ * 继续做路径元数据匹配。“不要读取任何业务文件，只读取 Skill/create-project”里的
+ * 斜杠是 Skill 内部说明，不是文章输入路径，因此这里只接受内容根别名或文件扩展名。
+ */
+export function localSkillQuestionNamesConcreteInputFile(question: string): boolean {
+  const normalized = question.normalize('NFKC').replace(/[\\／]+/g, '/').replace(/\/{2,}/g, '/')
+  if (normalized.length > 800) return false
+  return (
+    /(?:\$?(?:raw|wiki|output)|原始素材|知识库|输出)(?:文件夹)?\s*\/[^\s，。！？、；：)）]+/iu.test(normalized) ||
+    /[^\s，。！？、；：)）]+\.(?:md|txt|pdf|docx|html?|pptx|xlsx)(?:\s|$|[，。！？、；：)）])/iu.test(normalized)
+  )
+}
+
 function comparablePath(value: string): string {
   return value
     .normalize('NFKC')

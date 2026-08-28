@@ -353,6 +353,16 @@ assert.equal(
 )
 assert.equal(localSkillCore.localSkillQuestionNamesInputFile('处理 Raw//销售逐字稿/沈立冬的咨询逐字稿'), true)
 assert.equal(localSkillCore.localSkillQuestionNamesInputFile(`处理下面粘贴的正文：${'正文'.repeat(500)}`), false)
+assert.equal(
+  localSkillCore.localSkillQuestionNamesConcreteInputFile('不要读取任何业务文件，只读取 Skill/create-project'),
+  false,
+  'Skill 内部斜杠不能冒充文章输入路径',
+)
+assert.equal(
+  localSkillCore.localSkillQuestionNamesConcreteInputFile('不要读取当前笔记，只读取 Output/课堂演示/文章.md'),
+  true,
+  '排除当前笔记后仍允许用户点名另一份准确输入',
+)
 console.log('  ✓ 点名文件仍能唯一锁定为主要输入，但不再阻断整个 Vault 的按需检索')
 const broadScopePrompt = studioCore.buildSkillStudioPrompt({
   name: 'weekly-review',
@@ -765,6 +775,26 @@ assert.equal(extractedQuestion.invalid, false)
 assert.equal(extractedQuestion.question.responseId, 'resp-1')
 assert.equal(extractedQuestion.cleanText, '请补充范围。')
 assert.equal(questionCore.extractVaultQuestion('<<<AI_LINZI_ASK_USER>>>bad').invalid, true)
+assert.equal(
+  questionCore.isTerminalVaultQuestionAnswer('不执行任何操作', {
+    ...pendingQuestion,
+    options: ['重新核验', '不执行任何操作'],
+  }),
+  true,
+  '明确的结束选项必须由本机直接收口，不能再次发给模型循环追问',
+)
+assert.equal(
+  questionCore.isTerminalVaultQuestionAnswer('停止，保留当前 _02 项目', {
+    ...pendingQuestion,
+    options: ['允许修正', '停止，保留当前 _02 项目'],
+  }),
+  true,
+)
+assert.equal(
+  questionCore.isTerminalVaultQuestionAnswer('先不做了', pendingQuestion),
+  false,
+  '不是卡片精确选项的自由文本不能绕过正常澄清流程',
+)
 const webSearchQuestion = {
   ...pendingQuestion,
   kind: 'web-search',
@@ -774,6 +804,11 @@ const webSearchQuestion = {
   webSearchQuery: '2026 内容增长趋势',
   webSearchReason: '补充最新外部数据',
 }
+assert.equal(
+  questionCore.isTerminalVaultQuestionAnswer('仅用现有内容', webSearchQuestion),
+  false,
+  '联网替代方案仍需交回模型继续，不属于终止整个工作流',
+)
 const extractedWebSearch = questionCore.extractVaultQuestion(
   questionCore.formatVaultQuestionMarker(webSearchQuestion),
 )

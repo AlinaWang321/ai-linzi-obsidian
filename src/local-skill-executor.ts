@@ -48,14 +48,40 @@ interface ExpandedAction {
   declaredOutputs: { absolute: string; vaultPath: string }[]
 }
 
+export type LocalSkillEnvironmentProvider = (
+  skillName: string,
+  proposal: LocalSkillActionProposal,
+  context: ActiveLocalSkillContext,
+) => Promise<Readonly<Record<string, string>>> | Readonly<Record<string, string>>
+
 export class LocalSkillExecutor {
   constructor(
     private readonly app: App,
     private readonly outputFolder: () => string,
+    private readonly environmentForAction: LocalSkillEnvironmentProvider = () => ({}),
   ) {}
 
   prepare(raw: unknown): LocalSkillActionPreparation {
     return prepareLocalSkillAction(raw)
+  }
+
+  /**
+   * Return the Skill-relative script path that still needs a complete read.
+   *
+   * This is intentionally checked before showing the execution confirmation:
+   * proposing an action is not an execution attempt, so an unread script must
+   * route the model back to read_skill_file without creating a red 0 ms run.
+   */
+  requiredScriptRead(
+    proposal: LocalSkillActionProposal,
+    context: ActiveLocalSkillContext,
+  ): string | undefined {
+    if (proposal.program !== 'node' && proposal.program !== 'python') return undefined
+    const portable = proposal.args[0]?.replace(/\\/g, '/') ?? ''
+    if (!portable.startsWith('$SKILL/')) return undefined
+    const relativeScriptPath = portable.slice('$SKILL/'.length)
+    const vaultPath = normalizePath(`${context.directory}/${relativeScriptPath}`)
+    return context.fullyReadPaths.includes(vaultPath) ? undefined : relativeScriptPath
   }
 
   async run(
@@ -63,13 +89,16 @@ export class LocalSkillExecutor {
     proposal: LocalSkillActionProposal,
     context: ActiveLocalSkillContext,
   ): Promise<LocalSkillExecutionResult> {
+    this.enforceNetworkPolicy(proposal, context)
     const expanded = await this.expand(proposal, context)
+    const extraEnvironment = await this.environmentForAction(skillName, proposal, context)
     const startedAt = Date.now()
     const result = await runLocalSkillProcess(
       proposal.program,
       expanded.args,
       expanded.cwd,
       proposal.timeoutSeconds * 1_000,
+      extraEnvironment,
     )
     const createdOutputs = await this.createdOutputs(expanded.declaredOutputs)
     const missingDeclaredOutputs = expanded.declaredOutputs
@@ -113,6 +142,21 @@ export class LocalSkillExecutor {
         this.vaultBasePath(),
         resolve(this.vaultBasePath(), context.directory),
       ),
+    }
+  }
+
+  private enforceNetworkPolicy(
+    proposal: LocalSkillActionProposal,
+    context: ActiveLocalSkillContext,
+  ): void {
+    if (!proposal.usesNetwork) return
+    const network = context.runtimePolicy?.network
+    if (network === 'none') throw new Error('当前 Skill 的权限清单明确禁止联网，已拒绝执行')
+    if (
+      network === 'user-configured-tts' &&
+      !/^(?:\$SKILL\/)?scripts\/narrate\.mjs$/i.test(proposal.args[0]?.replace(/\\/g, '/') ?? '')
+    ) {
+      throw new Error('当前 Skill 只允许配音脚本连接用户配置的 TTS 服务')
     }
   }
 
@@ -237,7 +281,10 @@ export class LocalSkillExecutor {
         await stat(absolute)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        if (!declaredAbsolute.has(absolute)) {
+        const containsDeclaredOutput = declaredOutputs.some(
+          (output) => normalize(output.absolute) !== absolute && isWithin(output.absolute, absolute),
+        )
+        if (!declaredAbsolute.has(absolute) && !containsDeclaredOutput) {
           throw new Error(`尚不存在的 Vault 文件必须声明为预计生成：${action.args[index]}`)
         }
       }

@@ -35,6 +35,47 @@ const sharedOutput = core.prepareLocalSkillAction({
 assert.equal(sharedOutput.ok, true)
 assert.equal(sharedOutput.action.shareOutputWithAi, true)
 
+const fiveSceneJsonChunk = JSON.stringify({
+  scenes: Array.from({ length: 5 }, (_, index) => ({
+    id: `s${index + 1}`,
+    headline: `第 ${index + 1} 幕`,
+    voiceover: '这是一段用于验证五幕分镜 JSON 参数可以安全传给当前 Skill 脚本的旁白。'.repeat(8),
+  })),
+})
+assert.ok(fiveSceneJsonChunk.length > 1_000 && fiveSceneJsonChunk.length < 8_000)
+const fiveSceneAction = core.prepareLocalSkillAction({
+  label: '创建五幕分镜',
+  program: 'node',
+  args: ['$SKILL/scripts/create-project.mjs', '--json-chunk', fiveSceneJsonChunk],
+  writes: ['$OUTPUT/project/storyboard.json'],
+})
+assert.equal(fiveSceneAction.ok, true, '5–8 幕所需的有界 JSON 参数必须可执行')
+
+const multilineJsonAction = core.prepareLocalSkillAction({
+  label: '创建多行 JSON 分镜',
+  program: 'node',
+  args: ['$SKILL/scripts/create-project.mjs', '--json-chunk', '{\n  "scenes": []\n}'],
+  writes: ['$OUTPUT/project/storyboard.json'],
+})
+assert.equal(multilineJsonAction.ok, true, '模型生成的多行 JSON chunk 应在执行前安全压成单行')
+assert.equal(multilineJsonAction.action.args[2], '{  "scenes": []}')
+
+const unrelatedMultilineAction = core.prepareLocalSkillAction({
+  label: '普通多行参数',
+  program: 'node',
+  args: ['$SKILL/scripts/write.mjs', 'line 1\nline 2'],
+})
+assert.equal(unrelatedMultilineAction.ok, false, '非 JSON chunk 参数仍必须拒绝换行')
+assert.match(unrelatedMultilineAction.error, /参数格式不正确或数量过多/)
+
+const oversizedJsonAction = core.prepareLocalSkillAction({
+  label: '超大参数',
+  program: 'node',
+  args: ['$SKILL/scripts/create-project.mjs', 'x'.repeat(8_001)],
+})
+assert.equal(oversizedJsonAction.ok, false)
+assert.match(oversizedJsonAction.error, /参数格式不正确或数量过多/)
+
 for (const [label, proposal, expected] of [
   ['拒绝 Python 内联代码', { label: 'x', program: 'python', args: ['-c', 'print(1)'] }, /只能运行当前 Skill/],
   ['拒绝 Node eval', { label: 'x', program: 'node', args: ['-e', 'process.exit()'] }, /只能运行当前 Skill/],

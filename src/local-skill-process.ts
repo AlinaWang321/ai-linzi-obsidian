@@ -24,6 +24,7 @@ export async function runLocalSkillProcess(
   args: string[],
   cwd: string,
   timeout: number,
+  extraEnvironment: Readonly<Record<string, string>> = {},
 ): Promise<LocalSkillProcessResult> {
   for (const candidate of commandCandidates(program)) {
     try {
@@ -32,6 +33,7 @@ export async function runLocalSkillProcess(
         [...candidate.prefixArgs, ...args],
         cwd,
         timeout,
+        extraEnvironment,
       )
     } catch (error) {
       if (!isMissingExecutable(error)) throw error
@@ -88,13 +90,24 @@ function programLabel(program: LocalSkillActionProgram): string {
   return program === 'python' ? 'Python 3' : program === 'node' ? 'Node.js' : program
 }
 
-function safeEnvironment(): NodeJS.ProcessEnv {
+const SAFE_EXTRA_ENVIRONMENT_KEYS = new Set([
+  'ARTICLE_VIDEO_TTS_PROVIDER',
+  'ARTICLE_VIDEO_VOICE_SPEED',
+  'FISH_API_KEY',
+  'FISH_AUDIO_VOICE_ID',
+  'FISH_AUDIO_MODEL',
+])
+
+function safeEnvironment(extraEnvironment: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
   const keys = [
     'PATH', 'Path', 'PATHEXT', 'HOME', 'USERPROFILE', 'TMPDIR', 'TEMP', 'TMP',
     'SystemRoot', 'WINDIR', 'LANG', 'LC_ALL', 'PYTHONUTF8',
   ]
   const env: NodeJS.ProcessEnv = {}
   for (const key of keys) if (process.env[key] !== undefined) env[key] = process.env[key]
+  for (const [key, value] of Object.entries(extraEnvironment)) {
+    if (SAFE_EXTRA_ENVIRONMENT_KEYS.has(key) && value) env[key] = value
+  }
   env.PYTHONUTF8 = '1'
   return env
 }
@@ -104,6 +117,7 @@ function runCommand(
   args: string[],
   cwd: string,
   timeout: number,
+  extraEnvironment: Readonly<Record<string, string>>,
 ): Promise<LocalSkillProcessResult> {
   return new Promise((resolvePromise, reject) => {
     execFile(
@@ -111,7 +125,7 @@ function runCommand(
       args,
       {
         cwd,
-        env: safeEnvironment(),
+        env: safeEnvironment(extraEnvironment),
         timeout,
         maxBuffer: MAX_PROCESS_OUTPUT_BYTES,
         windowsHide: true,

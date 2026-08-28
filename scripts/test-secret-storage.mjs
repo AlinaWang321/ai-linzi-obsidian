@@ -19,6 +19,15 @@ assert.match(
   /writeSecretOrExplain\(DEFAULT_WECHAT_SECRET_ID, value\.trim\(\), '公众号 AppSecret'\)/,
   '公众号 AppSecret 必须经带自检的写入助手存入固定内部条目',
 )
+assert.match(
+  source,
+  /writeSecretOrExplain\(DEFAULT_FISH_AUDIO_SECRET_ID, value\.trim\(\), 'Fish Audio API Key'\)/,
+  'Fish Audio API Key 必须经带自检的写入助手存入固定内部条目',
+)
+assert.match(source, /setName\('Fish Audio API Key'\)/, '设置页必须提供 Fish Audio API Key 密码输入')
+assert.match(source, /setName\('Fish Audio 音色 ID'\)/, '设置页必须提供 Fish Audio 音色 ID')
+assert.match(source, /articleVideoFishModel: 's2\.1-pro-free'/, 'Fish Audio 课堂默认模型必须为免费开发模型')
+assert.match(source, /setName\('Fish Audio 模型'\)/, '设置页必须允许在 Fish 免费与付费模型之间切换')
 assert.match(source, /保存后校验失败/, '密钥写入必须回读自检，失败必须可见')
 assert.match(source, /safeGetSecret/, '迁移段读取必须兜底 Obsidian 1.13 的条目名校验异常')
 assert.match(source, /safeSetSecret/, '迁移段写入必须兜底，绝不能炸掉 loadSettings')

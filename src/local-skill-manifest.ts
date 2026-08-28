@@ -32,7 +32,7 @@ export interface LocalSkillRuntimePolicy {
   source: 'structured-v2' | 'legacy-v1'
   vaultRead: LocalSkillVaultReadPolicy
   vaultWrite: LocalSkillVaultWritePolicy
-  network: 'none' | 'ai-linzi-only'
+  network: 'none' | 'ai-linzi-only' | 'user-configured-tts'
   /** 控制服务端预加载哪些个人上下文；不改变本机 Vault 读取权限。 */
   contextMode?: PluginContextMode
 }
@@ -150,7 +150,7 @@ function parseV2(value: Record<string, unknown>, expectedOutput: LocalSkillOutpu
     return { kind: 'invalid', message: 'manifest v2 的写入方式与 SKILL.md 输出方式不一致' }
   }
   const network = value.network
-  if (network !== 'none' && network !== 'ai-linzi-only') {
+  if (network !== 'none' && network !== 'ai-linzi-only' && network !== 'user-configured-tts') {
     return { kind: 'invalid', message: 'manifest v2 的 network 无效' }
   }
   if (permissions(value).length === 0 || !Array.isArray(value.programs)) {

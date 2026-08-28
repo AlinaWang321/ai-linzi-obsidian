@@ -159,6 +159,7 @@ import {
 import {
   extractVaultQuestion,
   formatVaultQuestionMarker,
+  isTerminalVaultQuestionAnswer,
   type PendingVaultQuestion,
 } from './vault-question-core'
 import {
@@ -291,6 +292,7 @@ import {
   isPotentialLocalSkillUpdateIntent,
   isLocalSkillListIntent,
   localSkillForbidsVaultExpansion,
+  localSkillQuestionNamesConcreteInputFile,
   localSkillQuestionNamesInputFile,
   resolveLocalSkillScopedInput,
   localSkillMenuTitle,
@@ -320,6 +322,8 @@ import {
   extractConsultationBriefAction,
 } from './official-skill-runtime-core'
 import {
+  isAllUserContentSourceExplicitlyDenied,
+  isCurrentNoteSourceExplicitlyDenied,
   resolveCurrentNoteReference,
   selectCurrentOpenMarkdownPath,
   shouldSearchVaultBeyondCurrentNote,
@@ -328,6 +332,7 @@ import {
   openCustomerCrmSyncModal,
   readLocalCustomerProfile,
 } from './customer-profile-sync'
+import { ARTICLE_VIDEO_DISPLAY_NAME, isBuiltInArticleVideoIntent } from './article-video-core'
 
 /** 内置动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -347,6 +352,11 @@ export const SKILL_ACTIONS: {
   { id: 'wechat-draft', name: '发到公众号草稿箱(自动传图,需配置AppID)', fn: async (p) => sendToWechatDraft(p) },
   { id: 'xhs-cards', name: '小红书图文卡片:当前笔记 → 正文 + 3:4 PNG', fn: runXhsCards },
   { id: 'distribute', name: '多平台分发:当前笔记成稿 → 小红书/口播/朋友圈', fn: runDistribute },
+  {
+    id: 'article-to-video',
+    name: ARTICLE_VIDEO_DISPLAY_NAME,
+    fn: async (p) => p.runArticleToVideo(),
+  },
   {
     id: 'customer-consultation-brief',
     name: '客户咨询简报:选择逐字稿 → 客户版 PNG 长图',
@@ -401,6 +411,10 @@ interface AiLinziSettings {
   localSkillsFolder: string
   /** 本地程序执行默认关闭；开启后仍然每一步单独确认。 */
   localSkillExecutionEnabled: boolean
+  /** Article to Video 的 Fish Audio 音色；API Key 只存 SecretStorage。 */
+  articleVideoFishVoiceId: string
+  /** 仍只使用 Fish Audio；课堂默认免费模型，需要稳定生产时可切付费模型。 */
+  articleVideoFishModel: 's2.1-pro-free' | 's2.1-pro'
   /** 「AI霖子·今天的判断」按日缓存(免费但没必要一天生成多次) */
   cockpitJudgmentDate: string
   cockpitJudgmentText: string
@@ -432,6 +446,8 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   cockpitOutputFolder: '04_Output',
   localSkillsFolder: '05_System/Skills',
   localSkillExecutionEnabled: false,
+  articleVideoFishVoiceId: '',
+  articleVideoFishModel: 's2.1-pro-free',
   cockpitJudgmentDate: '',
   cockpitJudgmentText: '',
   cockpitPartnerSteps: [],
@@ -459,6 +475,7 @@ interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
 
 const DEFAULT_TOKEN_SECRET_ID = 'ai-linzi-api-token'
 const DEFAULT_WECHAT_SECRET_ID = 'ai-linzi-wechat-app-secret'
+const DEFAULT_FISH_AUDIO_SECRET_ID = 'ai-linzi-fish-audio-api-key'
 const OFFICIAL_SERVER_URL = 'https://chat.alinalinzi.com'
 
 const VIEW_TYPE_CHAT = 'ai-linzi-chat'
@@ -1764,6 +1781,49 @@ export default class AiLinziPlugin extends Plugin {
     await this.saveSettings()
   }
 
+  getFishAudioApiKey(): string {
+    try {
+      return this.app.secretStorage.getSecret(DEFAULT_FISH_AUDIO_SECRET_ID)?.trim() ?? ''
+    } catch {
+      return ''
+    }
+  }
+
+  async setFishAudioApiKey(value: string): Promise<void> {
+    this.writeSecretOrExplain(DEFAULT_FISH_AUDIO_SECRET_ID, value.trim(), 'Fish Audio API Key')
+    await this.saveSettings()
+  }
+
+  /**
+   * 官方内置 Article to Video：本机确定性执行链，不走“我的 Skills”逐步确认协议。
+   * 只在用户的一次总授权内执行弹窗中已列明的分镜、Fish 联网、本机写入与渲染。
+   */
+  async runArticleToVideo(requestText = ''): Promise<void> {
+    const { runArticleToVideo } = await import('./article-video-runtime')
+    await runArticleToVideo(this, requestText)
+  }
+
+  private articleVideoEnvironment(
+    skillName: string,
+    proposal: LocalSkillActionProposal,
+    _context: ActiveLocalSkillContext,
+  ): Readonly<Record<string, string>> {
+    if (skillName.toLowerCase() !== 'article-to-video') return {}
+    const script = proposal.args[0]?.replace(/\\/g, '/') ?? ''
+    if (!/^\$SKILL\/scripts\/(?:doctor|narrate)\.mjs$/i.test(script)) return {}
+    const apiKey = this.getFishAudioApiKey()
+    const voiceId = this.settings.articleVideoFishVoiceId.trim()
+    if (/\/narrate\.mjs$/i.test(script) && (!apiKey || !voiceId)) {
+      throw new Error('Fish Audio 尚未配置完整。请到 AI霖子设置填写 API Key 与自己的音色 ID。')
+    }
+    return {
+      ARTICLE_VIDEO_TTS_PROVIDER: 'fish',
+      FISH_API_KEY: apiKey,
+      FISH_AUDIO_VOICE_ID: voiceId,
+      FISH_AUDIO_MODEL: this.settings.articleVideoFishModel === 's2.1-pro' ? 's2.1-pro' : 's2.1-pro-free',
+    }
+  }
+
   // ── 会话与短期配图任务持久化（统一使用 Obsidian 插件数据 API） ──
 
   async loadConvos(): Promise<SavedConvo[]> {
@@ -1960,6 +2020,11 @@ export default class AiLinziPlugin extends Plugin {
         ({ LocalSkillExecutor }) => new LocalSkillExecutor(
           this.app,
           () => this.settings.outputFolder,
+          (skillName, proposal, context) => this.articleVideoEnvironment(
+            skillName,
+            proposal,
+            context,
+          ),
         ),
       )
     }
@@ -2437,6 +2502,8 @@ class ChatView extends ItemView {
   private longDocumentChars = 0
   private longDocumentTask: LongDocumentTaskState | null = null
   private sending = false
+  /** 官方视频流程运行时不允许同一对话叠加第二条任务。 */
+  private builtInArticleVideoRunning = false
   private activeTurnAbort: AbortController | null = null
   /** 用于取消较旧的异步恢复，避免新建并行对话被“最近会话”覆盖。 */
   private restoreEpoch = 0
@@ -2906,7 +2973,12 @@ class ChatView extends ItemView {
   }
 
   private async showLocalSkillsMenu(event: MouseEvent): Promise<void> {
-    const skills = await this.localSkills.list()
+    // Article to Video 已是官方内置流程。Vault 里的同名课堂包仍保留，
+    // 供 Codex / WorkBuddy 使用；但在 AI霖子里隐藏旧入口，避免再走多轮确认链。
+    const skills = (await this.localSkills.list()).filter((skill) =>
+      skill.name.toLocaleLowerCase() !== 'article-to-video' &&
+      skill.displayName.toLocaleLowerCase() !== 'article to video',
+    )
     const menu = new Menu()
     menu.addItem((item) => item
       .setTitle('＋ 打开 Skill Studio')
@@ -4190,6 +4262,22 @@ class ChatView extends ItemView {
     return undefined
   }
 
+  /**
+   * Find the newest unanswered question even when its normal resume window has
+   * expired. Old question cards can remain visible after Obsidian reloads; an
+   * exact terminal option on such a card must still close locally instead of
+   * being sent to the model and starting another clarification loop.
+   */
+  private recentUnansweredVaultQuestion(): { message: WireMessage; question: PendingVaultQuestion } | undefined {
+    for (let index = this.messages.length - 1; index >= 0; index--) {
+      const message = this.messages[index]
+      const question = message.vaultQuestion
+      if (!question || question.answeredAt) continue
+      return { message, question }
+    }
+    return undefined
+  }
+
   private hasPendingSkillCreatorInterview(): boolean {
     for (let index = this.messages.length - 1; index >= 0; index--) {
       const message = this.messages[index]
@@ -4262,6 +4350,84 @@ class ChatView extends ItemView {
 
   private async send(options: SendOptions = {}) {
     const typedText = this.inputEl.value.trim()
+    if (this.builtInArticleVideoRunning) {
+      new Notice(`“${ARTICLE_VIDEO_DISPLAY_NAME}”正在自动生成，完成前不会丢失当前文章或参数。`, 5000)
+      return
+    }
+    const unansweredVaultQuestion = this.recentUnansweredVaultQuestion()
+    // Handle a visible terminal choice before entering the sending state. This
+    // protects restored/old conversations too: no spinner, API request, credit
+    // use, or second clarification is allowed for an exact stop option.
+    if (
+      typedText &&
+      unansweredVaultQuestion &&
+      isTerminalVaultQuestionAnswer(typedText, unansweredVaultQuestion.question)
+    ) {
+      this.messages.push({
+        id: uid(),
+        role: 'user',
+        parts: [{ type: 'text', text: typedText }],
+      })
+      unansweredVaultQuestion.message.vaultQuestion = {
+        ...unansweredVaultQuestion.question,
+        answeredAt: Date.now(),
+      }
+      if (this.pendingVaultTask) {
+        this.vaultBatchToolResults.delete(this.pendingVaultTask.id)
+        this.pendingVaultTask = null
+      }
+      this.messages.push({
+        id: uid(),
+        role: 'assistant',
+        parts: [{
+          type: 'text',
+          text: '已结束这轮操作。不会再调用模型或执行本地动作；已经生成的文件保持不变。',
+        }],
+        localSkillPath: unansweredVaultQuestion.message.localSkillPath,
+      })
+      this.inputEl.value = ''
+      await this.persistNow()
+      this.renderMessages()
+      return
+    }
+    if (typedText && isBuiltInArticleVideoIntent(typedText)) {
+      if (this.sending || this.builtInArticleVideoRunning) return
+      this.builtInArticleVideoRunning = true
+      try {
+        this.messages.push({
+          id: uid(),
+          role: 'user',
+          parts: [{ type: 'text', text: typedText }],
+        })
+        // 这是一个新的官方确定性工作流：显式收尾上一个对话任务，
+        // 不允许历史 ask_user / localSkillPath 把它拉回旧的多轮链。
+        if (unansweredVaultQuestion) {
+          unansweredVaultQuestion.message.vaultQuestion = {
+            ...unansweredVaultQuestion.question,
+            answeredAt: Date.now(),
+          }
+        }
+        if (this.pendingVaultTask) {
+          this.vaultBatchToolResults.delete(this.pendingVaultTask.id)
+          this.pendingVaultTask = null
+        }
+        this.inputEl.value = ''
+        await this.persistNow()
+        this.renderMessages()
+        this.sendBtn.disabled = true
+        this.sendBtn.setAttribute('title', `${ARTICLE_VIDEO_DISPLAY_NAME}正在运行`)
+        this.sendBtn.setAttribute('aria-label', `${ARTICLE_VIDEO_DISPLAY_NAME}正在运行`)
+        await this.plugin.runArticleToVideo(typedText)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        this.plugin.reportSkillStatus(`❌ ${ARTICLE_VIDEO_DISPLAY_NAME}未能启动：${message}`)
+        new Notice(`❌ 文章转短视频未能启动：${message}`, 9000)
+      } finally {
+        this.builtInArticleVideoRunning = false
+        this.setSendingUi(false)
+      }
+      return
+    }
     const attachmentSummary = this.attachmentTurnSummary()
     const text = typedText || buildAttachmentOnlyTurnText(attachmentSummary)
     if ((!text && attachmentTurnCount(attachmentSummary) === 0) || this.sending) return
@@ -4372,6 +4538,31 @@ class ChatView extends ItemView {
     let consultationWorkflowTaskTurn = false
     let activeLocalSkillPath: string | undefined
     try {
+      const unansweredVaultQuestion = this.recentUnansweredVaultQuestion()
+      if (
+        unansweredVaultQuestion &&
+        isTerminalVaultQuestionAnswer(text, unansweredVaultQuestion.question)
+      ) {
+        unansweredVaultQuestion.message.vaultQuestion = {
+          ...unansweredVaultQuestion.question,
+          answeredAt: Date.now(),
+        }
+        if (this.pendingVaultTask) {
+          this.vaultBatchToolResults.delete(this.pendingVaultTask.id)
+          this.pendingVaultTask = null
+        }
+        this.messages.push({
+          id: uid(),
+          role: 'assistant',
+          parts: [{
+            type: 'text',
+            text: '已结束这轮操作。不会再调用模型或执行本地动作；已经生成的文件保持不变。',
+          }],
+          localSkillPath: unansweredVaultQuestion.message.localSkillPath,
+        })
+        await this.persistNow()
+        return
+      }
       const pendingVaultQuestion = this.recentPendingVaultQuestion()
       const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
       const pendingSkillCreatorDraft = this.recentPendingSkillCreatorDraft()
@@ -4594,7 +4785,22 @@ class ChatView extends ItemView {
         : explicitInstalledLocalSkill
           ? explicitLocalSkillMatch
           : await this.localSkills.resolve(text, { allowAutomatic: true })
-      if (pendingVaultQuestion) localSkillMatch = { kind: 'none' }
+      if (pendingVaultQuestion) {
+        const pendingLocalSkillPath = pendingVaultQuestion.message.localSkillPath
+        const pendingLocalSkill = pendingLocalSkillPath
+          ? await this.localSkills.resolvePath(pendingLocalSkillPath)
+          : undefined
+        if (pendingLocalSkillPath && !pendingLocalSkill) {
+          throw new Error(`等待确认的 Skill 已被移动或删除：${pendingLocalSkillPath}`)
+        }
+        // ask_user 的回答属于上一轮原生 Responses 工具调用。普通 Vault 任务不应
+        // 重新猜路由；本地 Skill 任务则必须同时恢复精确入口与本机执行上下文，
+        // 否则服务端虽然拿到 previousResponseId，客户端会丢掉 Skill 工具并误入
+        // 普通 Vault 整理流程。路径只来自上一条本机消息，不上传云端历史。
+        localSkillMatch = pendingLocalSkill
+          ? { kind: 'matched', skill: pendingLocalSkill }
+          : { kind: 'none' }
+      }
       if (
         localSkillMatch.kind === 'none' &&
         /(?:继续|接着|下一步|上一份|下一份|最新一份|刚才|按照?(?:这个|刚才)|处理(?:这|它|最新)|更新已处理|写入客户档案)/u.test(text)
@@ -4654,11 +4860,17 @@ class ChatView extends ItemView {
       const illustrationEdit = isArticleIllustrationEditIntent(text)
       const singleIllustrationIntent = isSingleArticleIllustrationIntent(text)
       const recentCurrentNotePath = this.recentCurrentNotePath()
-      const currentNoteReference = resolveCurrentNoteReference(text, Boolean(recentCurrentNotePath))
+      const allUserContentSourceDenied = isAllUserContentSourceExplicitlyDenied(text)
+      const currentNoteSourceDenied =
+        allUserContentSourceDenied || isCurrentNoteSourceExplicitlyDenied(text)
+      const currentNoteReference = currentNoteSourceDenied
+        ? 'none'
+        : resolveCurrentNoteReference(text, Boolean(recentCurrentNotePath))
       const currentNoteRequested =
         !skillCreatorTurn &&
         !skillUpdaterTurn &&
         !consultationWorkflowTaskTurn &&
+        !currentNoteSourceDenied &&
         (
           currentNoteReference !== 'none' ||
           singleIllustrationIntent ||
@@ -4687,7 +4899,16 @@ class ChatView extends ItemView {
         )
       }
       let scopedSkillInputPath: string | undefined
-      if (localSkill && localSkillHasPrimaryInput && !noteContext) {
+      if (
+        localSkill &&
+        localSkillHasPrimaryInput &&
+        !noteContext &&
+        !allUserContentSourceDenied &&
+        (
+          !currentNoteSourceDenied ||
+          localSkillQuestionNamesConcreteInputFile(text)
+        )
+      ) {
         noteContext = await this.scopedLocalSkillInputContext(text, localSkill.name)
         scopedSkillInputPath = noteContext?.path
         if (noteContext) {
@@ -6646,6 +6867,23 @@ class ChatView extends ItemView {
       const prepared = localSkillExecutor.prepare(call.arguments)
       if (!prepared.ok) throw new Error(`AI 提出的本地动作不安全：${prepared.error}`)
       const action = prepared.action
+      const requiredScriptPath = localSkillExecutor.requiredScriptRead(
+        action,
+        input.localSkillContext,
+      )
+      if (requiredScriptPath) {
+        return {
+          callId: call.id,
+          name: call.name,
+          ok: false,
+          output: JSON.stringify({
+            status: 'script_read_required',
+            message: '这一步尚未执行。请先调用 read_skill_file 完整读取脚本，再重新提出本地动作。',
+            path: requiredScriptPath,
+            offset: 0,
+          }),
+        }
+      }
       const ok = await confirmLocalSkillAction(
         this.app,
         input.localSkill?.name ?? '我的 Skill',
@@ -6850,6 +7088,9 @@ class ChatView extends ItemView {
                 }
               }
               appendToolResults(executedResults)
+              const actionNeedsScriptRead = executedResults.some(
+                (result) => result.output.includes('"status":"script_read_required"'),
+              )
               nextBody = {
                 question: input.question,
                 round: Math.min(requestRound + 1, maxRounds - 1),
@@ -6860,7 +7101,7 @@ class ChatView extends ItemView {
                   callId: result.callId,
                   output: result.output.slice(0, 18_000),
                 })),
-                ...(readCalls.length > 0
+                ...(readCalls.length > 0 || actionNeedsScriptRead
                   ? { retryHint: 'local_skill_tool_required' }
                   : {}),
               }
@@ -7194,6 +7435,36 @@ class ChatView extends ItemView {
             return text
           }
           throw new Error('native: empty step')
+        }
+        // 本地 Skill 经常需要先分页读取入口、manifest、规范和脚本。若最后一次
+        // 工具结果刚好占满第 12 步，旧逻辑会直接报 `native: no final text`，尽管
+        // 所有读取都已成功。这里额外给一次“禁用所有工具”的收尾机会：只允许
+        // 模型基于已返回的真实结果作答，不能借机继续读文件、执行程序或写入。
+        if (input.localSkillContext && nextBody && previousResponseId) {
+          this.activityCurrent('技能资料已读取，正在整理最终答复…')
+          const finalData = await this.plugin.api('/api/plugin/v1/vault-native/step', {
+            method: 'POST',
+            signal: input.signal,
+            body: {
+              ...nextBody,
+              question: input.question,
+              round: maxRounds - 1,
+              batchMode,
+              sessionId: this.sessionId,
+              previousResponseId,
+              disableTools: true,
+              retryHint: 'budget',
+              ...nativeLocalSkillRequest,
+            },
+          })
+          const finalCalls = Array.isArray(finalData.toolCalls)
+            ? finalData.toolCalls.filter(isUnknownRecord)
+            : []
+          if (finalCalls.length > 0) {
+            throw new Error('native: local Skill requested tools after finalization')
+          }
+          const finalText = typeof finalData.text === 'string' ? finalData.text.trim() : ''
+          if (finalText) return finalText
         }
         if (batchMode && this.pendingVaultTask?.batch) {
           await pauseBatch(toolBudgetExhausted ? 'tool-budget' : 'round-limit')
@@ -9551,7 +9822,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('AI霖子连接密钥')
-      .setDesc('这是登录 AI霖子网页后生成的账号连接凭证，不是大模型 API Key，无需填写密钥名称或 ID。插件不要求、也不会保存任何模型厂商密钥；该凭证按 Obsidian 官方 SecretStorage 规则保存在当前设备。')
+      .setDesc('这是登录 AI霖子网页后生成的账号连接凭证，不是大模型 API Key，无需填写密钥名称或 ID。只有启用 Fish Audio 等可选本地能力时，才在下方对应位置填写自己的服务密钥；所有密钥均按 Obsidian 官方 SecretStorage 规则保存在当前设备。')
       .addText((input) => {
         input.inputEl.type = 'password'
         input.inputEl.autocomplete = 'off'
@@ -9676,6 +9947,62 @@ class AiLinziSettingTab extends PluginSettingTab {
             this.plugin.settings.localSkillExecutionEnabled = value
             await this.plugin.saveSettings()
           }),
+      )
+
+    new Setting(containerEl).setName(`${ARTICLE_VIDEO_DISPLAY_NAME} · Fish Audio`).setHeading()
+    containerEl.createEl('p', {
+      text: `${ARTICLE_VIDEO_DISPLAY_NAME}是 AI霖子官方内置技能，不受上面的“我的 Skills”程序开关影响。打开一篇文章后直接说“用文章转短视频处理当前文章”：系统会自动锁定原文、检测环境，并把视频参数、联网、缺失环境安装和输出范围合并成一次确认；已有 Homebrew 或 WinGet 时，确认后会自动安装缺失项并连续运行，不再要求你回复“继续”或自行检测。正式配音统一使用 Fish Audio；课堂默认免费开发模型，密钥只保存在当前设备的 Obsidian SecretStorage，不会写入笔记、Skill、日志或发送给 AI。`,
+      cls: 'setting-item-description',
+    })
+
+    new Setting(containerEl)
+      .setName('Fish Audio API Key')
+      .setDesc('从 Fish Audio 开发者页面创建并粘贴。生成配音会联网，并按 Fish Audio 当前规则消耗额度。')
+      .addText((input) => {
+        input.inputEl.type = 'password'
+        input.inputEl.autocomplete = 'off'
+        input
+          .setPlaceholder('粘贴自己的 Fish Audio API Key')
+          .setValue(this.plugin.getFishAudioApiKey())
+          .onChange(async (value) => {
+            await this.plugin.setFishAudioApiKey(value)
+          })
+      })
+
+    new Setting(containerEl)
+      .setName('Fish Audio 音色 ID')
+      .setDesc('填写你自己创建、公开可用或已获得授权的音色 ID；不要使用他人未授权的克隆音色。')
+      .addText((input) =>
+        input
+          .setPlaceholder('例如：Fish Audio voice / reference ID')
+          .setValue(this.plugin.settings.articleVideoFishVoiceId)
+          .onChange(async (value) => {
+            this.plugin.settings.articleVideoFishVoiceId = value.trim()
+            await this.plugin.saveSettings()
+          }),
+      )
+
+    new Setting(containerEl)
+      .setName('Fish Audio 模型')
+      .setDesc('课堂建议保留“免费开发模型”；需要稳定生产保障时再切换付费模型。')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('s2.1-pro-free', '免费开发模型（默认）')
+          .addOption('s2.1-pro', '付费生产模型')
+          .setValue(this.plugin.settings.articleVideoFishModel)
+          .onChange(async (value) => {
+            this.plugin.settings.articleVideoFishModel = value === 's2.1-pro' ? 's2.1-pro' : 's2.1-pro-free'
+            await this.plugin.saveSettings()
+          }),
+      )
+
+    new Setting(containerEl)
+      .setName('打开 Fish Audio 配置页')
+      .setDesc('注册、创建 API Key、上传自己的声音并取得音色 ID。')
+      .addButton((button) =>
+        button.setButtonText('打开 Fish Audio').onClick(() => {
+          window.open('https://fish.audio/app/api-keys/')
+        }),
       )
 
     new Setting(containerEl).setName('小红书卡片').setHeading()

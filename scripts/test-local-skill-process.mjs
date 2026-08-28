@@ -20,9 +20,15 @@ const fixture = await mkdtemp(join(tmpdir(), 'ai-linzi-process-test-'))
 try {
   const echoScript = join(fixture, 'echo.mjs')
   const timeoutScript = join(fixture, 'timeout.mjs')
+  const environmentScript = join(fixture, 'environment.mjs')
   const unexpected = join(fixture, 'must-not-exist.txt')
   await writeFile(echoScript, 'console.log(JSON.stringify(process.argv.slice(2)))\n', 'utf8')
   await writeFile(timeoutScript, 'setTimeout(() => {}, 5000)\n', 'utf8')
+  await writeFile(
+    environmentScript,
+    `console.log(JSON.stringify({ fish: process.env.FISH_API_KEY === 'test-secret', blocked: Boolean(process.env.SHOULD_NOT_PASS) }))\n`,
+    'utf8',
+  )
 
   const literal = `;touch ${unexpected}`
   const result = await processModule.runLocalSkillProcess('node', [echoScript, literal], fixture, 5_000)
@@ -33,6 +39,15 @@ try {
   const timedOut = await processModule.runLocalSkillProcess('node', [timeoutScript], fixture, 100)
   assert.equal(timedOut.timedOut, true)
   assert.notEqual(timedOut.exitCode, 0)
+
+  const environment = await processModule.runLocalSkillProcess(
+    'node',
+    [environmentScript],
+    fixture,
+    5_000,
+    { FISH_API_KEY: 'test-secret', SHOULD_NOT_PASS: 'blocked-secret' },
+  )
+  assert.deepEqual(JSON.parse(environment.stdout.trim()), { fish: true, blocked: false })
 
   const windowsPython = processModule.commandCandidates('python')
   if (process.platform === 'win32') {

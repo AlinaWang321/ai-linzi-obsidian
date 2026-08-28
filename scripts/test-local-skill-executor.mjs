@@ -51,6 +51,8 @@ const fixture = await mkdtemp(join(tmpdir(), 'ai-linzi-executor-test-'))
 const skillDirectory = 'system/skills/smoke'
 const scriptVaultPath = `${skillDirectory}/scripts/write.mjs`
 const scriptPath = join(fixture, scriptVaultPath)
+const projectScriptVaultPath = `${skillDirectory}/scripts/create-project.mjs`
+const projectScriptPath = join(fixture, projectScriptVaultPath)
 const outputDirectory = join(fixture, 'AI霖子输出')
 const trashCalls = []
 
@@ -101,6 +103,11 @@ try {
     `import { writeFile } from 'node:fs/promises'\nawait writeFile(process.argv[2], 'safe output', 'utf8')\n`,
     'utf8',
   )
+  await writeFile(
+    projectScriptPath,
+    `import { mkdir, writeFile } from 'node:fs/promises'\nimport { join } from 'node:path'\nconst project = process.argv[process.argv.indexOf('--project') + 1]\nawait mkdir(project, { recursive: true })\nawait writeFile(join(project, 'storyboard.json'), '{}', 'utf8')\n`,
+    'utf8',
+  )
   const executor = new executorModule.LocalSkillExecutor({
     vault: fakeVault,
     fileManager: { trashFile: (file) => fakeVault.trash(file) },
@@ -110,8 +117,8 @@ try {
     directory: skillDirectory,
     entryPath: `${skillDirectory}/SKILL.md`,
     linkedPaths: [],
-    fullyReadPaths: [scriptVaultPath],
-    readThroughByPath: { [scriptVaultPath]: 1_000 },
+    fullyReadPaths: [scriptVaultPath, projectScriptVaultPath],
+    readThroughByPath: { [scriptVaultPath]: 1_000, [projectScriptVaultPath]: 1_000 },
   }
 
   const outputPath = 'AI霖子输出/smoke.txt'
@@ -125,6 +132,16 @@ try {
     usesNetwork: false,
     shareOutputWithAi: false,
   }
+  assert.equal(
+    executor.requiredScriptRead(proposal, { ...context, fullyReadPaths: [] }),
+    'scripts/write.mjs',
+    '未完整读取的脚本必须在弹执行确认前先返回精确相对路径',
+  )
+  assert.equal(
+    executor.requiredScriptRead(proposal, context),
+    undefined,
+    '已经完整读取的脚本可以继续进入执行确认',
+  )
   const executed = await executor.run('smoke', proposal, context)
   assert.equal(executed.record.status, 'success')
   assert.deepEqual(executed.record.declaredOutputs, [outputPath])
@@ -147,6 +164,23 @@ try {
     /尚未完整读取/,
   )
 
+  await assert.rejects(
+    executor.run(
+      'smoke',
+      { ...proposal, usesNetwork: true },
+      { ...context, runtimePolicy: { network: 'none' } },
+    ),
+    /明确禁止联网/,
+  )
+  await assert.rejects(
+    executor.run(
+      'smoke',
+      { ...proposal, usesNetwork: true },
+      { ...context, runtimePolicy: { network: 'user-configured-tts' } },
+    ),
+    /只允许配音脚本/,
+  )
+
   const missingOutputProposal = {
     ...proposal,
     label: '声明但不生成',
@@ -157,6 +191,28 @@ try {
   assert.equal(missing.record.status, 'failed')
   assert.deepEqual(missing.record.createdOutputs, [])
   assert.match(missing.output, /missingDeclaredOutputs/)
+
+  const projectProposal = {
+    ...proposal,
+    label: '创建项目目录与分镜',
+    args: ['$SKILL/scripts/create-project.mjs', '--project', '$OUTPUT/new-project'],
+    writes: ['$OUTPUT/new-project/storyboard.json'],
+  }
+  const project = await executor.run('smoke', projectProposal, context)
+  assert.equal(project.record.status, 'success')
+  assert.deepEqual(project.record.createdOutputs.map((item) => item.path), [
+    'AI霖子输出/new-project/storyboard.json',
+  ])
+  assert.equal(await readFile(join(fixture, 'AI霖子输出/new-project/storyboard.json'), 'utf8'), '{}')
+
+  await assert.rejects(
+    executor.run('smoke', {
+      ...projectProposal,
+      args: ['$SKILL/scripts/create-project.mjs', '--project', '$OUTPUT/unrelated-project'],
+      writes: ['$OUTPUT/declared-project/storyboard.json'],
+    }, context),
+    /尚不存在的 Vault 文件必须声明为预计生成/,
+  )
 
   if (process.platform !== 'win32') {
     const outside = await mkdtemp(join(tmpdir(), 'ai-linzi-outside-script-'))

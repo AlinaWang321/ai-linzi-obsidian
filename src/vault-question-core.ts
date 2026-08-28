@@ -24,6 +24,36 @@ export function formatVaultQuestionMarker(question: PendingVaultQuestion): strin
   return `<<<AI_LINZI_ASK_USER>>>\n${JSON.stringify(question)}\n<<<AI_LINZI_ASK_USER_END>>>`
 }
 
+function normalizedQuestionAnswer(value: string): string {
+  return value.trim().replace(/[，,。.!！?？]/gu, '').replace(/\s+/gu, '')
+}
+
+/**
+ * A model-provided option that explicitly ends the current workflow must be
+ * handled locally. Sending it back to the model can make the model ask the
+ * same question again, wastes credits, and leaves beginners in a loop.
+ *
+ * Free-text answers never trigger this branch: the answer must exactly match
+ * one of the rendered options and that option must clearly be terminal.
+ */
+export function isTerminalVaultQuestionAnswer(
+  answer: string,
+  question: PendingVaultQuestion,
+): boolean {
+  const normalized = normalizedQuestionAnswer(answer)
+  if (!normalized) return false
+  const matchedOption = question.options.some(
+    (option) => normalizedQuestionAnswer(option) === normalized,
+  )
+  if (!matchedOption) return false
+  return (
+    /^不(?:再)?执行(?:任何)?操作$/u.test(normalized) ||
+    /^停止(?:并)?(?:保留|不要|不再|当前|本次|这次|$)/u.test(normalized) ||
+    /^取消(?:本次|这次|当前)?(?:操作|任务)?$/u.test(normalized) ||
+    /^(?:到此结束|先不做了?)$/u.test(normalized)
+  )
+}
+
 export function extractVaultQuestion(text: string): {
   cleanText: string
   question?: PendingVaultQuestion

@@ -41,6 +41,23 @@ assert.equal(wholeVault.policy.vaultRead.fallbackToWholeVault, true)
 assert.equal(wholeVault.policy.vaultRead.metadataDiscovery, false)
 assert.equal(wholeVault.policy.contextMode, 'personalized-content')
 
+const userConfiguredTts = manifest.parseLocalSkillManifest(JSON.stringify({
+  schemaVersion: 2,
+  permissions: ['只允许连接用户自行配置的配音服务'],
+  vaultRead: {
+    scope: 'user-specified-files',
+    metadataDiscovery: false,
+    preferUserScope: false,
+    fallbackToWholeVault: false,
+    maxFiles: 12,
+  },
+  vaultWrite: { mode: 'none', confirmation: 'single-atomic-plan', overwrite: false },
+  network: 'user-configured-tts',
+  programs: ['node'],
+}), 'chat')
+assert.equal(userConfiguredTts.kind, 'valid')
+assert.equal(userConfiguredTts.policy.network, 'user-configured-tts')
+
 const invalidContext = manifest.parseLocalSkillManifest(JSON.stringify({
   schemaVersion: 2,
   permissions: ['读取整个 Vault'],

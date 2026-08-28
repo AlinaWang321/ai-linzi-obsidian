@@ -43,6 +43,32 @@ for (const text of [
   assert.equal(core.shouldUseCurrentNote(text), false, text)
 }
 
+for (const text of [
+  '不要读取当前笔记',
+  '不要使用当前文章，只确认 Skill 能不能调用',
+  '别把这篇文章作为本轮主要材料',
+  '当前打开的文件不要发送给模型',
+  '再帮我确认一次，但不要读取当前笔记',
+  '不要读取当前笔记或任何业务文件，只读取 Skill/create-project',
+  '禁止读取任何文件，只审核 Article to Video 的路由',
+]) {
+  assert.equal(core.shouldUseCurrentNote(text, true), false, text)
+  assert.equal(core.resolveCurrentNoteReference(text, true), 'none', text)
+}
+
+assert.equal(core.isCurrentNoteSourceExplicitlyDenied('不要读取当前笔记'), true)
+assert.equal(core.isAllUserContentSourceExplicitlyDenied('不要读取任何业务文件'), true)
+assert.equal(
+  core.shouldUseCurrentNote('不要读取其他文件，只读取当前文章'),
+  true,
+  '排除其他文件不能误伤明确授权的当前文章',
+)
+assert.equal(
+  core.shouldUseCurrentNote('不要只读取当前笔记，还要结合其他资料分析'),
+  true,
+  '“不要只读取”是在扩大范围，不是拒绝当前笔记',
+)
+
 assert.equal(core.shouldUseCurrentNote('再短一点', true), true)
 assert.equal(core.shouldUseCurrentNote('再短一点', false), false)
 assert.equal(core.shouldUseCurrentNote('谢谢', true), false)
@@ -109,6 +135,10 @@ assert.doesNotMatch(main, /主对话带上当前笔记/)
 assert.doesNotMatch(main, /默认带上当前笔记/)
 assert.doesNotMatch(main, /attachToggleEl/)
 assert.match(main, /resolveCurrentNoteReference/)
+assert.match(main, /const currentNoteSourceDenied =/)
+assert.match(main, /!currentNoteSourceDenied &&/)
+assert.match(main, /!allUserContentSourceDenied &&/)
+assert.match(main, /localSkillQuestionNamesConcreteInputFile\(text\)/)
 assert.match(main, /const currentNoteOnlyTurn = Boolean/)
 assert.match(main, /!currentNoteOnlyTurn/)
 assert.match(main, /shouldSearchVaultBeyondCurrentNote\(text\)/)
