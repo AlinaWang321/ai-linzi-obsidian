@@ -15,6 +15,11 @@ assert.doesNotMatch(
   /require\(["']node:/,
   '生产包不得使用 Obsidian 插件加载器可能无法识别的 node: 协议模块',
 )
+assert.doesNotMatch(
+  bundleSource,
+  /import\(["']crypto["']\)/,
+  '生产包不得保留 Electron 渲染器无法解析的动态 crypto 引用',
+)
 
 class EmptyComponent {
   constructor(app) {

@@ -438,8 +438,6 @@ interface AiLinziSettings {
   localSkillsFolder: string
   /** 本地程序执行默认关闭；开启后仍然每一步单独确认。 */
   localSkillExecutionEnabled: boolean
-  /** 微信官方 iLink 收件箱；连接凭证另存 SecretStorage。 */
-  wechatInboxEnabled: boolean
   /** 微信收件箱写入目录（Vault 相对路径）。 */
   wechatInboxFolder: string
   /** Article to Video 的 Fish Audio 音色；API Key 只存 SecretStorage。 */
@@ -477,7 +475,6 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   cockpitOutputFolder: '04_Output',
   localSkillsFolder: '05_System/Skills',
   localSkillExecutionEnabled: false,
-  wechatInboxEnabled: false,
   wechatInboxFolder: '000_Inbox/微信收件箱',
   articleVideoFishVoiceId: '',
   articleVideoFishModel: 's2.1-pro-free',
@@ -504,6 +501,8 @@ interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
   workflowFolder?: string
   /** v0.7.x 早期的搜索默认开关；已无任何读取点，停止写盘。 */
   vaultSearchDefault?: boolean
+  /** v0.7.101 候选版的冗余手动收件开关；连接成功后改为自动接收。 */
+  wechatInboxEnabled?: boolean
 }
 
 const DEFAULT_TOKEN_SECRET_ID = 'ai-linzi-api-token'
@@ -1401,7 +1400,7 @@ export default class AiLinziPlugin extends Plugin {
   private wechatInbox: WechatInboxManager | null = null
   private wechatInboxRuntimeStatus: WechatInboxRuntimeStatus = {
     kind: 'stopped',
-    text: '接收已关闭',
+    text: '尚未启动',
   }
   /** 当前 JS 生命周期里仍在执行的本机技能状态；插件重载后会自然清空。 */
   private readonly activeLocalSkillStatusIds = new Set<string>()
@@ -1449,7 +1448,6 @@ export default class AiLinziPlugin extends Plugin {
     this.wechatInbox = new WechatInboxManager({
       app: this.app,
       pluginVersion: this.manifest.version,
-      enabled: () => this.settings.wechatInboxEnabled,
       inboxFolder: () => this.settings.wechatInboxFolder,
       connection: () => this.getWechatInboxConnection(),
       state: () => this.wechatInboxState,
@@ -1654,6 +1652,7 @@ export default class AiLinziPlugin extends Plugin {
       lastUpdateCheckAt: legacyLastUpdateCheckAt,
       attachNoteDefault: legacyAttachNoteDefault,
       cleanChatDefaultsV1: legacyCleanChatDefaultsV1,
+      wechatInboxEnabled: legacyWechatInboxEnabled,
       conversations,
       illustrationJobs,
       imageStyleContext,
@@ -1681,7 +1680,8 @@ export default class AiLinziPlugin extends Plugin {
       legacyVaultSearchExcludedFolders !== undefined ||
       legacyLastUpdateCheckAt !== undefined ||
       legacyAttachNoteDefault !== undefined ||
-      legacyCleanChatDefaultsV1 !== undefined
+      legacyCleanChatDefaultsV1 !== undefined ||
+      legacyWechatInboxEnabled !== undefined
     // 学员正式版只连接 AI霖子官方后端，避免误按第三方教程把连接密钥和笔记
     // 发送到陌生服务器。localhost 仅保留给本机开发联调。
     if (
@@ -1879,7 +1879,7 @@ export default class AiLinziPlugin extends Plugin {
     return this.wechatInboxRuntimeStatus
   }
 
-  openWechatInboxConnection(): void {
+  openWechatInboxConnection(onConnected?: () => void): void {
     new WechatInboxConnectModal({
       app: this.app,
       pluginVersion: this.manifest.version,
@@ -1895,22 +1895,11 @@ export default class AiLinziPlugin extends Plugin {
         if (!previous || previous.botId !== connection.botId || previous.userId !== connection.userId) {
           this.wechatInboxState = defaultWechatInboxState()
         }
-        this.settings.wechatInboxEnabled = true
         await this.saveSettings()
         this.wechatInbox?.restart()
+        onConnected?.()
       },
     }).open()
-  }
-
-  async setWechatInboxEnabled(enabled: boolean): Promise<boolean> {
-    if (enabled && !this.getWechatInboxConnection()) {
-      new Notice('请先点击“连接微信”，扫码确认后才能开启微信收件箱。', 8000)
-      return false
-    }
-    this.settings.wechatInboxEnabled = enabled
-    await this.saveSettings()
-    this.wechatInbox?.restart()
-    return true
   }
 
   async setWechatInboxFolder(folder: string): Promise<void> {
@@ -10448,7 +10437,7 @@ class AiLinziSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).setName('微信收件箱（测试版）').setHeading()
     containerEl.createEl('p', {
-      text: 'Obsidian 开着时，插件会在本机后台接收你发给微信 Bot 的私聊消息并写入当前 Vault。电脑关机或 Obsidian 退出时不能实时接收；重新打开后会从微信游标继续拉取尚可回放的消息，但不承诺无限期离线保存。',
+      text: '连接成功后会自动持续接收，无需单独开启。Obsidian 开着时，插件会在本机接收你发给微信 Bot 的私聊消息并写入当前 Vault。电脑关机或 Obsidian 退出时不能实时接收；重新打开后会从微信游标继续拉取尚可回放的消息，但不承诺无限期离线保存。',
       cls: 'setting-item-description',
     })
     containerEl.createEl('p', {
@@ -10467,21 +10456,10 @@ class AiLinziSettingTab extends PluginSettingTab {
       .addButton((button) => button
         .setButtonText(inboxConnection ? '重新连接' : '连接微信')
         .setCta()
-        .onClick(() => this.plugin.openWechatInboxConnection()))
+        .onClick(() => this.plugin.openWechatInboxConnection(() => this.redisplaySettings())))
       .addButton((button) => button.setButtonText('刷新状态').onClick(() => {
         this.redisplaySettings()
       }))
-
-    new Setting(containerEl)
-      .setName('后台接收')
-      .setDesc('关闭后立即停止长轮询；已经写入 Vault 的笔记和附件不会删除。')
-      .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.wechatInboxEnabled)
-        .onChange(async (value) => {
-          const applied = await this.plugin.setWechatInboxEnabled(value)
-          if (!applied) toggle.setValue(false)
-          this.redisplaySettings()
-        }))
 
     new Setting(containerEl)
       .setName('保存到文件夹')

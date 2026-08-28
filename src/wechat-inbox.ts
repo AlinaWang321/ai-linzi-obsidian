@@ -8,6 +8,7 @@ import {
   normalizePath,
   requestUrl,
 } from 'obsidian'
+import { createDecipheriv } from 'crypto'
 import qrcode from 'qrcode-generator'
 import {
   WECHAT_INBOX_MAX_MEDIA_BYTES,
@@ -127,7 +128,6 @@ export type WechatInboxRuntimeStatus =
 export interface WechatInboxManagerOptions {
   app: App
   pluginVersion: string
-  enabled: () => boolean
   inboxFolder: () => string
   connection: () => WechatInboxConnection | null
   state: () => WechatInboxPersistedState
@@ -491,10 +491,6 @@ export class WechatInboxManager {
 
   start(): void {
     this.stop(false)
-    if (!this.options.enabled()) {
-      this.options.reportStatus({ kind: 'stopped', text: '接收已关闭' })
-      return
-    }
     const connection = this.options.connection()
     if (!connection) {
       this.options.reportStatus({ kind: 'needs-connection', text: '请先连接微信' })
@@ -530,8 +526,7 @@ export class WechatInboxManager {
     let longPollTimeout = WECHAT_LONG_POLL_MS
     while (
       !signal.aborted &&
-      generation === this.generation &&
-      this.options.enabled()
+      generation === this.generation
     ) {
       try {
         const current = this.options.state()
@@ -832,8 +827,10 @@ export class WechatInboxManager {
       if (!allowPlain) throw new Error(`${label}缺少微信解密信息`)
       return encrypted
     }
-    const cryptoModule = await import('crypto')
-    const decipher = cryptoModule.createDecipheriv('aes-128-ecb', key, null)
+    // Obsidian 插件以 CommonJS 加载；Node 内置模块必须走顶层静态引用，
+    // 否则 esbuild 会在产物中保留动态 crypto 模块引用，Electron 渲染器会将其
+    // 当成浏览器 ESM 规范并报 Failed to resolve module specifier。
+    const decipher = createDecipheriv('aes-128-ecb', key, null)
     const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()])
     if (decrypted.byteLength > WECHAT_INBOX_MAX_MEDIA_BYTES) {
       throw new Error(`${label}超过 25MB，未保存`)

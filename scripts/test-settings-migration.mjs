@@ -81,6 +81,8 @@ console.log('第6组 僵尸设置字段停止写盘')
 assert('workflowFolder 进 Legacy 清单（被解构剔除）', main.includes('workflowFolder?: string'))
 assert('vaultSearchDefault 移出活动设置', !/^\s{2}vaultSearchDefault: boolean$/m.test(main))
 assert('vaultSearchDefault 不再有默认值写盘', !main.includes('vaultSearchDefault: false'))
+assert('微信收件箱手动开关移出活动设置', !/^\s{2}wechatInboxEnabled: boolean$/m.test(main))
+assert('微信收件箱旧开关作为历史字段被剔除', main.includes('wechatInboxEnabled: legacyWechatInboxEnabled'))
 
 if (failures > 0) {
   console.error(`settings migration tests: ${failures} failure(s)`)

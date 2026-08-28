@@ -19,7 +19,7 @@ AI Linzi gives the currently selected model the same on-demand Vault tools, rega
 
 This public plugin is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration are not included in this repository.
 
-可选的微信收件箱开启后，插件会在本机通过 `https://ilinkai.weixin.qq.com` 保持可中止的长轮询，只从校验通过的微信官方 `*.cdn.weixin.qq.com` HTTPS 地址下载本次图片或文件。微信 iLink 连接凭证只存 Obsidian SecretStorage；消息、游标和附件保留在当前设备/Vault，不发送到 AI霖子服务，不调用 AI，也不消耗 AI霖子积分。电脑关机或 Obsidian 退出时不能实时接收；重新打开后会从已保存游标继续拉取微信仍可回放的消息，但不承诺无限期离线保存。
+可选的微信收件箱连接成功后会自动接收，无需单独开启。插件会在本机通过 `https://ilinkai.weixin.qq.com` 保持可中止的长轮询，只从校验通过的微信官方 `*.cdn.weixin.qq.com` HTTPS 地址下载本次图片或文件。微信 iLink 连接凭证只存 Obsidian SecretStorage；消息、游标和附件保留在当前设备/Vault，不发送到 AI霖子服务，不调用 AI，也不消耗 AI霖子积分。电脑关机或 Obsidian 退出时不能实时接收；重新打开后会从已保存游标继续拉取微信仍可回放的消息，但不承诺无限期离线保存。
 
 ## 中文说明
 

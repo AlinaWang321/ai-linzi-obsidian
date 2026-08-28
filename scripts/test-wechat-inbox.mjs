@@ -143,7 +143,6 @@ let responseFactory = () => new Response(encryptedPng, {
 const manager = new runtime.WechatInboxManager({
   app: { vault: {} },
   pluginVersion: '0.7.101',
-  enabled: () => false,
   inboxFolder: () => '000_Inbox/微信收件箱',
   connection: () => null,
   state: () => inbox.defaultWechatInboxState(),
@@ -178,7 +177,6 @@ globalThis.__obsidianRequestUrl = async (params) => {
 const defaultNetworkManager = new runtime.WechatInboxManager({
   app: { vault: {} },
   pluginVersion: '0.7.101',
-  enabled: () => false,
   inboxFolder: () => '000_Inbox/微信收件箱',
   connection: () => null,
   state: () => inbox.defaultWechatInboxState(),
@@ -246,7 +244,6 @@ const integrationManager = new runtime.WechatInboxManager({
     },
   },
   pluginVersion: '0.7.101',
-  enabled: () => true,
   inboxFolder: () => '000_Inbox/微信收件箱',
   connection: () => connection,
   state: () => persistedState,
@@ -312,7 +309,6 @@ const mediaManager = new runtime.WechatInboxManager({
     },
   },
   pluginVersion: '0.7.101',
-  enabled: () => true,
   inboxFolder: () => mediaInboxFolder,
   connection: () => connection,
   state: () => mediaState,
@@ -405,7 +401,6 @@ const stoppedManager = new runtime.WechatInboxManager({
     },
   },
   pluginVersion: '0.7.101',
-  enabled: () => true,
   inboxFolder: () => '000_Inbox/微信收件箱',
   connection: () => connection,
   state: () => stoppedState,
@@ -455,6 +450,8 @@ assert.match(runtimeSource, /item\.voice_item\?\.text/, '语音 MVP 必须只取
 assert.match(runtimeSource, /当前版本暂不保存视频/, '视频必须明确延期')
 assert.match(runtimeSource, /暂未保存媒体文件/, 'MP3 等媒体文件必须明确延期')
 assert.match(runtimeSource, /aes-128-ecb/, '图片和文件必须按官方协议解密')
+assert.match(runtimeSource, /import \{ createDecipheriv \} from 'crypto'/, 'AES 解密必须走 Obsidian CommonJS 可加载的静态 Node 内置模块')
+assert.doesNotMatch(runtimeSource, /import\(['"]crypto['"]\)/, '生产运行时不得留下 Electron 无法解析的动态 crypto 引用')
 assert.match(runtimeSource, /WECHAT_INBOX_MAX_MEDIA_BYTES/, '媒体写入必须有体积上限')
 assert.match(runtimeSource, /isAllowedWechatCdnUrl/, '媒体 URL 必须有微信 CDN 白名单')
 assert.match(runtimeSource, /isOwnedDirectMessage/, '只能接收已连接用户的私聊消息')
@@ -466,6 +463,9 @@ assert.doesNotMatch(
   'data.json 快照不得包含微信连接 token',
 )
 assert.match(mainSource, /this\.wechatInbox\?\.stop\(false\)/, '插件卸载时必须停止长轮询')
+assert.doesNotMatch(mainSource, /setName\('后台接收'\)/, '连接后自动收件，不应再暴露冗余手动开关')
+assert.doesNotMatch(runtimeSource, /options\.enabled/, '运行时不应再依赖手动收件开关')
+assert.match(mainSource, /openWechatInboxConnection\(\(\) => this\.redisplaySettings\(\)\)/, '扫码成功后必须自动刷新设置页')
 assert.match(mainSource, /电脑关机或 Obsidian 退出时不能实时接收/, '设置页必须讲清离线边界')
 assert.match(mainSource, /不调用 AI，也不消耗 AI霖子积分/, '设置页必须讲清无 AI 计费')
 
