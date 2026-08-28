@@ -11,6 +11,7 @@ AI Linzi connects Alina's business coaching services to your local knowledge Vau
 - Generate a confirmed HTML, DOCX, PDF, or PPTX deliverable, or create an editable Markdown workspace that refreshes locally when Vault files change.
 - Generate or revise article illustrations and save successful images locally.
 - Format WeChat articles and send them to a configured WeChat draft box.
+- 连接微信官方 iLink 收件箱；Obsidian 运行时，可把发给已连接 Bot 的私聊文字、微信现成语音转写、图片和 25MB 内普通文件保存到本地 Vault。本版本不保存语音原声、MP3 和视频。
 
 ## Privacy and network access
 
@@ -18,12 +19,15 @@ AI Linzi gives the currently selected model the same on-demand Vault tools, rega
 
 This public plugin is a thin client. Private prompts, model routing, billing, account data, and service-side orchestration are not included in this repository.
 
+可选的微信收件箱开启后，插件会在本机通过 `https://ilinkai.weixin.qq.com` 保持可中止的长轮询，只从校验通过的微信官方 `*.cdn.weixin.qq.com` HTTPS 地址下载本次图片或文件。微信 iLink 连接凭证只存 Obsidian SecretStorage；消息、游标和附件保留在当前设备/Vault，不发送到 AI霖子服务，不调用 AI，也不消耗 AI霖子积分。电脑关机或 Obsidian 退出时不能实时接收；重新打开后会从已保存游标继续拉取微信仍可回放的消息，但不承诺无限期离线保存。
+
 ## 中文说明
 
 把 AI霖子（Alina 方法论 + 学员长期记忆的商业军师）接进用户的 Obsidian 数字大脑。
 
 ## 功能路线
 
+- **v0.7.101**：新增微信收件箱测试版。扫码连接微信官方 iLink 后，在 Obsidian 运行期间后台接收本人发给 Bot 的私聊；支持文字、微信已有语音转写、图片和 25MB 内常见文档/压缩包，按天追加 Markdown，附件使用确定性路径且不覆盖。连接凭证只进 SecretStorage，API/CDN 域名白名单、AES-128-ECB 解密、幂等标记和游标断点都在本机完成；原始语音、MP3、视频延期。
 - **v0.7.94**：主对话按同一小句里的直接语义区分“创建新 Skill”和“修改已有 Skill”，不再把“调用这个 Skill 生成一份咨询方案”中的业务产物误判成“生成 Skill”。同一句确实同时要求新建和修改、更新目标缺失或出现多个候选时，插件先问用户要创建还是修改，不再擅自选路或直接报“没有找到要修改的 Skill”。用户回复后会继续锁定的更新流程或退出旧上下文进入新建。更新已有 Skill 时可以附带截图作为本轮只读参考，但截图不会成为 Skill 文件、权限、本机路径来源或无关指令；既有完整预览、一次确认、全树复核和内存回滚边界不变。
 - **v0.7.93**：明确的批量文件任务支持停止或重启后继续。插件最多只保存 500 份候选路径、目录/正文分页游标、mtime/size 指纹和失败摘要，不保存文件正文；停止时进入暂停态，重启后回到同一对话说“继续”会按真实 Vault 路径重新读取。未读和失败文件不会被冒充为已经纳入综合结果，普通非批量对话仍保持 120 份跨轮候选上限。
 - **v0.7.92**：新增真正独立的并行对话标签页，每个标签页拥有独立 session、运行状态和停止信号；同一历史会话已经在另一标签页打开时只切换过去，禁止两个窗口同时写同一会话。主对话里用户发送和 AI 回复的文字都可以直接用鼠标拖选并右键复制。明确的批量任务可从普通 12 轮扩到最多 36 轮、100 万字符本机结果预算，再生成完整综合结果。

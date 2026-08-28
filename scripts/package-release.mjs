@@ -26,6 +26,7 @@ for (const licenseName of [
   'html-to-image-mit.txt',
   'docx-mit.txt',
   'pdf-lib-mit.txt',
+  'qrcode-generator-mit.txt',
 ]) {
   await copyFile(
     join(root, 'docs/third-party-licenses', licenseName),

@@ -25,6 +25,10 @@ class EmptyComponent {
 const registeredMarkdownProcessors = []
 
 class PluginMock extends EmptyComponent {
+  constructor(app, manifest) {
+    super(app)
+    this.manifest = manifest
+  }
   async loadData() { return {} }
   async saveData() {}
   registerEvent() {}

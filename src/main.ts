@@ -346,6 +346,20 @@ import {
   isBuiltInArticleVideoIntent,
   type ArticleVideoReviewState,
 } from './article-video-core'
+import {
+  WechatInboxConnectModal,
+  WechatInboxManager,
+  type WechatInboxRuntimeStatus,
+} from './wechat-inbox'
+import {
+  defaultWechatInboxState,
+  normalizeWechatInboxFolder,
+  parseWechatInboxConnection,
+  serializeWechatInboxConnection,
+  storedWechatInboxState,
+  type WechatInboxConnection,
+  type WechatInboxPersistedState,
+} from './wechat-inbox-core'
 
 /** 内置动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -424,6 +438,10 @@ interface AiLinziSettings {
   localSkillsFolder: string
   /** 本地程序执行默认关闭；开启后仍然每一步单独确认。 */
   localSkillExecutionEnabled: boolean
+  /** 微信官方 iLink 收件箱；连接凭证另存 SecretStorage。 */
+  wechatInboxEnabled: boolean
+  /** 微信收件箱写入目录（Vault 相对路径）。 */
+  wechatInboxFolder: string
   /** Article to Video 的 Fish Audio 音色；API Key 只存 SecretStorage。 */
   articleVideoFishVoiceId: string
   /** 仍只使用 Fish Audio；课堂默认免费模型，需要稳定生产时可切付费模型。 */
@@ -459,6 +477,8 @@ const DEFAULT_SETTINGS: AiLinziSettings = {
   cockpitOutputFolder: '04_Output',
   localSkillsFolder: '05_System/Skills',
   localSkillExecutionEnabled: false,
+  wechatInboxEnabled: false,
+  wechatInboxFolder: '000_Inbox/微信收件箱',
   articleVideoFishVoiceId: '',
   articleVideoFishModel: 's2.1-pro-free',
   cockpitJudgmentDate: '',
@@ -489,6 +509,7 @@ interface LegacyAiLinziSettings extends Partial<AiLinziSettings> {
 const DEFAULT_TOKEN_SECRET_ID = 'ai-linzi-api-token'
 const DEFAULT_WECHAT_SECRET_ID = 'ai-linzi-wechat-app-secret'
 const DEFAULT_FISH_AUDIO_SECRET_ID = 'ai-linzi-fish-audio-api-key'
+const DEFAULT_WECHAT_INBOX_SECRET_ID = 'ai-linzi-wechat-inbox-connection'
 const OFFICIAL_SERVER_URL = 'https://chat.alinalinzi.com'
 
 const VIEW_TYPE_CHAT = 'ai-linzi-chat'
@@ -756,6 +777,7 @@ interface AiLinziPluginData extends LegacyAiLinziSettings {
   vaultActionHistory?: VaultActionRecord[]
   localSkillRunHistory?: LocalSkillRunRecord[]
   weeklyBusinessDashboardCache?: unknown
+  wechatInboxState?: unknown
 }
 
 const IMAGE_STYLE_CONTEXT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
@@ -1375,6 +1397,12 @@ export default class AiLinziPlugin extends Plugin {
   private imageStyleContext: SavedImageStyleContext | null = null
   private vaultActionHistory: VaultActionRecord[] = []
   private localSkillRunHistory: LocalSkillRunRecord[] = []
+  private wechatInboxState: WechatInboxPersistedState = defaultWechatInboxState()
+  private wechatInbox: WechatInboxManager | null = null
+  private wechatInboxRuntimeStatus: WechatInboxRuntimeStatus = {
+    kind: 'stopped',
+    text: '接收已关闭',
+  }
   /** 当前 JS 生命周期里仍在执行的本机技能状态；插件重载后会自然清空。 */
   private readonly activeLocalSkillStatusIds = new Set<string>()
   /**
@@ -1418,6 +1446,21 @@ export default class AiLinziPlugin extends Plugin {
 
   async onload() {
     await this.loadSettings()
+    this.wechatInbox = new WechatInboxManager({
+      app: this.app,
+      pluginVersion: this.manifest.version,
+      enabled: () => this.settings.wechatInboxEnabled,
+      inboxFolder: () => this.settings.wechatInboxFolder,
+      connection: () => this.getWechatInboxConnection(),
+      state: () => this.wechatInboxState,
+      persistState: async (state) => {
+        this.wechatInboxState = storedWechatInboxState(state)
+        await this.saveSettings()
+      },
+      reportStatus: (status) => {
+        this.wechatInboxRuntimeStatus = status
+      },
+    })
 
     // 插件重载时 active leaf 可能正好是右侧对话面板；先从仍打开的 Markdown
     // 标签页恢复“用户刚才在看的笔记”，避免勾选成功却拿不到正文。
@@ -1427,6 +1470,7 @@ export default class AiLinziPlugin extends Plugin {
       this.warnOrphanLocalSkills()
       void this.vaultSearch.initialize()
       void this.weeklyBusinessIndex.initialize()
+      this.wechatInbox?.start()
       this.registerEvent(
         this.app.vault.on('create', (file) => {
           if (file instanceof TFile) void this.vaultSearch.handleCreate(file)
@@ -1526,6 +1570,12 @@ export default class AiLinziPlugin extends Plugin {
     })
 
     this.addCommand({
+      id: 'connect-wechat-inbox',
+      name: '连接微信收件箱',
+      callback: () => this.openWechatInboxConnection(),
+    })
+
+    this.addCommand({
       id: 'open-content-dashboard',
       name: '打开内容发布看板',
       callback: () => this.activateContentDashboard(),
@@ -1592,6 +1642,7 @@ export default class AiLinziPlugin extends Plugin {
     // Obsidian 官方规范:卸载时不 detach leaves(用户布局归用户)
     this.vaultSearch.dispose()
     this.weeklyBusinessIndex.dispose()
+    this.wechatInbox?.stop(false)
   }
 
   async loadSettings() {
@@ -1609,6 +1660,7 @@ export default class AiLinziPlugin extends Plugin {
       vaultActionHistory,
       localSkillRunHistory,
       weeklyBusinessDashboardCache,
+      wechatInboxState,
       ...safeSettings
     } = raw
     this.savedConversations = Array.isArray(conversations) ? conversations : []
@@ -1623,6 +1675,7 @@ export default class AiLinziPlugin extends Plugin {
     this.weeklyBusinessDashboardCache = storedWeeklyBusinessDashboardCache(
       weeklyBusinessDashboardCache,
     )
+    this.wechatInboxState = storedWechatInboxState(wechatInboxState)
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
     let migrated =
       legacyVaultSearchExcludedFolders !== undefined ||
@@ -1754,7 +1807,7 @@ export default class AiLinziPlugin extends Plugin {
    * 自定义条目名在 1.13 上写入抛错且无任何提示。固定条目名本身合法，此处
    * 兜底任何未来的存储异常，保证失败一定可见、绝不静默。）
    */
-  private writeSecretOrExplain(id: string, value: string, label: string): void {
+  private writeSecretOrExplain(id: string, value: string, label: string): boolean {
     try {
       this.app.secretStorage.setSecret(id, value)
     } catch (error) {
@@ -1762,7 +1815,7 @@ export default class AiLinziPlugin extends Plugin {
         `${label}保存失败：${error instanceof Error ? error.message : String(error)}。请重启 Obsidian 后重试。`,
         10000,
       )
-      return
+      return false
     }
     let readBack = ''
     try {
@@ -1772,7 +1825,9 @@ export default class AiLinziPlugin extends Plugin {
     }
     if (value && readBack !== value) {
       new Notice(`${label}保存后校验失败（存储未生效）。请重启 Obsidian 后重新填写。`, 10000)
+      return false
     }
+    return true
   }
 
   /** 打开本插件的设置页(空状态引导按钮用;Obsidian 未公开类型,窄接口断言) */
@@ -1808,6 +1863,58 @@ export default class AiLinziPlugin extends Plugin {
 
   async setFishAudioApiKey(value: string): Promise<void> {
     this.writeSecretOrExplain(DEFAULT_FISH_AUDIO_SECRET_ID, value.trim(), 'Fish Audio API Key')
+    await this.saveSettings()
+  }
+
+  getWechatInboxConnection(): WechatInboxConnection | null {
+    try {
+      const saved = this.app.secretStorage.getSecret(DEFAULT_WECHAT_INBOX_SECRET_ID)?.trim() ?? ''
+      return saved ? parseWechatInboxConnection(saved) : null
+    } catch {
+      return null
+    }
+  }
+
+  getWechatInboxRuntimeStatus(): WechatInboxRuntimeStatus {
+    return this.wechatInboxRuntimeStatus
+  }
+
+  openWechatInboxConnection(): void {
+    new WechatInboxConnectModal({
+      app: this.app,
+      pluginVersion: this.manifest.version,
+      existingConnection: this.getWechatInboxConnection(),
+      onConnected: async (connection) => {
+        const previous = this.getWechatInboxConnection()
+        const saved = this.writeSecretOrExplain(
+          DEFAULT_WECHAT_INBOX_SECRET_ID,
+          serializeWechatInboxConnection(connection),
+          '微信收件箱连接',
+        )
+        if (!saved) throw new Error('微信收件箱连接没有安全保存，请重启 Obsidian 后重试')
+        if (!previous || previous.botId !== connection.botId || previous.userId !== connection.userId) {
+          this.wechatInboxState = defaultWechatInboxState()
+        }
+        this.settings.wechatInboxEnabled = true
+        await this.saveSettings()
+        this.wechatInbox?.restart()
+      },
+    }).open()
+  }
+
+  async setWechatInboxEnabled(enabled: boolean): Promise<boolean> {
+    if (enabled && !this.getWechatInboxConnection()) {
+      new Notice('请先点击“连接微信”，扫码确认后才能开启微信收件箱。', 8000)
+      return false
+    }
+    this.settings.wechatInboxEnabled = enabled
+    await this.saveSettings()
+    this.wechatInbox?.restart()
+    return true
+  }
+
+  async setWechatInboxFolder(folder: string): Promise<void> {
+    this.settings.wechatInboxFolder = normalizeWechatInboxFolder(folder)
     await this.saveSettings()
   }
 
@@ -2145,6 +2252,7 @@ export default class AiLinziPlugin extends Plugin {
         vaultActionHistory: this.vaultActionHistory,
         localSkillRunHistory: this.localSkillRunHistory,
         weeklyBusinessDashboardCache: this.weeklyBusinessDashboardCache ?? undefined,
+        wechatInboxState: this.wechatInboxState,
       } satisfies AiLinziPluginData)
     })
     this.settingsSaveQueue = run.catch(() => undefined)
@@ -10337,6 +10445,53 @@ class AiLinziSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings()
           }),
       )
+
+    new Setting(containerEl).setName('微信收件箱（测试版）').setHeading()
+    containerEl.createEl('p', {
+      text: 'Obsidian 开着时，插件会在本机后台接收你发给微信 Bot 的私聊消息并写入当前 Vault。电脑关机或 Obsidian 退出时不能实时接收；重新打开后会从微信游标继续拉取尚可回放的消息，但不承诺无限期离线保存。',
+      cls: 'setting-item-description',
+    })
+    containerEl.createEl('p', {
+      text: '当前版本：文字、微信现成的语音转写、图片、普通文件（单个不超过 25MB）。不保存语音原声、MP3 和视频；这条链路不调用 AI，也不消耗 AI霖子积分。',
+      cls: 'setting-item-description',
+    })
+
+    const inboxConnection = this.plugin.getWechatInboxConnection()
+    const inboxRuntime = this.plugin.getWechatInboxRuntimeStatus()
+    const lastReceived = inboxRuntime.kind === 'listening' && inboxRuntime.lastReceivedAt
+      ? `；最近接收：${new Date(inboxRuntime.lastReceivedAt).toLocaleString()}`
+      : ''
+    new Setting(containerEl)
+      .setName('微信连接')
+      .setDesc(`${inboxConnection ? '已安全连接' : '尚未连接'}；${inboxRuntime.text}${lastReceived}`)
+      .addButton((button) => button
+        .setButtonText(inboxConnection ? '重新连接' : '连接微信')
+        .setCta()
+        .onClick(() => this.plugin.openWechatInboxConnection()))
+      .addButton((button) => button.setButtonText('刷新状态').onClick(() => {
+        this.redisplaySettings()
+      }))
+
+    new Setting(containerEl)
+      .setName('后台接收')
+      .setDesc('关闭后立即停止长轮询；已经写入 Vault 的笔记和附件不会删除。')
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.wechatInboxEnabled)
+        .onChange(async (value) => {
+          const applied = await this.plugin.setWechatInboxEnabled(value)
+          if (!applied) toggle.setValue(false)
+          this.redisplaySettings()
+        }))
+
+    new Setting(containerEl)
+      .setName('保存到文件夹')
+      .setDesc('每天生成一份 Markdown；图片和文件放在该目录的 attachments 子文件夹。只新建或追加，不覆盖已有附件。')
+      .addText((input) => input
+        .setPlaceholder('000_Inbox/微信收件箱')
+        .setValue(this.plugin.settings.wechatInboxFolder)
+        .onChange(async (value) => {
+          await this.plugin.setWechatInboxFolder(value)
+        }))
 
     new Setting(containerEl).setName(`${ARTICLE_VIDEO_DISPLAY_NAME} · 配音设置`).setHeading()
     containerEl.createEl('p', {
