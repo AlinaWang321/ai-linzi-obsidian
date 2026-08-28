@@ -14,6 +14,26 @@ export type ArticleVideoSceneType =
   | 'timeline'
   | 'summary'
 
+export const ARTICLE_VIDEO_SCENE_TYPE_LABELS: Record<ArticleVideoSceneType, string> = {
+  hook: '开场钩子',
+  quote: '金句',
+  number: '数字重点',
+  comparison: '对比',
+  flow: '流程',
+  steps: '步骤',
+  timeline: '时间线',
+  summary: '总结',
+}
+
+export const ARTICLE_VIDEO_HOMEBREW_INSTALL_COMMAND =
+  '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+export const ARTICLE_VIDEO_HOMEBREW_INSTALL_URL = 'https://brew.sh/zh-cn/'
+export const ARTICLE_VIDEO_WINDOWS_APP_INSTALLER_URL = 'https://apps.microsoft.com/detail/9nblggh4nns1'
+export const ARTICLE_VIDEO_NODE_INSTALL_URL = 'https://nodejs.org/zh-cn/download'
+export const ARTICLE_VIDEO_FFMPEG_INSTALL_URL = 'https://ffmpeg.org/download.html'
+export const ARTICLE_VIDEO_HYPERFRAMES_INSTALL_URL = 'https://www.npmjs.com/package/hyperframes'
+export const ARTICLE_VIDEO_HYPERFRAMES_INSTALL_COMMAND = 'npm install --global hyperframes@0.8.15'
+
 export interface ArticleVideoScene {
   id: string
   type: ArticleVideoSceneType
@@ -37,6 +57,55 @@ export interface ArticleVideoStoryboard {
     accent: string
   }
   scenes: ArticleVideoScene[]
+}
+
+export type ArticleVideoReviewPhase =
+  | 'draft'
+  | 'revising'
+  | 'superseded'
+  | 'confirmed'
+  | 'setup-required'
+  | 'running'
+  | 'cancelled'
+  | 'failed'
+  | 'complete'
+
+export type ArticleVideoPlatform = 'macos' | 'windows' | 'unsupported'
+export type ArticleVideoVoiceProvider = 'local' | 'fish'
+
+export interface ArticleVideoLaunchOptions {
+  projectName: string
+  videoTitle: string
+  theme: string
+  voiceProvider: ArticleVideoVoiceProvider
+}
+
+export interface ArticleVideoSetupState {
+  kind: 'fish-audio' | 'environment'
+  platform?: ArticleVideoPlatform
+  missing?: string[]
+  message?: string
+}
+
+/**
+ * 只保存在 Obsidian 本机会话中的脚本审稿状态。它不保存原文正文、API Key、
+ * 绝对路径或终端输出；恢复时按 sourcePath + sourceHash 重新核对锁定文章。
+ */
+export interface ArticleVideoReviewState {
+  kind: 'article-video-review'
+  sourcePath: string
+  sourceName: string
+  sourceHash: string
+  draftTarget: ArticleVideoDuration
+  projectName: string
+  theme: string
+  voiceProvider: ArticleVideoVoiceProvider
+  storyboard: ArticleVideoStoryboard
+  revision: number
+  phase: ArticleVideoReviewPhase
+  setup?: ArticleVideoSetupState
+  outputPath?: string
+  error?: string
 }
 
 export const ARTICLE_VIDEO_DEFAULT_BRAND = {
@@ -85,6 +154,71 @@ export function articleVideoDurationFromText(text: string): ArticleVideoDuration
   if (/(?:半分钟|30秒)/u.test(value)) return 30
   if (/(?:1|一)分钟|60秒/u.test(value)) return 60
   return 60
+}
+
+export function articleVideoPlatform(value: string): ArticleVideoPlatform {
+  if (value === 'darwin') return 'macos'
+  if (value === 'win32') return 'windows'
+  return 'unsupported'
+}
+
+export function isArticleVideoCancelIntent(text: string): boolean {
+  const value = normalized(text)
+  return /^(?:取消|停止|先不做了?|不做了?|结束)(?:视频|这个视频|这条视频|本次)?[。.!！]?$/u.test(value)
+}
+
+export type ArticleVideoPendingTurnAction = 'cancel' | 'confirm' | 'revise' | 'none'
+
+/** 锁定脚本后的下一轮必须留在同一工作流；只有明确新任务才由上层另行路由。 */
+export function articleVideoPendingTurnAction(
+  text: string,
+  phase: ArticleVideoReviewPhase,
+): ArticleVideoPendingTurnAction {
+  const value = text.normalize('NFKC').trim()
+  if (!value || !['draft', 'failed', 'setup-required'].includes(phase)) return 'none'
+  if (isArticleVideoCancelIntent(value)) return 'cancel'
+  if (/^(?:确认|可以|没问题|ok|okay|生成视频|开始生成|安装完成|配置完成|重新检测|继续生成)[。.!！]?$/iu.test(value)) {
+    return 'confirm'
+  }
+  return 'revise'
+}
+
+function sceneVisualDetails(scene: ArticleVideoScene): string[] {
+  if (scene.type === 'number') {
+    return scene.number ? [`画面数字：${scene.number}${scene.unit ?? ''}`] : []
+  }
+  if (scene.type === 'comparison') {
+    const sides = [scene.left, scene.right]
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+      .map((entry) => `${entry.label}：${entry.value}`)
+    return sides.length > 0 ? [`画面对比：${sides.join('；')}`] : []
+  }
+  if ((scene.items?.length ?? 0) > 0) {
+    return [`画面要点：${scene.items?.map((entry) =>
+      `${entry.title}${entry.detail ? `（${entry.detail}）` : ''}`).join('；')}`]
+  }
+  return []
+}
+
+/** 主对话里的逐幕可读稿；不暴露内部 JSON，也不要求用户理解页型字段。 */
+export function articleVideoStoryboardMarkdown(storyboard: ArticleVideoStoryboard): string {
+  const narrationChars = storyboard.scenes
+    .reduce((sum, scene) => sum + scene.voiceover.replace(/\s/gu, '').length, 0)
+  const sections = storyboard.scenes.map((scene, index) => {
+    const lines = [
+      `### 第 ${index + 1} 幕｜${ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type]}`,
+      `- **屏幕主文案：** ${scene.headline}`,
+      ...(scene.support ? [`- **辅助文案：** ${scene.support}`] : []),
+      ...sceneVisualDetails(scene).map((line) => `- **${line.split('：')[0]}：** ${line.split('：').slice(1).join('：')}`),
+      `- **旁白：** ${scene.voiceover}`,
+    ]
+    return lines.join('\n')
+  })
+  return [
+    `## 视频脚本草稿｜${storyboard.title}`,
+    `起草目标约 ${storyboard.durationTarget} 秒，当前共 ${storyboard.scenes.length} 幕、旁白约 ${narrationChars} 字。最终时长以确认后的真实配音为准。`,
+    ...sections,
+  ].join('\n\n')
 }
 
 function text(value: unknown, max: number): string {

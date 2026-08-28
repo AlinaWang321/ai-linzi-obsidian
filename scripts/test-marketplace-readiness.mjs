@@ -51,6 +51,20 @@ assert(
 assert(pkg.license === 'MIT', 'package.json 必须声明 MIT 许可证')
 assert(license.startsWith('MIT License\n'), 'LICENSE 必须使用可识别的 MIT 文本')
 assert(!sources.includes("from './updater'"), '官方市场版不得包含插件自更新器')
+assert(
+  !/\b(?:brew|winget|npm|npx)\b[\s\S]{0,120}\b(?:install|update|upgrade)\b/u.test(
+    sourceEntries
+      .filter((entry) => entry.name !== 'article-video-core.ts' && entry.name !== 'main.ts')
+      .map((entry) => entry.text)
+      .join('\n'),
+  ),
+  '官方市场版不得从插件代码执行包管理器安装或更新依赖',
+)
+assert(!sources.includes("['--yes', `hyperframes@"), '官方市场版不得通过 npx 自动下载 HyperFrames')
+assert(
+  readme.includes('never installs, downloads, or updates these dependencies'),
+  'README 必须公开说明 Article to Video 不会由插件安装或更新本机依赖',
+)
 assert(!sources.includes('.vault.adapter.'), '插件状态和 Vault 文件操作不得直接使用 Adapter API')
 assert(!sources.includes('window.confirm('), '确认操作必须使用 Obsidian Modal')
 

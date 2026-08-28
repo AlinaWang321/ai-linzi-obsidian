@@ -1,7 +1,7 @@
 import { execFile } from 'child_process'
 import { createHash } from 'crypto'
 import { promises as fs } from 'fs'
-import { homedir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import {
   FileSystemAdapter,
@@ -15,18 +15,23 @@ import {
 } from 'obsidian'
 import {
   ARTICLE_VIDEO_DISPLAY_NAME,
+  articleVideoPlatform,
   articleVideoDurationFromText,
   parseArticleVideoStoryboard,
   safeArticleVideoName,
   type ArticleVideoDuration,
+  type ArticleVideoLaunchOptions,
   type ArticleVideoScene,
+  type ArticleVideoReviewState,
+  type ArticleVideoSetupState,
   type ArticleVideoStoryboard,
+  type ArticleVideoVoiceProvider,
 } from './article-video-core'
 
 const HYPERFRAMES_VERSION = '0.8.15'
 const PROCESS_OUTPUT_LIMIT = 12 * 1024 * 1024
 
-interface ArticleVideoPluginHost {
+export interface ArticleVideoPluginHost {
   app: App
   settings: {
     outputFolder: string
@@ -47,16 +52,6 @@ interface CommandInfo {
   version?: string
 }
 
-type ArticleVideoPackageManager = 'homebrew' | 'winget' | 'none'
-type ArticleVideoPackage = 'node' | 'ffmpeg'
-
-interface ArticleVideoInstallerInfo {
-  manager: ArticleVideoPackageManager
-  command?: string
-  missing: ArticleVideoPackage[]
-  canAutoInstall: boolean
-}
-
 export interface ArticleVideoEnvironmentReport {
   ok: boolean
   node: CommandInfo
@@ -65,17 +60,28 @@ export interface ArticleVideoEnvironmentReport {
   ffprobe: CommandInfo
   hyperframes: CommandInfo
   chrome: CommandInfo
-  installer: ArticleVideoInstallerInfo
+  missing: Array<'node' | 'ffmpeg' | 'hyperframes'>
 }
 
 interface ArticleVideoRunOptions {
   draftTarget: ArticleVideoDuration
   storyboard: ArticleVideoStoryboard
-  apiKey: string
-  voiceId: string
+  voiceProvider: ArticleVideoVoiceProvider
+  apiKey?: string
+  voiceId?: string
   model: 's2.1-pro-free' | 's2.1-pro'
-  installMissing: boolean
 }
+
+export interface ArticleVideoDraftRequest extends ArticleVideoLaunchOptions {
+  sourcePath: string
+  sourceName: string
+  sourceHash: string
+  draftTarget: ArticleVideoDuration
+}
+
+export type ArticleVideoGenerationResult =
+  | { status: 'setup-required'; setup: ArticleVideoSetupState }
+  | { status: 'complete'; outputPath: string }
 
 interface ProcessResult {
   stdout: string
@@ -83,10 +89,12 @@ interface ProcessResult {
 }
 
 interface WorkflowRecord {
-  version: 1
+  version: 2
   sourcePath: string
   sourceHash: string
   requestedDuration: ArticleVideoDuration
+  voiceProvider: ArticleVideoVoiceProvider
+  voiceConfigHash: string
   stage: 'storyboard' | 'narration' | 'build' | 'render' | 'complete' | 'failed'
   updatedAt: string
   output?: string
@@ -230,384 +238,191 @@ async function detectChrome(): Promise<CommandInfo> {
   return { ok: false, version: '未在常见位置找到（HyperFrames 可使用自带浏览器）' }
 }
 
-async function detectPackageManager(): Promise<Pick<ArticleVideoInstallerInfo, 'manager' | 'command'>> {
-  const candidates = process.platform === 'darwin'
-    ? ['/opt/homebrew/bin/brew', '/usr/local/bin/brew', 'brew']
-    : process.platform === 'win32'
-      ? ['winget.exe', 'winget']
-      : []
-  for (const command of candidates) {
+async function detectHyperframes(): Promise<CommandInfo> {
+  const executable = process.platform === 'win32' ? 'hyperframes.cmd' : 'hyperframes'
+  const candidates = [
+    ...(process.platform === 'darwin'
+      ? [
+          `/opt/homebrew/bin/${executable}`,
+          `/usr/local/bin/${executable}`,
+          join(homedir(), '.npm-global', 'bin', executable),
+        ]
+      : []),
+    executable,
+  ]
+  for (const command of [...new Set(candidates)]) {
     try {
-      await runProcess(command, ['--version'], process.cwd(), 8_000)
-      return { manager: process.platform === 'darwin' ? 'homebrew' : 'winget', command }
+      const result = await runProcess(command, ['--version'], process.cwd(), 8_000)
+      return { ok: true, command, version: result.stdout.trim().split('\n')[0] || '已安装' }
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') continue
     }
   }
-  return { manager: 'none' }
+  const cached = await cachedHyperframes()
+  return cached
+    ? { ok: true, command: cached, version: `已安装 ${HYPERFRAMES_VERSION}` }
+    : { ok: false, version: '未安装' }
 }
 
 export async function detectArticleVideoEnvironment(): Promise<ArticleVideoEnvironmentReport> {
-  const [node, npx, ffmpeg, ffprobe, cached, chrome, packageManager] = await Promise.all([
+  const [node, npx, ffmpeg, ffprobe, hyperframes, chrome] = await Promise.all([
     probeCommand('node'),
     probeCommand('npx'),
     probeCommand('ffmpeg'),
     probeCommand('ffprobe'),
-    cachedHyperframes(),
+    detectHyperframes(),
     detectChrome(),
-    detectPackageManager(),
   ])
   const major = Number(node.version?.match(/v?(\d+)/u)?.[1] ?? 0)
   node.ok = node.ok && major >= 22
-  const hyperframes: CommandInfo = cached
-    ? { ok: true, command: cached, version: `已缓存 ${HYPERFRAMES_VERSION}` }
-    : { ok: true, version: `首次生成时自动下载 ${HYPERFRAMES_VERSION}` }
-  const missing: ArticleVideoPackage[] = []
+  const missing: Array<'node' | 'ffmpeg' | 'hyperframes'> = []
   if (!node.ok || !npx.ok) missing.push('node')
   if (!ffmpeg.ok || !ffprobe.ok) missing.push('ffmpeg')
-  const installer: ArticleVideoInstallerInfo = {
-    ...packageManager,
-    missing,
-    canAutoInstall: missing.length > 0 && packageManager.manager !== 'none' && Boolean(packageManager.command),
-  }
+  if (!hyperframes.ok) missing.push('hyperframes')
   return {
-    ok: node.ok && npx.ok && ffmpeg.ok && ffprobe.ok,
+    ok: node.ok && npx.ok && ffmpeg.ok && ffprobe.ok && hyperframes.ok,
     node,
     npx,
     ffmpeg,
     ffprobe,
     hyperframes,
     chrome,
-    installer,
+    missing,
   }
-}
-
-async function installArticleVideoEnvironment(
-  environment: ArticleVideoEnvironmentReport,
-  progress: (message: string) => void,
-): Promise<void> {
-  const { installer } = environment
-  if (!installer.canAutoInstall || !installer.command || installer.missing.length === 0) {
-    throw new Error('本机没有可用的安全自动安装入口，请先按弹窗中的官方说明安装后再重试。')
-  }
-  if (installer.manager === 'homebrew') {
-    const formulas = installer.missing.map((item) => item === 'node' ? 'node' : 'ffmpeg')
-    progress(`正在通过 Homebrew 安装：${formulas.join('、')}。请不要关闭 Obsidian。`)
-    await runProcess(
-      installer.command,
-      ['install', ...formulas],
-      process.cwd(),
-      30 * 60_000,
-      { HOMEBREW_NO_ANALYTICS: '1', HOMEBREW_NO_AUTO_UPDATE: '1' },
-    )
-    return
-  }
-  const packages = installer.missing.map((item) => item === 'node'
-    ? { id: 'OpenJS.NodeJS.LTS', label: 'Node.js LTS' }
-    : { id: 'Gyan.FFmpeg', label: 'FFmpeg' })
-  for (let index = 0; index < packages.length; index += 1) {
-    const pkg = packages[index]
-    progress(`正在通过 WinGet 安装 ${pkg.label}（${index + 1}/${packages.length}）。Windows 可能弹出一次系统授权。`)
-    await runProcess(
-      installer.command,
-      [
-        'install', '--id', pkg.id, '--exact', '--source', 'winget',
-        '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity',
-      ],
-      process.cwd(),
-      30 * 60_000,
-    )
-  }
-}
-
-const ARTICLE_VIDEO_SCENE_TYPE_LABELS: Record<ArticleVideoScene['type'], string> = {
-  hook: '开场钩子',
-  quote: '金句',
-  number: '数字重点',
-  comparison: '对比',
-  flow: '流程',
-  steps: '步骤',
-  timeline: '时间线',
-  summary: '总结',
-}
-
-function cloneStoryboard(storyboard: ArticleVideoStoryboard): ArticleVideoStoryboard {
-  return JSON.parse(JSON.stringify(storyboard)) as ArticleVideoStoryboard
 }
 
 function storyboardFingerprint(storyboard: ArticleVideoStoryboard): string {
   return createHash('sha256').update(JSON.stringify(storyboard)).digest('hex')
 }
 
-function editableItems(scene: ArticleVideoScene): string {
-  return (scene.items ?? [])
-    .map((entry) => `${entry.title}${entry.detail ? `｜${entry.detail}` : ''}`)
-    .join('\n')
-}
-
-function updateEditableItems(scene: ArticleVideoScene, value: string): void {
-  const items = value.split(/\r?\n/gu)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, 4)
-    .map((line) => {
-      const [title, ...detailParts] = line.split('｜')
-      const detail = detailParts.join('｜').trim().slice(0, 52)
-      return { title: title.trim().slice(0, 36), ...(detail ? { detail } : {}) }
-    })
-    .filter((entry) => Boolean(entry.title))
-  scene.items = items
-}
-
-class ArticleVideoScriptModal extends Modal {
-  private resolvePromise: (value: ArticleVideoRunOptions | null) => void = () => undefined
+class ArticleVideoSetupModal extends Modal {
+  private resolvePromise: (value: ArticleVideoLaunchOptions | null) => void = () => undefined
   private submitted = false
-  private readonly options: ArticleVideoRunOptions
-  readonly result: Promise<ArticleVideoRunOptions | null>
+  private readonly options: ArticleVideoLaunchOptions
+  private enteredApiKey = ''
+  private readonly hasStoredFishKey: boolean
+  private storedVoiceId: string
+  private fishSettingsEl?: HTMLElement
+  readonly result: Promise<ArticleVideoLaunchOptions | null>
 
   constructor(
     app: App,
     private readonly sourceName: string,
-    storyboard: ArticleVideoStoryboard,
-    apiKey: string,
-    voiceId: string,
-    model: 's2.1-pro-free' | 's2.1-pro',
-    private readonly environment: ArticleVideoEnvironmentReport,
+    defaults: ArticleVideoLaunchOptions,
+    private readonly plugin: ArticleVideoPluginHost,
   ) {
     super(app)
-    this.options = {
-      draftTarget: storyboard.durationTarget,
-      storyboard: cloneStoryboard(storyboard),
-      apiKey,
-      voiceId,
-      model,
-      installMissing: false,
-    }
+    this.options = { ...defaults }
+    this.hasStoredFishKey = Boolean(plugin.getFishAudioApiKey())
+    this.storedVoiceId = plugin.settings.articleVideoFishVoiceId.trim()
     this.result = new Promise((resolvePromise) => { this.resolvePromise = resolvePromise })
+  }
+
+  private refreshFishSettings(): void {
+    if (this.fishSettingsEl) this.fishSettingsEl.toggle(this.options.voiceProvider === 'fish')
   }
 
   onOpen(): void {
     const { contentEl } = this
     contentEl.empty()
-    this.modalEl.addClass('ai-linzi-article-video-script-modal')
+    this.modalEl.addClass('ai-linzi-article-video-setup-modal')
     contentEl.createEl('h2', { text: ARTICLE_VIDEO_DISPLAY_NAME })
     contentEl.createEl('p', {
-      text: `已锁定当前文章《${this.sourceName}》，下面是 AI 起草的完整视频脚本。请直接修改；字幕会按你确认后的旁白自动生成。`,
+      text: `已锁定当前文章《${this.sourceName}》。确认下面 4 项后，完整脚本会直接出现在主对话；这里不编辑第几幕。`,
       cls: 'setting-item-description',
     })
-    const countEl = contentEl.createEl('p', { cls: 'setting-item-description' })
-    const refreshCount = () => {
-      const count = this.options.storyboard.scenes
-        .reduce((sum, scene) => sum + scene.voiceover.replace(/\s/gu, '').length, 0)
-      countEl.setText(
-        `起草目标：约 ${this.options.draftTarget} 秒 · 当前旁白：${count} 字。最终成片不强行拉伸到目标时长，而是跟随这版旁白的真实 Fish Audio 音频。`,
-      )
-    }
-    refreshCount()
+
+    new Setting(contentEl)
+      .setName('短视频名字')
+      .setDesc('只用于本机项目文件夹，系统已经按文章标题预填。')
+      .addText((input) => {
+        input.inputEl.maxLength = 48
+        input.setValue(this.options.projectName)
+          .onChange((value) => { this.options.projectName = value.trim() })
+      })
 
     new Setting(contentEl)
       .setName('视频标题')
-      .setDesc('成片底部只保留这个标题，不显示 Article to Video 或 AI霖子水印。')
+      .setDesc('会显示在成片底部；不加 Article to Video 或 AI霖子水印。')
       .addText((input) => {
         input.inputEl.maxLength = 40
-        input.setValue(this.options.storyboard.title)
-          .onChange((value) => { this.options.storyboard.title = value.trim() })
+        input.setValue(this.options.videoTitle)
+          .onChange((value) => { this.options.videoTitle = value.trim() })
       })
-
-    const scriptEl = contentEl.createDiv({ cls: 'ai-linzi-article-video-script' })
-    this.options.storyboard.scenes.forEach((scene, index) => {
-      const sceneEl = scriptEl.createEl('details', { cls: 'ai-linzi-article-video-scene' })
-      sceneEl.open = index === 0
-      const summaryEl = sceneEl.createEl('summary', {
-        text: `第 ${index + 1} 幕 · ${ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type]} · ${scene.headline}`,
-      })
-      const refreshSummary = () => summaryEl.setText(
-        `第 ${index + 1} 幕 · ${ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type]} · ${scene.headline || '请填写画面标题'}`,
-      )
-      new Setting(sceneEl)
-        .setName('画面标题')
-        .addText((input) => {
-          input.inputEl.maxLength = 36
-          input.setValue(scene.headline)
-            .onChange((value) => {
-            scene.headline = value.trim()
-            refreshSummary()
-            })
-        })
-      new Setting(sceneEl)
-        .setName('辅助文案')
-        .setDesc('可留空；用于标题下面的一行解释。')
-        .addText((input) => {
-          input.inputEl.maxLength = 72
-          input.setValue(scene.support ?? '')
-            .onChange((value) => { scene.support = value.trim() || undefined })
-        })
-
-      if (scene.type === 'number') {
-        new Setting(sceneEl)
-          .setName('画面数字')
-          .addText((input) => {
-            input.inputEl.maxLength = 24
-            input.setValue(scene.number ?? '')
-              .onChange((value) => { scene.number = value.trim() })
-          })
-          .addText((input) => {
-            input.inputEl.maxLength = 16
-            input.setPlaceholder('单位')
-              .setValue(scene.unit ?? '')
-              .onChange((value) => { scene.unit = value.trim() || undefined })
-          })
-      }
-      if (scene.type === 'comparison') {
-        new Setting(sceneEl)
-          .setName('左侧对比')
-          .addText((input) => {
-            input.inputEl.maxLength = 20
-            input.setPlaceholder('标签')
-              .setValue(scene.left?.label ?? '')
-              .onChange((value) => { scene.left = { label: value.trim(), value: scene.left?.value ?? '' } })
-          })
-          .addText((input) => {
-            input.inputEl.maxLength = 44
-            input.setPlaceholder('内容')
-              .setValue(scene.left?.value ?? '')
-              .onChange((value) => { scene.left = { label: scene.left?.label ?? '', value: value.trim() } })
-          })
-        new Setting(sceneEl)
-          .setName('右侧对比')
-          .addText((input) => {
-            input.inputEl.maxLength = 20
-            input.setPlaceholder('标签')
-              .setValue(scene.right?.label ?? '')
-              .onChange((value) => { scene.right = { label: value.trim(), value: scene.right?.value ?? '' } })
-          })
-          .addText((input) => {
-            input.inputEl.maxLength = 44
-            input.setPlaceholder('内容')
-              .setValue(scene.right?.value ?? '')
-              .onChange((value) => { scene.right = { label: scene.right?.label ?? '', value: value.trim() } })
-          })
-      }
-      if (['flow', 'steps', 'timeline', 'summary'].includes(scene.type)) {
-        new Setting(sceneEl)
-          .setName('画面要点')
-          .setDesc('每行一个；需要补充说明时写成“要点｜说明”。')
-          .addTextArea((input) => {
-            input.inputEl.rows = 4
-            input.inputEl.maxLength = 400
-            input.setValue(editableItems(scene))
-              .onChange((value) => { updateEditableItems(scene, value) })
-          })
-      }
-      new Setting(sceneEl)
-        .setName('本幕旁白')
-        .setDesc('这段文字会直接用于 Fish Audio 配音，也是自动字幕的唯一来源。')
-        .addTextArea((input) => {
-          input.inputEl.rows = 6
-          input.inputEl.maxLength = 360
-          input.setValue(scene.voiceover)
-            .onChange((value) => {
-              scene.voiceover = value.trim()
-              refreshCount()
-            })
-        })
-    })
-
-    contentEl.createEl('h3', { text: '生成设置' })
-    const checks = [
-      ['Node.js 22+', this.environment.node],
-      ['FFmpeg', this.environment.ffmpeg],
-      ['FFprobe', this.environment.ffprobe],
-      ['npx', this.environment.npx],
-      ['HyperFrames', this.environment.hyperframes],
-      ['Chrome（可选）', this.environment.chrome],
-    ] as const
-    contentEl.createEl('p', {
-      text: `环境检测：${checks.map(([label, value]) => `${value.ok ? '✅' : label.includes('可选') ? '⚠️' : '❌'} ${label}`).join(' · ')}`,
-      cls: 'setting-item-description',
-    })
-    if (!this.environment.ok) {
-      const missingLabels = this.environment.installer.missing
-        .map((item) => item === 'node' ? 'Node.js 22+' : 'FFmpeg / FFprobe')
-      contentEl.createEl('p', {
-        text: this.environment.installer.canAutoInstall
-          ? `AI霖子已检测出缺少：${missingLabels.join('、')}。点击一次“确认脚本、安装环境并生成”，系统会安装、复检并接着生成，不会再问第二次。`
-          : `AI霖子已检测出缺少：${missingLabels.join('、')}。这台电脑还没有可用的 Homebrew（Mac）或 WinGet（Windows），为避免越权，不能静默安装系统包管理器。请先使用下面的官方入口安装。`,
-        cls: 'setting-item-description',
-      })
-      if (!this.environment.installer.canAutoInstall) {
-        new Setting(contentEl)
-          .setName('首次安装帮助')
-          .setDesc('Mac 建议先安装 Homebrew；Windows 建议先确认 WinGet 可用。Node.js 与 FFmpeg 均只使用官方页面。')
-          .addButton((button) => button.setButtonText('Homebrew').onClick(() => {
-            window.open('https://docs.brew.sh/Installation', '_blank', 'noopener')
-          }))
-          .addButton((button) => button.setButtonText('Node.js').onClick(() => {
-            window.open('https://nodejs.org/en/download/', '_blank', 'noopener')
-          }))
-          .addButton((button) => button.setButtonText('FFmpeg').onClick(() => {
-            window.open('https://ffmpeg.org/download.html', '_blank', 'noopener')
-          }))
-      }
-    }
 
     new Setting(contentEl)
+      .setName('视频主题')
+      .setDesc('告诉 AI 这条视频最想讲透什么；脚本事实仍只来自当前文章。')
+      .addTextArea((input) => {
+        input.inputEl.rows = 3
+        input.inputEl.maxLength = 160
+        input.setValue(this.options.theme)
+          .onChange((value) => { this.options.theme = value.trim() })
+      })
+
+    new Setting(contentEl)
+      .setName('配音方式')
+      .setDesc('没有 Fish Audio API 时，直接使用电脑自带的免费配音。')
+      .addDropdown((dropdown) => dropdown
+        .addOption('local', '本机免费配音（默认，无需 API）')
+        .addOption('fish', 'Fish Audio（音质更好，需要 API）')
+        .setValue(this.options.voiceProvider)
+        .onChange((value) => {
+          this.options.voiceProvider = value === 'fish' ? 'fish' : 'local'
+          this.refreshFishSettings()
+        }))
+
+    this.fishSettingsEl = contentEl.createDiv({ cls: 'ai-linzi-article-video-fish-settings' })
+    new Setting(this.fishSettingsEl)
       .setName('Fish Audio API Key')
-      .setDesc('只存当前设备 SecretStorage，不写入文章、项目文件、日志或 AI 对话。')
+      .setDesc(this.hasStoredFishKey
+        ? '当前设备已有安全配置；留空即可继续使用，输入新值会替换。'
+        : '只保存在当前设备 SecretStorage，不进入文章、脚本、日志或 AI 对话。')
       .addText((input) => {
         input.inputEl.type = 'password'
         input.inputEl.autocomplete = 'off'
-        input.setPlaceholder('粘贴自己的 Fish Audio API Key')
-          .setValue(this.options.apiKey)
-          .onChange((value) => { this.options.apiKey = value.trim() })
+        input.setPlaceholder(this.hasStoredFishKey ? '已安全配置（无需重复填写）' : '粘贴自己的 Fish Audio API Key')
+          .onChange((value) => { this.enteredApiKey = value.trim() })
       })
-
-    new Setting(contentEl)
+    new Setting(this.fishSettingsEl)
       .setName('Fish Audio 音色 ID')
-      .setDesc('使用自己的声音、公开声音或已经获得授权的声音。')
+      .setDesc('使用自己的声音、公开声音或已获得授权的声音。')
       .addText((input) => input
         .setPlaceholder('Fish Audio voice / reference ID')
-        .setValue(this.options.voiceId)
-        .onChange((value) => { this.options.voiceId = value.trim() }))
-
-    new Setting(contentEl)
-      .setName('Fish Audio 模型')
-      .setDesc('课堂默认免费开发模型；稳定生产时可改付费模型。')
-      .addDropdown((dropdown) => dropdown
-        .addOption('s2.1-pro-free', '免费开发模型（默认）')
-        .addOption('s2.1-pro', '付费生产模型')
-        .setValue(this.options.model)
-        .onChange((value) => {
-          this.options.model = value === 's2.1-pro' ? 's2.1-pro' : 's2.1-pro-free'
-        }))
+        .setValue(this.storedVoiceId)
+        .onChange((value) => { this.storedVoiceId = value.trim() }))
+    this.refreshFishSettings()
 
     contentEl.createEl('p', {
-      text: '输出：AI霖子输出/文章转短视频/新的项目文件夹。不会覆盖已有成片；Fish 配音会联网并使用你的 Fish 额度。首次没有 HyperFrames 缓存时，会在这一次总授权内自动下载。',
+      text: '下一步只生成脚本到主对话，不会立即配音、安装环境或渲染视频。脚本确认后才连续完成后续步骤。',
       cls: 'setting-item-description',
     })
 
     new Setting(contentEl)
       .addButton((button) => button.setButtonText('取消').onClick(() => this.close()))
       .addButton((button) => {
-        button.setCta().setButtonText(
-          this.environment.ok ? '确认脚本并生成视频' : '确认脚本、安装环境并生成',
-        )
-        button.setDisabled(!this.environment.ok && !this.environment.installer.canAutoInstall)
-        button.onClick(() => {
-          if (!this.options.apiKey || !this.options.voiceId) {
-            new Notice('请先填写 Fish Audio API Key 和音色 ID；只需在这个窗口填一次。', 7000)
+        button.setCta().setButtonText('确认，生成脚本')
+        button.onClick(async () => {
+          this.options.projectName = safeArticleVideoName(this.options.projectName)
+          this.options.videoTitle = this.options.videoTitle.trim().slice(0, 40)
+          this.options.theme = this.options.theme.trim().slice(0, 160)
+          if (!this.options.projectName || !this.options.videoTitle || !this.options.theme) {
+            new Notice('请确认短视频名字、视频标题和主题。系统已经预填，通常不需要重新写。', 7000)
             return
           }
-          const approved = parseArticleVideoStoryboard(
-            JSON.stringify(this.options.storyboard),
-            this.options.draftTarget,
-          )
-          if (!approved) {
-            new Notice('脚本还不完整：请检查标题、每幕画面标题、旁白，以及数字/对比/步骤场景的必填内容。', 8000)
+          if (this.options.voiceProvider === 'fish' && !this.hasStoredFishKey && !this.enteredApiKey) {
+            new Notice('选择 Fish Audio 时需要填写自己的 API Key；也可以改选“本机免费配音”。', 7000)
             return
           }
-          this.options.storyboard = approved
-          this.options.installMissing = !this.environment.ok
+          if (this.options.voiceProvider === 'fish' && !this.storedVoiceId) {
+            new Notice('选择 Fish Audio 时还需要填写音色 ID；也可以改选“本机免费配音”。', 7000)
+            return
+          }
+          if (this.enteredApiKey) await this.plugin.setFishAudioApiKey(this.enteredApiKey)
+          if (this.options.voiceProvider === 'fish') {
+            this.plugin.settings.articleVideoFishVoiceId = this.storedVoiceId
+            await this.plugin.saveSettings()
+          }
           this.submitted = true
           this.resolvePromise({ ...this.options })
           this.close()
@@ -682,6 +497,8 @@ async function findResumableProject(
   sourcePath: string,
   sourceHash: string,
   requestedDuration: ArticleVideoDuration,
+  voiceProvider: ArticleVideoVoiceProvider,
+  voiceConfigHash: string,
 ): Promise<{ project: string; storyboard: ArticleVideoStoryboard; timings: NarrationTimeline } | null> {
   const root = articleVideoOutputRoot(plugin)
   let entries
@@ -696,10 +513,13 @@ async function findResumableProject(
     try {
       const workflow = JSON.parse(await fs.readFile(join(project, 'workflow.json'), 'utf8')) as WorkflowRecord
       if (
+        workflow.version !== 2 ||
         workflow.stage === 'complete' ||
         workflow.sourcePath !== sourcePath ||
         workflow.sourceHash !== sourceHash ||
-        workflow.requestedDuration !== requestedDuration
+        workflow.requestedDuration !== requestedDuration ||
+        workflow.voiceProvider !== voiceProvider ||
+        workflow.voiceConfigHash !== voiceConfigHash
       ) continue
       const storyboard = parseArticleVideoStoryboard(
         await fs.readFile(join(project, 'storyboard.json'), 'utf8'),
@@ -728,6 +548,7 @@ async function fishSpeech(
   output: string,
   options: ArticleVideoRunOptions,
 ): Promise<void> {
+  if (!options.apiKey || !options.voiceId) throw new Error('Fish Audio 配置不完整，请重新选择配音方式。')
   let lastError = 'Fish Audio 请求失败'
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -763,6 +584,113 @@ async function fishSpeech(
   throw new Error(lastError)
 }
 
+async function macChineseVoice(project: string): Promise<string | undefined> {
+  try {
+    const result = await runProcess('/usr/bin/say', ['-v', '?'], project, 10_000)
+    const voices = result.stdout.split(/\r?\n/gu)
+      .map((line) => /^(.+?)\s+(zh_(?:CN|TW|HK))\s+#/u.exec(line.trim()))
+      .filter((match): match is RegExpExecArray => Boolean(match))
+    // Tingting is the long-standing system Mandarin voice and is more reliable
+    // for file export than some of the newer novelty voices listed first.
+    const preferred = voices.find((match) => match[1]?.trim() === 'Tingting')
+      ?? voices.find((match) => match[2] === 'zh_CN')
+      ?? voices[0]
+    return preferred?.[1]?.trim()
+  } catch {
+    return undefined
+  }
+}
+
+async function localSpeech(
+  text: string,
+  output: string,
+  project: string,
+  index: number,
+): Promise<void> {
+  const nonce = `${process.pid}-${Date.now()}-${index}`
+  const textFile = join(tmpdir(), `ai-linzi-local-voice-${nonce}.txt`)
+  const temporaryAudio = join(tmpdir(), `ai-linzi-local-voice-${nonce}.${process.platform === 'win32' ? 'wav' : 'aiff'}`)
+  await fs.writeFile(textFile, text, 'utf8')
+  try {
+    if (process.platform === 'darwin') {
+      const voice = await macChineseVoice(project)
+      const attempts = [
+        [...(voice ? ['-v', voice] : []), '--file-format=AIFF', '-o', temporaryAudio, '-f', textFile],
+        [...(voice ? ['-v', voice] : []), '-o', temporaryAudio, '-f', textFile],
+        ['--file-format=AIFF', '-o', temporaryAudio, '-f', textFile],
+      ]
+      let lastError: unknown
+      for (const args of attempts) {
+        try {
+          await fs.rm(temporaryAudio, { force: true })
+          await runProcess('/usr/bin/say', args, tmpdir(), 120_000)
+          const file = await fs.stat(temporaryAudio)
+          if (file.size <= 64) throw new Error('系统配音没有写入有效音频')
+          await fs.copyFile(temporaryAudio, output)
+          return
+        } catch (error) {
+          lastError = error
+        }
+      }
+      try {
+        await fs.rm(temporaryAudio, { force: true })
+        await runProcess('/usr/bin/osascript', [
+          '-l', 'JavaScript',
+          '-e', [
+            "ObjC.import('AppKit')",
+            'function run(argv) {',
+            '  const readError = Ref()',
+            '  const source = $.NSString.stringWithContentsOfFileEncodingError(argv[0], $.NSUTF8StringEncoding, readError)',
+            '  const synthesizer = $.NSSpeechSynthesizer.alloc.init',
+            '  const target = $.NSURL.fileURLWithPath(argv[1])',
+            '  const started = synthesizer.startSpeakingStringToURL(ObjC.unwrap(source), target)',
+            "  if (!started) throw new Error('macOS 系统声音启动失败')",
+            '  while (synthesizer.isSpeaking) {',
+            '    $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.1))',
+            '  }',
+            '  return true',
+            '}',
+          ].join('; '),
+          textFile,
+          temporaryAudio,
+        ], tmpdir(), 120_000)
+        const file = await fs.stat(temporaryAudio)
+        if (file.size <= 64) throw new Error('macOS 系统配音没有写入有效音频')
+        await fs.copyFile(temporaryAudio, output)
+        return
+      } catch (error) {
+        lastError = error
+      }
+      throw lastError instanceof Error ? lastError : new Error('macOS 系统配音失败')
+    }
+    if (process.platform === 'win32') {
+      const command = [
+        'Add-Type -AssemblyName System.Speech',
+        '$s = New-Object System.Speech.Synthesis.SpeechSynthesizer',
+        "$v = $s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -like 'zh-*' } | Select-Object -First 1",
+        'if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }',
+        '$s.SetOutputToWaveFile($args[1])',
+        '$s.Speak([IO.File]::ReadAllText($args[0], [Text.Encoding]::UTF8))',
+        '$s.Dispose()',
+      ].join('; ')
+      await runProcess(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', command, textFile, temporaryAudio],
+        tmpdir(),
+        120_000,
+      )
+      await fs.copyFile(temporaryAudio, output)
+      return
+    }
+    throw new Error('当前系统没有可用的本机免费配音。请改用 macOS、Windows，或在启动弹框选择 Fish Audio。')
+  } finally {
+    await Promise.allSettled([
+      fs.rm(textFile, { force: true }),
+      fs.rm(temporaryAudio, { force: true }),
+    ])
+  }
+}
+
 async function audioDuration(ffprobe: string, file: string, cwd: string): Promise<number> {
   const result = await runProcess(
     ffprobe,
@@ -786,7 +714,7 @@ async function buildNarration(
   const ffprobe = environment.ffprobe.command
   if (!ffmpeg || !ffprobe) throw new Error('FFmpeg / FFprobe 路径丢失，请重新运行环境检测。')
   const audioDir = join(project, 'audio')
-  const rawDir = join(audioDir, '.fish-parts')
+  const rawDir = join(audioDir, '.voice-parts')
   await fs.mkdir(rawDir, { recursive: true })
   const normalizedFiles: string[] = []
   const timings: Array<{ id: string; start: number; duration: number; end: number }> = []
@@ -795,9 +723,13 @@ async function buildNarration(
     progress(index + 1, storyboard.scenes.length)
     const scene = storyboard.scenes[index]
     const prefix = `${String(index + 1).padStart(2, '0')}-${scene.id}`
-    const raw = join(rawDir, `${prefix}.wav`)
+    const raw = join(rawDir, `${prefix}.${options.voiceProvider === 'fish' || process.platform === 'win32' ? 'wav' : 'aiff'}`)
     const normalized = join(audioDir, `${prefix}.wav`)
-    await fishSpeech(scene.voiceover, raw, options)
+    if (options.voiceProvider === 'fish') {
+      await fishSpeech(scene.voiceover, raw, options)
+    } else {
+      await localSpeech(scene.voiceover, raw, project, index)
+    }
     await runProcess(
       ffmpeg,
       ['-nostdin', '-y', '-i', raw, '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', normalized],
@@ -927,18 +859,15 @@ async function renderProject(
   environment: ArticleVideoEnvironmentReport,
   expectedDuration: number,
 ): Promise<{ output: string; validation: Record<string, unknown> }> {
-  const cached = await cachedHyperframes()
-  const npx = environment.npx.command
-  if (!cached && !npx) throw new Error('没有找到 npx，无法首次下载 HyperFrames。')
-  const command = cached ?? npx ?? 'npx'
-  const prefix = cached ? [] : ['--yes', `hyperframes@${HYPERFRAMES_VERSION}`]
-  const env = { HYPERFRAMES_NO_TELEMETRY: '1', npm_config_prefer_offline: 'true' }
-  await runProcess(command, [...prefix, 'check', project, '--snapshots'], project, 5 * 60_000, env)
+  const command = environment.hyperframes.command
+  if (!command) throw new Error('没有找到已安装的 HyperFrames，请按首次设置卡片完成安装后重试。')
+  const env = { HYPERFRAMES_NO_TELEMETRY: '1' }
+  await runProcess(command, ['check', project, '--snapshots'], project, 5 * 60_000, env)
   const output = join(project, 'renders', 'final.mp4')
   await fs.mkdir(dirname(output), { recursive: true })
   await runProcess(
     command,
-    [...prefix, 'render', project, '--output', output, '--fps', '30', '--quality', 'standard', '--format', 'mp4'],
+    ['render', project, '--output', output, '--fps', '30', '--quality', 'standard', '--format', 'mp4'],
     project,
     15 * 60_000,
     env,
@@ -988,167 +917,260 @@ function userFacingError(error: unknown): string {
     .slice(0, 1_000)
 }
 
-export async function runArticleToVideo(
+async function readLockedSource(
+  plugin: ArticleVideoPluginHost,
+  locked: Pick<ArticleVideoReviewState, 'sourcePath' | 'sourceName' | 'sourceHash'>,
+): Promise<string> {
+  const file = plugin.app.vault.getAbstractFileByPath(locked.sourcePath)
+  if (!(file instanceof TFile)) {
+    throw new Error(`已锁定的文章《${locked.sourceName}》被移动或删除，请重新发起视频任务。`)
+  }
+  const sourceText = await plugin.app.vault.read(file)
+  const sourceHash = createHash('sha256').update(sourceText).digest('hex')
+  if (sourceHash !== locked.sourceHash) {
+    throw new Error(`已锁定的文章《${locked.sourceName}》在审稿期间发生了变化。为避免脚本与原文错位，请重新发起视频任务。`)
+  }
+  return sourceText
+}
+
+async function readLockedArticle(
+  plugin: ArticleVideoPluginHost,
+  review: ArticleVideoReviewState,
+): Promise<string> {
+  return readLockedSource(plugin, review)
+}
+
+function articleTitleDefaults(sourceName: string, sourceText: string): { title: string; theme: string } {
+  const heading = sourceText.match(/^\s*#\s+(.+)$/mu)?.[1]
+  const title = (heading || sourceName)
+    .replace(/^\d{4}[._-]\d{1,2}[._-]\d{1,2}[_\s-]*/u, '')
+    .replace(/[《》]/gu, '')
+    .trim()
+    .slice(0, 40) || '我的短视频'
+  return {
+    title,
+    theme: `讲清楚“${title}”最核心的观点与行动建议`.slice(0, 160),
+  }
+}
+
+export async function requestArticleVideoDraft(
   plugin: ArticleVideoPluginHost,
   requestText = '',
-): Promise<void> {
-  // 用插件已有的“当前笔记”选择器：对话面板获得焦点时，
-  // getActiveFile() 不足以证明用户指的是哪篇文章，也绝不能随便取第一个打开标签。
+): Promise<ArticleVideoDraftRequest | null> {
   const current = plugin.rememberCurrentMarkdownFile()
   if (!(current instanceof TFile)) {
-    new Notice(`请先打开要制作成视频的 Markdown 文章，再调用“${ARTICLE_VIDEO_DISPLAY_NAME}”。`, 7000)
-    return
+    throw new Error(`请先打开要制作成视频的 Markdown 文章，再调用“${ARTICLE_VIDEO_DISPLAY_NAME}”。`)
   }
   const sourceText = await plugin.app.vault.read(current)
-  if (sourceText.trim().length < 100) {
-    new Notice('当前文章内容太少，至少需要 100 字才能生成短视频。', 7000)
-    return
-  }
+  if (sourceText.trim().length < 100) throw new Error('当前文章内容太少，至少需要 100 字才能生成短视频。')
   const sourcePath = current.path
   const sourceName = current.basename
-  const requestedDuration = articleVideoDurationFromText(requestText)
   const sourceHash = createHash('sha256').update(sourceText).digest('hex')
-  const statusId = plugin.reportSkillStatus(
-    `🔒 ${ARTICLE_VIDEO_DISPLAY_NAME} · 已锁定当前文章《${sourceName}》，正在起草可修改脚本并自动检测本机环境…`,
-  )
-  const environmentPromise = detectArticleVideoEnvironment()
-  let resumable: Awaited<ReturnType<typeof findResumableProject>> = null
-  let draftStoryboard: ArticleVideoStoryboard
-  let environment: ArticleVideoEnvironmentReport
-  try {
-    resumable = await findResumableProject(
-      plugin,
-      sourcePath,
-      sourceHash,
-      requestedDuration,
-    )
-    if (resumable) {
-      draftStoryboard = resumable.storyboard
-      plugin.reportSkillStatus('♻️ 已恢复上次失败项目的脚本草稿；确认时若没有改动，还会复用已有配音。', statusId)
-    } else {
-      plugin.reportSkillStatus(
-        `📝 正在把《${sourceName}》起草成约 ${requestedDuration} 秒的分镜与旁白；这里只是起草目标，最终时长以你确认后的旁白为准…`,
-        statusId,
-      )
-      const rawStoryboard = await plugin.apiText('/api/plugin/v1/skills/article-to-video', {
-        text: sourceText,
-        sourceTitle: sourceName,
-        duration: requestedDuration,
-        style: 'minimal-infographic',
-      })
-      const parsedStoryboard = parseArticleVideoStoryboard(rawStoryboard, requestedDuration)
-      if (!parsedStoryboard) throw new Error('AI 返回的脚本没有通过结构校验，系统已停止，未创建项目或消耗 Fish Audio 额度。')
-      draftStoryboard = parsedStoryboard
-    }
-    environment = await environmentPromise
-  } catch (error) {
-    const message = userFacingError(error)
-    plugin.reportSkillStatus(
-      `❌ ${ARTICLE_VIDEO_DISPLAY_NAME} 起草脚本失败：${message}\n\n没有创建视频项目，也没有消耗 Fish Audio 额度。`,
-      statusId,
-    )
-    new Notice(`❌ 视频脚本生成失败：${message}`, 10_000)
-    return
+  const defaults = articleTitleDefaults(sourceName, sourceText)
+  const hasFish = Boolean(plugin.getFishAudioApiKey() && plugin.settings.articleVideoFishVoiceId.trim())
+  const launch: ArticleVideoLaunchOptions = {
+    projectName: safeArticleVideoName(defaults.title),
+    videoTitle: defaults.title,
+    theme: defaults.theme,
+    voiceProvider: hasFish ? 'fish' : 'local',
   }
-  plugin.reportSkillStatus(
-    environment.ok
-      ? `✅ 视频脚本草稿与环境检测已完成。请在弹窗直接修改脚本；点击一次确认后才会配音并连续生成 MP4。`
-      : `⚠️ 视频脚本草稿与环境检测已完成。请先修改脚本；确认按钮会同时授权安装缺失环境并继续生成，不需要你自己检测。`,
-    statusId,
-  )
-  const scriptModal = new ArticleVideoScriptModal(
-    plugin.app,
+  const modal = new ArticleVideoSetupModal(plugin.app, sourceName, launch, plugin)
+  modal.open()
+  const approved = await modal.result
+  if (!approved) return null
+  await readLockedSource(plugin, { sourcePath, sourceName, sourceHash })
+  return {
+    ...approved,
+    sourcePath,
     sourceName,
-    draftStoryboard,
-    plugin.getFishAudioApiKey(),
-    plugin.settings.articleVideoFishVoiceId,
-    plugin.settings.articleVideoFishModel,
-    environment,
-  )
-  scriptModal.open()
-  const options = await scriptModal.result
-  if (!options) {
-    plugin.reportSkillStatus(
-      `已取消“${ARTICLE_VIDEO_DISPLAY_NAME}”。脚本没有定稿，没有创建新项目，也没有消耗 Fish Audio 额度。`,
-      statusId,
-    )
-    return
+    sourceHash,
+    draftTarget: articleVideoDurationFromText(requestText),
   }
-  if (options.installMissing) {
-    try {
-      await installArticleVideoEnvironment(environment, (message) => {
-        plugin.reportSkillStatus(`🧰 ${message}`, statusId)
-      })
-      plugin.reportSkillStatus('🔎 安装完成，正在自动重新检测环境…', statusId)
-      environment = await detectArticleVideoEnvironment()
-      if (!environment.ok) {
-        throw new Error('安装命令已结束，但环境仍未通过复检。请重启 Obsidian 后再次调用；原文章和参数不需要重填。')
-      }
-      plugin.reportSkillStatus('✅ 本机环境安装并复检通过，正在继续生成视频…', statusId)
-    } catch (error) {
-      const message = userFacingError(error)
-      plugin.reportSkillStatus(
-        `❌ ${ARTICLE_VIDEO_DISPLAY_NAME} 已停止：${message}\n\n没有创建视频项目，也没有消耗 Fish Audio 额度。`,
-        statusId,
-      )
-      new Notice(`❌ 环境安装失败：${message}`, 10_000)
-      return
+}
+
+export async function prepareArticleVideoDraft(
+  plugin: ArticleVideoPluginHost,
+  draft: ArticleVideoDraftRequest,
+): Promise<ArticleVideoReviewState> {
+  const sourceText = await readLockedSource(plugin, draft)
+  const rawStoryboard = await plugin.apiText('/api/plugin/v1/skills/article-to-video', {
+    mode: 'draft',
+    text: sourceText,
+    sourceTitle: draft.sourceName,
+    videoTitle: draft.videoTitle,
+    theme: draft.theme,
+    duration: draft.draftTarget,
+    style: 'minimal-infographic',
+  })
+  const parsed = parseArticleVideoStoryboard(rawStoryboard, draft.draftTarget) ?? undefined
+  const storyboard = parsed ? { ...parsed, title: draft.videoTitle } : undefined
+  if (!storyboard) {
+    throw new Error('AI 返回的脚本没有通过结构校验，系统已停止；没有创建项目，也没有消耗 Fish Audio 额度。')
+  }
+  return {
+    kind: 'article-video-review',
+    sourcePath: draft.sourcePath,
+    sourceName: draft.sourceName,
+    sourceHash: draft.sourceHash,
+    draftTarget: draft.draftTarget,
+    projectName: draft.projectName,
+    theme: draft.theme,
+    voiceProvider: draft.voiceProvider,
+    storyboard,
+    revision: 0,
+    phase: 'draft',
+  }
+}
+
+export async function reviseArticleVideoDraft(
+  plugin: ArticleVideoPluginHost,
+  review: ArticleVideoReviewState,
+  instruction: string,
+): Promise<ArticleVideoReviewState> {
+  const change = instruction.trim()
+  if (!change || change.length > 1_000) throw new Error('请用 1–1000 字说明要修改哪一幕或哪句话。')
+  const sourceText = await readLockedArticle(plugin, review)
+  const rawStoryboard = await plugin.apiText('/api/plugin/v1/skills/article-to-video', {
+    mode: 'revise',
+    text: sourceText,
+    sourceTitle: review.sourceName,
+    theme: review.theme,
+    duration: review.draftTarget,
+    style: 'minimal-infographic',
+    currentStoryboard: review.storyboard,
+    instruction: change,
+  })
+  const storyboard = parseArticleVideoStoryboard(rawStoryboard, review.draftTarget)
+  if (!storyboard) throw new Error('修改后的脚本没有通过结构校验，上一版脚本仍然保留，请换一种说法再试。')
+  return {
+    ...review,
+    storyboard,
+    revision: review.revision + 1,
+    phase: 'draft',
+    setup: undefined,
+    error: undefined,
+  }
+}
+
+export async function generateConfirmedArticleVideo(
+  plugin: ArticleVideoPluginHost,
+  review: ArticleVideoReviewState,
+): Promise<ArticleVideoGenerationResult> {
+  await readLockedArticle(plugin, review)
+  const apiKey = plugin.getFishAudioApiKey()
+  const voiceId = plugin.settings.articleVideoFishVoiceId.trim()
+  if (review.voiceProvider === 'fish' && (!apiKey || !voiceId)) {
+    return {
+      status: 'setup-required',
+      setup: {
+        kind: 'fish-audio',
+        message: '这版脚本选择了 Fish Audio，但当前设备缺少 API Key 或音色 ID。可以补充配置后继续，也可以重新发起并选择本机免费配音。',
+      },
     }
   }
-  await plugin.setFishAudioApiKey(options.apiKey)
-  plugin.settings.articleVideoFishVoiceId = options.voiceId
-  plugin.settings.articleVideoFishModel = options.model
-  await plugin.saveSettings()
+  const statusId = plugin.reportSkillStatus('🔎 脚本已确认，正在自动检测本机视频环境…')
+  let environment = await detectArticleVideoEnvironment()
+  if (!environment.ok) {
+    return {
+      status: 'setup-required',
+      setup: {
+        kind: 'environment',
+        platform: articleVideoPlatform(process.platform),
+        missing: environment.missing.map((item) => item === 'node'
+          ? 'Node.js 22+'
+          : item === 'ffmpeg'
+            ? 'FFmpeg / FFprobe'
+            : `HyperFrames ${HYPERFRAMES_VERSION}`),
+        message: '正式市场版不会代替用户安装或更新本机依赖。请按下面的官方步骤完成一次安装，再点击“安装完成，重新检测并继续”；文章和脚本不会丢失。',
+      },
+    }
+  }
 
+  const storyboard = review.storyboard
+  const model = plugin.settings.articleVideoFishModel
+  const voiceConfigHash = createHash('sha256')
+    .update(`${review.voiceProvider}|${review.voiceProvider === 'fish' ? `${voiceId}|${model}` : process.platform}`)
+    .digest('hex')
+  const options: ArticleVideoRunOptions = {
+    draftTarget: review.draftTarget,
+    storyboard,
+    voiceProvider: review.voiceProvider,
+    apiKey,
+    voiceId,
+    model,
+  }
+  const resumable = await findResumableProject(
+    plugin,
+    review.sourcePath,
+    review.sourceHash,
+    review.draftTarget,
+    review.voiceProvider,
+    voiceConfigHash,
+  )
   let project = ''
   const workflowBase: Omit<WorkflowRecord, 'stage' | 'updatedAt'> = {
-    version: 1,
-    sourcePath,
-    sourceHash,
-    requestedDuration: options.draftTarget,
+    version: 2,
+    sourcePath: review.sourcePath,
+    sourceHash: review.sourceHash,
+    requestedDuration: review.draftTarget,
+    voiceProvider: review.voiceProvider,
+    voiceConfigHash,
   }
   try {
-    const storyboard = options.storyboard
     let timings: NarrationTimeline
-    const canReuseNarration = resumable &&
-      storyboardFingerprint(resumable.storyboard) === storyboardFingerprint(storyboard)
+    const canReuseNarration = Boolean(
+      resumable && storyboardFingerprint(resumable.storyboard) === storyboardFingerprint(storyboard),
+    )
     if (canReuseNarration && resumable) {
       project = resumable.project
       timings = resumable.timings
-      plugin.reportSkillStatus(
-        '♻️ 确认后的脚本与上次完全一致，正在复用已有 Fish Audio 配音；不会重复消耗配音额度。',
-        statusId,
-      )
-      await writeWorkflow(project, { ...workflowBase, stage: 'narration', updatedAt: new Date().toISOString() })
+      plugin.reportSkillStatus('♻️ 脚本和配音方式与上次完全一致，正在复用已有配音，不会重复消耗配音额度。', statusId)
+      await writeWorkflow(project, {
+        ...workflowBase,
+        stage: 'narration',
+        updatedAt: new Date().toISOString(),
+      })
     } else {
-      project = await uniqueProjectPath(plugin, storyboard.title || sourceName)
+      project = await uniqueProjectPath(plugin, review.projectName || storyboard.title || review.sourceName)
       await fs.mkdir(project, { recursive: false })
       await fs.writeFile(join(project, 'storyboard.json'), `${JSON.stringify(storyboard, null, 2)}\n`, 'utf8')
-      await writeWorkflow(project, { ...workflowBase, stage: 'storyboard', updatedAt: new Date().toISOString() })
-
-      plugin.reportSkillStatus(
-        `${resumable ? '✏️ 脚本已经修改，将按定稿重新配音。' : '✅ 脚本已经定稿。'}\n🎙️ 1/3 正在用 Fish Audio 生成 ${storyboard.scenes.length} 段配音…`,
-        statusId,
-      )
+      await writeWorkflow(project, {
+        ...workflowBase,
+        stage: 'storyboard',
+        updatedAt: new Date().toISOString(),
+      })
+      const voiceLabel = review.voiceProvider === 'fish' ? 'Fish Audio' : '本机免费声音'
+      plugin.reportSkillStatus(`🎙️ 1/3 正在用${voiceLabel}生成 ${storyboard.scenes.length} 段配音…`, statusId)
       timings = await buildNarration(
         project,
         storyboard,
         environment,
         options,
         (currentIndex, total) => plugin.reportSkillStatus(
-          `🎙️ 1/3 Fish Audio 配音 ${currentIndex}/${total}：《${storyboard.scenes[currentIndex - 1]?.headline ?? ''}》`,
+          `🎙️ 1/3 ${voiceLabel}配音 ${currentIndex}/${total}：《${storyboard.scenes[currentIndex - 1]?.headline ?? ''}》`,
           statusId,
         ),
       )
-      await writeWorkflow(project, { ...workflowBase, stage: 'narration', updatedAt: new Date().toISOString() })
+      await writeWorkflow(project, {
+        ...workflowBase,
+        stage: 'narration',
+        updatedAt: new Date().toISOString(),
+      })
     }
 
-    plugin.reportSkillStatus('🎨 2/3 配音与真实时间轴已完成，正在本机构建无水印的淡黄极简信息图和字幕…', statusId)
+    plugin.reportSkillStatus('🎨 2/3 正在本机构建无水印的淡黄极简信息图和字幕…', statusId)
     await buildProjectHtml(project, storyboard, timings)
-    await writeWorkflow(project, { ...workflowBase, stage: 'build', updatedAt: new Date().toISOString() })
-
-    plugin.reportSkillStatus('🎬 3/3 正在本机渲染 MP4 并核验尺寸、时长和音轨；请保持 Obsidian 打开…', statusId)
-    await writeWorkflow(project, { ...workflowBase, stage: 'render', updatedAt: new Date().toISOString() })
+    await writeWorkflow(project, {
+      ...workflowBase,
+      stage: 'build',
+      updatedAt: new Date().toISOString(),
+    })
+    plugin.reportSkillStatus('🎬 3/3 正在本机渲染 MP4 并核验尺寸、时长和音轨…', statusId)
+    await writeWorkflow(project, {
+      ...workflowBase,
+      stage: 'render',
+      updatedAt: new Date().toISOString(),
+    })
     const result = await renderProject(project, environment, timings.totalDuration)
     const outputPath = normalizePath(relative(vaultBasePath(plugin), result.output).replaceAll('\\', '/'))
     await writeWorkflow(project, {
@@ -1158,16 +1180,11 @@ export async function runArticleToVideo(
       output: outputPath,
     })
     plugin.reportSkillStatus(
-      `✅ ${ARTICLE_VIDEO_DISPLAY_NAME} 已自动完成\n\n成片：${outputPath}\n分镜：${normalizePath(`${projectVaultPath(plugin, project)}/storyboard.json`)}\n字幕：${normalizePath(`${projectVaultPath(plugin, project)}/captions.srt`)}\n技术核验：通过（1080×1440、含音轨）。请完整观看后再做视觉验收。`,
+      `✅ ${ARTICLE_VIDEO_DISPLAY_NAME} 已完成\n\n成片：${outputPath}\n分镜：${normalizePath(`${projectVaultPath(plugin, project)}/storyboard.json`)}\n字幕：${normalizePath(`${projectVaultPath(plugin, project)}/captions.srt`)}\n技术核验：通过（1080×1440、含音轨）。请完整观看后再验收。`,
       statusId,
     )
-    new Notice('✅ 视频已生成，正在用系统播放器打开…', 8000)
-    try {
-      const opener = plugin.app as unknown as { openWithDefaultApp?: (path: string) => Promise<void> }
-      await opener.openWithDefaultApp?.(outputPath)
-    } catch {
-      // 文件路径已经写在对话区；系统播放器打不开不改变生成结果。
-    }
+    new Notice('✅ 视频已生成。', 8000)
+    return { status: 'complete', outputPath }
   } catch (error) {
     const message = userFacingError(error)
     if (project) {
@@ -1179,13 +1196,13 @@ export async function runArticleToVideo(
           error: message,
         })
       } catch {
-        // 不用一个诊断文件写入失败盖住真正错误。
+        // 不用诊断文件写入失败覆盖真正错误。
       }
     }
     plugin.reportSkillStatus(
-      `❌ ${ARTICLE_VIDEO_DISPLAY_NAME} 已停止：${message}${project ? `\n\n已保留可检查项目：${projectVaultPath(plugin, project)}` : '\n\n没有创建视频项目。'}\n不需要重新说明文章和参数；修复该问题后再次调用即可。`,
+      `❌ ${ARTICLE_VIDEO_DISPLAY_NAME} 已停止：${message}${project ? `\n\n已保留可检查项目：${projectVaultPath(plugin, project)}` : '\n\n没有创建视频项目。'}\n修复后在原脚本卡片点击继续即可。`,
       statusId,
     )
-    new Notice(`❌ 文章转短视频失败：${message}`, 10_000)
+    throw error
   }
 }

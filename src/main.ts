@@ -332,7 +332,20 @@ import {
   openCustomerCrmSyncModal,
   readLocalCustomerProfile,
 } from './customer-profile-sync'
-import { ARTICLE_VIDEO_DISPLAY_NAME, isBuiltInArticleVideoIntent } from './article-video-core'
+import {
+  ARTICLE_VIDEO_DISPLAY_NAME,
+  ARTICLE_VIDEO_HOMEBREW_INSTALL_COMMAND,
+  ARTICLE_VIDEO_HOMEBREW_INSTALL_URL,
+  ARTICLE_VIDEO_NODE_INSTALL_URL,
+  ARTICLE_VIDEO_FFMPEG_INSTALL_URL,
+  ARTICLE_VIDEO_HYPERFRAMES_INSTALL_COMMAND,
+  ARTICLE_VIDEO_HYPERFRAMES_INSTALL_URL,
+  ARTICLE_VIDEO_WINDOWS_APP_INSTALLER_URL,
+  articleVideoPendingTurnAction,
+  articleVideoStoryboardMarkdown,
+  isBuiltInArticleVideoIntent,
+  type ArticleVideoReviewState,
+} from './article-video-core'
 
 /** 内置动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -608,6 +621,10 @@ interface WireMessage {
   localSkillPath?: string
   /** 显式调用命中多个 Skill 时的本机选择卡；候选只保存入口路径与展示名。 */
   localSkillChoice?: LocalSkillChoiceState
+  /** 内置文章转短视频的本机审稿状态；不上传原文、密钥或系统路径。 */
+  articleVideoReview?: ArticleVideoReviewState
+  /** 文章转短视频的本地用户指令；与审稿卡一并从普通云端对话上下文剥离。 */
+  articleVideoTurn?: boolean
   /** 咨询闭环首次锁定的逐字稿；只保存本机 Vault 路径，不上传。 */
   consultationWorkflowSourcePath?: string
   /** 经营周报本轮文件指纹；只存路径/mtime/size，确认成品后才升级为增量基线。 */
@@ -1794,13 +1811,12 @@ export default class AiLinziPlugin extends Plugin {
     await this.saveSettings()
   }
 
-  /**
-   * 官方内置 Article to Video：本机确定性执行链，不走“我的 Skills”逐步确认协议。
-   * 只在用户的一次总授权内执行弹窗中已列明的分镜、Fish 联网、本机写入与渲染。
-   */
+  /** 官方内置 Article to Video：打开主对话脚本审稿流程。 */
   async runArticleToVideo(requestText = ''): Promise<void> {
-    const { runArticleToVideo } = await import('./article-video-runtime')
-    await runArticleToVideo(this, requestText)
+    await this.activateChatView()
+    const view = this.activeChatView()
+    if (!view) throw new Error('AI霖子主对话没有打开，请重新点击一次。')
+    await view.startArticleVideoWorkflow(requestText)
   }
 
   private articleVideoEnvironment(
@@ -3164,7 +3180,8 @@ class ChatView extends ItemView {
       const cloud = await this.plugin.loadCloudConvo(targetId, savedConversationTitleState(local))
       const localHasRichCards = Boolean(
         local?.messages.some((message) =>
-          message.aiImageResult || message.imageResult || (message.vaultSources?.length ?? 0) > 0,
+          message.aiImageResult || message.imageResult || message.articleVideoReview ||
+            (message.vaultSources?.length ?? 0) > 0,
         ),
       )
       const localHasPendingVaultTask = Boolean(storedPendingVaultTask(local?.pendingVaultTask))
@@ -3201,6 +3218,9 @@ class ChatView extends ItemView {
       const localHasVaultSources = Boolean(
         latestLocal?.messages.some((message) => (message.vaultSources?.length ?? 0) > 0),
       )
+      const localHasArticleVideoReview = Boolean(
+        latestLocal?.messages.some((message) => message.articleVideoReview),
+      )
       const localHasPendingVaultTask = Boolean(storedPendingVaultTask(latestLocal?.pendingVaultTask))
       const latestCloudTitleState = latestCloudSummary
         ? cloudConversationTitleState(latestCloudSummary)
@@ -3226,7 +3246,7 @@ class ChatView extends ItemView {
         await this.plugin.saveConvo(latestLocal)
       }
       const preserveRicherLocalCopy = sameSession && (
-        localHasImageCards || localHasVaultSources || localHasPendingVaultTask
+        localHasImageCards || localHasVaultSources || localHasArticleVideoReview || localHasPendingVaultTask
       )
       if (
         latestCloudSummary &&
@@ -3252,6 +3272,35 @@ class ChatView extends ItemView {
     this.clearAuthorizedContent()
     let repairedInterruptedStatus = false
     this.messages = c.messages.map((message) => {
+      if (message.articleVideoReview) {
+        message = {
+          ...message,
+          articleVideoReview: {
+            ...message.articleVideoReview,
+            projectName: message.articleVideoReview.projectName || message.articleVideoReview.storyboard.title,
+            theme: message.articleVideoReview.theme || `讲清楚“${message.articleVideoReview.storyboard.title}”的核心观点`,
+            voiceProvider: message.articleVideoReview.voiceProvider || (
+              this.plugin.getFishAudioApiKey() && this.plugin.settings.articleVideoFishVoiceId.trim()
+                ? 'fish'
+                : 'local'
+            ),
+          },
+        }
+      }
+      if (
+        message.articleVideoReview &&
+        ['revising', 'confirmed', 'running'].includes(message.articleVideoReview.phase)
+      ) {
+        repairedInterruptedStatus = true
+        return {
+          ...message,
+          articleVideoReview: {
+            ...message.articleVideoReview,
+            phase: 'failed',
+            error: '上次执行被 Obsidian 关闭或刷新打断。文章和脚本仍已保留，可以继续修改或再次点击生成。',
+          },
+        }
+      }
       if (!message.localSkillStatus) return message
       const text = message.parts.find((part) => part.type === 'text')?.text ?? ''
       const recovered = recoverLocalSkillStatus(
@@ -4107,7 +4156,9 @@ class ChatView extends ItemView {
   private messagesForApi(): WireMessage[] {
     // 技能进度状态条与多候选卡都是本机 UI，不属于对话上下文；发给 API 前整条剥离。
     return this.messages
-      .filter((message) => !message.localSkillStatus && !message.localSkillChoice)
+      .filter((message) =>
+        !message.localSkillStatus && !message.localSkillChoice &&
+          !message.articleVideoReview && !message.articleVideoTurn)
       .map(({ id, role, parts }) => ({ id, role, parts }))
   }
 
@@ -4140,6 +4191,160 @@ class ChatView extends ItemView {
     void this.persistNow()
     this.renderMessages(thinking)
     return existing?.id ?? this.messages[this.messages.length - 1].id
+  }
+
+  private recentArticleVideoReviewMessage(): WireMessage | undefined {
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index]
+      const phase = message.articleVideoReview?.phase
+      if (phase && !['superseded', 'cancelled', 'complete'].includes(phase)) return message
+    }
+    return undefined
+  }
+
+  private articleVideoReviewText(review: ArticleVideoReviewState): string {
+    const revision = review.revision > 0 ? `这是按你的要求修改后的第 ${review.revision + 1} 版完整脚本。` : '这是第一版完整脚本。'
+    const voice = review.voiceProvider === 'fish' ? 'Fish Audio' : '本机免费配音'
+    return [
+      `已锁定当前文章《${review.sourceName}》。${revision}\n主题：${review.theme}\n配音：${voice}`,
+      articleVideoStoryboardMarkdown(review.storyboard),
+      '需要调整时，直接在下面说“开头再短一点”“把案例讲清楚”“结尾更有力”，我会在这里返回修改后的完整脚本。满意后只需点击一次“脚本确认，生成视频”。',
+    ].join('\n\n')
+  }
+
+  async startArticleVideoWorkflow(
+    requestText = '',
+    userMessageAlreadyAdded = false,
+  ): Promise<void> {
+    if (this.builtInArticleVideoRunning) {
+      new Notice(`“${ARTICLE_VIDEO_DISPLAY_NAME}”正在处理，当前文章和脚本不会丢失。`, 5000)
+      return
+    }
+    this.builtInArticleVideoRunning = true
+    const statusId = this.postSkillStatus('⚙️ 正在锁定当前文章并准备视频设置…')
+    try {
+      if (!userMessageAlreadyAdded) {
+        this.messages.push({
+          id: uid(),
+          role: 'user',
+          parts: [{ type: 'text', text: requestText.trim() || `调用“${ARTICLE_VIDEO_DISPLAY_NAME}”处理当前文章` }],
+          articleVideoTurn: true,
+        })
+      }
+      const { prepareArticleVideoDraft, requestArticleVideoDraft } = await import('./article-video-runtime')
+      const draft = await requestArticleVideoDraft(this.plugin, requestText)
+      if (!draft) {
+        this.postSkillStatus('已取消视频设置。没有生成脚本、配音或视频。', statusId)
+        await this.persistNow()
+        this.renderMessages()
+        return
+      }
+      this.postSkillStatus(`📝 设置已确认，正在为《${draft.sourceName}》生成主对话脚本…`, statusId)
+      const review = await prepareArticleVideoDraft(this.plugin, draft)
+      for (const message of this.messages) {
+        if (
+          message.articleVideoReview &&
+          !['complete', 'cancelled', 'superseded'].includes(message.articleVideoReview.phase)
+        ) {
+          message.articleVideoReview.phase = 'superseded'
+        }
+      }
+      this.messages.push({
+        id: uid(),
+        role: 'assistant',
+        parts: [{ type: 'text', text: this.articleVideoReviewText(review) }],
+        articleVideoReview: review,
+      })
+      this.postSkillStatus('✅ 完整脚本已生成，正在主对话等待你修改或确认。', statusId)
+      await this.persistNow()
+      this.renderMessages()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.postSkillStatus(`❌ 视频脚本没有生成：${message}\n\n没有创建视频项目，也没有消耗 Fish Audio 额度。`, statusId)
+      new Notice(`❌ 视频脚本生成失败：${message}`, 9000)
+    } finally {
+      this.builtInArticleVideoRunning = false
+      this.setSendingUi(false)
+    }
+  }
+
+  private async reviseArticleVideoReview(message: WireMessage, instruction: string): Promise<void> {
+    const review = message.articleVideoReview
+    if (!review || this.builtInArticleVideoRunning) return
+    this.builtInArticleVideoRunning = true
+    review.phase = 'revising'
+    review.error = undefined
+    await this.persistNow()
+    this.renderMessages()
+    try {
+      const { reviseArticleVideoDraft } = await import('./article-video-runtime')
+      const revised = await reviseArticleVideoDraft(this.plugin, review, instruction)
+      review.phase = 'superseded'
+      this.messages.push({
+        id: uid(),
+        role: 'assistant',
+        parts: [{ type: 'text', text: this.articleVideoReviewText(revised) }],
+        articleVideoReview: revised,
+      })
+      await this.persistNow()
+      this.renderMessages()
+    } catch (error) {
+      review.phase = 'draft'
+      review.error = error instanceof Error ? error.message : String(error)
+      this.messages.push({
+        id: uid(),
+        role: 'assistant',
+        parts: [{ type: 'text', text: `这次没有改动脚本：${review.error}\n\n上一版完整脚本仍然保留，你可以换一种说法继续修改。` }],
+      })
+      await this.persistNow()
+      this.renderMessages()
+    } finally {
+      this.builtInArticleVideoRunning = false
+      this.setSendingUi(false)
+    }
+  }
+
+  private async confirmArticleVideoReview(message: WireMessage): Promise<void> {
+    const review = message.articleVideoReview
+    if (!review || this.builtInArticleVideoRunning) return
+    this.builtInArticleVideoRunning = true
+    review.phase = 'running'
+    review.setup = undefined
+    review.error = undefined
+    await this.persistNow()
+    this.renderMessages()
+    try {
+      const { generateConfirmedArticleVideo } = await import('./article-video-runtime')
+      const result = await generateConfirmedArticleVideo(this.plugin, review)
+      if (result.status === 'setup-required') {
+        review.phase = 'setup-required'
+        review.setup = result.setup
+      } else {
+        review.phase = 'complete'
+        review.outputPath = result.outputPath
+      }
+    } catch (error) {
+      review.phase = 'failed'
+      review.error = error instanceof Error ? error.message : String(error)
+    } finally {
+      await this.persistNow()
+      this.renderMessages()
+      this.builtInArticleVideoRunning = false
+      this.setSendingUi(false)
+    }
+  }
+
+  private async cancelArticleVideoReview(message: WireMessage): Promise<void> {
+    if (!message.articleVideoReview) return
+    message.articleVideoReview.phase = 'cancelled'
+    message.articleVideoReview.setup = undefined
+    this.messages.push({
+      id: uid(),
+      role: 'assistant',
+      parts: [{ type: 'text', text: '已取消这次视频任务。没有继续配音或渲染；当前文章没有被修改。' }],
+    })
+    await this.persistNow()
+    this.renderMessages()
   }
 
   /**
@@ -4390,14 +4595,45 @@ class ChatView extends ItemView {
       this.renderMessages()
       return
     }
+    const articleVideoReviewMessage = this.recentArticleVideoReviewMessage()
+    const articleVideoReview = articleVideoReviewMessage?.articleVideoReview
+    if (
+      typedText &&
+      articleVideoReviewMessage &&
+      articleVideoReview &&
+      ['draft', 'failed', 'setup-required'].includes(articleVideoReview.phase) &&
+      !isBuiltInArticleVideoIntent(typedText)
+    ) {
+      const turnAction = articleVideoPendingTurnAction(typedText, articleVideoReview.phase)
+      this.messages.push({
+        id: uid(),
+        role: 'user',
+        parts: [{ type: 'text', text: typedText }],
+        articleVideoTurn: true,
+      })
+      this.inputEl.value = ''
+      await this.persistNow()
+      this.renderMessages()
+      if (turnAction === 'cancel') {
+        await this.cancelArticleVideoReview(articleVideoReviewMessage)
+        return
+      }
+      if (turnAction === 'confirm') {
+        await this.confirmArticleVideoReview(articleVideoReviewMessage)
+        return
+      }
+      if (articleVideoReview.phase === 'setup-required') articleVideoReview.phase = 'draft'
+      await this.reviseArticleVideoReview(articleVideoReviewMessage, typedText)
+      return
+    }
     if (typedText && isBuiltInArticleVideoIntent(typedText)) {
       if (this.sending || this.builtInArticleVideoRunning) return
-      this.builtInArticleVideoRunning = true
       try {
         this.messages.push({
           id: uid(),
           role: 'user',
           parts: [{ type: 'text', text: typedText }],
+          articleVideoTurn: true,
         })
         // 这是一个新的官方确定性工作流：显式收尾上一个对话任务，
         // 不允许历史 ask_user / localSkillPath 把它拉回旧的多轮链。
@@ -4417,13 +4653,12 @@ class ChatView extends ItemView {
         this.sendBtn.disabled = true
         this.sendBtn.setAttribute('title', `${ARTICLE_VIDEO_DISPLAY_NAME}正在运行`)
         this.sendBtn.setAttribute('aria-label', `${ARTICLE_VIDEO_DISPLAY_NAME}正在运行`)
-        await this.plugin.runArticleToVideo(typedText)
+        await this.startArticleVideoWorkflow(typedText, true)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         this.plugin.reportSkillStatus(`❌ ${ARTICLE_VIDEO_DISPLAY_NAME}未能启动：${message}`)
         new Notice(`❌ 文章转短视频未能启动：${message}`, 9000)
       } finally {
-        this.builtInArticleVideoRunning = false
         this.setSendingUi(false)
       }
       return
@@ -9256,6 +9491,156 @@ class ChatView extends ItemView {
     }
   }
 
+  private renderArticleVideoReviewCard(row: HTMLElement, message: WireMessage): void {
+    const review = message.articleVideoReview
+    if (!review) return
+    const card = row.createDiv({ cls: `ai-linzi-article-video-review is-${review.phase}` })
+    const stateText: Record<ArticleVideoReviewState['phase'], string> = {
+      draft: '脚本待确认',
+      revising: '正在按你的要求修改…',
+      superseded: '已有更新版本',
+      confirmed: '脚本已确认',
+      'setup-required': '首次设置后自动继续',
+      running: '正在自动生成视频…',
+      cancelled: '已取消',
+      failed: '生成中断，脚本仍已保留',
+      complete: '视频已生成',
+    }
+    card.createDiv({ text: stateText[review.phase], cls: 'ai-linzi-article-video-review-state' })
+    if (review.error) {
+      card.createDiv({ text: review.error, cls: 'ai-linzi-article-video-review-error' })
+    }
+    if (review.phase === 'superseded' || review.phase === 'cancelled') return
+    if (review.phase === 'revising' || review.phase === 'running' || review.phase === 'confirmed') {
+      card.createDiv({
+        text: review.phase === 'revising'
+          ? '文章和上一版脚本已锁定，请稍候。'
+          : '已进入自动检测、配音、HTML 动效和 MP4 渲染，不需要再逐步确认。',
+        cls: 'ai-linzi-article-video-review-hint',
+      })
+      return
+    }
+    if (review.phase === 'complete') {
+      card.createDiv({
+        text: review.outputPath ? `成片：${review.outputPath}` : '成片已生成。',
+        cls: 'ai-linzi-article-video-review-hint',
+      })
+      if (review.outputPath) {
+        const open = card.createEl('button', {
+          text: '打开成片',
+          cls: 'mod-cta',
+          attr: { type: 'button' },
+        })
+        open.onclick = () => {
+          const opener = this.app as unknown as {
+            openWithDefaultApp?: (path: string) => Promise<void>
+          }
+          void opener.openWithDefaultApp?.(review.outputPath ?? '')
+        }
+      }
+      return
+    }
+    if (review.phase === 'setup-required' && review.setup) {
+      card.createDiv({
+        text: review.setup.message ?? '完成首次设置后会从当前脚本继续。',
+        cls: 'ai-linzi-article-video-review-hint',
+      })
+      if (review.setup.kind === 'fish-audio') {
+        const steps = card.createEl('ol', { cls: 'ai-linzi-article-video-setup-steps' })
+        steps.createEl('li', { text: '点击“打开 AI霖子设置”。' })
+        steps.createEl('li', { text: '填写自己的 Fish Audio API Key 和音色 ID并保存。' })
+        steps.createEl('li', { text: '回到这里点击“配置完成，继续生成”。' })
+        const actions = card.createDiv({ cls: 'ai-linzi-article-video-review-actions' })
+        const settings = actions.createEl('button', {
+          text: '打开 AI霖子设置',
+          attr: { type: 'button' },
+        })
+        settings.onclick = () => this.plugin.openPluginSettings()
+        const retry = actions.createEl('button', {
+          text: '配置完成，继续生成',
+          cls: 'mod-cta',
+          attr: { type: 'button' },
+        })
+        retry.onclick = () => void this.confirmArticleVideoReview(message)
+        return
+      }
+      const missing = review.setup.missing?.join('、') || 'Node.js 22+、FFmpeg'
+      card.createDiv({
+        text: `缺少：${missing}`,
+        cls: 'ai-linzi-article-video-review-missing',
+      })
+      const steps = card.createEl('ol', { cls: 'ai-linzi-article-video-setup-steps' })
+      const actions = card.createDiv({ cls: 'ai-linzi-article-video-review-actions' })
+      if (review.setup.platform === 'macos') {
+        steps.createEl('li', { text: '如果还没有 Homebrew，先复制官方命令，在 Mac“终端”粘贴执行。' })
+        steps.createEl('li', { text: '在终端执行：brew install node ffmpeg。' })
+        steps.createEl('li', { text: `再执行：${ARTICLE_VIDEO_HYPERFRAMES_INSTALL_COMMAND}。` })
+        steps.createEl('li', { text: '全部安装结束后重启 Obsidian，再点击“安装完成，重新检测并继续”。' })
+        const copy = actions.createEl('button', {
+          text: '复制 Homebrew 官方安装命令',
+          attr: { type: 'button' },
+        })
+        copy.onclick = async () => {
+          await navigator.clipboard.writeText(ARTICLE_VIDEO_HOMEBREW_INSTALL_COMMAND)
+          new Notice('已复制 Homebrew 官方安装命令。')
+        }
+        const help = actions.createEl('button', { text: '打开 Homebrew 官方说明', attr: { type: 'button' } })
+        help.onclick = () => window.open(ARTICLE_VIDEO_HOMEBREW_INSTALL_URL, '_blank', 'noopener')
+      } else if (review.setup.platform === 'windows') {
+        steps.createEl('li', { text: '先安装或更新微软 App Installer，以获得 WinGet。' })
+        steps.createEl('li', { text: '在 PowerShell 依次安装 Node.js LTS 与 FFmpeg。' })
+        steps.createEl('li', { text: `再执行：${ARTICLE_VIDEO_HYPERFRAMES_INSTALL_COMMAND}。` })
+        steps.createEl('li', { text: '全部安装结束后重启 Obsidian，再点击“安装完成，重新检测并继续”。' })
+        const installer = actions.createEl('button', {
+          text: '安装微软 App Installer',
+          attr: { type: 'button' },
+        })
+        installer.onclick = () =>
+          window.open(ARTICLE_VIDEO_WINDOWS_APP_INSTALLER_URL, '_blank', 'noopener')
+      } else {
+        steps.createEl('li', { text: '当前系统请手动安装 Node.js 22+、FFmpeg 与 HyperFrames。' })
+        steps.createEl('li', { text: '完成后回到这里重新检测。' })
+      }
+      const nodeHelp = actions.createEl('button', { text: 'Node.js 官方下载', attr: { type: 'button' } })
+      nodeHelp.onclick = () => window.open(ARTICLE_VIDEO_NODE_INSTALL_URL, '_blank', 'noopener')
+      const ffmpegHelp = actions.createEl('button', { text: 'FFmpeg 官方下载', attr: { type: 'button' } })
+      ffmpegHelp.onclick = () => window.open(ARTICLE_VIDEO_FFMPEG_INSTALL_URL, '_blank', 'noopener')
+      const hyperframesHelp = actions.createEl('button', { text: 'HyperFrames 安装说明', attr: { type: 'button' } })
+      hyperframesHelp.onclick = () => window.open(ARTICLE_VIDEO_HYPERFRAMES_INSTALL_URL, '_blank', 'noopener')
+      const copyHyperframes = actions.createEl('button', {
+        text: '复制 HyperFrames 安装命令',
+        attr: { type: 'button' },
+      })
+      copyHyperframes.onclick = async () => {
+        await navigator.clipboard.writeText(ARTICLE_VIDEO_HYPERFRAMES_INSTALL_COMMAND)
+        new Notice('已复制 HyperFrames 安装命令。')
+      }
+      const retry = actions.createEl('button', {
+        text: '安装完成，重新检测并继续',
+        cls: 'mod-cta',
+        attr: { type: 'button' },
+      })
+      retry.onclick = () => void this.confirmArticleVideoReview(message)
+      return
+    }
+
+    card.createDiv({
+      text: review.phase === 'failed'
+        ? '你可以继续在输入框修改脚本，也可以从当前脚本重新检测并生成。'
+        : '没有额外弹窗。需要修改就直接回复；确认后系统才会检测环境并生成。',
+      cls: 'ai-linzi-article-video-review-hint',
+    })
+    const actions = card.createDiv({ cls: 'ai-linzi-article-video-review-actions' })
+    const confirm = actions.createEl('button', {
+      text: review.phase === 'failed' ? '重新检测并继续生成' : '脚本确认，生成视频',
+      cls: 'mod-cta',
+      attr: { type: 'button' },
+    })
+    confirm.onclick = () => void this.confirmArticleVideoReview(message)
+    const cancel = actions.createEl('button', { text: '取消', attr: { type: 'button' } })
+    cancel.onclick = () => void this.cancelArticleVideoReview(message)
+  }
+
   private renderMessages(thinking = false) {
     this.listEl.empty()
     if (this.messages.length === 0) {
@@ -9396,6 +9781,10 @@ class ChatView extends ItemView {
         const cleanText = folderResult.cleanText
         const patch = parseNotePatch(cleanText)
         void MarkdownRenderer.render(this.app, patch?.displayText ?? cleanText, body, '', this)
+        if (m.articleVideoReview) {
+          this.renderArticleVideoReviewCard(row, m)
+          continue
+        }
         if (m.localSkillChoice) {
           renderLocalSkillChoiceCard({
             isBusy: () => this.sending,
@@ -9949,9 +10338,9 @@ class AiLinziSettingTab extends PluginSettingTab {
           }),
       )
 
-    new Setting(containerEl).setName(`${ARTICLE_VIDEO_DISPLAY_NAME} · Fish Audio`).setHeading()
+    new Setting(containerEl).setName(`${ARTICLE_VIDEO_DISPLAY_NAME} · 配音设置`).setHeading()
     containerEl.createEl('p', {
-      text: `${ARTICLE_VIDEO_DISPLAY_NAME}是 AI霖子官方内置技能，不受上面的“我的 Skills”程序开关影响。打开一篇文章后直接说“用文章转短视频处理当前文章”：系统会自动锁定原文、检测环境，并把视频参数、联网、缺失环境安装和输出范围合并成一次确认；已有 Homebrew 或 WinGet 时，确认后会自动安装缺失项并连续运行，不再要求你回复“继续”或自行检测。正式配音统一使用 Fish Audio；课堂默认免费开发模型，密钥只保存在当前设备的 Obsidian SecretStorage，不会写入笔记、Skill、日志或发送给 AI。`,
+      text: `${ARTICLE_VIDEO_DISPLAY_NAME}是 AI霖子官方内置技能。首次小弹框只确认项目名、标题、主题和配音方式；完整脚本随后在主对话中展示并通过聊天修改。没有 Fish Audio API 时默认使用本机免费配音；选择 Fish Audio 时，API Key 只保存在当前设备的 Obsidian SecretStorage，不会写入笔记、Skill、日志或发送给 AI。脚本确认后才自动检测环境并连续生成。`,
       cls: 'setting-item-description',
     })
 

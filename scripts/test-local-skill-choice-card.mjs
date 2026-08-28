@@ -108,7 +108,7 @@ assert.match(
 )
 assert.match(
   mainSource,
-  /filter\(\(message\) => !message\.localSkillStatus && !message\.localSkillChoice\)/,
+  /filter\(\(message\) =>[\s\S]{0,160}!message\.localSkillStatus && !message\.localSkillChoice/,
   '本机选择卡必须从 API 消息中剥离，让恢复请求仍以原用户消息结尾',
 )
 assert.match(

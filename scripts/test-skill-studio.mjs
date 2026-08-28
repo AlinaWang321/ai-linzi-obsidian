@@ -1169,7 +1169,7 @@ assert.match(runSendTurnSource, /skillCreator: skillCreatorRequest/)
 assert.match(runSendTurnSource, /extractSkillUpdateProposals\(answer\)/)
 assert.match(runSendTurnSource, /this\.skillUpdateTransaction\.prepare\([\s\S]{0,180}skillUpdateTarget\.path/)
 assert.match(runSendTurnSource, /skillUpdatePendingPath = skillUpdaterTurn && !skillUpdateOffer/)
-assert.match(mainSource, /\.filter\(\(message\) => !message\.localSkillStatus && !message\.localSkillChoice\)[\s\S]{0,120}\.map\(\(\{ id, role, parts \}\)/)
+assert.match(mainSource, /\.filter\(\(message\) =>[\s\S]{0,220}!message\.localSkillStatus && !message\.localSkillChoice[\s\S]{0,120}\.map\(\(\{ id, role, parts \}\)/)
 assert.match(updateCardSource, /确认并更新到/)
 assert.match(
   updateCardSource,
