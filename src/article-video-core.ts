@@ -32,7 +32,49 @@ export const ARTICLE_VIDEO_WINDOWS_APP_INSTALLER_URL = 'https://apps.microsoft.c
 export const ARTICLE_VIDEO_NODE_INSTALL_URL = 'https://nodejs.org/zh-cn/download'
 export const ARTICLE_VIDEO_FFMPEG_INSTALL_URL = 'https://ffmpeg.org/download.html'
 export const ARTICLE_VIDEO_HYPERFRAMES_INSTALL_URL = 'https://www.npmjs.com/package/hyperframes'
-export const ARTICLE_VIDEO_HYPERFRAMES_INSTALL_COMMAND = 'npm install --global hyperframes@0.8.15'
+export const ARTICLE_VIDEO_NODE_MIN_MAJOR = 22
+export const ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION = '0.8.15'
+export const ARTICLE_VIDEO_HYPERFRAMES_INSTALL_COMMAND = 'npm install --global hyperframes@latest'
+
+export type ArticleVideoEnvironmentDependency = 'node' | 'ffmpeg' | 'hyperframes'
+
+/**
+ * 市场版只生成一份可复制给本机 AI 的安装任务，不在 Obsidian 内执行安装。
+ * 版本策略写最低兼容线 + 最新稳定版，避免课程截图里的补丁版本日后过期。
+ */
+export function buildArticleVideoLocalAiInstallPrompt(input: {
+  platform?: 'macos' | 'windows' | 'unsupported'
+  missing?: ArticleVideoEnvironmentDependency[]
+} = {}): string {
+  const platform = input.platform === 'macos'
+    ? 'macOS'
+    : input.platform === 'windows'
+      ? 'Windows'
+      : '请先检测当前操作系统'
+  const missing = input.missing?.length
+    ? input.missing.map((item) => item === 'node'
+      ? `Node.js >= ${ARTICLE_VIDEO_NODE_MIN_MAJOR}`
+      : item === 'ffmpeg'
+        ? 'FFmpeg（必须同时包含 FFprobe）'
+        : `HyperFrames >= ${ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION}`).join('、')
+    : `Node.js >= ${ARTICLE_VIDEO_NODE_MIN_MAJOR}、FFmpeg / FFprobe、HyperFrames >= ${ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION}`
+
+  return [
+    '请帮我为 Obsidian 的 AI霖子“文章转短视频”功能配置本机视频环境。',
+    '',
+    `当前系统提示：${platform}。当前缺少或版本不兼容：${missing}。`,
+    '',
+    '请按下面规则逐项完成：',
+    `1. 先只读检测操作系统、CPU 架构、PATH、现有版本和可用包管理器；Node.js 的最低兼容版本是 ${ARTICLE_VIDEO_NODE_MIN_MAJOR}，HyperFrames 的最低兼容版本是 ${ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION}。`,
+    '2. 已满足最低版本的依赖不要降级或重复安装；缺失或过旧时，优先通过官方来源/系统包管理器安装当前最新稳定版或最新 LTS，不要写死旧补丁版本。',
+    '3. macOS 优先使用 Homebrew；Windows 优先使用 WinGet/微软 App Installer。FFmpeg 安装后必须同时能调用 ffmpeg 与 ffprobe。HyperFrames 使用 npm 全局安装最新稳定版。',
+    '4. 每次需要管理员权限、sudo、修改系统 PATH 或安装系统软件前，先用中文告诉我将执行的准确命令、用途和影响，并等待我明确确认。不要关闭安全软件，不要执行来路不明的脚本。',
+    '5. 不要卸载或更改无关软件，不要修改 Obsidian Vault 内的任何文件，也不要读取我的业务内容。',
+    '6. 安装完成后逐项执行并展示验证结果：node --version、npm --version、ffmpeg -version、ffprobe -version、hyperframes --version。确认 Node.js 和 HyperFrames 达到上述最低版本。',
+    '7. 如果某一步失败，先解释原因并给出安全的修复选项，不要跳过验证，也不要把“命令已运行”当成“安装成功”。',
+    '8. 全部验证通过后，提醒我完全退出并重新打开 Obsidian，然后回到 AI霖子点击“安装完成，重新检测并继续”。',
+  ].join('\n')
+}
 
 export interface ArticleVideoScene {
   id: string
@@ -73,6 +115,11 @@ export type ArticleVideoReviewPhase =
 export type ArticleVideoPlatform = 'macos' | 'windows' | 'unsupported'
 export type ArticleVideoVoiceProvider = 'local' | 'fish'
 
+export interface ArticleVideoPronunciationOverride {
+  display: string
+  spoken: string
+}
+
 export interface ArticleVideoLaunchOptions {
   projectName: string
   videoTitle: string
@@ -103,6 +150,7 @@ export interface ArticleVideoReviewState {
   storyboard: ArticleVideoStoryboard
   revision: number
   phase: ArticleVideoReviewPhase
+  pronunciations?: ArticleVideoPronunciationOverride[]
   setup?: ArticleVideoSetupState
   outputPath?: string
   error?: string
@@ -147,13 +195,17 @@ export function isBuiltInArticleVideoIntent(text: string): boolean {
   return asksToRun && namesSource && (namesOfficialSkill || /(?:文章|笔记|文档)/u.test(value))
 }
 
-export function articleVideoDurationFromText(text: string): ArticleVideoDuration {
+export function explicitArticleVideoDurationFromText(text: string): ArticleVideoDuration | undefined {
   const value = normalized(text)
   if (/(?:2|两)分钟|120秒/u.test(value)) return 120
   if (/(?:1\.5|一分半|1分30秒)|90秒/u.test(value)) return 90
   if (/(?:半分钟|30秒)/u.test(value)) return 30
   if (/(?:1|一)分钟|60秒/u.test(value)) return 60
-  return 60
+  return undefined
+}
+
+export function articleVideoDurationFromText(text: string): ArticleVideoDuration {
+  return explicitArticleVideoDurationFromText(text) ?? 60
 }
 
 export function articleVideoPlatform(value: string): ArticleVideoPlatform {
@@ -175,12 +227,76 @@ export function articleVideoPendingTurnAction(
   phase: ArticleVideoReviewPhase,
 ): ArticleVideoPendingTurnAction {
   const value = text.normalize('NFKC').trim()
-  if (!value || !['draft', 'failed', 'setup-required'].includes(phase)) return 'none'
+  if (!value || !['draft', 'failed', 'setup-required', 'complete'].includes(phase)) return 'none'
   if (isArticleVideoCancelIntent(value)) return 'cancel'
   if (/^(?:确认|可以|没问题|ok|okay|生成视频|开始生成|安装完成|配置完成|重新检测|继续生成)[。.!！]?$/iu.test(value)) {
     return 'confirm'
   }
   return 'revise'
+}
+
+/** 成片后只接管明确的视频修改，避免普通闲聊被长期锁在旧视频项目里。 */
+export function isArticleVideoPostProductionRevisionIntent(text: string): boolean {
+  const value = normalized(text)
+  const namesVideoPart = /(?:视频|成片|脚本|配音|旁白|字幕|读音|发音|镜头|画面|转场|节奏|时长|第\s*\d+\s*幕|这一版|上一版)/u.test(value)
+  const asksChange = /(?:修改|调整|改成|改为|重做|重制|重新生成|重新制作|再生成|再做|丰富|增加|减少|延长|缩短|读作|读成|继续)/u.test(value)
+  const correctsPronunciation = /(?:读错|念错|发音错|应该读|应该念|读音(?:是|改)|发音(?:是|改))/u.test(value)
+  const explicitlyContinues = /(?:继续|沿用|基于|按照).{0,16}(?:文章转短视频|上一版|前一版|前面|刚才|这个视频|该视频)/u.test(value)
+    || /(?:文章转短视频).{0,16}(?:继续|修改|调整|重做|重制|重新生成|重新制作)/u.test(value)
+  return (namesVideoPart && (asksChange || correctsPronunciation)) || correctsPronunciation || explicitlyContinues
+}
+
+function cleanPronunciationTerm(value: string): string {
+  return value.normalize('NFKC').trim().replace(/^[“”"'「」『』]+|[“”"'「」『』]+$/gu, '').trim()
+}
+
+/** 从用户明确的“字幕写 X、配音读 Y”中提取本机读音替换；不让模型改错可见文字。 */
+export function extractArticleVideoPronunciationOverrides(text: string): ArticleVideoPronunciationOverride[] {
+  const value = text.normalize('NFKC')
+  const found: ArticleVideoPronunciationOverride[] = []
+  const add = (displayValue: string | undefined, spokenValue: string | undefined) => {
+    const display = cleanPronunciationTerm(displayValue ?? '')
+    const spoken = cleanPronunciationTerm(spokenValue ?? '')
+    if (!display || !spoken || display === spoken || display.length > 24 || spoken.length > 24 || /[\r\n]/u.test(`${display}${spoken}`)) return
+    found.push({ display, spoken })
+  }
+
+  const namedCharacter = value.match(/([A-Za-z0-9\u3400-\u9fff]{2,24})的([\u3400-\u9fff]).{0,12}(?:读错|念错).{0,20}?(?:这个字)?(?:应该)?(?:读|念)(?:作|成|为)?[：:\s]*[“"「]?([\u3400-\u9fff])[”"」]?/u)
+  if (namedCharacter) {
+    const display = namedCharacter[1].replace(/^.*(?:配音|旁白|语音)(?:里|中)/u, '')
+    add(display, display.replaceAll(namedCharacter[2], namedCharacter[3]))
+  }
+
+  const namedPhrase = value.match(/[“"「]?([A-Za-z0-9\u3400-\u9fff]{2,24})[”"」]?.{0,16}(?:配音|旁白|语音).{0,12}(?:统一)?(?:读|念)(?:作|成|为)[：:\s]*[“"「]?([A-Za-z0-9\u3400-\u9fff]{1,24})[”"」]?/u)
+  if (namedPhrase) add(namedPhrase[1], namedPhrase[2])
+
+  const subtitlePair = value.match(/字幕(?:上|里|中)?(?:仍然|仍|继续)?(?:显示|保留|写|是|用)?[：:\s]*[“"「]?([A-Za-z0-9\u3400-\u9fff]{1,24})[”"」]?.{0,24}(?:读音|配音|旁白)(?:是|改成|改为|读作|读成|念作|念成)?[：:\s]*[“"「]?([A-Za-z0-9\u3400-\u9fff]{1,24})[”"」]?/u)
+  if (subtitlePair) add(subtitlePair[1], subtitlePair[2])
+
+  const unique = new Map<string, ArticleVideoPronunciationOverride>()
+  for (const item of found) unique.set(item.display, item)
+  const sorted = [...unique.values()].sort((left, right) => right.display.length - left.display.length)
+  return sorted.filter((item, index) => !sorted.some((larger, largerIndex) =>
+    largerIndex < index && larger.display.includes(item.display) && larger.spoken.includes(item.spoken)))
+}
+
+export function mergeArticleVideoPronunciationOverrides(
+  current: ArticleVideoPronunciationOverride[] | undefined,
+  instruction: string,
+): ArticleVideoPronunciationOverride[] {
+  const merged = new Map<string, ArticleVideoPronunciationOverride>()
+  for (const item of current ?? []) merged.set(item.display, item)
+  for (const item of extractArticleVideoPronunciationOverrides(instruction)) merged.set(item.display, item)
+  return [...merged.values()].sort((left, right) => right.display.length - left.display.length)
+}
+
+export function applyArticleVideoPronunciations(
+  value: string,
+  overrides: ArticleVideoPronunciationOverride[] | undefined,
+): string {
+  return [...(overrides ?? [])]
+    .sort((left, right) => right.display.length - left.display.length)
+    .reduce((result, item) => result.split(item.display).join(item.spoken), value)
 }
 
 function sceneVisualDetails(scene: ArticleVideoScene): string[] {

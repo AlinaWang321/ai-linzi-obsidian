@@ -23,6 +23,7 @@ for (const [raw, expect] of [
   ['FUNCTION_INVOCATION_TIMEOUT', /时间太长/],
   ['net::ERR_CERT_AUTHORITY_INVALID', /拦截|代理/],
   ['ERR_SOMETHING_UNKNOWN', /网络出了点问题/],
+  ['Failed to fetch', /网络连接短暂中断|尝试恢复/],
 ]) {
   assert.match(fn(raw), expect, `未覆盖：${raw}`)
 }
@@ -45,4 +46,17 @@ for (const f of ['../src/actions.ts', '../src/customer-consultation-brief.ts']) 
   const text = readFileSync(new URL(f, import.meta.url), 'utf8')
   assert.match(text, /friendlyErrorMessage\(/, `${f} 未接入友好报错`)
 }
+const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
+assert.match(main, /const callNativeStep = async/)
+assert.match(main, /const requestId = uid\(\)/)
+assert.match(main, /body: \{ \.\.\.body, requestId \}/)
+assert.match(main, /attempt <= 3/)
+assert.match(main, /isRetryableNativeTransportError/)
+assert.match(main, /nativeRetryDelay/)
+assert.match(main, /网络短暂中断，正在恢复同一步/)
+assert.equal(
+  (main.match(/callNativeStep\(/g) ?? []).length,
+  2,
+  '普通原生步骤与本地 Skill 最终收尾两处都必须走恢复调用',
+)
 console.log('friendly error tests: ok')

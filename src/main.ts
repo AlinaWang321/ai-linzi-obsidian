@@ -87,6 +87,7 @@ import {
 } from './conversation-title-core'
 import { requestConversationTitle } from './conversation-title-modal'
 import { boundedWait } from './bounded-wait'
+import { friendlyErrorMessage } from './friendly-error'
 import {
   freshChatViewState,
   parseChatViewState,
@@ -150,6 +151,7 @@ import {
 import { exportSkillBundle, SkillStudioModal } from './skill-studio'
 import {
   classifyLocalSkillManagementIntent,
+  isExplicitSkillCreatorExitIntent,
   isExplicitLocalSkillRunIntent,
 } from './skill-studio-core'
 import {
@@ -325,6 +327,7 @@ import {
   isAllUserContentSourceExplicitlyDenied,
   isCurrentNoteSourceExplicitlyDenied,
   resolveCurrentNoteReference,
+  selectLockedConversationSource,
   selectCurrentOpenMarkdownPath,
   shouldSearchVaultBeyondCurrentNote,
 } from './current-note-intent'
@@ -343,7 +346,9 @@ import {
   ARTICLE_VIDEO_WINDOWS_APP_INSTALLER_URL,
   articleVideoPendingTurnAction,
   articleVideoStoryboardMarkdown,
+  buildArticleVideoLocalAiInstallPrompt,
   isBuiltInArticleVideoIntent,
+  isArticleVideoPostProductionRevisionIntent,
   type ArticleVideoReviewState,
 } from './article-video-core'
 import {
@@ -706,6 +711,7 @@ interface VaultMessageSource {
   sourceId: string
   filename: string
   path: string
+  kind?: 'current-note' | 'search' | 'read' | 'batch-read'
 }
 
 interface LongDocumentTaskState {
@@ -1265,6 +1271,33 @@ function countFilesInside(folder: TFolder): number {
 
 function uid(): string {
   return window.activeWindow.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function isRetryableNativeTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /Failed to fetch|Load failed|NetworkError|ERR_CONNECTION_(?:CLOSED|RESET)|ERR_NETWORK_CHANGED|socket hang up|ECONNRESET|ETIMEDOUT/i.test(message)
+}
+
+function nativeRetryDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    const error = new Error('The operation was aborted')
+    error.name = 'AbortError'
+    return Promise.reject(error)
+  }
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      const error = new Error('The operation was aborted')
+      error.name = 'AbortError'
+      reject(error)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
@@ -3613,10 +3646,8 @@ class ChatView extends ItemView {
 
   private recentCurrentNotePath(): string | undefined {
     for (let index = this.messages.length - 1; index >= Math.max(0, this.messages.length - 6); index--) {
-      const source = this.messages[index].vaultSources?.find((item) =>
-        item.sourceId.startsWith('current-note:'),
-      )
-      if (source?.path) return source.path
+      const path = selectLockedConversationSource(this.messages[index].vaultSources ?? [])
+      if (path) return path
     }
     return undefined
   }
@@ -4294,7 +4325,7 @@ class ChatView extends ItemView {
     for (let index = this.messages.length - 1; index >= 0; index -= 1) {
       const message = this.messages[index]
       const phase = message.articleVideoReview?.phase
-      if (phase && !['superseded', 'cancelled', 'complete'].includes(phase)) return message
+      if (phase && !['superseded', 'cancelled'].includes(phase)) return message
     }
     return undefined
   }
@@ -4302,8 +4333,11 @@ class ChatView extends ItemView {
   private articleVideoReviewText(review: ArticleVideoReviewState): string {
     const revision = review.revision > 0 ? `这是按你的要求修改后的第 ${review.revision + 1} 版完整脚本。` : '这是第一版完整脚本。'
     const voice = review.voiceProvider === 'fish' ? 'Fish Audio' : '本机免费配音'
+    const pronunciations = (review.pronunciations ?? []).length > 0
+      ? `\n配音读音：${review.pronunciations?.map((item) => `字幕“${item.display}”→配音“${item.spoken}”`).join('；')}`
+      : ''
     return [
-      `已锁定当前文章《${review.sourceName}》。${revision}\n主题：${review.theme}\n配音：${voice}`,
+      `已锁定当前文章《${review.sourceName}》。${revision}\n主题：${review.theme}\n配音：${voice}${pronunciations}`,
       articleVideoStoryboardMarkdown(review.storyboard),
       '需要调整时，直接在下面说“开头再短一点”“把案例讲清楚”“结尾更有力”，我会在这里返回修改后的完整脚本。满意后只需点击一次“脚本确认，生成视频”。',
     ].join('\n\n')
@@ -4368,6 +4402,7 @@ class ChatView extends ItemView {
   private async reviseArticleVideoReview(message: WireMessage, instruction: string): Promise<void> {
     const review = message.articleVideoReview
     if (!review || this.builtInArticleVideoRunning) return
+    const previousPhase = review.phase
     this.builtInArticleVideoRunning = true
     review.phase = 'revising'
     review.error = undefined
@@ -4386,7 +4421,7 @@ class ChatView extends ItemView {
       await this.persistNow()
       this.renderMessages()
     } catch (error) {
-      review.phase = 'draft'
+      review.phase = previousPhase === 'complete' ? 'complete' : 'draft'
       review.error = error instanceof Error ? error.message : String(error)
       this.messages.push({
         id: uid(),
@@ -4404,6 +4439,14 @@ class ChatView extends ItemView {
   private async confirmArticleVideoReview(message: WireMessage): Promise<void> {
     const review = message.articleVideoReview
     if (!review || this.builtInArticleVideoRunning) return
+    for (const stale of this.messages) {
+      if (
+        stale.localSkillStatus &&
+        stale.parts.some((part) => part.type === 'text' && part.text === '🔎 脚本已确认，正在自动检测本机视频环境…')
+      ) {
+        stale.parts = [{ type: 'text', text: '⚠️ 上一次环境检测没有完成；本次将重新检测。' }]
+      }
+    }
     this.builtInArticleVideoRunning = true
     review.phase = 'running'
     review.setup = undefined
@@ -4694,12 +4737,22 @@ class ChatView extends ItemView {
     }
     const articleVideoReviewMessage = this.recentArticleVideoReviewMessage()
     const articleVideoReview = articleVideoReviewMessage?.articleVideoReview
+    const continuesCompletedVideo = Boolean(
+      typedText &&
+      articleVideoReview?.phase === 'complete' &&
+      isArticleVideoPostProductionRevisionIntent(typedText),
+    )
+    const continuesPendingVideo = Boolean(
+      typedText &&
+      articleVideoReview &&
+      ['draft', 'failed', 'setup-required'].includes(articleVideoReview.phase) &&
+      (!isBuiltInArticleVideoIntent(typedText) || isArticleVideoPostProductionRevisionIntent(typedText)),
+    )
     if (
       typedText &&
       articleVideoReviewMessage &&
       articleVideoReview &&
-      ['draft', 'failed', 'setup-required'].includes(articleVideoReview.phase) &&
-      !isBuiltInArticleVideoIntent(typedText)
+      (continuesPendingVideo || continuesCompletedVideo)
     ) {
       const turnAction = articleVideoPendingTurnAction(typedText, articleVideoReview.phase)
       this.messages.push({
@@ -4897,6 +4950,8 @@ class ChatView extends ItemView {
       }
       const pendingVaultQuestion = this.recentPendingVaultQuestion()
       const pendingSkillCreatorInterview = this.hasPendingSkillCreatorInterview()
+      const exitPendingSkillCreator = pendingSkillCreatorInterview &&
+        isExplicitSkillCreatorExitIntent(text)
       const pendingSkillCreatorDraft = this.recentPendingSkillCreatorDraft()
       const skillManagementIntent = options.skillCreator === true
         ? 'create'
@@ -5032,7 +5087,11 @@ class ChatView extends ItemView {
           (
             !explicitLocalSkillRun &&
             !explicitInstalledLocalSkill &&
-            (pendingSkillCreatorInterview || explicitSkillCreation || continuePendingSkillDraft)
+            (
+              (!exitPendingSkillCreator && pendingSkillCreatorInterview) ||
+              explicitSkillCreation ||
+              continuePendingSkillDraft
+            )
           )
         )
       consultationWorkflowTaskTurn = Boolean(options.consultationWorkflowTaskOriginId)
@@ -5289,6 +5348,7 @@ class ChatView extends ItemView {
             sourceId: `current-note:${noteContext.path}`,
             filename: noteContext.filename,
             path: noteContext.path,
+            kind: 'current-note',
           }],
           vaultWriteSnapshots: this.plugin.captureVaultWriteSnapshots(plan),
         })
@@ -5449,6 +5509,7 @@ class ChatView extends ItemView {
                 : `current-note:${noteContext.path}`,
               filename: noteContext.filename,
               path: noteContext.path,
+              kind: 'current-note' as const,
             }]
           : []),
         ...vaultSearch.sources,
@@ -6732,6 +6793,37 @@ class ChatView extends ItemView {
         new Notice('本次任务读取量较大，AI霖子将基于已读内容收尾；更多材料建议分批处理。', 6000)
       }
     }
+    const callNativeStep = async (
+      body: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> => {
+      const requestId = uid()
+      let lastError: unknown
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        throwIfAborted(input.signal)
+        try {
+          return await this.plugin.api('/api/plugin/v1/vault-native/step', {
+            method: 'POST',
+            signal: input.signal,
+            body: { ...body, requestId },
+          })
+        } catch (error) {
+          if (isAbortError(error) || input.signal?.aborted) throw error
+          lastError = error
+          if (!isRetryableNativeTransportError(error) || attempt >= 3) break
+          this.activityStep(
+            `🌐 网络短暂中断，正在恢复同一步（${attempt}/2）`,
+            '网络短暂中断，正在恢复刚才那一步…',
+          )
+          await nativeRetryDelay(attempt * 900, input.signal)
+        }
+      }
+      const lastErrorMessage = lastError instanceof Error
+        ? lastError.message
+        : typeof lastError === 'string'
+          ? lastError
+          : '网络请求失败'
+      throw new Error(friendlyErrorMessage(lastErrorMessage))
+    }
     const batchCheckpointForApi = () => {
       if (!this.pendingVaultTask?.batch) return undefined
       const progress = vaultBatchProgress(this.pendingVaultTask)
@@ -7353,11 +7445,7 @@ class ChatView extends ItemView {
             ...nativeLocalSkillRequest,
           }
           const requestRound = typeof requestBody.round === 'number' ? requestBody.round : 0
-          const data = await this.plugin.api('/api/plugin/v1/vault-native/step', {
-            method: 'POST',
-            signal: input.signal,
-            body: requestBody,
-          })
+          const data = await callNativeStep(requestBody)
           const responseId = typeof data.responseId === 'string' ? data.responseId : ''
           const nativeCalls: Record<string, unknown>[] = Array.isArray(data.toolCalls)
             ? data.toolCalls.filter(isUnknownRecord)
@@ -7774,10 +7862,7 @@ class ChatView extends ItemView {
         // 模型基于已返回的真实结果作答，不能借机继续读文件、执行程序或写入。
         if (input.localSkillContext && nextBody && previousResponseId) {
           this.activityCurrent('技能资料已读取，正在整理最终答复…')
-          const finalData = await this.plugin.api('/api/plugin/v1/vault-native/step', {
-            method: 'POST',
-            signal: input.signal,
-            body: {
+          const finalData = await callNativeStep({
               ...nextBody,
               question: input.question,
               round: maxRounds - 1,
@@ -7787,7 +7872,6 @@ class ChatView extends ItemView {
               disableTools: true,
               retryHint: 'budget',
               ...nativeLocalSkillRequest,
-            },
           })
           const finalCalls = Array.isArray(finalData.toolCalls)
             ? finalData.toolCalls.filter(isUnknownRecord)
@@ -9635,6 +9719,10 @@ class ChatView extends ItemView {
           void opener.openWithDefaultApp?.(review.outputPath ?? '')
         }
       }
+      card.createDiv({
+        text: '发现读音、字幕、镜头、画面或时长需要调整时，直接在输入框说明；AI霖子会沿用这版脚本继续修改，新成片另存且不覆盖当前文件。',
+        cls: 'ai-linzi-article-video-review-hint',
+      })
       return
     }
     if (review.phase === 'setup-required' && review.setup) {
@@ -9668,6 +9756,30 @@ class ChatView extends ItemView {
       })
       const steps = card.createEl('ol', { cls: 'ai-linzi-article-video-setup-steps' })
       const actions = card.createDiv({ cls: 'ai-linzi-article-video-review-actions' })
+      const missingKinds = (review.setup.missing ?? []).flatMap((item) =>
+        item.startsWith('Node.js')
+          ? ['node' as const]
+          : item.startsWith('FFmpeg')
+            ? ['ffmpeg' as const]
+            : item.startsWith('HyperFrames')
+              ? ['hyperframes' as const]
+              : [],
+      )
+      const localAiPrompt = buildArticleVideoLocalAiInstallPrompt({
+        platform: review.setup.platform,
+        missing: missingKinds,
+      })
+      steps.createEl('li', {
+        text: '不熟悉终端时，点击“复制给本机 AI 安装”，粘贴给 WorkBuddy、Codex 或 Claude Code；它会先检测，再逐项征求确认。',
+      })
+      const copyLocalAi = actions.createEl('button', {
+        text: '复制给本机 AI 安装',
+        attr: { type: 'button' },
+      })
+      copyLocalAi.onclick = async () => {
+        await navigator.clipboard.writeText(localAiPrompt)
+        new Notice('已复制完整安装求助指令，可粘贴给本机 AI。')
+      }
       if (review.setup.platform === 'macos') {
         steps.createEl('li', { text: '如果还没有 Homebrew，先复制官方命令，在 Mac“终端”粘贴执行。' })
         steps.createEl('li', { text: '在终端执行：brew install node ffmpeg。' })
@@ -9890,7 +10002,6 @@ class ChatView extends ItemView {
         }
         if (m.skillUpdateOffer) this.renderSkillUpdateOffer(row, m)
         if (m.vaultQuestion) this.renderVaultQuestionOffer(row, m)
-        if ((m.vaultSources?.length ?? 0) > 0) this.renderVaultSources(row, m.vaultSources ?? [])
         if ((m.localSkillRunIds?.length ?? 0) > 0) this.renderLocalSkillRunOffer(row, m)
         if (localSkillCreateResult.blocks.length > 0) {
           this.renderCreateLocalSkillOffers(row, localSkillCreateResult.blocks, m)
@@ -10021,29 +10132,6 @@ class ChatView extends ItemView {
       resumeBtn.onclick = () => void this.resumeLongDocumentTask()
       const cancelBtn = actions.createEl('button', { text: '取消任务' })
       cancelBtn.onclick = () => this.cancelLongDocumentTask()
-    }
-  }
-
-  private renderVaultSources(row: HTMLElement, sources: VaultMessageSource[]): void {
-    const unique = [...new Map(sources.map((source) => [source.path, source])).values()]
-    if (unique.length === 0) return
-    const panel = row.createDiv({ cls: 'ai-linzi-vault-sources' })
-    panel.createSpan({ text: '本轮在 Vault 中找到：', cls: 'ai-linzi-vault-sources-label' })
-    const links = panel.createDiv({ cls: 'ai-linzi-vault-source-links' })
-    for (const source of unique) {
-      const extension = source.filename.match(/\.([^.]+)$/)?.[1]?.toLocaleUpperCase()
-      const basename = source.filename.replace(/\.(?:md|txt|pdf|docx)$/i, '')
-      const button = links.createEl('button', {
-        cls: 'ai-linzi-vault-source-link',
-        text: extension ? `${basename} · ${extension}` : source.filename,
-        attr: {
-          title: source.path,
-          'aria-label': `打开来源笔记 ${source.filename}`,
-        },
-      })
-      button.onclick = () => {
-        void this.app.workspace.openLinkText(source.path, '', false)
-      }
     }
   }
 

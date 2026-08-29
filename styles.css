@@ -1161,50 +1161,6 @@
   filter: brightness(0.92);
 }
 
-.ai-linzi-vault-sources {
-  display: block;
-  margin: 7px 0 2px;
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-}
-
-.ai-linzi-vault-sources-label {
-  display: block;
-  margin-bottom: 3px;
-}
-
-.ai-linzi-vault-source-links {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-}
-
-button.ai-linzi-vault-source-link {
-  width: fit-content;
-  max-width: 100%;
-  min-height: 0;
-  padding: 0;
-  overflow-wrap: anywhere;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  color: #0057ff;
-  background: transparent;
-  font-size: var(--font-ui-smaller);
-  line-height: 1.5;
-  text-align: left;
-  text-decoration: underline;
-  white-space: normal;
-  cursor: pointer;
-}
-
-button.ai-linzi-vault-source-link:hover,
-button.ai-linzi-vault-source-link:focus-visible {
-  color: #0044cc;
-  background: transparent;
-}
-
 /* .ai-linzi-actions / .ai-linzi-action-btn 的三列网格已随 0.7.71 移除：
    五个常驻按钮收进 composer 上的「技能」「工作台」两个菜单。
    .ai-linzi-action-btn.is-active 仍保留（附件态复用同一激活样式）。 */

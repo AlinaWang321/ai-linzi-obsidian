@@ -172,7 +172,7 @@ export function previewSkillStudioDraftInvocation(draft: SkillStudioDraft): Skil
 }
 
 const CREATE_SKILL_INTENT =
-  /(?:创建|生成|新建|做|制作|设计|搭建|保存成|沉淀成|提炼成|整理成|转成|转换成|固定成|固化成|封装成)(?:(?![，,。.!！?？:：；;\n]).){0,80}(?:skill|技能|工作流)/iu
+  /(?:(?:创建|生成|新建|制作|设计|搭建|保存成|沉淀成|提炼成|整理成|转成|转换成|固定成|固化成|封装成)(?:(?![，,。.!！?？:：；;\n]).){0,80}(?:skill|技能|工作流)|做(?:成|为)?(?:(?![，,。.!！?？:：；;\n]).){0,12}(?:一个|1个|一套|新的|可复用|能反复使用)(?:(?![，,。.!！?？:：；;\n]).){0,40}(?:skill|技能|工作流))/iu
 
 function localSkillIntentClauses(text: string): string[] {
   return text
@@ -213,6 +213,18 @@ export function classifyLocalSkillManagementIntent(text: string): LocalSkillMana
   if (create) return 'create'
   if (update) return 'update'
   return 'none'
+}
+
+/**
+ * 用户明确把任务拉回文章/笔记时，退出上一轮尚未完成的 Skill Creator 访谈。
+ * 这只影响 pending 上下文，不会拦截一条新的明确创建 Skill 请求。
+ */
+export function isExplicitSkillCreatorExitIntent(text: string): boolean {
+  const normalized = text.normalize('NFKC').replace(/\s+/gu, '')
+  return (
+    /(?:不是|不要|不用|无需|取消|停止|退出).{0,16}(?:创建|新建|制作|生成).{0,8}(?:skill|技能|工作流)/iu.test(normalized) ||
+    /(?:直接|继续|接着|按(?:刚才|前面|上面)?)(?:帮我)?(?:修改|改写|润色|处理|更新|写回).{0,12}(?:这篇|当前|刚才|前面|上面).{0,8}(?:文章|笔记|文档|稿子|内容)/u.test(normalized)
+  )
 }
 
 function manifestFile(

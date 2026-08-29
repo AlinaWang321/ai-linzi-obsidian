@@ -13,6 +13,10 @@ export function friendlyErrorMessage(raw: string): string {
   const text = (raw ?? '').trim()
   if (!text) return '这次没有完成，请稍后重试'
 
+  if (/Failed to fetch|Load failed|NetworkError when attempting to fetch resource/i.test(text)) {
+    return '网络连接短暂中断了。系统已经尝试恢复；如果仍未完成，请换个网络后重试'
+  }
+
   // 传输中断：长内容上传/下载途中连接被切断
   if (/ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_NETWORK_CHANGED|ERR_NETWORK_IO_SUSPENDED|socket hang up|ECONNRESET|Connection closed/i.test(text)) {
     return '网络中断了，内容没能传完。换个网络环境或稍后再试；逐字稿很长时，可以先拆成两段分别处理'

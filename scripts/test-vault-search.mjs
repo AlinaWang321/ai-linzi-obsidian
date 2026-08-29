@@ -288,7 +288,7 @@ assert.match(localAgent, /LIST_FOLDER_SCAN_MAX_ENTRIES = 20_000/)
 
 const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
-assert.match(main, /ai-linzi-vault-source-link/)
+assert.doesNotMatch(main, /ai-linzi-vault-source-link/)
 assert.match(main, /const modelDecidesVaultUse =/)
 assert.match(main, /在模型真正发起 tool call 前/)
 assert.match(main, /普通闲聊会在首轮直接回答/)
@@ -299,8 +299,6 @@ assert.doesNotMatch(
   await readFile(new URL('../src/vault-agent-core.ts', import.meta.url), 'utf8'),
   /deterministicVaultFactAnswer/,
 )
-assert.match(styles, /button\.ai-linzi-vault-source-link/)
-assert.match(styles, /color: #0057ff/)
-assert.match(styles, /border: 0/)
+assert.doesNotMatch(styles, /ai-linzi-vault-source-link/)
 
 console.log('vault search tests passed')

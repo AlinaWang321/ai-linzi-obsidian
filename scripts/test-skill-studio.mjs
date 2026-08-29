@@ -249,6 +249,27 @@ assert.equal(studioCore.isExplicitLocalSkillCreationIntent('Skill 是什么？')
 assert.equal(studioCore.isExplicitLocalSkillCreationIntent('列出我的 Skills'), false)
 assert.equal(
   studioCore.isExplicitLocalSkillCreationIntent(
+    '我把自己做短视频的5套Skill，全部开源了，标题改成这个。其他按照你的建议修改',
+  ),
+  false,
+  '文章标题里回顾自己做过的 Skill 不能误入 Skill Creator',
+)
+assert.equal(
+  studioCore.isExplicitSkillCreatorExitIntent('让你直接修改这篇文章'),
+  true,
+  '用户明确拉回文章任务时必须退出上一轮 pending Skill Creator',
+)
+assert.equal(
+  studioCore.isExplicitSkillCreatorExitIntent('不是创建 Skill，直接修改当前文章'),
+  true,
+)
+assert.equal(
+  studioCore.isExplicitSkillCreatorExitIntent('继续补充这个 Skill 的输入说明'),
+  false,
+  '普通 Skill 访谈补充不能被误判为退出',
+)
+assert.equal(
+  studioCore.isExplicitLocalSkillCreationIntent(
     '调用 weekly-business-dashboard Skill，生成本周经营周报交互看板。',
   ),
   false,
@@ -1035,6 +1056,8 @@ assert.doesNotMatch(
   '确认卡渲染已抽出，main.ts 不应再持有这段判断（避免两处实现漂移）',
 )
 assert.match(mainSource, /private hasPendingSkillCreatorInterview\(\): boolean \{[\s\S]*?return message\.skillCreatorPending === true/)
+assert.match(mainSource, /const exitPendingSkillCreator = pendingSkillCreatorInterview/)
+assert.match(mainSource, /!exitPendingSkillCreator && pendingSkillCreatorInterview/)
 assert.doesNotMatch(mainSource, /hasPendingSkillCreatorInterview[\s\S]{0,600}continue[\s\S]{0,200}skillCreatorPending === true[\s\S]{0,100}continue/)
 assert.match(
   mainSource,
@@ -1123,8 +1146,8 @@ assert.match(
 )
 assert.match(
   runSendTurnSource,
-  /skillCreatorTurn =\s*!pendingVaultQuestion\s*&&\s*!skillUpdaterTurn\s*&&[\s\S]{0,300}pendingSkillCreatorInterview \|\| explicitSkillCreation/,
-  'Skill Creator 路由必须复用同一个新建意图结果',
+  /skillCreatorTurn =\s*!pendingVaultQuestion\s*&&\s*!skillUpdaterTurn\s*&&[\s\S]{0,420}!exitPendingSkillCreator && pendingSkillCreatorInterview[\s\S]{0,120}explicitSkillCreation/,
+  'Skill Creator 路由必须复用同一个新建意图结果，并允许明确文章任务退出错误 pending',
 )
 assert.match(
   runSendTurnSource,
@@ -1136,7 +1159,7 @@ assert.match(
   /const continuePendingSkillDraft = shouldContinuePendingSkillDraft\([\s\S]{0,160}pendingSkillCreatorDraft\?\.name/,
   '刚生成但尚未安装的草稿必须能在“更新 Skill 吧”之后继续走 Creator，不能误查已安装目录',
 )
-assert.match(runSendTurnSource, /explicitSkillCreation \|\| continuePendingSkillDraft/)
+assert.match(runSendTurnSource, /explicitSkillCreation \|\|\s*continuePendingSkillDraft/)
 assert.match(mainSource, /Skill 包格式没有通过本机校验/, '无法修复的 Skill 协议必须显式显示失败卡')
 assert.match(
   runSendTurnSource,

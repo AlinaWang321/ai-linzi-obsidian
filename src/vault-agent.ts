@@ -59,7 +59,12 @@ const SKILL_TEXT_EXTENSIONS = new Set([
 
 export interface VaultAgentExecution {
   results: VaultAgentToolResult[]
-  sources: { sourceId: string; filename: string; path: string }[]
+  sources: {
+    sourceId: string
+    filename: string
+    path: string
+    kind: 'search' | 'read' | 'batch-read'
+  }[]
   /**
    * read_recent_documents 的本机指纹不能只从序列化后的工具输出反解。
    * 正文页较大时 outputJson 会安全截断，snapshotId 也会一起被包进 preview，
@@ -534,6 +539,7 @@ export class LocalVaultAgent {
           sourceId: call.id,
           filename: result.filename,
           path: result.path,
+          kind: 'search',
         })
       }
       return {
@@ -900,12 +906,12 @@ export class LocalVaultAgent {
           if (result.nextOffset !== null) {
             nextCharOffset = result.nextOffset
             usedChars += estimated
-            sources.push({ sourceId: call.id, filename: file.name, path: file.path })
+            sources.push({ sourceId: call.id, filename: file.name, path: file.path, kind: 'batch-read' })
             break
           }
           usedChars += estimated
           charOffset = 0
-          sources.push({ sourceId: call.id, filename: file.name, path: file.path })
+          sources.push({ sourceId: call.id, filename: file.name, path: file.path, kind: 'batch-read' })
         } catch (error) {
           skipped.push({
             path: file.path,
@@ -961,7 +967,7 @@ export class LocalVaultAgent {
       const maxChars = clampInt(call.arguments.maxChars, 12_000, 500, READ_NOTE_MAX_CHARS)
       const result = await this.search.readPath(path, { offset, maxChars })
       this.recordSkillVaultRead(path, skillContext)
-      sources.push({ sourceId: call.id, filename: result.filename, path })
+      sources.push({ sourceId: call.id, filename: result.filename, path, kind: 'read' })
       return result
     }
 

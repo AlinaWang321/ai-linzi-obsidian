@@ -53,6 +53,32 @@ const CURRENT_NOTE_RECOVERY =
 
 export type CurrentNoteReference = 'active' | 'locked' | 'none'
 
+export interface ConversationVaultSource {
+  sourceId: string
+  path: string
+  kind?: 'current-note' | 'search' | 'read' | 'batch-read'
+}
+
+/**
+ * 延续对话只锁定高置信来源：显式当前笔记，或本轮唯一一份被 read_note
+ * 真正读取的正文。搜索候选和批量读取永远不能偷偷变成下一轮的“这篇文章”。
+ */
+export function selectLockedConversationSource(
+  sources: ConversationVaultSource[],
+): string | undefined {
+  const current = sources.find((source) =>
+    source.kind === 'current-note' || source.sourceId.startsWith('current-note:'),
+  )
+  if (current?.path) return current.path
+  const readPaths = [...new Set(
+    sources
+      .filter((source) => source.kind === 'read')
+      .map((source) => source.path)
+      .filter(Boolean),
+  )]
+  return readPaths.length === 1 ? readPaths[0] : undefined
+}
+
 const BROADER_VAULT_SCOPE =
   /(?:(?:整个|全部|全库|全仓库).{0,4}(?:vault|obsidian|知识库|仓库|文件|笔记|资料)|(?:其他|相关|更多).{0,4}(?:笔记|文档|文件|资料|内容)|(?:vault|obsidian|知识库|仓库|文件夹|目录)(?:里|中|内|下)?)/iu
 

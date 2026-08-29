@@ -15,12 +15,18 @@ import {
 } from 'obsidian'
 import {
   ARTICLE_VIDEO_DISPLAY_NAME,
+  ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION,
+  ARTICLE_VIDEO_NODE_MIN_MAJOR,
+  applyArticleVideoPronunciations,
   articleVideoPlatform,
   articleVideoDurationFromText,
+  explicitArticleVideoDurationFromText,
+  mergeArticleVideoPronunciationOverrides,
   parseArticleVideoStoryboard,
   safeArticleVideoName,
   type ArticleVideoDuration,
   type ArticleVideoLaunchOptions,
+  type ArticleVideoPronunciationOverride,
   type ArticleVideoScene,
   type ArticleVideoReviewState,
   type ArticleVideoSetupState,
@@ -28,7 +34,6 @@ import {
   type ArticleVideoVoiceProvider,
 } from './article-video-core'
 
-const HYPERFRAMES_VERSION = '0.8.15'
 const PROCESS_OUTPUT_LIMIT = 12 * 1024 * 1024
 
 export interface ArticleVideoPluginHost {
@@ -49,13 +54,13 @@ export interface ArticleVideoPluginHost {
 interface CommandInfo {
   ok: boolean
   command?: string
+  argsPrefix?: string[]
   version?: string
 }
 
 export interface ArticleVideoEnvironmentReport {
   ok: boolean
   node: CommandInfo
-  npx: CommandInfo
   ffmpeg: CommandInfo
   ffprobe: CommandInfo
   hyperframes: CommandInfo
@@ -70,6 +75,7 @@ interface ArticleVideoRunOptions {
   apiKey?: string
   voiceId?: string
   model: 's2.1-pro-free' | 's2.1-pro'
+  pronunciations: ArticleVideoPronunciationOverride[]
 }
 
 export interface ArticleVideoDraftRequest extends ArticleVideoLaunchOptions {
@@ -106,15 +112,15 @@ interface NarrationTimeline {
   scenes: Array<{ id: string; start: number; duration: number; end: number }>
 }
 
-function commandCandidates(name: 'node' | 'npx' | 'ffmpeg' | 'ffprobe'): string[] {
-  const executable = process.platform === 'win32' ? `${name}.cmd` : name
+function commandCandidates(name: 'node' | 'ffmpeg' | 'ffprobe'): string[] {
+  const executable = process.platform === 'win32' ? `${name}.exe` : name
   const candidates: string[] = []
   if (process.platform === 'darwin') {
     candidates.push(`/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`)
   }
-  if (process.platform === 'win32' && (name === 'node' || name === 'npx')) {
+  if (process.platform === 'win32' && name === 'node') {
     const root = process.env.ProgramFiles
-    if (root) candidates.push(join(root, 'nodejs', name === 'node' ? 'node.exe' : 'npx.cmd'))
+    if (root) candidates.push(join(root, 'nodejs', 'node.exe'))
   }
   if (process.platform === 'win32' && (name === 'ffmpeg' || name === 'ffprobe')) {
     const localAppData = process.env.LOCALAPPDATA
@@ -173,7 +179,7 @@ function runProcess(
 }
 
 async function probeCommand(
-  name: 'node' | 'npx' | 'ffmpeg' | 'ffprobe',
+  name: 'node' | 'ffmpeg' | 'ffprobe',
 ): Promise<CommandInfo> {
   const args = name === 'ffmpeg' || name === 'ffprobe' ? ['-version'] : ['--version']
   for (const command of commandCandidates(name)) {
@@ -189,22 +195,102 @@ async function probeCommand(
   return { ok: false }
 }
 
-async function cachedHyperframes(): Promise<string | undefined> {
+function numericVersion(value: string | undefined): [number, number, number] | undefined {
+  const match = value?.match(/(?:^|\D)(\d+)\.(\d+)\.(\d+)(?:\D|$)/u)
+  if (!match) return undefined
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+function versionAtLeast(value: string | undefined, minimum: string): boolean {
+  const current = numericVersion(value)
+  const required = numericVersion(minimum)
+  if (!current || !required) return false
+  for (let index = 0; index < 3; index += 1) {
+    if (current[index] > required[index]) return true
+    if (current[index] < required[index]) return false
+  }
+  return true
+}
+
+function hyperframesBinPath(pkg: { bin?: string | Record<string, string> }): string | undefined {
+  if (typeof pkg.bin === 'string') return pkg.bin
+  if (!pkg.bin || typeof pkg.bin !== 'object') return undefined
+  return pkg.bin.hyperframes ?? Object.values(pkg.bin)[0]
+}
+
+async function installedHyperframesPackage(
+  nodeCommand: string | undefined,
+): Promise<CommandInfo | undefined> {
+  if (!nodeCommand) return undefined
+  const roots = new Set<string>()
+  if (process.platform === 'win32') {
+    for (const prefix of [process.env.APPDATA && join(process.env.APPDATA, 'npm'), process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'npm')]) {
+      if (prefix) roots.add(join(prefix, 'node_modules', 'hyperframes'))
+    }
+    const windowsPath = process.env.Path ?? process.env.PATH ?? ''
+    for (const prefix of windowsPath.split(';').filter(Boolean)) {
+      roots.add(join(prefix, 'node_modules', 'hyperframes'))
+    }
+  } else {
+    roots.add(join(homedir(), '.npm-global', 'lib', 'node_modules', 'hyperframes'))
+    roots.add('/opt/homebrew/lib/node_modules/hyperframes')
+    roots.add('/usr/local/lib/node_modules/hyperframes')
+  }
+  for (const root of roots) {
+    try {
+      const pkg = JSON.parse(await fs.readFile(join(root, 'package.json'), 'utf8')) as {
+        version?: string
+        bin?: string | Record<string, string>
+      }
+      const bin = hyperframesBinPath(pkg)
+      if (!bin) continue
+      const script = resolve(root, bin)
+      await fs.access(script)
+      if (!versionAtLeast(pkg.version, ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION)) {
+        return {
+          ok: false,
+          command: nodeCommand,
+          argsPrefix: [script],
+          version: `${pkg.version ?? '未知版本'}（需要 ${ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION}+）`,
+        }
+      }
+      return {
+        ok: true,
+        command: nodeCommand,
+        argsPrefix: [script],
+        version: pkg.version ?? ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION,
+      }
+    } catch {
+      // 继续看下一个 npm 全局目录。
+    }
+  }
+  return undefined
+}
+
+async function cachedHyperframes(nodeCommand: string | undefined): Promise<CommandInfo | undefined> {
+  if (!nodeCommand) return undefined
   const root = join(homedir(), '.npm', '_npx')
   try {
     for (const entry of await fs.readdir(root)) {
-      const packagePath = join(root, entry, 'node_modules', 'hyperframes', 'package.json')
-      const binary = join(
-        root,
-        entry,
-        'node_modules',
-        '.bin',
-        process.platform === 'win32' ? 'hyperframes.cmd' : 'hyperframes',
-      )
+      const packageRoot = join(root, entry, 'node_modules', 'hyperframes')
+      const packagePath = join(packageRoot, 'package.json')
       try {
-        const pkg = JSON.parse(await fs.readFile(packagePath, 'utf8')) as { version?: string }
-        await fs.access(binary)
-        if (pkg.version === HYPERFRAMES_VERSION) return binary
+        const pkg = JSON.parse(await fs.readFile(packagePath, 'utf8')) as {
+          version?: string
+          bin?: string | Record<string, string>
+        }
+        const bin = hyperframesBinPath(pkg)
+        if (!bin) continue
+        const script = resolve(packageRoot, bin)
+        await fs.access(script)
+        if (versionAtLeast(pkg.version, ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION)) {
+          return {
+            ok: true,
+            command: nodeCommand,
+            argsPrefix: [script],
+            version: pkg.version ?? ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION,
+          }
+        }
       } catch {
         // 继续看下一条 npx 缓存。
       }
@@ -238,7 +324,9 @@ async function detectChrome(): Promise<CommandInfo> {
   return { ok: false, version: '未在常见位置找到（HyperFrames 可使用自带浏览器）' }
 }
 
-async function detectHyperframes(): Promise<CommandInfo> {
+async function detectHyperframes(nodeCommand: string | undefined): Promise<CommandInfo> {
+  const installed = await installedHyperframesPackage(nodeCommand)
+  if (installed?.ok) return installed
   const executable = process.platform === 'win32' ? 'hyperframes.cmd' : 'hyperframes'
   const candidates = [
     ...(process.platform === 'darwin'
@@ -250,39 +338,47 @@ async function detectHyperframes(): Promise<CommandInfo> {
       : []),
     executable,
   ]
-  for (const command of [...new Set(candidates)]) {
+  let outdated: CommandInfo | undefined
+  for (const command of process.platform === 'win32' ? [] : [...new Set(candidates)]) {
     try {
       const result = await runProcess(command, ['--version'], process.cwd(), 8_000)
-      return { ok: true, command, version: result.stdout.trim().split('\n')[0] || '已安装' }
+      const version = result.stdout.trim().split('\n')[0] || result.stderr.trim().split('\n')[0] || '已安装'
+      if (versionAtLeast(version, ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION)) {
+        return { ok: true, command, version }
+      }
+      outdated ??= {
+        ok: false,
+        command,
+        version: `${version}（需要 ${ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION}+）`,
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') continue
     }
   }
-  const cached = await cachedHyperframes()
+  const cached = await cachedHyperframes(nodeCommand)
   return cached
-    ? { ok: true, command: cached, version: `已安装 ${HYPERFRAMES_VERSION}` }
-    : { ok: false, version: '未安装' }
+    ?? installed
+    ?? outdated
+    ?? { ok: false, version: '未安装' }
 }
 
 export async function detectArticleVideoEnvironment(): Promise<ArticleVideoEnvironmentReport> {
-  const [node, npx, ffmpeg, ffprobe, hyperframes, chrome] = await Promise.all([
+  const [node, ffmpeg, ffprobe, chrome] = await Promise.all([
     probeCommand('node'),
-    probeCommand('npx'),
     probeCommand('ffmpeg'),
     probeCommand('ffprobe'),
-    detectHyperframes(),
     detectChrome(),
   ])
+  const hyperframes = await detectHyperframes(node.command)
   const major = Number(node.version?.match(/v?(\d+)/u)?.[1] ?? 0)
-  node.ok = node.ok && major >= 22
+  node.ok = node.ok && major >= ARTICLE_VIDEO_NODE_MIN_MAJOR
   const missing: Array<'node' | 'ffmpeg' | 'hyperframes'> = []
-  if (!node.ok || !npx.ok) missing.push('node')
+  if (!node.ok) missing.push('node')
   if (!ffmpeg.ok || !ffprobe.ok) missing.push('ffmpeg')
   if (!hyperframes.ok) missing.push('hyperframes')
   return {
-    ok: node.ok && npx.ok && ffmpeg.ok && ffprobe.ok && hyperframes.ok,
+    ok: node.ok && ffmpeg.ok && ffprobe.ok && hyperframes.ok,
     node,
-    npx,
     ffmpeg,
     ffprobe,
     hyperframes,
@@ -722,13 +818,14 @@ async function buildNarration(
   for (let index = 0; index < storyboard.scenes.length; index += 1) {
     progress(index + 1, storyboard.scenes.length)
     const scene = storyboard.scenes[index]
+    const spokenVoiceover = applyArticleVideoPronunciations(scene.voiceover, options.pronunciations)
     const prefix = `${String(index + 1).padStart(2, '0')}-${scene.id}`
     const raw = join(rawDir, `${prefix}.${options.voiceProvider === 'fish' || process.platform === 'win32' ? 'wav' : 'aiff'}`)
     const normalized = join(audioDir, `${prefix}.wav`)
     if (options.voiceProvider === 'fish') {
-      await fishSpeech(scene.voiceover, raw, options)
+      await fishSpeech(spokenVoiceover, raw, options)
     } else {
-      await localSpeech(scene.voiceover, raw, project, index)
+      await localSpeech(spokenVoiceover, raw, project, index)
     }
     await runProcess(
       ffmpeg,
@@ -862,12 +959,13 @@ async function renderProject(
   const command = environment.hyperframes.command
   if (!command) throw new Error('没有找到已安装的 HyperFrames，请按首次设置卡片完成安装后重试。')
   const env = { HYPERFRAMES_NO_TELEMETRY: '1' }
-  await runProcess(command, ['check', project, '--snapshots'], project, 5 * 60_000, env)
+  const commandPrefix = environment.hyperframes.argsPrefix ?? []
+  await runProcess(command, [...commandPrefix, 'check', project, '--snapshots'], project, 5 * 60_000, env)
   const output = join(project, 'renders', 'final.mp4')
   await fs.mkdir(dirname(output), { recursive: true })
   await runProcess(
     command,
-    ['render', project, '--output', output, '--fps', '30', '--quality', 'standard', '--format', 'mp4'],
+    [...commandPrefix, 'render', project, '--output', output, '--fps', '30', '--quality', 'standard', '--format', 'mp4'],
     project,
     15 * 60_000,
     env,
@@ -897,7 +995,7 @@ async function renderProject(
   const validation = {
     ok: Object.values(checks).every(Boolean),
     generatedAt: new Date().toISOString(),
-    renderer: `hyperframes@${HYPERFRAMES_VERSION}`,
+    renderer: environment.hyperframes.version ?? `hyperframes@${ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION}+`,
     output: 'renders/final.mp4',
     expectedDuration,
     media: { duration, sizeBytes: Number(media.format?.size ?? 0), video, audio },
@@ -1029,26 +1127,34 @@ export async function reviseArticleVideoDraft(
 ): Promise<ArticleVideoReviewState> {
   const change = instruction.trim()
   if (!change || change.length > 1_000) throw new Error('请用 1–1000 字说明要修改哪一幕或哪句话。')
+  const draftTarget = explicitArticleVideoDurationFromText(change) ?? review.draftTarget
+  const pronunciations = mergeArticleVideoPronunciationOverrides(review.pronunciations, change)
+  const pronunciationGuard = pronunciations.length > 0
+    ? `\n\n配音读音替换由客户端单独处理：${pronunciations.map((item) => `字幕保留“${item.display}”，配音读“${item.spoken}”`).join('；')}。你必须保留字幕、屏幕文字和 voiceover 中的正确字形，不要把可见文字替换成同音字。`
+    : ''
   const sourceText = await readLockedArticle(plugin, review)
   const rawStoryboard = await plugin.apiText('/api/plugin/v1/skills/article-to-video', {
     mode: 'revise',
     text: sourceText,
     sourceTitle: review.sourceName,
     theme: review.theme,
-    duration: review.draftTarget,
+    duration: draftTarget,
     style: 'minimal-infographic',
     currentStoryboard: review.storyboard,
-    instruction: change,
+    instruction: `${change}${pronunciationGuard}`,
   })
-  const storyboard = parseArticleVideoStoryboard(rawStoryboard, review.draftTarget)
+  const storyboard = parseArticleVideoStoryboard(rawStoryboard, draftTarget)
   if (!storyboard) throw new Error('修改后的脚本没有通过结构校验，上一版脚本仍然保留，请换一种说法再试。')
   return {
     ...review,
     storyboard,
+    draftTarget,
+    pronunciations,
     revision: review.revision + 1,
     phase: 'draft',
     setup: undefined,
     error: undefined,
+    outputPath: undefined,
   }
 }
 
@@ -1069,27 +1175,37 @@ export async function generateConfirmedArticleVideo(
     }
   }
   const statusId = plugin.reportSkillStatus('🔎 脚本已确认，正在自动检测本机视频环境…')
-  let environment = await detectArticleVideoEnvironment()
+  let environment: ArticleVideoEnvironmentReport
+  try {
+    environment = await detectArticleVideoEnvironment()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    plugin.reportSkillStatus(`❌ 环境检测没有完成：${message}`, statusId)
+    throw error
+  }
   if (!environment.ok) {
+    const missing = environment.missing.map((item) => item === 'node'
+      ? 'Node.js 22+'
+      : item === 'ffmpeg'
+        ? 'FFmpeg / FFprobe'
+        : `HyperFrames ${ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION}+`)
+    plugin.reportSkillStatus(`⚠️ 环境检测已结束，仍未识别到：${missing.join('、')}。请按设置卡修复后重新检测。`, statusId)
     return {
       status: 'setup-required',
       setup: {
         kind: 'environment',
         platform: articleVideoPlatform(process.platform),
-        missing: environment.missing.map((item) => item === 'node'
-          ? 'Node.js 22+'
-          : item === 'ffmpeg'
-            ? 'FFmpeg / FFprobe'
-            : `HyperFrames ${HYPERFRAMES_VERSION}`),
-        message: '正式市场版不会代替用户安装或更新本机依赖。请按下面的官方步骤完成一次安装，再点击“安装完成，重新检测并继续”；文章和脚本不会丢失。',
+        missing,
+        message: '本轮检测已经结束。正式市场版不会代替用户安装或更新本机依赖；请按下面的官方步骤修复未识别项，再点击“安装完成，重新检测并继续”。文章和脚本不会丢失。',
       },
     }
   }
+  plugin.reportSkillStatus('✅ 本机视频环境检测通过，正在继续生成视频…', statusId)
 
   const storyboard = review.storyboard
   const model = plugin.settings.articleVideoFishModel
   const voiceConfigHash = createHash('sha256')
-    .update(`${review.voiceProvider}|${review.voiceProvider === 'fish' ? `${voiceId}|${model}` : process.platform}`)
+    .update(`${review.voiceProvider}|${review.voiceProvider === 'fish' ? `${voiceId}|${model}` : process.platform}|${JSON.stringify(review.pronunciations ?? [])}`)
     .digest('hex')
   const options: ArticleVideoRunOptions = {
     draftTarget: review.draftTarget,
@@ -1098,6 +1214,7 @@ export async function generateConfirmedArticleVideo(
     apiKey,
     voiceId,
     model,
+    pronunciations: review.pronunciations ?? [],
   }
   const resumable = await findResumableProject(
     plugin,

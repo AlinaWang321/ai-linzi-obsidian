@@ -80,6 +80,40 @@ assert.equal(core.resolveCurrentNoteReference('就是完整版的呀，你为什
 assert.equal(core.resolveCurrentNoteReference('你读错笔记了，重新读这篇', true), 'locked')
 assert.equal(core.resolveCurrentNoteReference('谢谢', true), 'none')
 
+const searchedAndRead = [
+  { sourceId: 'search-1', path: '草稿箱/候选 A.md', kind: 'search' },
+  { sourceId: 'search-1', path: '草稿箱/候选 B.md', kind: 'search' },
+  { sourceId: 'read-1', path: '草稿箱/8月28日文章.md', kind: 'read' },
+]
+assert.equal(
+  core.selectLockedConversationSource(searchedAndRead),
+  '草稿箱/8月28日文章.md',
+  '多个搜索候选中唯一真正 read_note 的正文必须成为后续“这篇文章”',
+)
+assert.equal(
+  core.selectLockedConversationSource([
+    ...searchedAndRead,
+    { sourceId: 'read-2', path: '草稿箱/另一篇.md', kind: 'read' },
+  ]),
+  undefined,
+  '同一轮实际读取多篇时不能擅自猜下一轮指哪篇',
+)
+assert.equal(
+  core.selectLockedConversationSource([
+    { sourceId: 'search-1', path: '草稿箱/候选 A.md', kind: 'search' },
+  ]),
+  undefined,
+  '只有搜索命中不能锁成后续正文',
+)
+assert.equal(
+  core.selectLockedConversationSource([
+    { sourceId: 'current-note:草稿箱/当前.md', path: '草稿箱/当前.md' },
+    ...searchedAndRead,
+  ]),
+  '草稿箱/当前.md',
+  '显式当前笔记优先于工具读取候选，并兼容旧会话 sourceId',
+)
+
 assert.equal(core.shouldSearchVaultBeyondCurrentNote('处理这篇笔记，只回答唯一代号'), false)
 assert.equal(core.shouldSearchVaultBeyondCurrentNote('在这篇笔记里查找唯一代号'), false)
 assert.equal(core.shouldSearchVaultBeyondCurrentNote('结合整个知识库的相关资料处理这篇笔记'), true)
@@ -135,6 +169,9 @@ assert.doesNotMatch(main, /主对话带上当前笔记/)
 assert.doesNotMatch(main, /默认带上当前笔记/)
 assert.doesNotMatch(main, /attachToggleEl/)
 assert.match(main, /resolveCurrentNoteReference/)
+assert.match(main, /selectLockedConversationSource/)
+assert.doesNotMatch(main, /renderVaultSources\(/)
+assert.doesNotMatch(main, /本轮在 Vault 中找到：/)
 assert.match(main, /const currentNoteSourceDenied =/)
 assert.match(main, /!currentNoteSourceDenied &&/)
 assert.match(main, /!allUserContentSourceDenied &&/)

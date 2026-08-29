@@ -472,8 +472,8 @@ assert.match(
 )
 assert.match(
   __mainForMenu,
-  /pendingSkillCreatorInterview \|\| explicitSkillCreation/,
-  'Skill Creator 必须复用已判定的新建意图，不能再次猜测',
+  /\(!exitPendingSkillCreator && pendingSkillCreatorInterview\) \|\|\s+explicitSkillCreation/,
+  'Skill Creator 必须复用已判定的新建意图，但明确文章改稿时允许退出旧流程',
 )
 assert.match(
   __mainForMenu,
