@@ -33,6 +33,12 @@ import {
   type ArticleVideoStoryboard,
   type ArticleVideoVoiceProvider,
 } from './article-video-core'
+import {
+  hasValidLocalSpeechSize,
+  macSayAttempts,
+  macSpeechFallbackInvocation,
+  windowsSpeechInvocation,
+} from './article-video-process'
 
 const PROCESS_OUTPUT_LIMIT = 12 * 1024 * 1024
 
@@ -707,21 +713,22 @@ async function localSpeech(
   const textFile = join(tmpdir(), `ai-linzi-local-voice-${nonce}.txt`)
   const temporaryAudio = join(tmpdir(), `ai-linzi-local-voice-${nonce}.${process.platform === 'win32' ? 'wav' : 'aiff'}`)
   await fs.writeFile(textFile, text, 'utf8')
+  const assertValidAudio = async (filePath: string): Promise<void> => {
+    const file = await fs.stat(filePath)
+    if (!hasValidLocalSpeechSize(file.size)) {
+      throw new Error('系统配音没有写入有效音频。请确认电脑已安装可用的中文系统语音，或改用 Fish Audio。')
+    }
+  }
   try {
     if (process.platform === 'darwin') {
       const voice = await macChineseVoice(project)
-      const attempts = [
-        [...(voice ? ['-v', voice] : []), '--file-format=AIFF', '-o', temporaryAudio, '-f', textFile],
-        [...(voice ? ['-v', voice] : []), '-o', temporaryAudio, '-f', textFile],
-        ['--file-format=AIFF', '-o', temporaryAudio, '-f', textFile],
-      ]
+      const attempts = macSayAttempts(voice, textFile, temporaryAudio)
       let lastError: unknown
       for (const args of attempts) {
         try {
           await fs.rm(temporaryAudio, { force: true })
           await runProcess('/usr/bin/say', args, tmpdir(), 120_000)
-          const file = await fs.stat(temporaryAudio)
-          if (file.size <= 64) throw new Error('系统配音没有写入有效音频')
+          await assertValidAudio(temporaryAudio)
           await fs.copyFile(temporaryAudio, output)
           return
         } catch (error) {
@@ -730,28 +737,9 @@ async function localSpeech(
       }
       try {
         await fs.rm(temporaryAudio, { force: true })
-        await runProcess('/usr/bin/osascript', [
-          '-l', 'JavaScript',
-          '-e', [
-            "ObjC.import('AppKit')",
-            'function run(argv) {',
-            '  const readError = Ref()',
-            '  const source = $.NSString.stringWithContentsOfFileEncodingError(argv[0], $.NSUTF8StringEncoding, readError)',
-            '  const synthesizer = $.NSSpeechSynthesizer.alloc.init',
-            '  const target = $.NSURL.fileURLWithPath(argv[1])',
-            '  const started = synthesizer.startSpeakingStringToURL(ObjC.unwrap(source), target)',
-            "  if (!started) throw new Error('macOS 系统声音启动失败')",
-            '  while (synthesizer.isSpeaking) {',
-            '    $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.1))',
-            '  }',
-            '  return true',
-            '}',
-          ].join('; '),
-          textFile,
-          temporaryAudio,
-        ], tmpdir(), 120_000)
-        const file = await fs.stat(temporaryAudio)
-        if (file.size <= 64) throw new Error('macOS 系统配音没有写入有效音频')
+        const fallback = macSpeechFallbackInvocation(textFile, temporaryAudio)
+        await runProcess(fallback.command, fallback.args, tmpdir(), 120_000, fallback.environment ?? {})
+        await assertValidAudio(temporaryAudio)
         await fs.copyFile(temporaryAudio, output)
         return
       } catch (error) {
@@ -760,21 +748,15 @@ async function localSpeech(
       throw lastError instanceof Error ? lastError : new Error('macOS 系统配音失败')
     }
     if (process.platform === 'win32') {
-      const command = [
-        'Add-Type -AssemblyName System.Speech',
-        '$s = New-Object System.Speech.Synthesis.SpeechSynthesizer',
-        "$v = $s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -like 'zh-*' } | Select-Object -First 1",
-        'if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }',
-        '$s.SetOutputToWaveFile($args[1])',
-        '$s.Speak([IO.File]::ReadAllText($args[0], [Text.Encoding]::UTF8))',
-        '$s.Dispose()',
-      ].join('; ')
+      const invocation = windowsSpeechInvocation(textFile, temporaryAudio)
       await runProcess(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-Command', command, textFile, temporaryAudio],
+        invocation.command,
+        invocation.args,
         tmpdir(),
         120_000,
+        invocation.environment ?? {},
       )
+      await assertValidAudio(temporaryAudio)
       await fs.copyFile(temporaryAudio, output)
       return
     }

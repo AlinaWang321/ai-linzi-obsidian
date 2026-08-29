@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const tempDir = await mkdtemp(path.join(os.tmpdir(), 'ai-linzi-article-video-'))
 const outfile = path.join(tempDir, 'article-video-core.mjs')
+const processOutfile = path.join(tempDir, 'article-video-process.mjs')
 await build({
   entryPoints: [fileURLToPath(new URL('../src/article-video-core.ts', import.meta.url))],
   outfile,
@@ -15,6 +16,14 @@ await build({
   format: 'esm',
 })
 const core = await import(pathToFileURL(outfile).href)
+await build({
+  entryPoints: [fileURLToPath(new URL('../src/article-video-process.ts', import.meta.url))],
+  outfile: processOutfile,
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+})
+const processCore = await import(pathToFileURL(processOutfile).href)
 
 for (const value of [
   '用文章转短视频处理当前文章',
@@ -73,6 +82,30 @@ assert.match(localAiInstallPrompt, /ffprobe -version/)
 assert.match(localAiInstallPrompt, /hyperframes --version/)
 assert.doesNotMatch(localAiInstallPrompt, /hyperframes@0\.8\.15/)
 
+const windowsTextFile = 'C:\\Users\\lenovo\\AppData\\Local\\Temp\\AI 霖子\\voice.txt'
+const windowsAudioFile = 'C:\\Users\\lenovo\\AppData\\Local\\Temp\\AI 霖子\\voice.wav'
+const windowsSpeech = processCore.windowsSpeechInvocation(windowsTextFile, windowsAudioFile)
+assert.equal(windowsSpeech.command, 'powershell.exe')
+assert.deepEqual(windowsSpeech.args.slice(0, 4), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command'])
+assert.equal(windowsSpeech.args.length, 5, 'PowerShell -Command 后不得追加文件路径')
+assert.doesNotMatch(windowsSpeech.args.join('\n'), /C:\\Users\\lenovo/u)
+assert.equal(windowsSpeech.environment[processCore.WINDOWS_SPEECH_TEXT_ENV], windowsTextFile)
+assert.equal(windowsSpeech.environment[processCore.WINDOWS_SPEECH_OUTPUT_ENV], windowsAudioFile)
+assert.match(windowsSpeech.args[4], /GetEnvironmentVariable/)
+assert.match(windowsSpeech.args[4], /OutputEncoding/)
+assert.match(windowsSpeech.args[4], /没有找到可用的中文系统语音/)
+assert.match(windowsSpeech.args[4], /finally/)
+assert.match(windowsSpeech.args[4], /Dispose/)
+assert.doesNotMatch(windowsSpeech.args[4], /\$args/u)
+const macAttempts = processCore.macSayAttempts('Tingting', '/tmp/AI 霖子.txt', '/tmp/AI 霖子.aiff')
+assert.equal(macAttempts.length, 3)
+assert.deepEqual(macAttempts[0], ['-v', 'Tingting', '--file-format=AIFF', '-o', '/tmp/AI 霖子.aiff', '-f', '/tmp/AI 霖子.txt'])
+const macFallback = processCore.macSpeechFallbackInvocation('/tmp/AI 霖子.txt', '/tmp/AI 霖子.aiff')
+assert.equal(macFallback.command, '/usr/bin/osascript')
+assert.deepEqual(macFallback.args.slice(-2), ['/tmp/AI 霖子.txt', '/tmp/AI 霖子.aiff'])
+assert.equal(processCore.hasValidLocalSpeechSize(4096), false)
+assert.equal(processCore.hasValidLocalSpeechSize(8192), true)
+
 const valid = {
   title: '知识体系卖三次',
   durationTarget: 60,
@@ -97,6 +130,7 @@ assert.match(readable, /最终时长以确认后的真实配音为准/)
 
 const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
 const runtime = await readFile(new URL('../src/article-video-runtime.ts', import.meta.url), 'utf8')
+const processSource = await readFile(new URL('../src/article-video-process.ts', import.meta.url), 'utf8')
 assert.match(main, /id: 'article-to-video'/)
 assert.match(main, /isBuiltInArticleVideoIntent\(typedText\)/)
 assert.match(main, /await this\.startArticleVideoWorkflow\(typedText, true\)/)
@@ -134,13 +168,16 @@ assert.match(runtime, /Fish Audio（音质更好，需要 API）/)
 assert.match(runtime, /localSpeech/)
 assert.match(runtime, /\/usr\/bin\/say/)
 assert.match(runtime, /Tingting/)
-assert.match(runtime, /--file-format=AIFF/)
+assert.match(processSource, /--file-format=AIFF/)
 assert.match(runtime, /tmpdir\(\)/)
 assert.match(runtime, /copyFile\(temporaryAudio, output\)/)
-assert.match(runtime, /\/usr\/bin\/osascript/)
-assert.match(runtime, /NSSpeechSynthesizer/)
-assert.match(runtime, /startSpeakingStringToURL/)
-assert.match(runtime, /System\.Speech\.Synthesis\.SpeechSynthesizer/)
+assert.match(processSource, /\/usr\/bin\/osascript/)
+assert.match(processSource, /NSSpeechSynthesizer/)
+assert.match(processSource, /startSpeakingStringToURL/)
+assert.match(processSource, /System\.Speech\.Synthesis\.SpeechSynthesizer/)
+assert.match(runtime, /windowsSpeechInvocation\(textFile, temporaryAudio\)/)
+assert.doesNotMatch(runtime, /'\-Command', command, textFile, temporaryAudio/)
+assert.match(runtime, /hasValidLocalSpeechSize/)
 assert.doesNotMatch(runtime, /class ArticleVideoScriptModal/)
 assert.doesNotMatch(runtime, /ai-linzi-article-video-script-modal/)
 assert.doesNotMatch(runtime, /setName\('画面标题'\)/)
