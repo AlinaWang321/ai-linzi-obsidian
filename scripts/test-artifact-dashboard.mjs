@@ -11,7 +11,7 @@ const bundled = await build({
   format: 'esm',
   write: false,
 })
-const { resolveArtifactLayout } = await import(
+const { resolveArtifactLayout, jsonForInlineScript } = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`
 )
 
@@ -66,6 +66,12 @@ assert('模型自主 CSS 在本机默认样式之后注入', renderer.includes('
 
 console.log('第3组 安全与自包含')
 assert('看板正文仍走转义', renderer.includes('escapeHtml(task.text)'))
+const hostileTitle = '</script><img src=x onerror="globalThis.pwned=1">\u2028下一行'
+const safeInlineJson = jsonForInlineScript(hostileTitle)
+assert('内联脚本 JSON 不含可闭合 script 的小于号', !safeInlineJson.includes('<'))
+assert('内联脚本 JSON 不含原始 JS 行分隔符', !safeInlineJson.includes('\u2028'))
+assert('安全 JSON 仍能无损还原标题', JSON.parse(safeInlineJson) === hostileTitle)
+assert('看板 storage key 使用专用内联脚本转义', renderer.includes('jsonForInlineScript(storageKey)'))
 const dashboardSection = renderer.slice(renderer.indexOf('function artifactDashboardHtml'), renderer.indexOf('function docxTable'))
 assert('无外部脚本/样式引用', !/src="https?:|href="https?:|@import/.test(dashboardSection))
 assert('无网络请求代码', !/fetch\(|XMLHttpRequest|WebSocket/.test(dashboardSection))

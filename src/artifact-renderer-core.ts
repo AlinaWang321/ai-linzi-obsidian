@@ -561,6 +561,22 @@ export interface ArtifactDocument {
   blocks: ArtifactBlock[]
 }
 
+/**
+ * JSON.stringify 不会转义 `</script>` 中的斜杠；把不受信任的 JSON 直接放进
+ * 内联脚本会允许 HTML 解析器提前结束 script 标签。这里同时转义 HTML 敏感
+ * 字符和 JS 的两个行分隔符，返回值仍是可由 JSON.parse 还原的合法 JSON。
+ */
+export function jsonForInlineScript(value: unknown): string {
+  const serialized = JSON.stringify(value)
+  if (serialized === undefined) return 'null'
+  return serialized
+    .replace(/&/g, '\\u0026')
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+}
+
 function plainInline(value: string): string {
   return value
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')

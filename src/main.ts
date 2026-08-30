@@ -365,6 +365,15 @@ import {
   type WechatInboxConnection,
   type WechatInboxPersistedState,
 } from './wechat-inbox-core'
+import {
+  PLUGIN_UPDATE_CHECK_INTERVAL_MS,
+  PLUGIN_UPDATE_NOTICE_TEXT,
+  comparePluginVersions,
+  isPluginBundleVersionMismatch,
+  isPluginUpdateAvailable,
+} from './plugin-update-core'
+
+declare const __AI_LINZI_BUILD_VERSION__: string
 
 /** 内置动作的唯一清单:命令面板、正文右键、对话面板按钮三个入口共用 */
 export const SKILL_ACTIONS: {
@@ -1339,14 +1348,7 @@ function newPluginSessionId(): string {
 }
 
 function compareVersions(left: string, right: string): number {
-  const parse = (value: string) => value.split('.').map((part) => Number.parseInt(part, 10) || 0)
-  const a = parse(left)
-  const b = parse(right)
-  for (let index = 0; index < Math.max(a.length, b.length); index++) {
-    const diff = (a[index] ?? 0) - (b[index] ?? 0)
-    if (diff !== 0) return diff
-  }
-  return 0
+  return comparePluginVersions(left, right)
 }
 
 function responseHeader(headers: Record<string, string>, wanted: string): string {
@@ -1420,6 +1422,12 @@ export default class AiLinziPlugin extends Plugin {
   )
   private localSkillExecutorPromise: Promise<LocalSkillExecutor> | null = null
   private capabilitiesCache: { data: PluginCapabilities; loadedAt: number } | null = null
+  /** 同一运行周期同一个远端版本只提醒一次；重启后仍未更新会再次提醒。 */
+  private lastNotifiedPluginVersion: string | null = null
+  /** 安装不完整的强提醒同一运行周期也只出现一次，避免切换标签页时反复打扰。 */
+  private pluginBundleMismatchNotified = false
+  /** 用户继续使用 Obsidian 时每 6 小时最多联网检查一次，不创建常驻轮询器。 */
+  private lastPluginUpdateCheckAt = 0
   private savedConversations: SavedConvo[] = []
   /** 多对话并行时，对话列表的读-改-写必须串行，否则两个窗口会相互覆盖。 */
   private conversationMutationQueue: Promise<void> = Promise.resolve()
@@ -1476,6 +1484,62 @@ export default class AiLinziPlugin extends Plugin {
     }
   }
 
+  /**
+   * manifest 和实际运行的 main.js 版本不一致，说明更新只替换了一部分文件，
+   * 正是“设置显示最新版、菜单仍是旧版”的状态。只提醒，不触碰插件文件。
+   */
+  private warnIfPluginBundleVersionMismatch(): boolean {
+    const bundledVersion = typeof __AI_LINZI_BUILD_VERSION__ === 'string'
+      ? __AI_LINZI_BUILD_VERSION__
+      : this.manifest.version
+    if (!isPluginBundleVersionMismatch(this.manifest.version, bundledVersion)) return false
+    if (this.pluginBundleMismatchNotified) return true
+    this.pluginBundleMismatchNotified = true
+    new Notice(
+      `${PLUGIN_UPDATE_NOTICE_TEXT}。当前安装没有完整加载（界面版本 ${this.manifest.version}，运行版本 ${bundledVersion}），` +
+        '请到“设置 → 第三方插件”重新检查更新，并完全退出后重启 Obsidian。',
+      20_000,
+    )
+    return true
+  }
+
+  /**
+   * 官方市场版不包含自更新器：这里只读取 AI霖子后端已经公开的最新版本头。
+   * 用户仍通过 Obsidian 官方“检查更新”完成安装。网络或服务异常静默失败，
+   * 绝不能让一个提醒影响插件加载、聊天、Vault 或已有付费功能。
+   */
+  private async checkForPluginUpdate(): Promise<void> {
+    if (this.warnIfPluginBundleVersionMismatch()) return
+    const now = Date.now()
+    if (now - this.lastPluginUpdateCheckAt < PLUGIN_UPDATE_CHECK_INTERVAL_MS) return
+    this.lastPluginUpdateCheckAt = now
+    try {
+      const response = await requestUrl({
+        url: `${OFFICIAL_SERVER_URL}/api/plugin/v1/capabilities?updateCheck=${encodeURIComponent(this.manifest.version)}`,
+        method: 'GET',
+        headers: {
+          'Cache-Control': 'no-cache',
+          'X-AI-Linzi-Plugin-Version': this.manifest.version,
+        },
+        throw: false,
+      })
+      const latestVersion = responseHeader(
+        response.headers,
+        'X-AI-Linzi-Latest-Plugin-Version',
+      ).trim()
+      if (!isPluginUpdateAvailable(this.manifest.version, latestVersion)) return
+      if (this.lastNotifiedPluginVersion === latestVersion) return
+      this.lastNotifiedPluginVersion = latestVersion
+      new Notice(
+        `${PLUGIN_UPDATE_NOTICE_TEXT}（当前 ${this.manifest.version}，最新 ${latestVersion}）。` +
+          '请到“设置 → 第三方插件”点击“检查更新”，更新后完全退出并重启 Obsidian。',
+        20_000,
+      )
+    } catch {
+      // 更新提醒不是业务能力；断网、限流或服务异常都静默，不打扰用户。
+    }
+  }
+
   async onload() {
     await this.loadSettings()
     this.wechatInbox = new WechatInboxManager({
@@ -1499,6 +1563,7 @@ export default class AiLinziPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       this.rememberCurrentMarkdownFile()
       this.warnOrphanLocalSkills()
+      void this.checkForPluginUpdate()
       void this.vaultSearch.initialize()
       void this.weeklyBusinessIndex.initialize()
       this.wechatInbox?.start()
@@ -1531,6 +1596,7 @@ export default class AiLinziPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on('active-leaf-change', () => {
         this.rememberCurrentMarkdownFile()
+        void this.checkForPluginUpdate()
       }),
     )
     this.registerEvent(

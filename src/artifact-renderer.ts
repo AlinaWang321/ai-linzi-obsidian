@@ -28,6 +28,7 @@ import {
   normalizeArtifactHtmlDesign,
   normalizePresentationSpec,
   presentationContentProblem,
+  jsonForInlineScript,
   resolveArtifactLayout,
   type ArtifactFont,
   type ArtifactBlock,
@@ -479,7 +480,7 @@ export function artifactDashboardHtml(
   const storageKey = `ai-linzi-board:${document.title}`
   const script = [
     '(function(){',
-    `var KEY=${JSON.stringify(storageKey)}+":"+location.pathname;`,
+    `var KEY=${jsonForInlineScript(storageKey)}+":"+location.pathname;`,
     'var boxes=[].slice.call(document.querySelectorAll("#today input[type=checkbox]"));',
     'boxes.forEach(function(box,i){box.dataset.idx=String(i)});',
     'var saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){saved={}}',

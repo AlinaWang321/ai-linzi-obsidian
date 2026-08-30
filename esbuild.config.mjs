@@ -2,9 +2,11 @@ import esbuild from 'esbuild'
 import process from 'node:process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readFile } from 'node:fs/promises'
 
 const prod = process.argv[2] === 'production'
 const root = path.dirname(fileURLToPath(import.meta.url))
+const manifest = JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8'))
 
 // docx 的 dist 产物内联了 jszip → lie/immediate/setimmediate 整条依赖链，
 // 其中 IE 时代的动态 <script> 调度兜底无法用模块 alias 拦截。这里在加载
@@ -90,6 +92,9 @@ const ctx = await esbuild.context({
   ],
   format: 'cjs',
   target: 'es2022',
+  define: {
+    __AI_LINZI_BUILD_VERSION__: JSON.stringify(manifest.version),
+  },
   logLevel: 'info',
   sourcemap: prod ? false : 'inline',
   treeShaking: true,
