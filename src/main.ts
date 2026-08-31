@@ -55,12 +55,14 @@ import {
   runSalesReview,
   runTopicRadar,
   runWechatWriter,
+  recoverPendingWechatWriter,
   writeOutput,
   saveAiImageToVault,
   vaultImageToReferenceDataUrl,
   type AiImageRatio,
   type ChatIllustrationCandidate,
   type LocalImageReference,
+  type PendingWechatWriterJob,
   imageMediaTypeFromDataUrl,
   fileToReferenceDataUrl,
 } from './actions'
@@ -792,6 +794,31 @@ interface AiLinziPluginData extends LegacyAiLinziSettings {
   localSkillRunHistory?: LocalSkillRunRecord[]
   weeklyBusinessDashboardCache?: unknown
   wechatInboxState?: unknown
+  pendingWechatWriterJob?: unknown
+}
+
+function storedPendingWechatWriterJob(value: unknown): PendingWechatWriterJob | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  if (
+    raw.version !== 1 ||
+    typeof raw.requestId !== 'string' ||
+    !/^[A-Za-z0-9_-]{8,64}$/.test(raw.requestId) ||
+    typeof raw.topic !== 'string' ||
+    !raw.topic.trim() ||
+    typeof raw.sourcePath !== 'string' ||
+    !raw.sourcePath.trim() ||
+    typeof raw.createdAt !== 'number' ||
+    !Number.isFinite(raw.createdAt)
+  ) return null
+  return {
+    version: 1,
+    requestId: raw.requestId,
+    topic: raw.topic.trim(),
+    sourcePath: normalizePath(raw.sourcePath.trim()),
+    createdAt: raw.createdAt,
+    phase: raw.phase === 'saving' ? 'saving' : 'waiting',
+  }
 }
 
 const IMAGE_STYLE_CONTEXT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
@@ -1438,6 +1465,8 @@ export default class AiLinziPlugin extends Plugin {
   private vaultActionHistory: VaultActionRecord[] = []
   private localSkillRunHistory: LocalSkillRunRecord[] = []
   private wechatInboxState: WechatInboxPersistedState = defaultWechatInboxState()
+  private pendingWechatWriterJob: PendingWechatWriterJob | null = null
+  private pluginUnloaded = false
   private wechatInbox: WechatInboxManager | null = null
   private wechatInboxRuntimeStatus: WechatInboxRuntimeStatus = {
     kind: 'stopped',
@@ -1541,6 +1570,7 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   async onload() {
+    this.pluginUnloaded = false
     await this.loadSettings()
     this.wechatInbox = new WechatInboxManager({
       app: this.app,
@@ -1564,6 +1594,7 @@ export default class AiLinziPlugin extends Plugin {
       this.rememberCurrentMarkdownFile()
       this.warnOrphanLocalSkills()
       void this.checkForPluginUpdate()
+      void recoverPendingWechatWriter(this)
       void this.vaultSearch.initialize()
       void this.weeklyBusinessIndex.initialize()
       this.wechatInbox?.start()
@@ -1736,6 +1767,7 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.pluginUnloaded = true
     // Obsidian 官方规范:卸载时不 detach leaves(用户布局归用户)
     this.vaultSearch.dispose()
     this.weeklyBusinessIndex.dispose()
@@ -1759,6 +1791,7 @@ export default class AiLinziPlugin extends Plugin {
       localSkillRunHistory,
       weeklyBusinessDashboardCache,
       wechatInboxState,
+      pendingWechatWriterJob,
       ...safeSettings
     } = raw
     this.savedConversations = Array.isArray(conversations) ? conversations : []
@@ -1774,6 +1807,7 @@ export default class AiLinziPlugin extends Plugin {
       weeklyBusinessDashboardCache,
     )
     this.wechatInboxState = storedWechatInboxState(wechatInboxState)
+    this.pendingWechatWriterJob = storedPendingWechatWriterJob(pendingWechatWriterJob)
     this.settings = Object.assign({}, DEFAULT_SETTINGS, safeSettings)
     let migrated =
       legacyVaultSearchExcludedFolders !== undefined ||
@@ -2341,10 +2375,37 @@ export default class AiLinziPlugin extends Plugin {
         localSkillRunHistory: this.localSkillRunHistory,
         weeklyBusinessDashboardCache: this.weeklyBusinessDashboardCache ?? undefined,
         wechatInboxState: this.wechatInboxState,
+        pendingWechatWriterJob: this.pendingWechatWriterJob ?? undefined,
       } satisfies AiLinziPluginData)
     })
     this.settingsSaveQueue = run.catch(() => undefined)
     await run
+  }
+
+  createWechatWriterRequestId(): string {
+    return uid()
+  }
+
+  getPendingWechatWriterJob(): PendingWechatWriterJob | null {
+    return this.pendingWechatWriterJob ? { ...this.pendingWechatWriterJob } : null
+  }
+
+  async setPendingWechatWriterJob(job: PendingWechatWriterJob): Promise<void> {
+    const stored = storedPendingWechatWriterJob(job)
+    if (!stored) throw new Error('公众号文章恢复任务格式错误')
+    this.pendingWechatWriterJob = stored
+    await this.saveSettings()
+  }
+
+  async clearPendingWechatWriterJob(requestId?: string): Promise<void> {
+    if (requestId && this.pendingWechatWriterJob?.requestId !== requestId) return
+    if (!this.pendingWechatWriterJob) return
+    this.pendingWechatWriterJob = null
+    await this.saveSettings()
+  }
+
+  canRecoverWechatWriter(): boolean {
+    return !this.pluginUnloaded
   }
 
   /** 用户确认生成完整看板后，才把本轮指纹提升为下一次增量刷新基线。 */

@@ -229,6 +229,8 @@ interface OutputSpec {
   /** 文章辅助信息写进 frontmatter，不混入可发布正文 */
   summary?: string
   titleCandidates?: string[]
+  /** 长任务断网恢复幂等标识；只用于识别已经落盘的同一份成品。 */
+  recoveryRequestId?: string
 }
 
 export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Promise<TFile> {
@@ -282,6 +284,9 @@ export async function writeOutput(plugin: AiLinziPlugin, spec: OutputSpec): Prom
     ...contentLines,
     spec.summary ? `摘要: ${JSON.stringify(spec.summary)}` : null,
     spec.titleCandidates?.length ? `候选标题: ${JSON.stringify(spec.titleCandidates.slice(0, 5))}` : null,
+    spec.recoveryRequestId
+      ? `AI霖子任务ID: ${JSON.stringify(spec.recoveryRequestId)}`
+      : null,
     spec.sourceNote
       ? `关联笔记: ${JSON.stringify(`[[${spec.sourceNote.path}|${spec.sourceNote.basename}]]`)}`
       : null,
@@ -501,6 +506,12 @@ export async function runWechatWriter(plugin: AiLinziPlugin) {
   ]).result
   if (!input) return
 
+  if (plugin.getPendingWechatWriterJob()) {
+    new Notice('上一篇公众号文章仍在后台生成；联网后会自动取回，请不要重复发起。', 8000)
+    void recoverPendingWechatWriter(plugin)
+    return
+  }
+
   const n = runningNotice('公众号写作')
   try {
     const topic = input.topic.trim()
@@ -511,38 +522,168 @@ export async function runWechatWriter(plugin: AiLinziPlugin) {
     if (material.length > LIMITS.WECHAT_MATERIAL_MAX) {
       throw new Error(`当前笔记共 ${material.length.toLocaleString('zh-CN')} 字，超过 ${LIMITS.WECHAT_MATERIAL_MAX.toLocaleString('zh-CN')} 字上限；系统没有截取前半段冒充全文，请改用主对话长文档处理`)
     }
+    const requestId = plugin.createWechatWriterRequestId()
+    await plugin.setPendingWechatWriterJob({
+      version: 1,
+      requestId,
+      topic,
+      sourcePath: note.file.path,
+      createdAt: Date.now(),
+    })
     const text = await plugin.apiText('/api/plugin/v1/skills/wechat-writer', {
       topic,
       material,
+      clientRequestId: requestId,
     })
-    const article = prepareWechatArticle(text)
-    if (!isCompleteWechatArticle(article)) {
-      throw new Error('文章没有完整生成到正文结尾和一句话摘要，系统没有写入残稿，请重试')
+    await saveWechatWriterResult(plugin, plugin.getPendingWechatWriterJob(), text)
+  } catch (e) {
+    const rawMessage = e instanceof Error ? e.message : String(e)
+    if (isWechatWriterRecoverableError(rawMessage) && plugin.getPendingWechatWriterJob()) {
+      new Notice('你的网络或VPN不稳定，文章仍在后台生成；网络恢复后会自动取回。', 10000)
+      void recoverPendingWechatWriter(plugin)
+    } else {
+      await plugin.clearPendingWechatWriterJob()
+      const message = friendlyErrorMessage(rawMessage)
+      new Notice(`❌ 公众号写作：${message}`, 8000)
     }
-    const articleFile = await writeOutput(plugin, {
-      skill: '公众号写作',
-      platform: '公众号',
-      title: article.titleCandidates[0] || input.topic.trim(),
-      body: article.body,
-      summary: article.digest,
-      titleCandidates: article.titleCandidates,
-      sourceNote: note.file,
-    })
-    const sourceFm = plugin.app.metadataCache.getFileCache(note.file)?.frontmatter
+  } finally {
+    n.hide()
+  }
+}
+
+export interface PendingWechatWriterJob {
+  version: 1
+  requestId: string
+  topic: string
+  sourcePath: string
+  createdAt: number
+  phase?: 'waiting' | 'saving'
+}
+
+type WechatWriterOperationResponse = {
+  status?: 'running' | 'succeeded' | 'failed'
+  text?: string
+  error?: string
+}
+
+const activeWechatWriterRecoveries = new WeakSet<AiLinziPlugin>()
+const WECHAT_WRITER_RECOVERY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+export async function recoverPendingWechatWriter(plugin: AiLinziPlugin): Promise<void> {
+  if (activeWechatWriterRecoveries.has(plugin)) return
+  const initialJob = plugin.getPendingWechatWriterJob()
+  if (!initialJob) return
+  activeWechatWriterRecoveries.add(plugin)
+  let confirmedNotFoundAt = 0
+  try {
+    while (plugin.canRecoverWechatWriter()) {
+      const job = plugin.getPendingWechatWriterJob()
+      if (!job || job.requestId !== initialJob.requestId) return
+      const ageMs = Date.now() - job.createdAt
+      if (ageMs > WECHAT_WRITER_RECOVERY_MAX_AGE_MS) {
+        await plugin.clearPendingWechatWriterJob(job.requestId)
+        new Notice('上次公众号文章的临时恢复记录已过期，请重新生成。', 8000)
+        return
+      }
+      try {
+        const data = await plugin.api(
+          `/api/plugin/v1/skills/wechat-writer/operations/${encodeURIComponent(job.requestId)}`,
+        ) as WechatWriterOperationResponse
+        confirmedNotFoundAt = 0
+        if (data.status === 'succeeded' && typeof data.text === 'string') {
+          await saveWechatWriterResult(plugin, job, data.text, true)
+          return
+        }
+        if (data.status === 'failed') {
+          await plugin.clearPendingWechatWriterJob(job.requestId)
+          new Notice(`❌ 公众号写作：${data.error || '文章生成没有完成，请重新发起'}`, 8000)
+          return
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (/请求失败\(404\)/.test(message)) {
+          confirmedNotFoundAt ||= Date.now()
+          if (Date.now() - confirmedNotFoundAt >= 60_000) {
+            await plugin.clearPendingWechatWriterJob(job.requestId)
+            new Notice('上次请求没有到达服务器，请网络恢复后重新点击“公众号写作”。', 10000)
+            return
+          }
+        } else if (/已过期|请求失败\(410\)/.test(message)) {
+          await plugin.clearPendingWechatWriterJob(job.requestId)
+          new Notice('上次公众号文章的临时恢复记录已过期，请重新生成。', 8000)
+          return
+        } else if (!isWechatWriterRecoverableError(message)) {
+          console.error('[ai-linzi] wechat writer recovery check failed:', error)
+        }
+      }
+      const delayMs = ageMs < 2 * 60_000
+        ? 5_000
+        : ageMs < 30 * 60_000
+          ? 15_000
+          : 5 * 60_000
+      await waitForWechatWriterRecovery(delayMs)
+    }
+  } finally {
+    activeWechatWriterRecoveries.delete(plugin)
+  }
+}
+
+function isWechatWriterRecoverableError(message: string): boolean {
+  return /Failed to fetch|Load failed|NetworkError|ERR_CONNECTION_(?:CLOSED|RESET)|ERR_NETWORK_CHANGED|ERR_NETWORK_IO_SUSPENDED|socket hang up|ECONNRESET|ETIMEDOUT|timed out|文章仍在后台生成/i.test(message)
+}
+
+function waitForWechatWriterRecovery(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+async function saveWechatWriterResult(
+  plugin: AiLinziPlugin,
+  job: PendingWechatWriterJob | null,
+  text: string,
+  recovered = false,
+): Promise<void> {
+  if (!job) throw new Error('公众号文章任务记录已丢失，系统没有写入无法核对的结果')
+  const article = prepareWechatArticle(text)
+  if (!isCompleteWechatArticle(article)) {
+    await plugin.clearPendingWechatWriterJob(job.requestId)
+    throw new Error('文章没有完整生成到正文结尾和一句话摘要，系统没有写入残稿，请重试')
+  }
+
+  const existing = plugin.app.vault.getMarkdownFiles().find((file) => {
+    const frontmatter = plugin.app.metadataCache.getFileCache(file)?.frontmatter
+    return frontmatter?.['AI霖子任务ID'] === job.requestId
+  })
+  if (existing) {
+    await plugin.clearPendingWechatWriterJob(job.requestId)
+    if (recovered) new Notice('✅ 断网前生成的公众号文章已经在输出文件夹中。', 8000)
+    return
+  }
+
+  await plugin.setPendingWechatWriterJob({ ...job, phase: 'saving' })
+  const source = plugin.app.vault.getAbstractFileByPath(job.sourcePath)
+  const sourceNote = source instanceof TFile ? source : undefined
+  const articleFile = await writeOutput(plugin, {
+    skill: '公众号写作',
+    platform: '公众号',
+    title: article.titleCandidates[0] || job.topic,
+    body: article.body,
+    summary: article.digest,
+    titleCandidates: article.titleCandidates,
+    sourceNote,
+    recoveryRequestId: job.requestId,
+  })
+  if (sourceNote) {
+    const sourceFm = plugin.app.metadataCache.getFileCache(sourceNote)?.frontmatter
     if (sourceFm?.['内容类型'] === '选题' || sourceFm?.['来源技能'] === '选题雷达') {
-      await plugin.app.fileManager.processFrontMatter(note.file, (fm: Record<string, unknown>) => {
+      await plugin.app.fileManager.processFrontMatter(sourceNote, (fm: Record<string, unknown>) => {
         fm['状态'] = '已生成草稿'
         fm['内容阶段'] = '已生成草稿'
         fm['关联文章'] = `[[${articleFile.basename}]]`
       })
     }
-    new Notice('✅ 公众号文章已生成并落盘')
-  } catch (e) {
-    const message = friendlyErrorMessage(e instanceof Error ? e.message : String(e))
-    new Notice(`❌ 公众号写作：${message}`, 8000)
-  } finally {
-    n.hide()
   }
+  await plugin.clearPendingWechatWriterJob(job.requestId)
+  new Notice(recovered ? '✅ 网络已恢复，公众号文章已自动取回并落盘。' : '✅ 公众号文章已生成并落盘')
 }
 
 export async function runDistribute(plugin: AiLinziPlugin) {
