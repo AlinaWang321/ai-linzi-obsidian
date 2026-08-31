@@ -538,7 +538,8 @@ export async function runWechatWriter(plugin: AiLinziPlugin) {
     }
     new Notice('✅ 公众号文章已生成并落盘')
   } catch (e) {
-    new Notice(`❌ 公众号写作:${e instanceof Error ? e.message : String(e)}`, 8000)
+    const message = friendlyErrorMessage(e instanceof Error ? e.message : String(e))
+    new Notice(`❌ 公众号写作：${message}`, 8000)
   } finally {
     n.hide()
   }

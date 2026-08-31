@@ -19,7 +19,7 @@ export function friendlyErrorMessage(raw: string): string {
 
   // 传输中断：长内容上传/下载途中连接被切断
   if (/ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_NETWORK_CHANGED|ERR_NETWORK_IO_SUSPENDED|socket hang up|ECONNRESET|Connection closed/i.test(text)) {
-    return '网络中断了，内容没能传完。换个网络环境或稍后再试；逐字稿很长时，可以先拆成两段分别处理'
+    return '你的网络或VPN不稳定，请稍后再试'
   }
   // 连不上
   if (/ERR_CONNECTION_REFUSED|ERR_CONNECTION_TIMED_OUT|ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED|ENOTFOUND|EAI_AGAIN/i.test(text)) {

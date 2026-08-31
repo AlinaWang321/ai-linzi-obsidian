@@ -11,14 +11,13 @@ const fn = new Function('raw', body[1].replace(/: string/g, ''))
 const closed = fn('net::ERR_CONNECTION_CLOSED')
 assert.ok(!closed.includes('ERR_'), '不得外露错误码')
 assert.ok(!closed.includes('net::'), '不得外露 net:: 前缀')
-assert.match(closed, /网络中断|重试/, '必须给出可操作建议')
-assert.match(closed, /拆成两段/, '长内容场景必须给出拆分建议')
+assert.equal(closed, '你的网络或VPN不稳定，请稍后再试')
 
 // ② 各类网络错误都有对应人话
 for (const [raw, expect] of [
   ['ERR_CONNECTION_REFUSED', /连不上服务器/],
   ['ERR_NAME_NOT_RESOLVED', /连不上服务器/],
-  ['net::ERR_NETWORK_IO_SUSPENDED', /网络中断|重试/],
+  ['net::ERR_NETWORK_IO_SUSPENDED', /网络|VPN|稍后再试/],
   ['The operation timed out', /时间太长|拆成两段/],
   ['FUNCTION_INVOCATION_TIMEOUT', /时间太长/],
   ['net::ERR_CERT_AUTHORITY_INVALID', /拦截|代理/],
@@ -46,6 +45,13 @@ for (const f of ['../src/actions.ts', '../src/customer-consultation-brief.ts']) 
   const text = readFileSync(new URL(f, import.meta.url), 'utf8')
   assert.match(text, /friendlyErrorMessage\(/, `${f} 未接入友好报错`)
 }
+const actions = readFileSync(new URL('../src/actions.ts', import.meta.url), 'utf8')
+const wechatWriter = actions.slice(
+  actions.indexOf('export async function runWechatWriter'),
+  actions.indexOf('export async function runDistribute'),
+)
+assert.match(wechatWriter, /const message = friendlyErrorMessage\(/, '公众号写作必须翻译底层网络错误')
+assert.match(wechatWriter, /公众号写作：\$\{message\}/, '公众号写作提示必须展示翻译后的人话')
 const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
 assert.match(main, /const callNativeStep = async/)
 assert.match(main, /const requestId = uid\(\)/)
