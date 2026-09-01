@@ -190,9 +190,14 @@ export function isBuiltInArticleVideoIntent(text: string): boolean {
     /(?:为什么|怎么|能不能|是否|有什么|介绍|说明).{0,12}(?:article[- ]?to[- ]?video|文章转短视频|文章.{0,6}短视频)/iu.test(value)
   ) return false
   const namesOfficialSkill = /(?:article[- ]?to[- ]?video|文章转短视频)/iu.test(value)
-  const namesSource = /(?:当前|这篇|这份|打开的).{0,8}(?:文章|笔记|文档|内容)|(?:文章|笔记|文档).{0,8}(?:转|变|做|生成).{0,6}(?:短视频|视频)/u.test(value)
+  const namesCurrentSource = /(?:当前|这篇|这份|打开的).{0,8}(?:文章|笔记|文档|内容)/u.test(value)
+  const asksForVideoConversion = /(?:文章|笔记|文档).{0,12}(?:转|变|做|生成).{0,8}(?:短视频|视频)/u.test(value)
   const asksToRun = /(?:用|调用|运行|执行|处理|制作|生成|转成|变成|做成)/u.test(value)
-  return asksToRun && namesSource && (namesOfficialSkill || /(?:文章|笔记|文档)/u.test(value))
+  // 不能因为一句话里同时有“处理 + 当前文档”就默认启动视频。显式点名的
+  // consultation-client-workflow 等本地 Skill 必须继续进入本地 Skill 解析链。
+  return asksToRun && (
+    asksForVideoConversion || (namesOfficialSkill && namesCurrentSource)
+  )
 }
 
 export function explicitArticleVideoDurationFromText(text: string): ArticleVideoDuration | undefined {

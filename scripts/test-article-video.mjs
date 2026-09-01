@@ -37,6 +37,9 @@ for (const value of [
   '文章转短视频为什么总是让我确认？',
   '介绍一下文章转短视频的流程',
   '帮我润色这篇文章',
+  '用咨询交付闭环处理当前打开的咨询文档',
+  '用 consultation-client-workflow 处理当前打开的咨询文档',
+  '调用客户咨询简报处理这份逐字稿',
 ]) assert.equal(core.isBuiltInArticleVideoIntent(value), false, value)
 
 assert.equal(core.articleVideoDurationFromText('生成一分钟视频'), 60)

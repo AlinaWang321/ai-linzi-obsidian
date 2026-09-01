@@ -280,10 +280,15 @@ async function getAccessToken(appId: string, secret: string): Promise<string> {
   return d.access_token
 }
 
-function friendlyWxError(code?: number, msg?: string): string {
+export function friendlyWxError(code?: number, msg?: string): string {
   if (code === 40164) {
     const ip = /invalid ip ([\d.]+)/.exec(msg ?? '')?.[1]
-    return `你的电脑 IP${ip ? ` (${ip})` : ''} 不在公众号白名单里。去 公众号后台 → 设置与开发 → 基本配置 → IP 白名单,把这个 IP 加进去(家里网络 IP 会变,变了就再加一次)`
+    return (
+      `微信实际拒绝的出口 IP${ip ? ` 是 ${ip}` : '不在公众号白名单里'}。` +
+      '请到当前 AppID 对应的公众号后台 → 设置与开发 → 基本配置 → IP 白名单，' +
+      `${ip ? `确认已逐字添加 ${ip} 并点了保存` : '添加报错中显示的 IP 并保存'}。` +
+      '如果已经添加仍出现这条提示，请关闭或切换 VPN/代理后重试，并以新报错里的 IP 为准；家庭和手机网络的出口 IP 都可能变化。'
+    )
   }
   if (code === 40125 || code === 40001) return 'AppSecret 不对或已重置,去公众号后台「基本配置」重新生成后填入插件设置'
   if (code === 40013) return 'AppID 不对,检查插件设置里是否抄错'
@@ -308,6 +313,38 @@ function buildMultipart(filename: string, data: ArrayBuffer, mime: string): { bo
 function mimeOf(name: string): string {
   const ext = name.toLowerCase().split('.').pop() ?? ''
   return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/png' }[ext] ?? 'image/png'
+}
+
+function unwrapMarkdownImageDestination(src: string): string {
+  const value = src.trim()
+  return value.startsWith('<') && value.endsWith('>') ? value.slice(1, -1).trim() : value
+}
+
+/**
+ * Markdown 图片路径可能包含 URL 编码，也可能把文件名里的字面量 `%` 原样写入。
+ * decodeURIComponent 对后者会抛出 `URI malformed`，因此只把成功解码的值作为
+ * 第一候选，并始终保留原始值兜底。
+ */
+export function wechatImageLinkCandidates(src: string): string[] {
+  const raw = unwrapMarkdownImageDestination(src)
+  const candidates: string[] = []
+  try {
+    candidates.push(decodeURIComponent(raw))
+  } catch {
+    // 字面量百分号是合法 Vault 文件名；继续使用原始路径解析。
+  }
+  candidates.push(raw)
+  return [...new Set(candidates.filter(Boolean))]
+}
+
+export function isExternalFileImageSource(src: string): boolean {
+  return wechatImageLinkCandidates(src).some((candidate) => /^file:\/\//i.test(candidate))
+}
+
+function externalImageLabel(src: string): string {
+  const candidate = wechatImageLinkCandidates(src)[0] ?? src
+  const withoutQuery = candidate.split(/[?#]/u)[0]
+  return withoutQuery.split(/[\\/]/u).filter(Boolean).pop() ?? '本地临时图片'
 }
 
 /** 正文图:uploadimg(不占素材库额度,返回 URL) */
@@ -343,13 +380,16 @@ async function uploadThumb(token: string, file: TFile, plugin: AiLinziPlugin): P
 }
 
 function resolveImgFile(plugin: AiLinziPlugin, src: string, from: TFile): TFile | null {
-  const f = plugin.app.metadataCache.getFirstLinkpathDest(decodeURIComponent(src), from.path)
-  return f instanceof TFile ? f : null
+  for (const candidate of wechatImageLinkCandidates(src)) {
+    const file = plugin.app.metadataCache.getFirstLinkpathDest(candidate, from.path)
+    if (file instanceof TFile) return file
+  }
+  return null
 }
 
 export async function sendToWechatDraft(plugin: AiLinziPlugin) {
-  const { wechatAppId } = plugin.settings
-  const wechatAppSecret = plugin.getWechatAppSecret()
+  const wechatAppId = plugin.settings.wechatAppId?.trim()
+  const wechatAppSecret = plugin.getWechatAppSecret().trim()
   if (!wechatAppId || !wechatAppSecret) {
     new Notice('先在 设置 → AI霖子 → 公众号发布 里填入你的 AppID 和 AppSecret(公众号后台「基本配置」里抄)', 8000)
     return
@@ -361,21 +401,30 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
 
   const n = new Notice('📮 正在发送到公众号草稿箱…', 0)
   try {
-    const token = await getAccessToken(wechatAppId, wechatAppSecret)
-
     // 收集本地图片并上传。独立封面只上传为 thumb_media_id，不重复塞进正文。
     const { imgs } = extractImages(note.body)
     const urlMap = new Map<string, string>()
     const missingImages: string[] = []
+    const externalFileImages: string[] = []
     const localFiles = new Map<string, TFile>()
     for (const img of imgs) {
       if (/^https?:\/\//.test(img.src)) continue
+      if (isExternalFileImageSource(img.src)) {
+        externalFileImages.push(externalImageLabel(img.src))
+        continue
+      }
       const f = resolveImgFile(plugin, img.src, note.file)
       if (!f) {
         missingImages.push(img.src)
         continue
       }
       localFiles.set(img.src, f)
+    }
+    if (externalFileImages.length > 0) {
+      throw new Error(
+        `有 ${externalFileImages.length} 张图片引用的是 WPS 或浏览器临时文件（${externalFileImages.slice(0, 3).join('、')}），` +
+        '它们不在当前 Obsidian 知识库内，已停止发布。请先把图片保存到 Vault，再从 Obsidian 重新插入文章后重试。',
+      )
     }
     if (missingImages.length > 0) {
       throw new Error(`有 ${missingImages.length} 张本地图片找不到，已停止发布：${missingImages.slice(0, 3).join('、')}`)
@@ -389,6 +438,9 @@ export async function sendToWechatDraft(plugin: AiLinziPlugin) {
       new Notice('公众号草稿必须有一张封面图——请在文章里至少插入一张本地图片(第一张会自动作为封面)', 9000)
       return
     }
+
+    // 先完成全部本机图片校验，再访问微信接口；本地素材错误不应被 IP 白名单错误遮蔽。
+    const token = await getAccessToken(wechatAppId, wechatAppSecret)
 
     for (const img of imgs) {
       const f = localFiles.get(img.src)

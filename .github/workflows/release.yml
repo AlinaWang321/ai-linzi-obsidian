@@ -23,8 +23,14 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
-      - run: npm run package:release
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run complete regression suite
+        run: npm test
+      - name: Run strict lint and marketplace policy checks
+        run: npm run check:marketplace
+      - name: Build release assets
+        run: npm run package:release
       - name: Generate build provenance attestations
         uses: actions/attest@v4
         with:

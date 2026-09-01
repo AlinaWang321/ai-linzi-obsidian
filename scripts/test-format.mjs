@@ -159,6 +159,24 @@ assert.match(imageBlock, /^<section/)
 assert.match(imageBlock, /<img src="https:\/\/example\.com\/a\.png"/)
 assert.match(imageBlock, /<\/section>$/)
 
+assert.deepEqual(
+  publisher.wechatImageLinkCandidates('assets/%E6%B5%8B%E8%AF%95%20%E5%9B%BE.png'),
+  ['assets/测试 图.png', 'assets/%E6%B5%8B%E8%AF%95%20%E5%9B%BE.png'],
+  '合法 URL 编码优先解码，同时保留原路径兜底',
+)
+assert.deepEqual(
+  publisher.wechatImageLinkCandidates('assets/100%真实.png'),
+  ['assets/100%真实.png'],
+  '文件名含字面量百分号时不得抛出 URI malformed',
+)
+assert.equal(
+  publisher.isExternalFileImageSource('<file:///private/var/folders/wps-office/wps1.jpg>'),
+  true,
+  'WPS 临时 file URI 必须与 Vault 图片区分',
+)
+assert.match(publisher.friendlyWxError(40164, 'invalid ip 120.230.70.62'), /120\.230\.70\.62/)
+assert.match(publisher.friendlyWxError(40164, 'invalid ip 120.230.70.62'), /VPN\/代理/)
+
 // ── 公众号排版主题库 ──────────────────────────────
 const themes = await loadTs('src/wechat-themes.ts')
 assert.ok(Array.isArray(themes.WECHAT_THEMES) && themes.WECHAT_THEMES.length >= 4, '至少提供 4 套排版主题')
@@ -202,6 +220,7 @@ const sendDraftStart = publishSource.indexOf('export async function sendToWechat
 assert.ok(sendDraftStart >= 0, '必须保留公众号草稿箱发送入口')
 const sendDraftSource = publishSource.slice(sendDraftStart)
 assert.match(sendDraftSource, /extractImages\(note\.body\)/, '草稿箱发送应读取文章里已有的图片')
+assert.match(sendDraftSource, /isExternalFileImageSource/, '草稿箱发送应拒绝 Vault 外的 WPS\/浏览器临时图片')
 assert.match(sendDraftSource, /uploadContentImage/, '草稿箱发送应上传已有正文图片')
 assert.match(sendDraftSource, /mdToWechatHtml/, '草稿箱发送应自动执行公众号排版')
 assert.doesNotMatch(
