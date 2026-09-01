@@ -25,6 +25,8 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
+      - name: Build production bundle for regression tests
+        run: npm run build
       - name: Run complete regression suite
         run: npm test
       - name: Run strict lint and marketplace policy checks
