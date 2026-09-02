@@ -4698,6 +4698,7 @@ class ChatView extends ItemView {
     for (const message of this.messages) delete message.consultationBriefDraft
     target.consultationBriefDraft = draft
     await this.persistNow()
+    this.renderMessages()
   }
 
   /**
@@ -9681,6 +9682,74 @@ class ChatView extends ItemView {
     }
   }
 
+  /**
+   * 咨询简报生成后给出显式修改入口。自然语言直接发送仍然支持；这张卡让不熟悉
+   * 指令的用户能看见“写修改要求 → 点按钮 → 生成新版 PNG”的完整闭环。
+   */
+  private renderConsultationBriefRevisionOffer(row: HTMLElement, message: WireMessage): void {
+    const draft = message.consultationBriefDraft
+    if (!draft?.markdown.trim() || !draft.pngPath.trim()) return
+    const card = row.createDiv({ cls: 'ai-linzi-consultation-revision-card' })
+    card.createDiv({ text: '修改这张咨询简报', cls: 'ai-linzi-consultation-revision-title' })
+    card.createDiv({
+      text: `当前图片：${draft.pngPath}。填写要改的文字后点击按钮，会生成一张新版 PNG；旧图保留。`,
+      cls: 'ai-linzi-consultation-revision-description',
+    })
+    const instruction = card.createEl('textarea', {
+      cls: 'ai-linzi-consultation-revision-input',
+      attr: {
+        rows: '3',
+        placeholder: '例如：删掉“你47岁”；把第二条建议改成……',
+        'aria-label': '咨询简报修改要求',
+      },
+    })
+    const actions = card.createDiv({ cls: 'ai-linzi-consultation-revision-actions' })
+    const openBtn = actions.createEl('button', { text: '打开当前图片' })
+    openBtn.onclick = () => {
+      const file = this.app.vault.getAbstractFileByPath(draft.pngPath)
+      if (!(file instanceof TFile)) {
+        new Notice('当前咨询简报图片已被移动或删除')
+        return
+      }
+      void this.app.workspace.getLeaf('tab').openFile(file)
+    }
+    const reviseBtn = actions.createEl('button', {
+      text: '按修改要求重新生成图片',
+      cls: 'mod-cta',
+    })
+    let running = false
+    reviseBtn.onclick = () => {
+      const request = instruction.value.trim()
+      if (!request) {
+        new Notice('请先填写要修改的文字')
+        instruction.focus()
+        return
+      }
+      if (running || this.sending) {
+        new Notice('AI霖子正在处理上一项任务，请完成后再试')
+        return
+      }
+      running = true
+      reviseBtn.disabled = true
+      openBtn.disabled = true
+      instruction.disabled = true
+      void (async () => {
+        try {
+          const { reviseCustomerConsultationBrief } = await import('./customer-consultation-brief')
+          await reviseCustomerConsultationBrief(this.plugin, draft, request)
+          await this.persistNow()
+          this.renderMessages()
+        } catch (error) {
+          running = false
+          reviseBtn.disabled = false
+          openBtn.disabled = false
+          instruction.disabled = false
+          new Notice(`咨询简报修改失败：${friendlyErrorMessage(error instanceof Error ? error.message : String(error))}`, 9000)
+        }
+      })()
+    }
+  }
+
   private renderLocalSkillRunOffer(row: HTMLElement, message: WireMessage): void {
     const records = (message.localSkillRunIds ?? [])
       .map((id) => this.plugin.getLocalSkillRunRecord(id))
@@ -10130,6 +10199,7 @@ class ChatView extends ItemView {
         if (m.skillUpdateOffer) this.renderSkillUpdateOffer(row, m)
         if (m.vaultQuestion) this.renderVaultQuestionOffer(row, m)
         if ((m.localSkillRunIds?.length ?? 0) > 0) this.renderLocalSkillRunOffer(row, m)
+        if (m.consultationBriefDraft) this.renderConsultationBriefRevisionOffer(row, m)
         if (localSkillCreateResult.blocks.length > 0) {
           this.renderCreateLocalSkillOffers(row, localSkillCreateResult.blocks, m)
         }

@@ -39,6 +39,11 @@ assert.equal(core.CUSTOMER_CONSULTATION_TRANSCRIPT_MAX, 100_000)
 assert.equal(core.CUSTOMER_CONSULTATION_OUTPUT_FOLDER, '客户咨询简报')
 assert.equal(core.isConsultationBriefRevisionIntent('把刚才的咨询简报里核心诊断第 2 条改成更直接的说法'), true)
 assert.equal(core.isConsultationBriefRevisionIntent('修改这张简报图片上的标题文字'), true)
+assert.equal(
+  core.isConsultationBriefRevisionIntent('把刚才生成的安妮的咨询简报里面的“你47岁”删掉'),
+  true,
+  '引用具体原文并要求删除时必须进入咨询简报修改，不得误入 Vault 整理',
+)
 assert.equal(core.isConsultationBriefRevisionIntent('修改咨询简报 Skill 的输出规则'), false)
 assert.equal(core.isConsultationBriefRevisionIntent('帮我生成一份咨询简报'), false)
 const originalBrief = `# 客户 A · 咨询简报
@@ -139,6 +144,9 @@ assert.match(source, /旧图片仍保留，没有覆盖/)
 assert.match(mainSource, /consultationBriefDraft\?: CustomerConsultationBriefDraft/)
 assert.match(mainSource, /recentConsultationBriefDraft\(\)/)
 assert.match(mainSource, /isConsultationBriefRevisionIntent\(text\)/)
+assert.match(mainSource, /renderConsultationBriefRevisionOffer\(row, m\)/)
+assert.match(mainSource, /按修改要求重新生成图片/)
+assert.match(mainSource, /咨询简报修改要求/)
 assert.match(mainSource, /delete message\.consultationBriefDraft/)
 assert.match(
   mainSource,

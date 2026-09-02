@@ -3384,6 +3384,44 @@
   font-weight: 650;
 }
 
+.ai-linzi-consultation-revision-card {
+	margin: 10px 0 2px;
+	padding: 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+	background: var(--background-secondary);
+}
+
+.ai-linzi-consultation-revision-title {
+	font-size: 13px;
+	font-weight: 700;
+	color: var(--text-normal);
+}
+
+.ai-linzi-consultation-revision-description {
+	margin-top: 5px;
+	font-size: 11px;
+	line-height: 1.55;
+	color: var(--text-muted);
+	overflow-wrap: anywhere;
+}
+
+.ai-linzi-consultation-revision-input {
+	box-sizing: border-box;
+	width: 100%;
+	min-height: 68px;
+	margin-top: 10px;
+	padding: 9px 10px;
+	resize: vertical;
+}
+
+.ai-linzi-consultation-revision-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 9px;
+}
+
 .ai-linzi-consultation-export-host {
   position: fixed;
   z-index: -10000;

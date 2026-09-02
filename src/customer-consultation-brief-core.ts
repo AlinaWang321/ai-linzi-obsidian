@@ -26,8 +26,11 @@ export function isConsultationBriefRevisionIntent(value: string): boolean {
   const text = value.trim()
   if (!text || /(?:skill|技能|工作流)/iu.test(text)) return false
   if (!/(?:咨询简报|简报图片|这张简报|刚才的简报)/u.test(text)) return false
-  return /(?:修改|改成|改为|替换|删掉|删除|补充|新增|增加|调整|精简|重写|换成|纠正)/u.test(text) &&
-    /(?:文字|文案|标题|副标题|第\s*[一二三四五六七八九十\d]+\s*条|诊断|洞察|路径|产品|目标|总结|行动|给你的话|部分|内容|图片|图上)/u.test(text)
+  const editVerb = /(?:修改|改成|改为|替换|删掉|删除|补充|新增|增加|调整|精简|重写|换成|纠正)/u.test(text)
+  const namedPart = /(?:文字|文案|标题|副标题|第\s*[一二三四五六七八九十\d]+\s*条|诊断|洞察|路径|产品|目标|总结|行动|给你的话|部分|内容|图片|图上)/u.test(text)
+  const quotedText = /[“‘"'「『][^”’"'」』\r\n]{1,120}[”’"'」』]/u.test(text)
+  const insideBrief = /(?:简报|图片|图)(?:里面|里|上面|上|中的?|内).{1,120}(?:修改|改成|改为|替换|删掉|删除|补充|新增|增加|调整|精简|重写|换成|纠正)/u.test(text)
+  return editVerb && (namedPart || quotedText || insideBrief)
 }
 
 function consultationBriefHeadings(markdown: string): string[] {
