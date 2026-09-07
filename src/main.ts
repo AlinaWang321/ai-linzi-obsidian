@@ -235,6 +235,7 @@ import {
   appendToolResultsWithinBudget,
   buildVaultExecuteFailureToolResult,
   createVaultBatchCheckpoint,
+  completedVaultReadCount,
   detectVaultAgentIntent,
   extractVaultOrganizePlan,
   extractVaultToolCalls,
@@ -244,6 +245,7 @@ import {
   limitVaultAgentToolCalls,
   localSkillAnswerRetryReason,
   requiresWebSearchNativeRouting,
+  requiredVaultReadsBeforeCloudTurn,
   stripVaultInternalTurnMarkers,
   isExplicitCurrentNoteTrashRequest,
   isExplicitVaultTrashIntent,
@@ -8183,7 +8185,17 @@ class ChatView extends ItemView {
       // E2E)：创建档案后用户说「继续」进入 CRM 登记，续跑轮继承 organize 意图，
       // 旧门禁把标记当普通文字→强制要 Vault 方案→模型在本地瞎搜「CRM」直到撞
       // 轮次上限。标记本身就是模型对「本轮目的=云端写入」的判断，与意图来源无关。
-      if (round === 0 && isCloudToolsTurnRequest(lastText)) {
+      if (isCloudToolsTurnRequest(lastText)) {
+        const requiredSourceReads = requiredVaultReadsBeforeCloudTurn(input.question)
+        const completedSourceReads = completedVaultReadCount(toolResults)
+        if (requiredSourceReads > completedSourceReads) {
+          pendingRetryReason = 'missing_tool_use'
+          this.activityStep(
+            `📚 CRM 同步依赖本地档案，先读取正文（${completedSourceReads}/${requiredSourceReads}）`,
+            '正在读取客户档案正文…',
+          )
+          continue
+        }
         this.activityStep('☁️ 判定为云端写入（任务清单 / 客户管理）', '正在执行云端写入…')
         const data = await this.plugin.api('/api/plugin/v1/chat', {
           method: 'POST',

@@ -132,6 +132,23 @@ console.log('[test-vault-task-state]')
     false,
   )
   assert.equal(core.isCloudToolsTurnRequest('普通回答没有标记'), false)
+  assert.equal(
+    core.requiredVaultReadsBeforeCloudTurn('只读取02_Wiki/07_客户档案中目前这五个人，把五人更新进CRM'),
+    5,
+  )
+  assert.equal(
+    core.requiredVaultReadsBeforeCloudTurn('根据刚才读取的客户档案同步到客户管理'),
+    1,
+  )
+  assert.equal(core.requiredVaultReadsBeforeCloudTurn('把客户小A，渠道微信，录入CRM'), 0)
+  assert.equal(core.requiredVaultReadsBeforeCloudTurn('读取客户档案后帮我总结'), 0)
+  assert.equal(core.completedVaultReadCount([
+    { callId: 'a', name: 'read_note', ok: true, output: '{"path":"客户A.md","nextOffset":null}' },
+    { callId: 'a2', name: 'read_note', ok: true, output: '{"path":"客户A.md","nextOffset":null}' },
+    { callId: 'b1', name: 'read_note', ok: true, output: '{"path":"客户B.md","nextOffset":12000}' },
+    { callId: 'b2', name: 'read_note', ok: true, output: '{"path":"客户B.md","nextOffset":null}' },
+    { callId: 'c', name: 'read_note', ok: false, output: '读取失败' },
+  ]), 2)
   console.log('  ✓ 6. CLOUD_TOOLS_TURN 标记识别与防两头下注')
 }
 

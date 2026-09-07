@@ -763,6 +763,55 @@ export function isCloudToolsTurnRequest(text: string): boolean {
 }
 
 /**
+ * 云端写入是否明确依赖 Vault 文件正文。
+ *
+ * 这里只做安全兜底：模型仍负责理解任务；但用户同时点名 CRM、Vault/文件来源和
+ * “读取/根据”关系时，插件不能在零读取状态下直接切进云端写入轮。否则云端只拿到
+ * 用户的一句任务说明，看不到本机档案正文，会出现零工具、零回执的空执行。
+ */
+export function requiredVaultReadsBeforeCloudTurn(text: string): number {
+  const normalized = text.normalize('NFKC').toLocaleLowerCase()
+  const cloudTarget = /(?:\bcrm\b|客户管理|客户库|客户系统)/iu.test(normalized)
+  const vaultSource = /(?:vault|obsidian|wiki|知识库|文件夹|目录|路径|客户档案|学员档案|笔记|文档|文件|\.md\b)/iu.test(
+    normalized,
+  )
+  const sourceDependency = /(?:读取|读完|查看|扫描|核对|根据|基于|来自|从|刚才(?:已经)?读)/u.test(
+    normalized,
+  )
+  if (!cloudTarget || !vaultSource || !sourceDependency) return 0
+
+  const countMatch = normalized.match(
+    /(?:这|上述|当前|目前|指定的?)?\s*(\d{1,2}|[一二三四五六七八九十两])\s*(?:个|位|人|份|篇)/u,
+  )
+  if (!countMatch) return 1
+  const chineseCounts: Record<string, number> = {
+    一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5,
+    六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+  }
+  const parsed = Number(countMatch[1]) || chineseCounts[countMatch[1]] || 1
+  return Math.max(1, Math.min(VAULT_AGENT_MAX_CALLS_PER_ROUND * 3, parsed))
+}
+
+/** 只把已经完整返回的 read_note 计为可交给云端写入的正文来源。 */
+export function completedVaultReadCount(results: VaultAgentToolResult[]): number {
+  const completed = new Set<string>()
+  for (const result of results) {
+    if (!result.ok || result.name !== 'read_note') continue
+    let key = result.callId
+    try {
+      const parsed = JSON.parse(result.output) as Record<string, unknown>
+      if (typeof parsed.nextOffset === 'number') continue
+      if (typeof parsed.path === 'string' && parsed.path.trim()) key = parsed.path.trim()
+      else if (typeof parsed.filename === 'string' && parsed.filename.trim()) key = parsed.filename.trim()
+    } catch {
+      // 旧版执行器可能返回纯文本；成功回执仍按唯一调用计一次。
+    }
+    completed.add(key)
+  }
+  return completed.size
+}
+
+/**
  * 模型自主切换文件操作引擎的标记（0.7.52，与 CLOUD_TOOLS_TURN 同款两段式）。
  * 背景：意图词表连漏四轮（把/处理/给我/「名字前面加上日期」），而模型本人每次
  * 都听懂了需求——判断权交还给模型，词表只做兜底快路径。

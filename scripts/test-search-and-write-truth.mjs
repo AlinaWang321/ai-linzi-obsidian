@@ -73,12 +73,17 @@ console.log('第5组 续跑轮也能切云端写入（0.7.61 技能串联接缝�
 {
   const main = readFileSync(join(root, 'src/main.ts'), 'utf8')
   assert.ok(
-    /if \(round === 0 && isCloudToolsTurnRequest\(lastText\)\)/.test(main),
-    'round 0 必须无条件认云端标记',
+    /if \(isCloudToolsTurnRequest\(lastText\)\)/.test(main),
+    '读取 Vault 正文后的后续轮也必须识别云端标记',
   )
   assert.ok(
     !/round === 0 && intent === 'auto' && isCloudToolsTurnRequest/.test(main),
     '不得再按 intent 锁死云端标记——续跑轮(如档案创建后说「继续」进CRM)会被锁死',
+  )
+  assert.ok(
+    /requiredVaultReadsBeforeCloudTurn\(input\.question\)/.test(main) &&
+      /completedVaultReadCount\(toolResults\)/.test(main),
+    '依赖 Vault 正文的 CRM 写入必须先核对真实 read_note 完成数',
   )
 }
 console.log('search \& write truth tests: ok')
