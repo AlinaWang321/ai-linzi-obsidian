@@ -138,11 +138,10 @@ export function prepareWechatArticle(raw: string): PreparedWechatArticle {
 
 /**
  * 写入 Vault 前的最后一道完整性门禁。
- * 公众号直写入口默认目标 4000 字；3000—5000 是正常范围，所以正文至少 3000 字。
+ * 篇幅只作创作参考；完整短文同样交付，不设最低正文字数。
  */
 export function isCompleteWechatArticle(
   article: PreparedWechatArticle,
-  minimumBodyChars = 3_000,
 ): boolean {
   const bodyChars = article.body
     .replace(/```[\s\S]*?```/g, '')
@@ -155,7 +154,7 @@ export function isCompleteWechatArticle(
   return article.recognizedContainer
     && article.titleCandidates.length === 5
     && article.digest.replace(/\s+/g, '').length >= 8
-    && bodyChars >= minimumBodyChars
+    && bodyChars > 0
 }
 
 /** frontmatter 必须永远留在文件第一行；返回正文可插入的第一行索引。 */

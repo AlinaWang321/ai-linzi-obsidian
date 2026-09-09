@@ -89,7 +89,13 @@ ${'这是完整正文。'.repeat(520)}
 
 这是一句完整且可以直接使用的文章摘要。`
 assert.equal(article.isCompleteWechatArticle(article.prepareWechatArticle(completeWriterOutput)), true)
-assert.equal(article.isCompleteWechatArticle(preparedWriter), false, '标题不足、正文过短的残稿不得写入')
+assert.equal(article.isCompleteWechatArticle(preparedWriter), false, '标题与摘要不完整的残稿不得写入')
+for (const bodyChars of [1, 1100, 1681, 2174, 2847]) {
+  const shortOutput = completeWriterOutput.replace('这是完整正文。'.repeat(520), '文'.repeat(bodyChars))
+  assert.equal(article.isCompleteWechatArticle(article.prepareWechatArticle(shortOutput)), true, `${bodyChars} 字完整正文可以交付`)
+}
+const emptyOutput = completeWriterOutput.replace('这是完整正文。'.repeat(520), '')
+assert.equal(article.isCompleteWechatArticle(article.prepareWechatArticle(emptyOutput)), false, '空正文不交付')
 
 const interviewOutput = `## 一、5 个爆款标题候选
 
