@@ -3729,23 +3729,27 @@
 }
 
 .ai-linzi-consultation-body li.task-list-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  position: relative;
+  display: block;
   margin: 8px 0;
-  padding: 10px 14px;
+  padding: 10px 14px 10px 42px;
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   background: #fff;
   color: #1f2937;
   line-height: 1.6;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .ai-linzi-consultation-body li.task-list-item input[type="checkbox"] {
-  flex: 0 0 18px;
+  position: absolute;
+  top: 12px;
+  left: 14px;
   width: 18px;
   height: 18px;
-  margin: 2px 0 0;
+  margin: 0;
   accent-color: #0f172a;
 }
 

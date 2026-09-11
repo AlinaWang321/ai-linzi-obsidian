@@ -142,9 +142,14 @@ export function applyConsultationBriefExportStyles(
   setAll(body, 'ul', { margin: '8px 0', 'padding-left': '22px', 'list-style': 'disc' })
   setAll(body, 'li', { margin: '6px 0', color: '#1f2937', 'line-height': '1.7' })
   setAll(body, 'li.task-list-item', {
-    display: 'flex', 'align-items': 'flex-start', gap: '10px', margin: '8px 0',
-    padding: '10px 14px', border: '1px solid #e5e7eb', 'border-radius': '10px',
+    position: 'relative', display: 'block', margin: '8px 0',
+    padding: '10px 14px 10px 42px', border: '1px solid #e5e7eb', 'border-radius': '10px',
     background: '#ffffff', color: '#1f2937', 'line-height': '1.6', 'list-style': 'none',
+    'min-width': '0', 'overflow-wrap': 'anywhere', 'word-break': 'break-word',
+  })
+  setAll(body, 'li.task-list-item input[type="checkbox"]', {
+    position: 'absolute', top: '12px', left: '14px', width: '18px', height: '18px',
+    margin: '0', 'accent-color': '#0f172a',
   })
 
   const footer = card.querySelector('.ai-linzi-consultation-footer')
