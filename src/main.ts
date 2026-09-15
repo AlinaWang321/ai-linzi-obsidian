@@ -341,6 +341,7 @@ import {
 } from './customer-profile-sync'
 import {
   ARTICLE_VIDEO_DISPLAY_NAME,
+  ARTICLE_VIDEO_HORIZONTAL_DISPLAY_NAME,
   ARTICLE_VIDEO_HOMEBREW_INSTALL_COMMAND,
   ARTICLE_VIDEO_HOMEBREW_INSTALL_URL,
   ARTICLE_VIDEO_NODE_INSTALL_URL,
@@ -348,11 +349,14 @@ import {
   ARTICLE_VIDEO_HYPERFRAMES_INSTALL_COMMAND,
   ARTICLE_VIDEO_HYPERFRAMES_INSTALL_URL,
   ARTICLE_VIDEO_WINDOWS_APP_INSTALLER_URL,
+  articleVideoDisplayName,
+  articleVideoFormatFromText,
   articleVideoPendingTurnAction,
   articleVideoStoryboardMarkdown,
   buildArticleVideoLocalAiInstallPrompt,
   isBuiltInArticleVideoIntent,
   isArticleVideoPostProductionRevisionIntent,
+  type ArticleVideoFormat,
   type ArticleVideoReviewState,
 } from './article-video-core'
 import {
@@ -400,7 +404,12 @@ export const SKILL_ACTIONS: {
   {
     id: 'article-to-video',
     name: ARTICLE_VIDEO_DISPLAY_NAME,
-    fn: async (p) => p.runArticleToVideo(),
+    fn: async (p) => p.runArticleToVideo('vertical'),
+  },
+  {
+    id: 'article-to-video-horizontal',
+    name: ARTICLE_VIDEO_HORIZONTAL_DISPLAY_NAME,
+    fn: async (p) => p.runArticleToVideo('horizontal'),
   },
   {
     id: 'customer-consultation-brief',
@@ -2043,11 +2052,11 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   /** 官方内置 Article to Video：打开主对话脚本审稿流程。 */
-  async runArticleToVideo(requestText = ''): Promise<void> {
+  async runArticleToVideo(format: ArticleVideoFormat = 'vertical', requestText = ''): Promise<void> {
     await this.activateChatView()
     const view = this.activeChatView()
     if (!view) throw new Error('AI霖子主对话没有打开，请重新点击一次。')
-    await view.startArticleVideoWorkflow(requestText)
+    await view.startArticleVideoWorkflow(requestText, false, format)
   }
 
   private articleVideoEnvironment(
@@ -3252,6 +3261,7 @@ class ChatView extends ItemView {
     // 供 Codex / WorkBuddy 使用；但在 AI霖子里隐藏旧入口，避免再走多轮确认链。
     const skills = (await this.localSkills.list()).filter((skill) =>
       skill.name.toLocaleLowerCase() !== 'article-to-video' &&
+      skill.name.toLocaleLowerCase() !== 'alina-horizontal-ai-explainer-video' &&
       skill.displayName.toLocaleLowerCase() !== 'article to video',
     )
     const menu = new Menu()
@@ -3536,6 +3546,7 @@ class ChatView extends ItemView {
           ...message,
           articleVideoReview: {
             ...message.articleVideoReview,
+            format: message.articleVideoReview.format ?? 'vertical',
             projectName: message.articleVideoReview.projectName || message.articleVideoReview.storyboard.title,
             theme: message.articleVideoReview.theme || `讲清楚“${message.articleVideoReview.storyboard.title}”的核心观点`,
             voiceProvider: message.articleVideoReview.voiceProvider || (
@@ -4462,11 +4473,12 @@ class ChatView extends ItemView {
   private articleVideoReviewText(review: ArticleVideoReviewState): string {
     const revision = review.revision > 0 ? `这是按你的要求修改后的第 ${review.revision + 1} 版完整脚本。` : '这是第一版完整脚本。'
     const voice = review.voiceProvider === 'fish' ? 'Fish Audio' : '本机免费配音'
+    const format = (review.format ?? 'vertical') === 'horizontal' ? '横版 16:9（深色蓝橙动画）' : '竖版 3:4（极简信息图）'
     const pronunciations = (review.pronunciations ?? []).length > 0
       ? `\n配音读音：${review.pronunciations?.map((item) => `字幕“${item.display}”→配音“${item.spoken}”`).join('；')}`
       : ''
     return [
-      `已锁定当前文章《${review.sourceName}》。${revision}\n主题：${review.theme}\n配音：${voice}${pronunciations}`,
+      `已锁定当前文章《${review.sourceName}》。${revision}\n画幅：${format}\n主题：${review.theme}\n配音：${voice}${pronunciations}`,
       articleVideoStoryboardMarkdown(review.storyboard),
       '需要调整时，直接在下面说“开头再短一点”“把案例讲清楚”“结尾更有力”，我会在这里返回修改后的完整脚本。满意后只需点击一次“脚本确认，生成视频”。',
     ].join('\n\n')
@@ -4475,9 +4487,11 @@ class ChatView extends ItemView {
   async startArticleVideoWorkflow(
     requestText = '',
     userMessageAlreadyAdded = false,
+    format: ArticleVideoFormat = 'vertical',
   ): Promise<void> {
+    const displayName = articleVideoDisplayName(format)
     if (this.builtInArticleVideoRunning) {
-      new Notice(`“${ARTICLE_VIDEO_DISPLAY_NAME}”正在处理，当前文章和脚本不会丢失。`, 5000)
+      new Notice(`“${displayName}”正在处理，当前文章和脚本不会丢失。`, 5000)
       return
     }
     this.builtInArticleVideoRunning = true
@@ -4487,12 +4501,12 @@ class ChatView extends ItemView {
         this.messages.push({
           id: uid(),
           role: 'user',
-          parts: [{ type: 'text', text: requestText.trim() || `调用“${ARTICLE_VIDEO_DISPLAY_NAME}”处理当前文章` }],
+          parts: [{ type: 'text', text: requestText.trim() || `调用“${displayName}”处理当前文章` }],
           articleVideoTurn: true,
         })
       }
       const { prepareArticleVideoDraft, requestArticleVideoDraft } = await import('./article-video-runtime')
-      const draft = await requestArticleVideoDraft(this.plugin, requestText)
+      const draft = await requestArticleVideoDraft(this.plugin, requestText, format)
       if (!draft) {
         this.postSkillStatus('已取消视频设置。没有生成脚本、配音或视频。', statusId)
         await this.persistNow()
@@ -4826,7 +4840,8 @@ class ChatView extends ItemView {
   private async send(options: SendOptions = {}) {
     const typedText = this.inputEl.value.trim()
     if (this.builtInArticleVideoRunning) {
-      new Notice(`“${ARTICLE_VIDEO_DISPLAY_NAME}”正在自动生成，完成前不会丢失当前文章或参数。`, 5000)
+      const format = this.recentArticleVideoReviewMessage()?.articleVideoReview?.format ?? 'vertical'
+      new Notice(`“${articleVideoDisplayName(format)}”正在自动生成，完成前不会丢失当前文章或参数。`, 5000)
       return
     }
     const unansweredVaultQuestion = this.recentUnansweredVaultQuestion()
@@ -4908,6 +4923,8 @@ class ChatView extends ItemView {
     }
     if (typedText && isBuiltInArticleVideoIntent(typedText)) {
       if (this.sending || this.builtInArticleVideoRunning) return
+      const format = articleVideoFormatFromText(typedText)
+      const displayName = articleVideoDisplayName(format)
       try {
         this.messages.push({
           id: uid(),
@@ -4931,12 +4948,12 @@ class ChatView extends ItemView {
         await this.persistNow()
         this.renderMessages()
         this.sendBtn.disabled = true
-        this.sendBtn.setAttribute('title', `${ARTICLE_VIDEO_DISPLAY_NAME}正在运行`)
-        this.sendBtn.setAttribute('aria-label', `${ARTICLE_VIDEO_DISPLAY_NAME}正在运行`)
-        await this.startArticleVideoWorkflow(typedText, true)
+        this.sendBtn.setAttribute('title', `${displayName}正在运行`)
+        this.sendBtn.setAttribute('aria-label', `${displayName}正在运行`)
+        await this.startArticleVideoWorkflow(typedText, true, format)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        this.plugin.reportSkillStatus(`❌ ${ARTICLE_VIDEO_DISPLAY_NAME}未能启动：${message}`)
+        this.plugin.reportSkillStatus(`❌ ${displayName}未能启动：${message}`)
         new Notice(`❌ 文章转短视频未能启动：${message}`, 9000)
       } finally {
         this.setSendingUi(false)
@@ -10768,9 +10785,9 @@ class AiLinziSettingTab extends PluginSettingTab {
           await this.plugin.setWechatInboxFolder(value)
         }))
 
-    new Setting(containerEl).setName(`${ARTICLE_VIDEO_DISPLAY_NAME} · 配音设置`).setHeading()
+    new Setting(containerEl).setName('文章转短视频（竖版 / 横版）· 配音设置').setHeading()
     containerEl.createEl('p', {
-      text: `${ARTICLE_VIDEO_DISPLAY_NAME}是 AI霖子官方内置技能。首次小弹框只确认项目名、标题、主题和配音方式；完整脚本随后在主对话中展示并通过聊天修改。没有 Fish Audio API 时默认使用本机免费配音；选择 Fish Audio 时，API Key 只保存在当前设备的 Obsidian SecretStorage，不会写入笔记、Skill、日志或发送给 AI。脚本确认后才自动检测环境并连续生成。`,
+      text: `${ARTICLE_VIDEO_DISPLAY_NAME}与${ARTICLE_VIDEO_HORIZONTAL_DISPLAY_NAME}是并列的 AI霖子官方内置技能，共用同一套简单流程和配音设置。首次小弹框只确认项目名、标题、主题和配音方式；完整脚本随后在主对话中展示并通过聊天修改。没有 Fish Audio API 时默认使用本机免费配音；选择 Fish Audio 时，API Key 只保存在当前设备的 Obsidian SecretStorage，不会写入笔记、Skill、日志或发送给 AI。脚本确认后才自动检测环境并连续生成。`,
       cls: 'setting-item-description',
     })
 

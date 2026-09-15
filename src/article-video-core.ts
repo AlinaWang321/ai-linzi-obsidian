@@ -1,7 +1,14 @@
 export const ARTICLE_VIDEO_DURATIONS = [30, 60, 90, 120] as const
 
-/** 用户界面的固定名称；内部路由 slug 继续使用 article-to-video，避免破坏升级兼容。 */
-export const ARTICLE_VIDEO_DISPLAY_NAME = '文章转短视频：当前文章➡️极简信息解说视频'
+/** 竖版继续沿用 article-to-video；横版使用独立 slug，两个入口互不替换。 */
+export const ARTICLE_VIDEO_DISPLAY_NAME = '文章转短视频（竖版）'
+export const ARTICLE_VIDEO_HORIZONTAL_DISPLAY_NAME = '文章转短视频（横版）'
+
+export type ArticleVideoFormat = 'vertical' | 'horizontal'
+
+export function articleVideoDisplayName(format: ArticleVideoFormat = 'vertical'): string {
+  return format === 'horizontal' ? ARTICLE_VIDEO_HORIZONTAL_DISPLAY_NAME : ARTICLE_VIDEO_DISPLAY_NAME
+}
 
 export type ArticleVideoDuration = (typeof ARTICLE_VIDEO_DURATIONS)[number]
 export type ArticleVideoSceneType =
@@ -121,6 +128,7 @@ export interface ArticleVideoPronunciationOverride {
 }
 
 export interface ArticleVideoLaunchOptions {
+  format: ArticleVideoFormat
   projectName: string
   videoTitle: string
   theme: string
@@ -143,6 +151,8 @@ export interface ArticleVideoReviewState {
   sourcePath: string
   sourceName: string
   sourceHash: string
+  /** 旧会话没有该字段时按竖版恢复，避免破坏升级兼容。 */
+  format?: ArticleVideoFormat
   draftTarget: ArticleVideoDuration
   projectName: string
   theme: string
@@ -161,6 +171,13 @@ export const ARTICLE_VIDEO_DEFAULT_BRAND = {
   background: '#FFFBEA',
   primary: '#173B6C',
   accent: '#F28C28',
+} as const
+
+export const ARTICLE_VIDEO_HORIZONTAL_BRAND = {
+  name: 'AI霖子',
+  background: '#050B16',
+  primary: '#0057FF',
+  accent: '#F39800',
 } as const
 
 const SCENE_TYPES = new Set<ArticleVideoSceneType>([
@@ -198,6 +215,12 @@ export function isBuiltInArticleVideoIntent(text: string): boolean {
   return asksToRun && (
     asksForVideoConversion || (namesOfficialSkill && namesCurrentSource)
   )
+}
+
+/** 未显式说横版时保持旧竖版默认；菜单入口会直接传入准确格式。 */
+export function articleVideoFormatFromText(text: string): ArticleVideoFormat {
+  const value = normalized(text)
+  return /(?:横版|横屏|16[:：]9|16比9|宽屏)/u.test(value) ? 'horizontal' : 'vertical'
 }
 
 export function explicitArticleVideoDurationFromText(text: string): ArticleVideoDuration | undefined {

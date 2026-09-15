@@ -14,9 +14,10 @@ import {
   type App,
 } from 'obsidian'
 import {
-  ARTICLE_VIDEO_DISPLAY_NAME,
+  ARTICLE_VIDEO_HORIZONTAL_BRAND,
   ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION,
   ARTICLE_VIDEO_NODE_MIN_MAJOR,
+  articleVideoDisplayName,
   applyArticleVideoPronunciations,
   articleVideoPlatform,
   articleVideoDurationFromText,
@@ -25,6 +26,7 @@ import {
   parseArticleVideoStoryboard,
   safeArticleVideoName,
   type ArticleVideoDuration,
+  type ArticleVideoFormat,
   type ArticleVideoLaunchOptions,
   type ArticleVideoPronunciationOverride,
   type ArticleVideoScene,
@@ -75,6 +77,7 @@ export interface ArticleVideoEnvironmentReport {
 }
 
 interface ArticleVideoRunOptions {
+  format: ArticleVideoFormat
   draftTarget: ArticleVideoDuration
   storyboard: ArticleVideoStoryboard
   voiceProvider: ArticleVideoVoiceProvider
@@ -101,7 +104,8 @@ interface ProcessResult {
 }
 
 interface WorkflowRecord {
-  version: 2
+  version: 2 | 3
+  format?: ArticleVideoFormat
   sourcePath: string
   sourceHash: string
   requestedDuration: ArticleVideoDuration
@@ -428,7 +432,7 @@ class ArticleVideoSetupModal extends Modal {
     const { contentEl } = this
     contentEl.empty()
     this.modalEl.addClass('ai-linzi-article-video-setup-modal')
-    contentEl.createEl('h2', { text: ARTICLE_VIDEO_DISPLAY_NAME })
+    contentEl.createEl('h2', { text: articleVideoDisplayName(this.options.format) })
     contentEl.createEl('p', {
       text: `已锁定当前文章《${this.sourceName}》。确认下面 4 项后，完整脚本会直接出现在主对话；这里不编辑第几幕。`,
       cls: 'setting-item-description',
@@ -601,6 +605,7 @@ async function findResumableProject(
   requestedDuration: ArticleVideoDuration,
   voiceProvider: ArticleVideoVoiceProvider,
   voiceConfigHash: string,
+  format: ArticleVideoFormat,
 ): Promise<{ project: string; storyboard: ArticleVideoStoryboard; timings: NarrationTimeline } | null> {
   const root = articleVideoOutputRoot(plugin)
   let entries
@@ -614,8 +619,10 @@ async function findResumableProject(
     const project = join(root, name)
     try {
       const workflow = JSON.parse(await fs.readFile(join(project, 'workflow.json'), 'utf8')) as WorkflowRecord
+      const workflowFormat: ArticleVideoFormat = workflow.format ?? 'vertical'
       if (
-        workflow.version !== 2 ||
+        ![2, 3].includes(workflow.version) ||
+        workflowFormat !== format ||
         workflow.stage === 'complete' ||
         workflow.sourcePath !== sourcePath ||
         workflow.sourceHash !== sourceHash ||
@@ -890,7 +897,7 @@ function srtTime(seconds: number): string {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')},${String(ms).padStart(3, '0')}`
 }
 
-async function buildProjectHtml(
+async function buildVerticalProjectHtml(
   project: string,
   storyboard: ArticleVideoStoryboard,
   timings: NarrationTimeline,
@@ -933,10 +940,58 @@ async function buildProjectHtml(
   }, null, 2)}\n`, 'utf8')
 }
 
+export async function buildHorizontalProjectHtml(
+  project: string,
+  storyboard: ArticleVideoStoryboard,
+  timings: NarrationTimeline,
+): Promise<void> {
+  const captions: Array<{ text: string; start: number; end: number }> = []
+  storyboard.scenes.forEach((scene, index) => {
+    const timing = timings.scenes[index]
+    const chunks = splitCaption(scene.voiceover, 22)
+    const weights = chunks.map((chunk) => Math.max(3, chunk.replace(/[，。！？；：]/gu, '').length))
+    const totalWeight = weights.reduce((sum, value) => sum + value, 0)
+    let cursor = timing.start
+    chunks.forEach((chunk, part) => {
+      const duration = timing.duration * weights[part] / totalWeight
+      captions.push({ text: chunk, start: cursor, end: cursor + duration })
+      cursor += duration
+    })
+  })
+  const totalScenes = storyboard.scenes.length
+  const sceneHtml = storyboard.scenes.map((scene, index) => {
+    const timing = timings.scenes[index]
+    const progressStart = (index / totalScenes * 100).toFixed(3)
+    const progressEnd = ((index + 1) / totalScenes * 100).toFixed(3)
+    return `<section id="scene-${index + 1}" class="clip scene scene-${scene.type}" data-start="${timing.start.toFixed(3)}" data-duration="${timing.duration.toFixed(3)}" data-track-index="1" style="--progress-start:${progressStart}%;--progress-end:${progressEnd}%;--scene-duration:${timing.duration.toFixed(3)}s"><div class="grid" data-layout-allow-overflow></div><div class="orb orb-blue" data-layout-allow-overflow></div><div class="orb orb-orange" data-layout-allow-overflow></div><div class="sweep" data-layout-allow-overflow></div><header><span>AI EXPLAINER</span><b>${String(index + 1).padStart(2, '0')} / ${String(totalScenes).padStart(2, '0')}</b></header><main>${sceneBody(scene)}</main><div class="timeline" aria-label="视频进度"><i></i></div></section>`
+  }).join('\n')
+  const captionHtml = captions.map((caption, index) => `<div id="caption-${index + 1}" class="clip caption horizontal-caption" data-start="${caption.start.toFixed(3)}" data-duration="${Math.max(0.2, caption.end - caption.start - 0.02).toFixed(3)}" data-track-index="2"><span>${escapeHtml(caption.text)}</span></div>`).join('\n')
+  const brand = ARTICLE_VIDEO_HORIZONTAL_BRAND
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=1280,height=720"><title>${escapeHtml(storyboard.title)}</title><style>
+@font-face{font-family:InfoSans;src:local("PingFang SC"),local("Microsoft YaHei"),local("Noto Sans CJK SC")}@font-face{font-family:InfoSerif;src:local("Songti SC"),local("STSong")}
+:root{--bg:${brand.background};--blue:${brand.primary};--blue-soft:#4D8CFF;--blue-deep:#18316E;--orange:${brand.accent};--warm:#F8F5F0;--muted:#AAB8D1}*{box-sizing:border-box;margin:0;padding:0}html,body,#root{width:1280px;height:720px;overflow:hidden;background:var(--bg);color:var(--warm);font-family:InfoSans,sans-serif}.scene{position:absolute;inset:0;overflow:hidden;background:linear-gradient(135deg,#050B16 0%,#071326 58%,#050B16 100%)}.grid{position:absolute;inset:-80px;opacity:.12;background-image:linear-gradient(rgba(77,140,255,.55) 1px,transparent 1px),linear-gradient(90deg,rgba(77,140,255,.55) 1px,transparent 1px);background-size:64px 64px;transform:perspective(700px) rotateX(58deg) translateY(180px) scale(1.15);transform-origin:center bottom;animation:gridDrift var(--scene-duration) linear both}.orb{position:absolute;border-radius:50%;opacity:.75}.orb-blue{width:360px;height:360px;right:-110px;top:-150px;border:2px solid rgba(77,140,255,.45);box-shadow:0 0 80px rgba(0,87,255,.28),inset 0 0 60px rgba(0,87,255,.12);animation:orbitBlue var(--scene-duration) ease-in-out both}.orb-orange{width:190px;height:190px;left:-70px;bottom:-90px;background:rgba(243,152,0,.12);box-shadow:0 0 80px rgba(243,152,0,.22);animation:orbitOrange var(--scene-duration) ease-in-out both}.sweep{position:absolute;top:-20%;left:-28%;width:22%;height:150%;background:linear-gradient(90deg,transparent,rgba(77,140,255,.08),transparent);transform:rotate(18deg);animation:sweep var(--scene-duration) ease-in-out both}header{position:absolute;z-index:3;left:72px;right:72px;top:42px;display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:17px;font-weight:800;letter-spacing:3px}header span{display:flex;align-items:center;gap:12px}header span:before{content:"";width:42px;height:4px;border-radius:9px;background:linear-gradient(90deg,var(--blue),var(--orange));box-shadow:0 0 18px rgba(0,87,255,.65)}header b{color:var(--warm);font-size:18px}main{position:absolute;z-index:3;left:86px;right:86px;top:105px;bottom:150px;display:flex;flex-direction:column;justify-content:center;gap:20px}h1{max-width:1080px;font-size:66px;line-height:1.08;letter-spacing:-2.5px;text-wrap:balance;text-shadow:0 10px 36px rgba(0,0,0,.34)}p{max-width:920px;color:var(--muted);font-size:27px;line-height:1.45;font-weight:620}.accent{width:148px;height:8px;border-radius:8px;background:linear-gradient(90deg,var(--blue),var(--blue-soft),var(--orange));box-shadow:0 0 26px rgba(0,87,255,.55);transform-origin:left;animation:draw .75s cubic-bezier(.2,.8,.2,1) both}.quote-mark{position:absolute;left:-15px;top:50px;color:var(--orange);font-family:InfoSerif,serif;font-size:210px;line-height:.4;opacity:.9;animation:quotePop .7s cubic-bezier(.2,.9,.25,1.2) both}h1.quote{max-width:1040px;padding-left:82px;font-family:InfoSerif,serif;font-size:62px;line-height:1.25}.number{display:flex;align-items:flex-end;gap:18px;color:var(--orange);font-size:220px;line-height:.72;font-weight:950;letter-spacing:-12px;text-shadow:0 0 42px rgba(243,152,0,.22);animation:numberPop .82s cubic-bezier(.18,.9,.22,1.14) both}.number small{margin-bottom:12px;color:var(--warm);font-size:44px;letter-spacing:0}.compare{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:28px;width:100%;max-width:1080px}.compare article{height:245px;padding:34px 38px;border:1px solid rgba(77,140,255,.45);border-radius:24px;background:linear-gradient(145deg,rgba(24,49,110,.62),rgba(7,19,38,.9));display:flex;flex-direction:column;justify-content:center;gap:24px;box-shadow:0 20px 60px rgba(0,0,0,.28);animation:cardLeft .75s cubic-bezier(.2,.85,.25,1) both}.compare article.right{border-color:rgba(243,152,0,.65);background:linear-gradient(145deg,rgba(243,152,0,.16),rgba(7,19,38,.92));animation-name:cardRight}.compare b{color:var(--blue-soft);font-size:22px;letter-spacing:3px}.compare article.right b{color:var(--orange)}.compare strong{font-size:40px;line-height:1.2}.compare i{position:absolute;z-index:4;left:50%;top:50%;transform:translate(-50%,-50%);width:64px;height:64px;border:2px solid rgba(248,245,240,.8);border-radius:50%;display:grid;place-items:center;background:var(--bg);color:var(--orange);font-size:18px;font-style:normal;font-weight:950;box-shadow:0 0 28px rgba(0,87,255,.42);animation:pulse 1.5s ease-in-out infinite}.items{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;width:100%;max-width:1080px}.items article{min-height:112px;padding:20px 24px;border:1px solid rgba(77,140,255,.34);border-radius:18px;background:linear-gradient(135deg,rgba(24,49,110,.55),rgba(5,11,22,.82));display:flex;gap:18px;align-items:center;box-shadow:0 14px 45px rgba(0,0,0,.22);animation:cardRise .68s cubic-bezier(.2,.85,.25,1) both}.items article:nth-child(2){animation-delay:.1s}.items article:nth-child(3){animation-delay:.2s}.items article:nth-child(4){animation-delay:.3s}.items span{flex:none;width:46px;height:46px;border:1px solid rgba(248,245,240,.38);border-radius:13px;display:grid;place-items:center;background:linear-gradient(145deg,var(--blue),var(--blue-deep));color:var(--warm);font-size:17px;font-weight:900;box-shadow:0 0 22px rgba(0,87,255,.34)}.items strong{display:block;font-size:26px;line-height:1.18}.items small{display:block;margin-top:6px;color:var(--muted);font-size:17px;line-height:1.3}.timeline{position:absolute;z-index:5;left:72px;right:72px;bottom:28px;height:6px;border-radius:99px;background:rgba(248,245,240,.13);overflow:hidden;box-shadow:inset 0 0 0 1px rgba(248,245,240,.06)}.timeline i{display:block;height:100%;width:var(--progress-start);border-radius:inherit;background:linear-gradient(90deg,var(--blue),var(--blue-soft) 55%,var(--orange));box-shadow:0 0 16px rgba(77,140,255,.68);animation:progress var(--scene-duration) linear both}.horizontal-caption{position:absolute;z-index:10;left:100px;right:100px;bottom:53px;height:64px;display:flex;align-items:center;justify-content:center;text-align:center}.horizontal-caption span{max-width:1040px;padding:10px 22px;border:1px solid rgba(77,140,255,.32);border-radius:13px;background:rgba(5,11,22,.94);color:var(--warm);font-size:26px;line-height:1.32;font-weight:760;box-shadow:0 10px 32px rgba(0,0,0,.3)}.scene main>*{animation:rise .7s cubic-bezier(.2,.85,.25,1) both}.scene main>*:nth-child(2){animation-delay:.1s}.scene main>*:nth-child(3){animation-delay:.2s}@keyframes rise{from{opacity:0;transform:translateY(28px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes draw{from{opacity:0;transform:scaleX(0)}to{opacity:1;transform:scaleX(1)}}@keyframes quotePop{from{opacity:0;transform:translateY(18px) scale(.6) rotate(-8deg)}to{opacity:.9;transform:none}}@keyframes numberPop{from{opacity:0;transform:translateY(34px) scale(.72)}to{opacity:1;transform:none}}@keyframes cardLeft{from{opacity:0;transform:translateX(-44px) rotateY(7deg)}to{opacity:1;transform:none}}@keyframes cardRight{from{opacity:0;transform:translateX(44px) rotateY(-7deg)}to{opacity:1;transform:none}}@keyframes cardRise{from{opacity:0;transform:translateY(32px) scale(.96)}to{opacity:1;transform:none}}@keyframes pulse{0%,100%{box-shadow:0 0 20px rgba(0,87,255,.3)}50%{box-shadow:0 0 38px rgba(243,152,0,.55)}}@keyframes progress{from{width:var(--progress-start)}to{width:var(--progress-end)}}@keyframes gridDrift{from{background-position:0 0,0 0}to{background-position:64px 32px,64px 32px}}@keyframes orbitBlue{from{transform:translate(0,0) scale(.92)}to{transform:translate(-50px,36px) scale(1.08)}}@keyframes orbitOrange{from{transform:translate(0,0) scale(.9)}to{transform:translate(52px,-30px) scale(1.12)}}@keyframes sweep{0%,15%{transform:translateX(0) rotate(18deg);opacity:0}38%{opacity:1}72%,100%{transform:translateX(760%) rotate(18deg);opacity:0}}
+</style></head><body><div id="root" data-composition-id="main" data-no-timeline data-width="1280" data-height="720" data-duration="${timings.totalDuration.toFixed(3)}" data-fps="30">${sceneHtml}${captionHtml}<audio id="narration-audio" src="audio/narration.wav" data-start="0" data-duration="${timings.totalDuration.toFixed(3)}" data-track-index="10" data-volume="1"></audio></div></body></html>`
+  await fs.writeFile(join(project, 'index.html'), html, 'utf8')
+  await fs.writeFile(
+    join(project, 'captions.srt'),
+    captions.map((caption, index) => `${index + 1}\n${srtTime(caption.start)} --> ${srtTime(caption.end)}\n${caption.text}\n`).join('\n'),
+    'utf8',
+  )
+  await fs.writeFile(join(project, 'index.motion.json'), `${JSON.stringify({
+    duration: Number(timings.totalDuration.toFixed(3)),
+    assertions: [
+      { kind: 'staysInFrame', selector: '.scene:first-of-type h1' },
+      { kind: 'staysInFrame', selector: '.horizontal-caption:first-of-type' },
+      { kind: 'staysInFrame', selector: '.scene:first-of-type .timeline' },
+    ],
+  }, null, 2)}\n`, 'utf8')
+}
+
 async function renderProject(
   project: string,
   environment: ArticleVideoEnvironmentReport,
   expectedDuration: number,
+  format: ArticleVideoFormat,
 ): Promise<{ output: string; validation: Record<string, unknown> }> {
   const command = environment.hyperframes.command
   if (!command) throw new Error('没有找到已安装的 HyperFrames，请按首次设置卡片完成安装后重试。')
@@ -971,7 +1026,9 @@ async function renderProject(
     outputExists: true,
     hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
-    correctDimensions: video?.width === 1080 && video?.height === 1440,
+    correctDimensions: format === 'horizontal'
+      ? video?.width === 1280 && video?.height === 720
+      : video?.width === 1080 && video?.height === 1440,
     durationClose: Math.abs(duration - expectedDuration) <= 0.45,
   }
   const validation = {
@@ -1036,10 +1093,11 @@ function articleTitleDefaults(sourceName: string, sourceText: string): { title: 
 export async function requestArticleVideoDraft(
   plugin: ArticleVideoPluginHost,
   requestText = '',
+  format: ArticleVideoFormat = 'vertical',
 ): Promise<ArticleVideoDraftRequest | null> {
   const current = plugin.rememberCurrentMarkdownFile()
   if (!(current instanceof TFile)) {
-    throw new Error(`请先打开要制作成视频的 Markdown 文章，再调用“${ARTICLE_VIDEO_DISPLAY_NAME}”。`)
+    throw new Error(`请先打开要制作成视频的 Markdown 文章，再调用“${articleVideoDisplayName(format)}”。`)
   }
   const sourceText = await plugin.app.vault.read(current)
   if (sourceText.trim().length < 100) throw new Error('当前文章内容太少，至少需要 100 字才能生成短视频。')
@@ -1049,6 +1107,7 @@ export async function requestArticleVideoDraft(
   const defaults = articleTitleDefaults(sourceName, sourceText)
   const hasFish = Boolean(plugin.getFishAudioApiKey() && plugin.settings.articleVideoFishVoiceId.trim())
   const launch: ArticleVideoLaunchOptions = {
+    format,
     projectName: safeArticleVideoName(defaults.title),
     videoTitle: defaults.title,
     theme: defaults.theme,
@@ -1083,7 +1142,11 @@ export async function prepareArticleVideoDraft(
     style: 'minimal-infographic',
   })
   const parsed = parseArticleVideoStoryboard(rawStoryboard, draft.draftTarget) ?? undefined
-  const storyboard = parsed ? { ...parsed, title: draft.videoTitle } : undefined
+  const storyboard = parsed ? {
+    ...parsed,
+    title: draft.videoTitle,
+    brand: draft.format === 'horizontal' ? { ...ARTICLE_VIDEO_HORIZONTAL_BRAND } : parsed.brand,
+  } : undefined
   if (!storyboard) {
     throw new Error('AI 返回的脚本没有通过结构校验，系统已停止；没有创建项目，也没有消耗 Fish Audio 额度。')
   }
@@ -1092,6 +1155,7 @@ export async function prepareArticleVideoDraft(
     sourcePath: draft.sourcePath,
     sourceName: draft.sourceName,
     sourceHash: draft.sourceHash,
+    format: draft.format,
     draftTarget: draft.draftTarget,
     projectName: draft.projectName,
     theme: draft.theme,
@@ -1125,8 +1189,11 @@ export async function reviseArticleVideoDraft(
     currentStoryboard: review.storyboard,
     instruction: `${change}${pronunciationGuard}`,
   })
-  const storyboard = parseArticleVideoStoryboard(rawStoryboard, draftTarget)
-  if (!storyboard) throw new Error('修改后的脚本没有通过结构校验，上一版脚本仍然保留，请换一种说法再试。')
+  const parsedStoryboard = parseArticleVideoStoryboard(rawStoryboard, draftTarget)
+  if (!parsedStoryboard) throw new Error('修改后的脚本没有通过结构校验，上一版脚本仍然保留，请换一种说法再试。')
+  const storyboard = (review.format ?? 'vertical') === 'horizontal'
+    ? { ...parsedStoryboard, brand: { ...ARTICLE_VIDEO_HORIZONTAL_BRAND } }
+    : parsedStoryboard
   return {
     ...review,
     storyboard,
@@ -1184,12 +1251,16 @@ export async function generateConfirmedArticleVideo(
   }
   plugin.reportSkillStatus('✅ 本机视频环境检测通过，正在继续生成视频…', statusId)
 
-  const storyboard = review.storyboard
+  const format: ArticleVideoFormat = review.format ?? 'vertical'
+  const storyboard = format === 'horizontal'
+    ? { ...review.storyboard, brand: { ...ARTICLE_VIDEO_HORIZONTAL_BRAND } }
+    : review.storyboard
   const model = plugin.settings.articleVideoFishModel
   const voiceConfigHash = createHash('sha256')
     .update(`${review.voiceProvider}|${review.voiceProvider === 'fish' ? `${voiceId}|${model}` : process.platform}|${JSON.stringify(review.pronunciations ?? [])}`)
     .digest('hex')
   const options: ArticleVideoRunOptions = {
+    format,
     draftTarget: review.draftTarget,
     storyboard,
     voiceProvider: review.voiceProvider,
@@ -1205,10 +1276,12 @@ export async function generateConfirmedArticleVideo(
     review.draftTarget,
     review.voiceProvider,
     voiceConfigHash,
+    format,
   )
   let project = ''
   const workflowBase: Omit<WorkflowRecord, 'stage' | 'updatedAt'> = {
-    version: 2,
+    version: 3,
+    format,
     sourcePath: review.sourcePath,
     sourceHash: review.sourceHash,
     requestedDuration: review.draftTarget,
@@ -1230,7 +1303,8 @@ export async function generateConfirmedArticleVideo(
         updatedAt: new Date().toISOString(),
       })
     } else {
-      project = await uniqueProjectPath(plugin, review.projectName || storyboard.title || review.sourceName)
+      const projectName = `${review.projectName || storyboard.title || review.sourceName}_${format === 'horizontal' ? '横版' : '竖版'}`
+      project = await uniqueProjectPath(plugin, projectName)
       await fs.mkdir(project, { recursive: false })
       await fs.writeFile(join(project, 'storyboard.json'), `${JSON.stringify(storyboard, null, 2)}\n`, 'utf8')
       await writeWorkflow(project, {
@@ -1257,8 +1331,14 @@ export async function generateConfirmedArticleVideo(
       })
     }
 
-    plugin.reportSkillStatus('🎨 2/3 正在本机构建无水印的淡黄极简信息图和字幕…', statusId)
-    await buildProjectHtml(project, storyboard, timings)
+    plugin.reportSkillStatus(
+      format === 'horizontal'
+        ? '🎨 2/3 正在本机构建无水印的深色蓝橙横版动画和字幕…'
+        : '🎨 2/3 正在本机构建无水印的淡黄极简信息图和字幕…',
+      statusId,
+    )
+    if (format === 'horizontal') await buildHorizontalProjectHtml(project, storyboard, timings)
+    else await buildVerticalProjectHtml(project, storyboard, timings)
     await writeWorkflow(project, {
       ...workflowBase,
       stage: 'build',
@@ -1270,7 +1350,7 @@ export async function generateConfirmedArticleVideo(
       stage: 'render',
       updatedAt: new Date().toISOString(),
     })
-    const result = await renderProject(project, environment, timings.totalDuration)
+    const result = await renderProject(project, environment, timings.totalDuration, format)
     const outputPath = normalizePath(relative(vaultBasePath(plugin), result.output).replaceAll('\\', '/'))
     await writeWorkflow(project, {
       ...workflowBase,
@@ -1279,7 +1359,7 @@ export async function generateConfirmedArticleVideo(
       output: outputPath,
     })
     plugin.reportSkillStatus(
-      `✅ ${ARTICLE_VIDEO_DISPLAY_NAME} 已完成\n\n成片：${outputPath}\n分镜：${normalizePath(`${projectVaultPath(plugin, project)}/storyboard.json`)}\n字幕：${normalizePath(`${projectVaultPath(plugin, project)}/captions.srt`)}\n技术核验：通过（1080×1440、含音轨）。请完整观看后再验收。`,
+      `✅ ${articleVideoDisplayName(format)} 已完成\n\n成片：${outputPath}\n分镜：${normalizePath(`${projectVaultPath(plugin, project)}/storyboard.json`)}\n字幕：${normalizePath(`${projectVaultPath(plugin, project)}/captions.srt`)}\n技术核验：通过（${format === 'horizontal' ? '1280×720' : '1080×1440'}、含音轨）。请完整观看后再验收。`,
       statusId,
     )
     new Notice('✅ 视频已生成。', 8000)
@@ -1299,7 +1379,7 @@ export async function generateConfirmedArticleVideo(
       }
     }
     plugin.reportSkillStatus(
-      `❌ ${ARTICLE_VIDEO_DISPLAY_NAME} 已停止：${message}${project ? `\n\n已保留可检查项目：${projectVaultPath(plugin, project)}` : '\n\n没有创建视频项目。'}\n修复后在原脚本卡片点击继续即可。`,
+      `❌ ${articleVideoDisplayName(format)} 已停止：${message}${project ? `\n\n已保留可检查项目：${projectVaultPath(plugin, project)}` : '\n\n没有创建视频项目。'}\n修复后在原脚本卡片点击继续即可。`,
       statusId,
     )
     throw error
