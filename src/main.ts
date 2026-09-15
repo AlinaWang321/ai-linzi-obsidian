@@ -4478,7 +4478,7 @@ class ChatView extends ItemView {
       ? `\n配音读音：${review.pronunciations?.map((item) => `字幕“${item.display}”→配音“${item.spoken}”`).join('；')}`
       : ''
     return [
-      `已锁定当前文章《${review.sourceName}》。${revision}\n画幅：${format}\n主题：${review.theme}\n配音：${voice}${pronunciations}`,
+      `已锁定所选文章《${review.sourceName}》。${revision}\n画幅：${format}\n主题：${review.theme}\n配音：${voice}${pronunciations}`,
       articleVideoStoryboardMarkdown(review.storyboard),
       '需要调整时，直接在下面说“开头再短一点”“把案例讲清楚”“结尾更有力”，我会在这里返回修改后的完整脚本。满意后只需点击一次“脚本确认，生成视频”。',
     ].join('\n\n')
@@ -4491,17 +4491,17 @@ class ChatView extends ItemView {
   ): Promise<void> {
     const displayName = articleVideoDisplayName(format)
     if (this.builtInArticleVideoRunning) {
-      new Notice(`“${displayName}”正在处理，当前文章和脚本不会丢失。`, 5000)
+      new Notice(`“${displayName}”正在处理，所选文章和脚本不会丢失。`, 5000)
       return
     }
     this.builtInArticleVideoRunning = true
-    const statusId = this.postSkillStatus('⚙️ 正在锁定当前文章并准备视频设置…')
+    const statusId = this.postSkillStatus('⚙️ 请选择要制作成视频的文章…')
     try {
       if (!userMessageAlreadyAdded) {
         this.messages.push({
           id: uid(),
           role: 'user',
-          parts: [{ type: 'text', text: requestText.trim() || `调用“${displayName}”处理当前文章` }],
+          parts: [{ type: 'text', text: requestText.trim() || `调用“${displayName}”选择文章并生成视频` }],
           articleVideoTurn: true,
         })
       }
@@ -4624,7 +4624,7 @@ class ChatView extends ItemView {
     this.messages.push({
       id: uid(),
       role: 'assistant',
-      parts: [{ type: 'text', text: '已取消这次视频任务。没有继续配音或渲染；当前文章没有被修改。' }],
+      parts: [{ type: 'text', text: '已取消这次视频任务。没有继续配音或渲染；所选文章没有被修改。' }],
     })
     await this.persistNow()
     this.renderMessages()
@@ -4841,7 +4841,7 @@ class ChatView extends ItemView {
     const typedText = this.inputEl.value.trim()
     if (this.builtInArticleVideoRunning) {
       const format = this.recentArticleVideoReviewMessage()?.articleVideoReview?.format ?? 'vertical'
-      new Notice(`“${articleVideoDisplayName(format)}”正在自动生成，完成前不会丢失当前文章或参数。`, 5000)
+      new Notice(`“${articleVideoDisplayName(format)}”正在自动生成，完成前不会丢失所选文章或参数。`, 5000)
       return
     }
     const unansweredVaultQuestion = this.recentUnansweredVaultQuestion()

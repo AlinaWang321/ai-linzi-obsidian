@@ -1,4 +1,6 @@
 export const ARTICLE_VIDEO_DURATIONS = [30, 60, 90, 120] as const
+export const ARTICLE_VIDEO_SOURCE_MAX_CHARS = 60_000
+export const ARTICLE_VIDEO_SOURCE_EXTENSIONS = ['md', 'txt', 'pdf', 'docx'] as const
 
 /** 竖版继续沿用 article-to-video；横版使用独立 slug，两个入口互不替换。 */
 export const ARTICLE_VIDEO_DISPLAY_NAME = '文章转短视频（竖版）'
@@ -86,6 +88,7 @@ export function buildArticleVideoLocalAiInstallPrompt(input: {
 export interface ArticleVideoScene {
   id: string
   type: ArticleVideoSceneType
+  eyebrow?: string
   headline: string
   support?: string
   voiceover: string
@@ -164,6 +167,11 @@ export interface ArticleVideoReviewState {
   setup?: ArticleVideoSetupState
   outputPath?: string
   error?: string
+}
+
+export function isArticleVideoSourceExtension(extension: string): boolean {
+  return (ARTICLE_VIDEO_SOURCE_EXTENSIONS as readonly string[])
+    .includes(extension.toLocaleLowerCase())
 }
 
 export const ARTICLE_VIDEO_DEFAULT_BRAND = {
@@ -351,6 +359,7 @@ export function articleVideoStoryboardMarkdown(storyboard: ArticleVideoStoryboar
   const sections = storyboard.scenes.map((scene, index) => {
     const lines = [
       `### 第 ${index + 1} 幕｜${ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type]}`,
+      ...(scene.eyebrow ? [`- **章节提示：** ${scene.eyebrow}`] : []),
       `- **屏幕主文案：** ${scene.headline}`,
       ...(scene.support ? [`- **辅助文案：** ${scene.support}`] : []),
       ...sceneVisualDetails(scene).map((line) => `- **${line.split('：')[0]}：** ${line.split('：').slice(1).join('：')}`),
@@ -425,6 +434,7 @@ export function parseArticleVideoStoryboard(
     const id = proposedId && !ids.has(proposedId) ? proposedId : `scene-${index + 1}`
     ids.add(id)
     const support = text(scene.support, 72)
+    const eyebrow = text(scene.eyebrow, 18)
     const items = (Array.isArray(scene.items) ? scene.items : [])
       .map(item)
       .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
@@ -434,6 +444,7 @@ export function parseArticleVideoStoryboard(
       type,
       headline,
       voiceover,
+      ...(eyebrow ? { eyebrow } : {}),
       ...(support ? { support } : {}),
     }
     const number = text(scene.number, 24)

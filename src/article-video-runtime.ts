@@ -5,6 +5,7 @@ import { homedir, tmpdir } from 'os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import {
   FileSystemAdapter,
+  FuzzySuggestModal,
   Modal,
   Notice,
   Setting,
@@ -17,11 +18,14 @@ import {
   ARTICLE_VIDEO_HORIZONTAL_BRAND,
   ARTICLE_VIDEO_HYPERFRAMES_MIN_VERSION,
   ARTICLE_VIDEO_NODE_MIN_MAJOR,
+  ARTICLE_VIDEO_SCENE_TYPE_LABELS,
+  ARTICLE_VIDEO_SOURCE_MAX_CHARS,
   articleVideoDisplayName,
   applyArticleVideoPronunciations,
   articleVideoPlatform,
   articleVideoDurationFromText,
   explicitArticleVideoDurationFromText,
+  isArticleVideoSourceExtension,
   mergeArticleVideoPronunciationOverrides,
   parseArticleVideoStoryboard,
   safeArticleVideoName,
@@ -35,6 +39,8 @@ import {
   type ArticleVideoStoryboard,
   type ArticleVideoVoiceProvider,
 } from './article-video-core'
+import { stripFrontmatter } from './article-format'
+import { readLocalDocumentText } from './long-document'
 import {
   hasValidLocalSpeechSize,
   macSayAttempts,
@@ -401,6 +407,103 @@ function storyboardFingerprint(storyboard: ArticleVideoStoryboard): string {
   return createHash('sha256').update(JSON.stringify(storyboard)).digest('hex')
 }
 
+class ArticleVideoSourceModal extends FuzzySuggestModal<TFile> {
+  private submitted = false
+  private resolvePromise: (file: TFile | null) => void = () => undefined
+  readonly result = new Promise<TFile | null>((resolvePromise) => {
+    this.resolvePromise = resolvePromise
+  })
+
+  constructor(app: App, private readonly files: TFile[], private readonly format: ArticleVideoFormat) {
+    super(app)
+    this.limit = 80
+    this.emptyStateText = '没有找到可处理的 MD、TXT、PDF 或 DOCX 文章'
+    this.setPlaceholder('输入文件名或 Vault 路径搜索文章')
+    this.setInstructions([
+      { command: '↑↓', purpose: '选择' },
+      { command: '↵', purpose: '确认' },
+      { command: 'esc', purpose: '取消' },
+    ])
+    this.open()
+  }
+
+  onOpen(): void {
+    void super.onOpen()
+    this.titleEl.setText(`${articleVideoDisplayName(this.format)} · 选择一篇文章`)
+  }
+
+  getItems(): TFile[] {
+    return this.files
+  }
+
+  getItemText(file: TFile): string {
+    return `${file.basename} ${file.extension.toLocaleUpperCase()} ${file.path}`
+  }
+
+  renderSuggestion(match: { item: TFile }, element: HTMLElement): void {
+    const file = match.item
+    element.createDiv({
+      text: `${file.basename} · ${file.extension.toLocaleUpperCase()}`,
+      cls: 'ai-linzi-transcript-source-name',
+    })
+    element.createEl('small', { text: file.path, cls: 'ai-linzi-transcript-source-path' })
+  }
+
+  selectSuggestion(match: { item: TFile }, evt: MouseEvent | KeyboardEvent): void {
+    this.submitted = true
+    this.resolvePromise(match.item)
+    super.selectSuggestion(match as never, evt)
+  }
+
+  onChooseItem(file: TFile): void {
+    this.submitted = true
+    this.resolvePromise(file)
+  }
+
+  onClose(): void {
+    super.onClose()
+    window.setTimeout(() => {
+      if (!this.submitted) this.resolvePromise(null)
+    }, 0)
+  }
+}
+
+async function articleVideoSourceText(plugin: ArticleVideoPluginHost, file: TFile): Promise<string> {
+  const result = await readLocalDocumentText(
+    plugin.app,
+    file,
+    ARTICLE_VIDEO_SOURCE_MAX_CHARS,
+    'skill',
+  )
+  const sourceText = file.extension.toLocaleLowerCase() === 'md'
+    ? stripFrontmatter(result.text).trim()
+    : result.text.trim()
+  if (sourceText.length < 100) {
+    throw new Error(`《${file.name}》内容太少，至少需要 100 字才能生成短视频。`)
+  }
+  return sourceText
+}
+
+async function selectArticleVideoSource(
+  plugin: ArticleVideoPluginHost,
+  format: ArticleVideoFormat,
+): Promise<{ file: TFile; text: string } | null> {
+  const activePath = plugin.app.workspace.getActiveFile()?.path
+  const files = plugin.app.vault.getFiles()
+    .filter((file) => isArticleVideoSourceExtension(file.extension))
+    .sort((left, right) => {
+      if (left.path === activePath) return -1
+      if (right.path === activePath) return 1
+      return left.path.localeCompare(right.path, 'zh-CN')
+    })
+  if (files.length === 0) {
+    throw new Error('Vault 中没有可处理的 MD、TXT、PDF 或 DOCX 文章。')
+  }
+  const file = await new ArticleVideoSourceModal(plugin.app, files, format).result
+  if (!file) return null
+  return { file, text: await articleVideoSourceText(plugin, file) }
+}
+
 class ArticleVideoSetupModal extends Modal {
   private resolvePromise: (value: ArticleVideoLaunchOptions | null) => void = () => undefined
   private submitted = false
@@ -434,7 +537,7 @@ class ArticleVideoSetupModal extends Modal {
     this.modalEl.addClass('ai-linzi-article-video-setup-modal')
     contentEl.createEl('h2', { text: articleVideoDisplayName(this.options.format) })
     contentEl.createEl('p', {
-      text: `已锁定当前文章《${this.sourceName}》。确认下面 4 项后，完整脚本会直接出现在主对话；这里不编辑第几幕。`,
+      text: `已锁定所选文章《${this.sourceName}》。确认下面 4 项后，完整脚本会直接出现在主对话；这里不编辑第几幕。`,
       cls: 'setting-item-description',
     })
 
@@ -458,7 +561,7 @@ class ArticleVideoSetupModal extends Modal {
 
     new Setting(contentEl)
       .setName('视频主题')
-      .setDesc('告诉 AI 这条视频最想讲透什么；脚本事实仍只来自当前文章。')
+      .setDesc('告诉 AI 这条视频最想讲透什么；脚本事实仍只来自所选文章。')
       .addTextArea((input) => {
         input.inputEl.rows = 3
         input.inputEl.maxLength = 160
@@ -875,19 +978,33 @@ function sceneBody(scene: ArticleVideoScene): string {
 }
 
 function horizontalSceneBody(scene: ArticleVideoScene): string {
+  const eyebrow = `<div class="eyebrow">${escapeHtml(scene.eyebrow ?? ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type])}</div>`
+  const support = scene.support ? `<p>${escapeHtml(scene.support)}</p>` : ''
   if (scene.type === 'number') {
-    return `<div class="number">${escapeHtml(scene.number)}<small>${escapeHtml(scene.unit)}</small></div><h1>${escapeHtml(scene.headline)}</h1><p>${escapeHtml(scene.support)}</p>`
+    return `${eyebrow}<div class="metric-stage"><div class="metric-rings" data-layout-allow-overflow><i></i><i></i><i></i></div><div class="number">${escapeHtml(scene.number)}<small>${escapeHtml(scene.unit)}</small></div><div class="metric-copy"><h1>${escapeHtml(scene.headline)}</h1>${support}</div></div>`
   }
   if (scene.type === 'comparison') {
-    return `<h1>${escapeHtml(scene.headline)}</h1><div class="compare"><article><b>${escapeHtml(scene.left?.label)}</b><strong>${escapeHtml(scene.left?.value)}</strong></article><i>VS</i><article class="right"><b>${escapeHtml(scene.right?.label)}</b><strong>${escapeHtml(scene.right?.value)}</strong></article></div>`
+    return `${eyebrow}<h1>${escapeHtml(scene.headline)}</h1>${support}<div class="compare"><article><b>${escapeHtml(scene.left?.label)}</b><strong>${escapeHtml(scene.left?.value)}</strong></article><i>VS</i><article class="right"><b>${escapeHtml(scene.right?.label)}</b><strong>${escapeHtml(scene.right?.value)}</strong></article></div>`
   }
   if (scene.type === 'quote') {
-    return `<div class="quote-mark">“</div><h1 class="quote">${escapeHtml(scene.headline)}</h1><p>${escapeHtml(scene.support)}</p>`
+    return `${eyebrow}<div class="quote-stage"><div class="quote-mark">“</div><div><h1 class="quote">${escapeHtml(scene.headline)}</h1>${support}</div></div>`
   }
-  if (scene.items && scene.items.length > 0) {
-    return `<h1>${escapeHtml(scene.headline)}</h1><p>${escapeHtml(scene.support)}</p><div class="items">${scene.items.map((entry, index) => `<article><span>${String(index + 1).padStart(2, '0')}</span><div><strong>${escapeHtml(entry.title)}</strong>${entry.detail ? `<small>${escapeHtml(entry.detail)}</small>` : ''}</div></article>`).join('')}</div>`
+  if (scene.type === 'flow' && scene.items) {
+    return `${eyebrow}<h1>${escapeHtml(scene.headline)}</h1>${support}<div class="flow-stage">${scene.items.map((entry, index) => `<article><span>${String(index + 1).padStart(2, '0')}</span><strong>${escapeHtml(entry.title)}</strong>${entry.detail ? `<small>${escapeHtml(entry.detail)}</small>` : ''}</article>${index < scene.items!.length - 1 ? '<i aria-hidden="true">→</i>' : ''}`).join('')}</div>`
   }
-  return `<div class="accent"></div><h1>${escapeHtml(scene.headline)}</h1><p>${escapeHtml(scene.support)}</p>`
+  if (scene.type === 'timeline' && scene.items) {
+    return `${eyebrow}<h1>${escapeHtml(scene.headline)}</h1>${support}<div class="semantic-timeline"><div class="timeline-rail"></div>${scene.items.map((entry, index) => `<article><span>${String(index + 1).padStart(2, '0')}</span><strong>${escapeHtml(entry.title)}</strong>${entry.detail ? `<small>${escapeHtml(entry.detail)}</small>` : ''}</article>`).join('')}</div>`
+  }
+  if (scene.type === 'steps' && scene.items) {
+    return `${eyebrow}<h1>${escapeHtml(scene.headline)}</h1>${support}<div class="steps-stage">${scene.items.map((entry, index) => `<article><span>${String(index + 1).padStart(2, '0')}</span><div><strong>${escapeHtml(entry.title)}</strong>${entry.detail ? `<small>${escapeHtml(entry.detail)}</small>` : ''}</div></article>`).join('')}</div>`
+  }
+  if (scene.type === 'summary' && scene.items) {
+    if (scene.items.length === 2) {
+      return `${eyebrow}<h1>${escapeHtml(scene.headline)}</h1>${support}<div class="fork-stage"><div class="fork-core"></div>${scene.items.map((entry, index) => `<article class="fork-${index + 1}"><span>路径 ${index + 1}</span><strong>${escapeHtml(entry.title)}</strong>${entry.detail ? `<small>${escapeHtml(entry.detail)}</small>` : ''}</article>`).join('')}</div>`
+    }
+    return `${eyebrow}<h1>${escapeHtml(scene.headline)}</h1>${support}<div class="summary-stage">${scene.items.map((entry, index) => `<article><span>${String(index + 1).padStart(2, '0')}</span><strong>${escapeHtml(entry.title)}</strong>${entry.detail ? `<small>${escapeHtml(entry.detail)}</small>` : ''}</article>`).join('')}</div>`
+  }
+  return `<div class="hook-stage"><div class="hook-signal" data-layout-allow-overflow><i></i><i></i><i></i><b></b></div><div class="hook-copy">${eyebrow}<div class="accent"></div><h1>${escapeHtml(scene.headline)}</h1>${support}</div></div>`
 }
 
 function splitCaption(text: string, max = 18): string[] {
@@ -991,7 +1108,12 @@ export async function buildHorizontalProjectHtml(
   const brand = ARTICLE_VIDEO_HORIZONTAL_BRAND
   const html = `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=1280,height=720"><title>${escapeHtml(storyboard.title)}</title><style>
 @font-face{font-family:InfoSans;src:local("PingFang SC"),local("Microsoft YaHei"),local("Noto Sans CJK SC")}@font-face{font-family:InfoSerif;src:local("Songti SC"),local("STSong")}
-:root{--bg:${brand.background};--blue:${brand.primary};--blue-soft:#4D8CFF;--blue-deep:#18316E;--orange:${brand.accent};--warm:#F8F5F0;--muted:#AAB8D1}*{box-sizing:border-box;margin:0;padding:0}html,body,#root{width:1280px;height:720px;overflow:hidden;background:var(--bg);color:var(--warm);font-family:InfoSans,sans-serif}.scene{position:absolute;inset:0;overflow:hidden;background:linear-gradient(135deg,#050B16 0%,#071326 58%,#050B16 100%)}.grid{position:absolute;inset:-80px;opacity:.12;background-image:linear-gradient(rgba(77,140,255,.55) 1px,transparent 1px),linear-gradient(90deg,rgba(77,140,255,.55) 1px,transparent 1px);background-size:64px 64px;transform:perspective(700px) rotateX(58deg) translateY(180px) scale(1.15);transform-origin:center bottom;animation:gridDrift var(--scene-duration) linear var(--scene-start) both}.orb{position:absolute;border-radius:50%;opacity:.75}.orb-blue{width:360px;height:360px;right:-110px;top:-150px;border:2px solid rgba(77,140,255,.45);box-shadow:0 0 80px rgba(0,87,255,.28),inset 0 0 60px rgba(0,87,255,.12);animation:orbitBlue var(--scene-duration) ease-in-out var(--scene-start) both}.orb-orange{width:190px;height:190px;left:-70px;bottom:-90px;background:rgba(243,152,0,.12);box-shadow:0 0 80px rgba(243,152,0,.22);animation:orbitOrange var(--scene-duration) ease-in-out var(--scene-start) both}.sweep{position:absolute;top:-20%;left:-28%;width:22%;height:150%;background:linear-gradient(90deg,transparent,rgba(77,140,255,.08),transparent);transform:rotate(18deg);animation:sweep var(--scene-duration) ease-in-out var(--scene-start) both}header{position:absolute;z-index:3;left:72px;right:72px;top:42px;display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:17px;font-weight:800;letter-spacing:3px;animation:headerIn .55s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .08s) both}header span{display:flex;align-items:center;gap:12px}header span:before{content:"";width:42px;height:4px;border-radius:9px;background:linear-gradient(90deg,var(--blue),var(--orange));box-shadow:0 0 18px rgba(0,87,255,.65)}header b{color:var(--warm);font-size:18px}main{position:absolute;z-index:3;left:86px;right:86px;top:105px;bottom:150px;display:flex;flex-direction:column;justify-content:center;gap:20px;transform-origin:center;animation:cameraDrift var(--scene-duration) ease-in-out var(--scene-start) both}h1{max-width:1080px;font-size:66px;line-height:1.08;letter-spacing:-2.5px;text-wrap:balance;text-shadow:0 10px 36px rgba(0,0,0,.34)}p{max-width:920px;color:var(--muted);font-size:27px;line-height:1.45;font-weight:620}.scene main>h1:not(.quote){animation:rise .7s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .12s) both}.scene main>p{animation:rise .7s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .28s) both}.accent{width:148px;height:8px;border-radius:8px;background:linear-gradient(90deg,var(--blue),var(--blue-soft),var(--orange));box-shadow:0 0 26px rgba(0,87,255,.55);transform-origin:left;animation:draw .75s cubic-bezier(.2,.8,.2,1) calc(var(--scene-start) + .05s) both}.quote-mark{position:absolute;left:-15px;top:50px;color:var(--orange);font-family:InfoSerif,serif;font-size:210px;line-height:.4;opacity:.9;animation:quotePop .7s cubic-bezier(.2,.9,.25,1.2) calc(var(--scene-start) + .04s) both}h1.quote{max-width:1040px;padding-left:82px;font-family:InfoSerif,serif;font-size:62px;line-height:1.25;animation:rise .75s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .16s) both}.number{display:flex;align-items:flex-end;gap:18px;color:var(--orange);font-size:220px;line-height:.72;font-weight:950;letter-spacing:-12px;text-shadow:0 0 42px rgba(243,152,0,.22);animation:numberPop .82s cubic-bezier(.18,.9,.22,1.14) calc(var(--scene-start) + .06s) both}.number small{margin-bottom:12px;color:var(--warm);font-size:44px;letter-spacing:0}.compare{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:28px;width:100%;max-width:1080px}.compare article{height:245px;padding:34px 38px;border:1px solid rgba(77,140,255,.45);border-radius:24px;background:linear-gradient(145deg,rgba(24,49,110,.62),rgba(7,19,38,.9));display:flex;flex-direction:column;justify-content:center;gap:24px;box-shadow:0 20px 60px rgba(0,0,0,.28);animation:cardLeft .75s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .22s) both}.compare article.right{border-color:rgba(243,152,0,.65);background:linear-gradient(145deg,rgba(243,152,0,.16),rgba(7,19,38,.92));animation-name:cardRight;animation-delay:calc(var(--scene-start) + .34s)}.compare b{color:var(--blue-soft);font-size:22px;letter-spacing:3px}.compare article.right b{color:var(--orange)}.compare strong{font-size:40px;line-height:1.2}.compare i{position:absolute;z-index:4;left:50%;top:50%;transform:translate(-50%,-50%);width:64px;height:64px;border:2px solid rgba(248,245,240,.8);border-radius:50%;display:grid;place-items:center;background:var(--bg);color:var(--orange);font-size:18px;font-style:normal;font-weight:950;box-shadow:0 0 28px rgba(0,87,255,.42);animation:pulse var(--scene-duration) ease-in-out var(--scene-start) both}.items{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;width:100%;max-width:1080px}.items article{min-height:112px;padding:20px 24px;border:1px solid rgba(77,140,255,.34);border-radius:18px;background:linear-gradient(135deg,rgba(24,49,110,.55),rgba(5,11,22,.82));display:flex;gap:18px;align-items:center;box-shadow:0 14px 45px rgba(0,0,0,.22);animation:cardRise .68s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .3s) both}.items article:nth-child(2){animation-delay:calc(var(--scene-start) + .42s)}.items article:nth-child(3){animation-delay:calc(var(--scene-start) + .54s)}.items article:nth-child(4){animation-delay:calc(var(--scene-start) + .66s)}.items span{flex:none;width:46px;height:46px;border:1px solid rgba(248,245,240,.38);border-radius:13px;display:grid;place-items:center;background:linear-gradient(145deg,var(--blue),var(--blue-deep));color:var(--warm);font-size:17px;font-weight:900;box-shadow:0 0 22px rgba(0,87,255,.34)}.items strong{display:block;font-size:26px;line-height:1.18}.items small{display:block;margin-top:6px;color:var(--muted);font-size:17px;line-height:1.3}.timeline{position:absolute;z-index:5;left:72px;right:72px;bottom:28px;height:6px;border-radius:99px;background:rgba(248,245,240,.13);overflow:hidden;box-shadow:inset 0 0 0 1px rgba(248,245,240,.06)}.timeline i{display:block;height:100%;width:100%;border-radius:inherit;background:linear-gradient(90deg,var(--blue),var(--blue-soft) 55%,var(--orange));box-shadow:0 0 16px rgba(77,140,255,.68);transform:scaleX(var(--progress-start));transform-origin:left;animation:progress var(--scene-duration) linear var(--scene-start) both}.horizontal-caption{position:absolute;z-index:10;left:100px;right:100px;bottom:53px;height:64px;display:flex;align-items:center;justify-content:center;text-align:center}.horizontal-caption span{max-width:1040px;padding:10px 22px;border:1px solid rgba(77,140,255,.32);border-radius:13px;background:rgba(5,11,22,.94);color:var(--warm);font-size:26px;line-height:1.32;font-weight:760;box-shadow:0 10px 32px rgba(0,0,0,.3);animation:captionIn .28s cubic-bezier(.2,.85,.25,1) calc(var(--caption-start) + .03s) both}@keyframes rise{from{opacity:0;transform:translateY(28px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes draw{from{opacity:0;transform:scaleX(0)}to{opacity:1;transform:scaleX(1)}}@keyframes quotePop{from{opacity:0;transform:translateY(18px) scale(.6) rotate(-8deg)}to{opacity:.9;transform:none}}@keyframes numberPop{from{opacity:0;transform:translateY(34px) scale(.72)}to{opacity:1;transform:none}}@keyframes cardLeft{from{opacity:0;transform:translateX(-44px) rotateY(7deg)}to{opacity:1;transform:none}}@keyframes cardRight{from{opacity:0;transform:translateX(44px) rotateY(-7deg)}to{opacity:1;transform:none}}@keyframes cardRise{from{opacity:0;transform:translateY(32px) scale(.96)}to{opacity:1;transform:none}}@keyframes headerIn{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:none}}@keyframes captionIn{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}@keyframes cameraDrift{from{transform:translate3d(-5px,4px,0) scale(.996)}to{transform:translate3d(7px,-5px,0) scale(1.006)}}@keyframes pulse{0%,100%{box-shadow:0 0 20px rgba(0,87,255,.3);transform:translate(-50%,-50%) scale(.94)}50%{box-shadow:0 0 38px rgba(243,152,0,.55);transform:translate(-50%,-50%) scale(1.08)}}@keyframes progress{from{transform:scaleX(var(--progress-start))}to{transform:scaleX(var(--progress-end))}}@keyframes gridDrift{from{background-position:0 0,0 0}to{background-position:64px 32px,64px 32px}}@keyframes orbitBlue{from{transform:translate(0,0) scale(.92)}to{transform:translate(-50px,36px) scale(1.08)}}@keyframes orbitOrange{from{transform:translate(0,0) scale(.9)}to{transform:translate(52px,-30px) scale(1.12)}}@keyframes sweep{0%,15%{transform:translateX(0) rotate(18deg);opacity:0}38%{opacity:1}72%,100%{transform:translateX(760%) rotate(18deg);opacity:0}}
+:root{--bg:${brand.background};--blue:${brand.primary};--blue-soft:#4D8CFF;--blue-deep:#18316E;--orange:${brand.accent};--warm:#F8F5F0;--muted:#AAB8D1}*{box-sizing:border-box;margin:0;padding:0}html,body,#root{width:1280px;height:720px;overflow:hidden;background:var(--bg);color:var(--warm);font-family:InfoSans,sans-serif}.scene{position:absolute;inset:0;overflow:hidden;background:linear-gradient(135deg,#050B16 0%,#071326 58%,#050B16 100%)}.grid{position:absolute;inset:-80px;opacity:.12;background-image:linear-gradient(rgba(77,140,255,.55) 1px,transparent 1px),linear-gradient(90deg,rgba(77,140,255,.55) 1px,transparent 1px);background-size:64px 64px;transform:perspective(700px) rotateX(58deg) translateY(180px) scale(1.15);transform-origin:center bottom;animation:gridDrift var(--scene-duration) linear var(--scene-start) both}.orb{position:absolute;border-radius:50%;opacity:.75}.orb-blue{width:360px;height:360px;right:-110px;top:-150px;border:2px solid rgba(77,140,255,.45);box-shadow:0 0 80px rgba(0,87,255,.28),inset 0 0 60px rgba(0,87,255,.12);animation:orbitBlue var(--scene-duration) ease-in-out var(--scene-start) both}.orb-orange{width:190px;height:190px;left:-70px;bottom:-90px;background:rgba(243,152,0,.12);box-shadow:0 0 80px rgba(243,152,0,.22);animation:orbitOrange var(--scene-duration) ease-in-out var(--scene-start) both}.sweep{position:absolute;top:-20%;left:-28%;width:22%;height:150%;background:linear-gradient(90deg,transparent,rgba(77,140,255,.08),transparent);transform:rotate(18deg);animation:sweep var(--scene-duration) ease-in-out var(--scene-start) both}header{position:absolute;z-index:3;left:72px;right:72px;top:42px;display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:17px;font-weight:800;letter-spacing:3px;animation:headerIn .55s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .08s) both}header span{display:flex;align-items:center;gap:12px}header span:before{content:"";width:42px;height:4px;border-radius:9px;background:linear-gradient(90deg,var(--blue),var(--orange));box-shadow:0 0 18px rgba(0,87,255,.65)}header b{color:var(--warm);font-size:18px}main{position:absolute;z-index:3;left:86px;right:86px;top:105px;bottom:150px;display:flex;flex-direction:column;justify-content:center;gap:18px;transform-origin:center;animation:cameraDrift var(--scene-duration) ease-in-out var(--scene-start) both}h1{max-width:1080px;font-size:58px;line-height:1.08;letter-spacing:-2.2px;text-wrap:balance;text-shadow:0 10px 36px rgba(0,0,0,.34)}p{max-width:980px;color:var(--muted);font-size:24px;line-height:1.4;font-weight:620}.scene main>h1:not(.quote){animation:rise .7s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .12s) both}.scene main>p{animation:rise .7s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .28s) both}.eyebrow{width:max-content;padding:7px 14px;border:1px solid rgba(77,140,255,.52);border-radius:999px;background:rgba(0,87,255,.12);color:var(--blue-soft);font-size:17px;font-weight:900;letter-spacing:2px;animation:eyebrowIn .48s ease-out calc(var(--scene-start) + .05s) both}.accent{width:148px;height:8px;border-radius:8px;background:linear-gradient(90deg,var(--blue),var(--blue-soft),var(--orange));box-shadow:0 0 26px rgba(0,87,255,.55);transform-origin:left;animation:draw .75s cubic-bezier(.2,.8,.2,1) calc(var(--scene-start) + .05s) both}.hook-stage{display:grid;grid-template-columns:340px 1fr;gap:52px;align-items:center}.hook-signal{position:relative;width:310px;height:310px;display:grid;place-items:center}.hook-signal i{position:absolute;border:2px solid rgba(77,140,255,.55);border-radius:50%;animation:hookOrbit var(--scene-duration) ease-in-out var(--scene-start) both}.hook-signal i:nth-child(1){width:300px;height:300px}.hook-signal i:nth-child(2){width:220px;height:220px;border-color:rgba(243,152,0,.55);animation-direction:reverse}.hook-signal i:nth-child(3){width:140px;height:140px}.hook-signal b{width:64px;height:64px;border-radius:18px;background:linear-gradient(145deg,var(--blue),var(--blue-soft));box-shadow:0 0 50px rgba(0,87,255,.75);animation:corePulse var(--scene-duration) ease-in-out var(--scene-start) both}.hook-copy{display:flex;flex-direction:column;gap:18px}.hook-copy h1{animation:rise .7s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .15s) both}.hook-copy p{animation:rise .7s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .3s) both}.metric-stage{position:relative;display:grid;grid-template-columns:430px 1fr;gap:40px;align-items:center;min-height:300px}.metric-rings{position:absolute;left:6px;width:340px;height:340px}.metric-rings i{position:absolute;inset:0;border:2px solid rgba(77,140,255,.32);border-radius:50%;animation:ringExpand 1.1s ease-out calc(var(--scene-start) + .05s) both}.metric-rings i:nth-child(2){inset:38px;border-color:rgba(243,152,0,.4);animation-delay:calc(var(--scene-start) + .17s)}.metric-rings i:nth-child(3){inset:76px;animation-delay:calc(var(--scene-start) + .29s)}.number{position:relative;z-index:2;display:flex;align-items:flex-end;justify-content:center;gap:18px;color:var(--orange);font-size:180px;line-height:.72;font-weight:950;letter-spacing:-10px;text-shadow:0 0 42px rgba(243,152,0,.22);animation:numberPop .82s cubic-bezier(.18,.9,.22,1.14) calc(var(--scene-start) + .15s) both}.number small{margin-bottom:12px;color:var(--warm);font-size:40px;letter-spacing:0}.metric-copy{display:flex;flex-direction:column;gap:18px}.metric-copy h1,.metric-copy p{animation:rise .72s ease-out calc(var(--scene-start) + .3s) both}.compare{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:28px;width:100%;max-width:1080px}.compare article{height:205px;padding:28px 34px;border:1px solid rgba(77,140,255,.45);border-radius:24px;background:linear-gradient(145deg,rgba(24,49,110,.62),rgba(7,19,38,.9));display:flex;flex-direction:column;justify-content:center;gap:20px;box-shadow:0 20px 60px rgba(0,0,0,.28);animation:cardLeft .75s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .22s) both}.compare article.right{border-color:rgba(243,152,0,.65);background:linear-gradient(145deg,rgba(243,152,0,.16),rgba(7,19,38,.92));animation-name:cardRight;animation-delay:calc(var(--scene-start) + .34s)}.compare b{color:var(--blue-soft);font-size:20px;letter-spacing:3px}.compare article.right b{color:var(--orange)}.compare strong{font-size:36px;line-height:1.2}.compare i{position:absolute;z-index:4;left:50%;top:50%;transform:translate(-50%,-50%);width:64px;height:64px;border:2px solid rgba(248,245,240,.8);border-radius:50%;display:grid;place-items:center;background:var(--bg);color:var(--orange);font-size:18px;font-style:normal;font-weight:950;box-shadow:0 0 28px rgba(0,87,255,.42);animation:pulse var(--scene-duration) ease-in-out var(--scene-start) both}.quote-stage{position:relative;display:grid;grid-template-columns:120px 1fr;gap:20px;align-items:center}.quote-mark{position:static;color:var(--orange);font-family:InfoSerif,serif;font-size:210px;line-height:.4;opacity:.9;animation:quotePop .7s cubic-bezier(.2,.9,.25,1.2) calc(var(--scene-start) + .04s) both}h1.quote{max-width:980px;padding:0;font-family:InfoSerif,serif;font-size:58px;line-height:1.22;animation:rise .75s cubic-bezier(.2,.85,.25,1) calc(var(--scene-start) + .16s) both}.flow-stage{display:flex;align-items:stretch;gap:10px;width:100%}.flow-stage article{flex:1;min-width:0;padding:24px 18px;border:1px solid rgba(77,140,255,.45);border-radius:20px;background:rgba(7,19,38,.84);display:flex;flex-direction:column;gap:9px;justify-content:center;animation:flowNode .65s ease-out calc(var(--scene-start) + .25s) both}.flow-stage article:nth-of-type(2){animation-delay:calc(var(--scene-start) + .4s)}.flow-stage article:nth-of-type(3){animation-delay:calc(var(--scene-start) + .55s)}.flow-stage article:nth-of-type(4){animation-delay:calc(var(--scene-start) + .7s)}.flow-stage article span,.steps-stage article span,.summary-stage article span{color:var(--orange);font-size:16px;font-weight:900;letter-spacing:2px}.flow-stage article strong{font-size:24px}.flow-stage article small{color:var(--muted);font-size:16px;line-height:1.3}.flow-stage>i{align-self:center;color:var(--blue-soft);font-size:34px;font-style:normal;transform-origin:left;animation:connectorDraw .45s ease-out calc(var(--scene-start) + .48s) both}.semantic-timeline{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;padding-top:30px}.timeline-rail{position:absolute;left:3%;right:3%;top:54px;height:4px;background:linear-gradient(90deg,var(--blue),var(--blue-soft),var(--orange));transform-origin:left;animation:railDraw 1s ease-out calc(var(--scene-start) + .2s) both}.semantic-timeline article{position:relative;padding-top:58px;display:flex;flex-direction:column;gap:8px;animation:cardRise .6s ease-out calc(var(--scene-start) + .35s) both}.semantic-timeline article:nth-of-type(3){animation-delay:calc(var(--scene-start) + .5s)}.semantic-timeline article:nth-of-type(4){animation-delay:calc(var(--scene-start) + .65s)}.semantic-timeline article:nth-of-type(5){animation-delay:calc(var(--scene-start) + .8s)}.semantic-timeline article span{position:absolute;top:0;width:50px;height:50px;border:3px solid var(--blue-soft);border-radius:50%;display:grid;place-items:center;background:var(--bg);color:var(--warm);font-weight:900;box-shadow:0 0 24px rgba(0,87,255,.45)}.semantic-timeline article strong{font-size:25px}.semantic-timeline article small{color:var(--muted);font-size:16px;line-height:1.3}.steps-stage{display:flex;align-items:flex-end;gap:16px;min-height:220px}.steps-stage article{flex:1;min-width:0;min-height:calc(118px + var(--step) * 30px);padding:20px;border:1px solid rgba(77,140,255,.4);border-radius:18px 18px 4px 4px;background:linear-gradient(180deg,rgba(0,87,255,.2),rgba(7,19,38,.92));display:flex;align-items:flex-start;gap:14px;animation:stepRise .7s ease-out calc(var(--scene-start) + .22s + var(--step) * .14s) both}.steps-stage article span{flex:none}.steps-stage article strong{display:block;font-size:24px}.steps-stage article small{display:block;margin-top:7px;color:var(--muted);font-size:16px;line-height:1.25}.fork-stage{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:120px;padding-top:48px}.fork-stage:before{content:"";position:absolute;left:50%;top:0;width:3px;height:48px;background:var(--blue-soft);transform-origin:top;animation:verticalDraw .4s ease-out calc(var(--scene-start) + .2s) both}.fork-core{position:absolute;left:18%;right:18%;top:47px;height:3px;background:linear-gradient(90deg,var(--blue),var(--orange));transform-origin:center;animation:forkDraw .6s ease-out calc(var(--scene-start) + .45s) both}.fork-stage article{position:relative;min-height:150px;padding:26px 30px;border:1px solid rgba(77,140,255,.45);border-radius:22px;background:rgba(7,19,38,.9);display:flex;flex-direction:column;gap:10px;animation:cardRise .65s ease-out calc(var(--scene-start) + .72s) both}.fork-stage article:last-child{border-color:rgba(243,152,0,.6)}.fork-stage article span{color:var(--blue-soft);font-size:17px;font-weight:900;letter-spacing:2px}.fork-stage article:last-child span{color:var(--orange)}.fork-stage article strong{font-size:31px}.fork-stage article small{color:var(--muted);font-size:18px;line-height:1.3}.summary-stage{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.summary-stage article{padding:20px 24px;border:1px solid rgba(77,140,255,.36);border-radius:18px;background:rgba(7,19,38,.84);display:grid;grid-template-columns:46px 1fr;gap:12px;align-items:center;animation:converge .65s ease-out calc(var(--scene-start) + .28s) both}.summary-stage article:nth-child(2){animation-delay:calc(var(--scene-start) + .42s)}.summary-stage article:nth-child(3){animation-delay:calc(var(--scene-start) + .56s)}.summary-stage article:nth-child(4){animation-delay:calc(var(--scene-start) + .7s)}.summary-stage article strong{font-size:24px}.summary-stage article small{grid-column:2;color:var(--muted);font-size:16px}.timeline{position:absolute;z-index:5;left:72px;right:72px;bottom:28px;height:6px;border-radius:99px;background:rgba(248,245,240,.13);overflow:hidden;box-shadow:inset 0 0 0 1px rgba(248,245,240,.06)}.timeline i{display:block;height:100%;width:100%;border-radius:inherit;background:linear-gradient(90deg,var(--blue),var(--blue-soft) 55%,var(--orange));box-shadow:0 0 16px rgba(77,140,255,.68);transform:scaleX(var(--progress-start));transform-origin:left;animation:progress var(--scene-duration) linear var(--scene-start) both}.horizontal-caption{position:absolute;z-index:10;left:100px;right:100px;bottom:53px;height:64px;display:flex;align-items:center;justify-content:center;text-align:center}.horizontal-caption span{max-width:1040px;padding:0;color:var(--warm);font-family:InfoSerif,serif;font-size:28px;line-height:1.32;font-weight:760;white-space:nowrap;animation:captionIn .28s cubic-bezier(.2,.85,.25,1) calc(var(--caption-start) + .03s) both}@keyframes rise{from{opacity:0;transform:translateY(28px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes draw{from{opacity:0;transform:scaleX(0)}to{opacity:1;transform:scaleX(1)}}@keyframes eyebrowIn{from{opacity:0;transform:translateX(-18px)}to{opacity:1;transform:none}}@keyframes hookOrbit{from{transform:rotate(-18deg) scale(.94)}to{transform:rotate(22deg) scale(1.04)}}@keyframes corePulse{0%,100%{transform:scale(.86);box-shadow:0 0 28px rgba(0,87,255,.45)}50%{transform:scale(1.08);box-shadow:0 0 58px rgba(243,152,0,.5)}}@keyframes ringExpand{from{opacity:0;transform:scale(.55)}to{opacity:1;transform:scale(1)}}@keyframes quotePop{from{opacity:0;transform:translateY(18px) scale(.6) rotate(-8deg)}to{opacity:.9;transform:none}}@keyframes numberPop{from{opacity:0;transform:translateY(34px) scale(.72)}to{opacity:1;transform:none}}@keyframes cardLeft{from{opacity:0;transform:translateX(-44px) rotateY(7deg)}to{opacity:1;transform:none}}@keyframes cardRight{from{opacity:0;transform:translateX(44px) rotateY(-7deg)}to{opacity:1;transform:none}}@keyframes cardRise{from{opacity:0;transform:translateY(32px) scale(.96)}to{opacity:1;transform:none}}@keyframes flowNode{from{opacity:0;transform:translateX(-24px) scale(.94)}to{opacity:1;transform:none}}@keyframes connectorDraw{from{opacity:0;transform:scaleX(0)}to{opacity:1;transform:scaleX(1)}}@keyframes railDraw{from{transform:scaleX(0)}to{transform:scaleX(1)}}@keyframes stepRise{from{opacity:0;transform:translateY(70px)}to{opacity:1;transform:none}}@keyframes verticalDraw{from{transform:scaleY(0)}to{transform:scaleY(1)}}@keyframes forkDraw{from{transform:scaleX(0)}to{transform:scaleX(1)}}@keyframes converge{from{opacity:0;transform:translateX(36px) scale(.94)}to{opacity:1;transform:none}}@keyframes headerIn{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:none}}@keyframes captionIn{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}@keyframes cameraDrift{from{transform:translate3d(-5px,4px,0) scale(.996)}to{transform:translate3d(7px,-5px,0) scale(1.006)}}@keyframes pulse{0%,100%{box-shadow:0 0 20px rgba(0,87,255,.3);transform:translate(-50%,-50%) scale(.94)}50%{box-shadow:0 0 38px rgba(243,152,0,.55);transform:translate(-50%,-50%) scale(1.08)}}@keyframes progress{from{transform:scaleX(var(--progress-start))}to{transform:scaleX(var(--progress-end))}}@keyframes gridDrift{from{background-position:0 0,0 0}to{background-position:64px 32px,64px 32px}}@keyframes orbitBlue{from{transform:translate(0,0) scale(.92)}to{transform:translate(-50px,36px) scale(1.08)}}@keyframes orbitOrange{from{transform:translate(0,0) scale(.9)}to{transform:translate(52px,-30px) scale(1.12)}}@keyframes sweep{0%,15%{transform:translateX(0) rotate(18deg);opacity:0}38%{opacity:1}72%,100%{transform:translateX(760%) rotate(18deg);opacity:0}}
+.steps-stage article{min-height:118px;animation:stepRise .7s ease-out calc(var(--scene-start) + .22s) both}.steps-stage article:nth-child(2){min-height:148px;animation-delay:calc(var(--scene-start) + .36s)}.steps-stage article:nth-child(3){min-height:178px;animation-delay:calc(var(--scene-start) + .5s)}.steps-stage article:nth-child(4){min-height:208px;animation-delay:calc(var(--scene-start) + .64s)}
+.eyebrow,header{animation-delay:var(--scene-start)}
+@keyframes eyebrowIn{from{opacity:.45;transform:translateX(-18px)}to{opacity:1;transform:none}}
+@keyframes headerIn{from{opacity:.35;transform:translateY(-12px)}to{opacity:1;transform:none}}
+@keyframes rise{from{opacity:.28;transform:translateY(28px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
 </style></head><body><div id="root" data-composition-id="main" data-no-timeline data-start="0" data-width="1280" data-height="720" data-duration="${timings.totalDuration.toFixed(3)}" data-fps="30">${sceneHtml}${captionHtml}<audio id="narration-audio" src="audio/narration.wav" data-start="0" data-duration="${timings.totalDuration.toFixed(3)}" data-track-index="10" data-volume="1"></audio></div></body></html>`
   await fs.writeFile(join(project, 'index.html'), html, 'utf8')
   await fs.writeFile(
@@ -1085,7 +1207,10 @@ async function readLockedSource(
   if (!(file instanceof TFile)) {
     throw new Error(`已锁定的文章《${locked.sourceName}》被移动或删除，请重新发起视频任务。`)
   }
-  const sourceText = await plugin.app.vault.read(file)
+  if (!isArticleVideoSourceExtension(file.extension)) {
+    throw new Error(`已锁定的文章《${locked.sourceName}》格式不再受支持，请重新发起视频任务。`)
+  }
+  const sourceText = await articleVideoSourceText(plugin, file)
   const sourceHash = createHash('sha256').update(sourceText).digest('hex')
   if (sourceHash !== locked.sourceHash) {
     throw new Error(`已锁定的文章《${locked.sourceName}》在审稿期间发生了变化。为避免脚本与原文错位，请重新发起视频任务。`)
@@ -1118,14 +1243,11 @@ export async function requestArticleVideoDraft(
   requestText = '',
   format: ArticleVideoFormat = 'vertical',
 ): Promise<ArticleVideoDraftRequest | null> {
-  const current = plugin.rememberCurrentMarkdownFile()
-  if (!(current instanceof TFile)) {
-    throw new Error(`请先打开要制作成视频的 Markdown 文章，再调用“${articleVideoDisplayName(format)}”。`)
-  }
-  const sourceText = await plugin.app.vault.read(current)
-  if (sourceText.trim().length < 100) throw new Error('当前文章内容太少，至少需要 100 字才能生成短视频。')
-  const sourcePath = current.path
-  const sourceName = current.basename
+  const selected = await selectArticleVideoSource(plugin, format)
+  if (!selected) return null
+  const { file, text: sourceText } = selected
+  const sourcePath = file.path
+  const sourceName = file.basename
   const sourceHash = createHash('sha256').update(sourceText).digest('hex')
   const defaults = articleTitleDefaults(sourceName, sourceText)
   const hasFish = Boolean(plugin.getFishAudioApiKey() && plugin.settings.articleVideoFishVoiceId.trim())
@@ -1162,7 +1284,8 @@ export async function prepareArticleVideoDraft(
     videoTitle: draft.videoTitle,
     theme: draft.theme,
     duration: draft.draftTarget,
-    style: 'minimal-infographic',
+    format: draft.format,
+    style: draft.format === 'horizontal' ? 'horizontal-ai-explainer' : 'minimal-infographic',
   })
   const parsed = parseArticleVideoStoryboard(rawStoryboard, draft.draftTarget) ?? undefined
   const storyboard = parsed ? {
@@ -1208,7 +1331,10 @@ export async function reviseArticleVideoDraft(
     sourceTitle: review.sourceName,
     theme: review.theme,
     duration: draftTarget,
-    style: 'minimal-infographic',
+    format: review.format ?? 'vertical',
+    style: (review.format ?? 'vertical') === 'horizontal'
+      ? 'horizontal-ai-explainer'
+      : 'minimal-infographic',
     currentStoryboard: review.storyboard,
     instruction: `${change}${pronunciationGuard}`,
   })
