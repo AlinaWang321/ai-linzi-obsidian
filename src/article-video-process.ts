@@ -9,6 +9,19 @@ export interface ArticleVideoProcessInvocation {
   environment?: Record<string, string>
 }
 
+export function articleVideoProcessFailureDetail(
+  stdout: string | null | undefined,
+  stderr: string | null | undefined,
+  fallback: string,
+  maxLength = 2_000,
+): string {
+  return [stderr, stdout, fallback]
+    .map((value) => (value ?? '').trim())
+    .filter(Boolean)
+    .join('\n')
+    .slice(-maxLength)
+}
+
 export function windowsSpeechInvocation(
   textFile: string,
   outputFile: string,

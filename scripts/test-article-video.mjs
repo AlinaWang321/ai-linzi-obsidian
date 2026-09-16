@@ -121,6 +121,16 @@ assert.equal(macFallback.command, '/usr/bin/osascript')
 assert.deepEqual(macFallback.args.slice(-2), ['/tmp/AI 霖子.txt', '/tmp/AI 霖子.aiff'])
 assert.equal(processCore.hasValidLocalSpeechSize(4096), false)
 assert.equal(processCore.hasValidLocalSpeechSize(8192), true)
+const failureDetail = processCore.articleVideoProcessFailureDetail(
+  'Layout\ncontent_overlap #scene-6 .quote-mark',
+  '[hyperframes] browserGpuMode probe -> hardware',
+  'Command failed',
+)
+assert.match(failureDetail, /content_overlap #scene-6/)
+assert.ok(
+  failureDetail.indexOf('browserGpuMode') < failureDetail.indexOf('content_overlap'),
+  '真正的布局报告必须保留在 GPU 探测信息之后，避免错误卡片只显示无关 stderr',
+)
 
 const valid = {
   title: '知识体系卖三次',
@@ -256,6 +266,7 @@ assert.match(runtime, /class="semantic-timeline"/)
 assert.match(runtime, /class="steps-stage"/)
 assert.match(runtime, /class="fork-stage"/)
 assert.match(runtime, /class="hook-signal"/)
+assert.match(runtime, /\.quote-stage\{margin-top:18px\}\.quote-mark\{font-size:168px;line-height:\.62\}/)
 assert.match(runtime, /horizontal-ai-explainer/)
 assert.match(runtime, /format: draft\.format/)
 assert.match(runtime, /--scene-start:\$\{sceneStart\}s/)

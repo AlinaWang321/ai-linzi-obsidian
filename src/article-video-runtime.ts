@@ -42,6 +42,7 @@ import {
 import { stripFrontmatter } from './article-format'
 import { readLocalDocumentText } from './long-document'
 import {
+  articleVideoProcessFailureDetail,
   hasValidLocalSpeechSize,
   macSayAttempts,
   macSpeechFallbackInvocation,
@@ -182,7 +183,7 @@ function runProcess(
     }, (error, stdout, stderr) => {
       const processError = error
       if (processError) {
-        const detail = `${stderr || stdout || processError.message}`.trim().slice(-2_000)
+        const detail = articleVideoProcessFailureDetail(stdout, stderr, processError.message)
         const message = processError.killed
           ? `本机步骤超时：${basename(command)}`
           : `${basename(command)} 执行失败${detail ? `：${detail}` : ''}`
@@ -1114,6 +1115,7 @@ export async function buildHorizontalProjectHtml(
 @keyframes eyebrowIn{from{opacity:.45;transform:translateX(-18px)}to{opacity:1;transform:none}}
 @keyframes headerIn{from{opacity:.35;transform:translateY(-12px)}to{opacity:1;transform:none}}
 @keyframes rise{from{opacity:.28;transform:translateY(28px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+.quote-stage{margin-top:18px}.quote-mark{font-size:168px;line-height:.62}
 </style></head><body><div id="root" data-composition-id="main" data-no-timeline data-start="0" data-width="1280" data-height="720" data-duration="${timings.totalDuration.toFixed(3)}" data-fps="30">${sceneHtml}${captionHtml}<audio id="narration-audio" src="audio/narration.wav" data-start="0" data-duration="${timings.totalDuration.toFixed(3)}" data-track-index="10" data-volume="1"></audio></div></body></html>`
   await fs.writeFile(join(project, 'index.html'), html, 'utf8')
   await fs.writeFile(
