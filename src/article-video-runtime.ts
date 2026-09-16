@@ -21,6 +21,7 @@ import {
   ARTICLE_VIDEO_SCENE_TYPE_LABELS,
   ARTICLE_VIDEO_SOURCE_MAX_CHARS,
   articleVideoDisplayName,
+  articleVideoHorizontalNumberLayout,
   applyArticleVideoPronunciations,
   articleVideoPlatform,
   articleVideoDurationFromText,
@@ -982,7 +983,8 @@ function horizontalSceneBody(scene: ArticleVideoScene): string {
   const eyebrow = `<div class="eyebrow">${escapeHtml(scene.eyebrow ?? ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type])}</div>`
   const support = scene.support ? `<p>${escapeHtml(scene.support)}</p>` : ''
   if (scene.type === 'number') {
-    return `${eyebrow}<div class="metric-stage"><div class="metric-rings" data-layout-allow-overflow><i></i><i></i><i></i></div><div class="number">${escapeHtml(scene.number)}<small>${escapeHtml(scene.unit)}</small></div><div class="metric-copy"><h1>${escapeHtml(scene.headline)}</h1>${support}</div></div>`
+    const numberLayout = articleVideoHorizontalNumberLayout(scene.number ?? '')
+    return `${eyebrow}<div class="metric-stage"><div class="metric-rings" data-layout-allow-overflow><i></i><i></i><i></i></div><div class="number${numberLayout.wide ? ' number-wide' : ''}" style="--number-size:${numberLayout.fontSize}px">${escapeHtml(scene.number)}<small>${escapeHtml(scene.unit)}</small></div><div class="metric-copy"><h1>${escapeHtml(scene.headline)}</h1>${support}</div></div>`
   }
   if (scene.type === 'comparison') {
     return `${eyebrow}<h1>${escapeHtml(scene.headline)}</h1>${support}<div class="compare"><article><b>${escapeHtml(scene.left?.label)}</b><strong>${escapeHtml(scene.left?.value)}</strong></article><i>VS</i><article class="right"><b>${escapeHtml(scene.right?.label)}</b><strong>${escapeHtml(scene.right?.value)}</strong></article></div>`
@@ -1116,6 +1118,7 @@ export async function buildHorizontalProjectHtml(
 @keyframes headerIn{from{opacity:.35;transform:translateY(-12px)}to{opacity:1;transform:none}}
 @keyframes rise{from{opacity:.28;transform:translateY(28px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
 .quote-stage{margin-top:18px}.quote-mark{font-size:168px;line-height:.62}
+.scene-number main{gap:28px}.metric-stage{grid-template-columns:460px minmax(0,1fr);gap:28px;margin-top:12px}.number{font-size:var(--number-size,180px);white-space:nowrap}.number.number-wide{align-items:flex-start;flex-direction:column;justify-content:center;gap:10px;letter-spacing:-6px}.number.number-wide small{margin:0 0 0 4px;font-size:30px;line-height:1;letter-spacing:4px}
 </style></head><body><div id="root" data-composition-id="main" data-no-timeline data-start="0" data-width="1280" data-height="720" data-duration="${timings.totalDuration.toFixed(3)}" data-fps="30">${sceneHtml}${captionHtml}<audio id="narration-audio" src="audio/narration.wav" data-start="0" data-duration="${timings.totalDuration.toFixed(3)}" data-track-index="10" data-volume="1"></audio></div></body></html>`
   await fs.writeFile(join(project, 'index.html'), html, 'utf8')
   await fs.writeFile(

@@ -479,3 +479,16 @@ export function safeArticleVideoName(value: string): string {
     .replace(/^-|-$/gu, '')
     .slice(0, 48) || '文章转短视频'
 }
+
+export function articleVideoHorizontalNumberLayout(value: string): { fontSize: number; wide: boolean } {
+  const visualWeight = [...value.trim()].reduce((total, character) => {
+    if (/\p{Script=Han}/u.test(character)) return total + 1
+    if (/[0-9]/u.test(character)) return total + 0.62
+    if (/[-–—.]/u.test(character)) return total + 0.45
+    return total + 0.7
+  }, 0)
+  return {
+    fontSize: Math.max(76, Math.min(180, Math.floor(410 / Math.max(visualWeight, 1)))),
+    wide: visualWeight > 2.8,
+  }
+}
