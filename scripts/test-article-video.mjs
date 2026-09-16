@@ -138,6 +138,18 @@ assert.ok(storyboard)
 assert.equal(storyboard.durationTarget, 60)
 assert.equal(storyboard.brand.background, '#FFFBEA')
 assert.equal(core.parseArticleVideoStoryboard(JSON.stringify({ ...valid, scenes: valid.scenes.slice(1) }), 60), null)
+const crossDurationStoryboard = core.parseArticleVideoStoryboard(JSON.stringify({ ...valid, durationTarget: 120 }), 120)
+assert.ok(crossDurationStoryboard, '120 秒修改稿保留 5 幕时仍应可渲染')
+assert.equal(crossDurationStoryboard.durationTarget, 120)
+const missingTypedPayload = {
+  ...valid,
+  scenes: valid.scenes.map((scene) => scene.id === 's2'
+    ? { id: 's2', type: 'number', headline: scene.headline, voiceover: scene.voiceover }
+    : scene),
+}
+const fallbackStoryboard = core.parseArticleVideoStoryboard(JSON.stringify(missingTypedPayload), 120)
+assert.ok(fallbackStoryboard, '单幕类型字段缺失时不应丢掉整幕')
+assert.equal(fallbackStoryboard.scenes[1]?.type, 'quote')
 const readable = core.articleVideoStoryboardMarkdown(storyboard)
 assert.match(readable, /第 1 幕｜开场钩子/)
 assert.match(readable, /屏幕主文案/)

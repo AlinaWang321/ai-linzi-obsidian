@@ -192,12 +192,7 @@ const SCENE_TYPES = new Set<ArticleVideoSceneType>([
   'hook', 'quote', 'number', 'comparison', 'flow', 'steps', 'timeline', 'summary',
 ])
 
-const DURATION_SCENE_RANGE: Record<ArticleVideoDuration, [number, number]> = {
-  30: [5, 6],
-  60: [5, 8],
-  90: [7, 10],
-  120: [9, 12],
-}
+const RENDERABLE_SCENE_RANGE: [number, number] = [5, 12]
 
 function normalized(value: string): string {
   return value.normalize('NFKC').replace(/\s+/gu, '')
@@ -426,7 +421,7 @@ export function parseArticleVideoStoryboard(
     const value = rawScenes[index]
     if (!value || typeof value !== 'object') continue
     const scene = value as Record<string, unknown>
-    const type = text(scene.type, 20) as ArticleVideoSceneType
+    let type = text(scene.type, 20) as ArticleVideoSceneType
     const headline = text(scene.headline, 36)
     const voiceover = text(scene.voiceover, 360)
     if (!SCENE_TYPES.has(type) || !headline || !voiceover) continue
@@ -439,6 +434,14 @@ export function parseArticleVideoStoryboard(
       .map(item)
       .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
       .slice(0, 4)
+    const number = text(scene.number, 24)
+    const unit = text(scene.unit, 16)
+    const left = side(scene.left)
+    const right = side(scene.right)
+    const lacksTypePayload = (type === 'number' && !number)
+      || (type === 'comparison' && (!left || !right))
+      || (['flow', 'steps', 'timeline', 'summary'].includes(type) && items.length < 2)
+    if (lacksTypePayload) type = 'quote'
     const next: ArticleVideoScene = {
       id,
       type,
@@ -447,22 +450,15 @@ export function parseArticleVideoStoryboard(
       ...(eyebrow ? { eyebrow } : {}),
       ...(support ? { support } : {}),
     }
-    const number = text(scene.number, 24)
-    const unit = text(scene.unit, 16)
-    if (number) next.number = number
-    if (unit) next.unit = unit
-    const left = side(scene.left)
-    const right = side(scene.right)
-    if (left) next.left = left
-    if (right) next.right = right
-    if (items.length > 0) next.items = items
-    if (type === 'number' && !next.number) continue
-    if (type === 'comparison' && (!next.left || !next.right)) continue
-    if (['flow', 'steps', 'timeline', 'summary'].includes(type) && items.length < 2) continue
+    if (type === 'number' && number) next.number = number
+    if (type === 'number' && unit) next.unit = unit
+    if (type === 'comparison' && left) next.left = left
+    if (type === 'comparison' && right) next.right = right
+    if (['flow', 'steps', 'timeline', 'summary'].includes(type) && items.length > 0) next.items = items
     scenes.push(next)
   }
 
-  const [minScenes, maxScenes] = DURATION_SCENE_RANGE[expectedDuration]
+  const [minScenes, maxScenes] = RENDERABLE_SCENE_RANGE
   if (!title || scenes.length < minScenes || scenes.length > maxScenes) return null
   if (new Set(scenes.map((scene) => scene.type)).size < 3) return null
   if (scenes[0]?.type !== 'hook') return null
