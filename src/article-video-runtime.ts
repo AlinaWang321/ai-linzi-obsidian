@@ -1277,6 +1277,24 @@ export async function requestArticleVideoDraft(
   }
 }
 
+/**
+ * 服务端对不认识的时长档位会取最接近的档；旧服务端更是直接回落 60 秒。
+ * 响应里的 durationTarget 是服务端真正采用的目标，和本机目标不一致时必须明说，
+ * 不能把 60 秒稿当成 150 秒稿展示给用户。
+ */
+function assertServerDurationTarget(rawStoryboard: string, expected: ArticleVideoDuration): void {
+  let declared: unknown
+  try {
+    declared = (JSON.parse(rawStoryboard) as { durationTarget?: unknown }).durationTarget
+  } catch {
+    return
+  }
+  if (typeof declared !== 'number' || declared === expected) return
+  throw new Error(
+    `服务端按 ${declared} 秒起草，而不是你要求的 ${expected} 秒；当前云端版本还不支持这个时长档位，请先更新 AI霖子服务端后再试。上一版脚本已保留。`,
+  )
+}
+
 export async function prepareArticleVideoDraft(
   plugin: ArticleVideoPluginHost,
   draft: ArticleVideoDraftRequest,
@@ -1292,6 +1310,7 @@ export async function prepareArticleVideoDraft(
     format: draft.format,
     style: draft.format === 'horizontal' ? 'horizontal-ai-explainer' : 'minimal-infographic',
   })
+  assertServerDurationTarget(rawStoryboard, draft.draftTarget)
   const parsed = parseArticleVideoStoryboard(rawStoryboard, draft.draftTarget) ?? undefined
   const storyboard = parsed ? {
     ...parsed,
@@ -1343,6 +1362,7 @@ export async function reviseArticleVideoDraft(
     currentStoryboard: review.storyboard,
     instruction: `${change}${pronunciationGuard}`,
   })
+  assertServerDurationTarget(rawStoryboard, draftTarget)
   const parsedStoryboard = parseArticleVideoStoryboard(rawStoryboard, draftTarget)
   if (!parsedStoryboard) throw new Error('修改后的脚本没有通过结构校验，上一版脚本仍然保留，请换一种说法再试。')
   const storyboard = (review.format ?? 'vertical') === 'horizontal'

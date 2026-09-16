@@ -1,4 +1,6 @@
-export const ARTICLE_VIDEO_DURATIONS = [30, 60, 90, 120] as const
+export const ARTICLE_VIDEO_DURATIONS = [30, 60, 90, 120, 150, 180] as const
+/** 真人克隆配音实测语速（四条横版成片折算），与私有后端的字数预算保持一致。 */
+export const ARTICLE_VIDEO_NARRATION_CHARS_PER_SECOND = 5.2
 export const ARTICLE_VIDEO_SOURCE_MAX_CHARS = 60_000
 export const ARTICLE_VIDEO_SOURCE_EXTENSIONS = ['md', 'txt', 'pdf', 'docx'] as const
 
@@ -226,13 +228,100 @@ export function articleVideoFormatFromText(text: string): ArticleVideoFormat {
   return /(?:横版|横屏|16[:：]9|16比9|宽屏)/u.test(value) ? 'horizontal' : 'vertical'
 }
 
+const CHINESE_DIGITS: Record<string, number> = {
+  '零': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+}
+
+function chineseNumber(raw: string): number | undefined {
+  const value = raw.trim()
+  if (!value) return undefined
+  if (/^\d+(?:\.\d+)?$/u.test(value)) return Number(value)
+  if (value === '十') return 10
+  const match = value.match(/^([一二两三四五六七八九])?十?([一二三四五六七八九])?$/u)
+  if (!match || !/十/u.test(value)) {
+    const single = CHINESE_DIGITS[value]
+    return single === undefined ? undefined : single
+  }
+  return (match[1] ? CHINESE_DIGITS[match[1]] : 1) * 10 + (match[2] ? CHINESE_DIGITS[match[2]] : 0)
+}
+
+export function nearestArticleVideoDuration(seconds: number): ArticleVideoDuration {
+  return [...ARTICLE_VIDEO_DURATIONS].reduce((best, candidate) =>
+    Math.abs(candidate - seconds) < Math.abs(best - seconds) ? candidate : best)
+}
+
+const NUMBER = '(\\d+(?:\\.\\d+)?|[一二两三四五六七八九十]+)'
+const RANGE_JOIN = '(?:[-–—~～]|到|至|或)'
+
+/**
+ * 把“2-3分钟”“两分半”“三分钟”“1分30秒”“150秒”都折算成秒，再取最接近的支持档位。
+ * 区间取中点：用户说 2–3 分钟时，按 150 秒起草最稳妥地落在区间内。
+ * 旧版只认“2分钟/两分钟/120秒”，用户说“增加到 2-3 分钟”时目标仍停在 60 秒。
+ */
 export function explicitArticleVideoDurationFromText(text: string): ArticleVideoDuration | undefined {
   const value = normalized(text)
-  if (/(?:2|两)分钟|120秒/u.test(value)) return 120
-  if (/(?:1\.5|一分半|1分30秒)|90秒/u.test(value)) return 90
-  if (/(?:半分钟|30秒)/u.test(value)) return 30
-  if (/(?:1|一)分钟|60秒/u.test(value)) return 60
+  if (!value) return undefined
+  const minutesUnit = '分钟?'
+  const patterns: Array<{ regex: RegExp; seconds: (match: RegExpMatchArray) => number | undefined }> = [
+    {
+      // 2分钟到3分钟 / 2-3分钟 / 两到三分钟 / 2～3分钟
+      regex: new RegExp(`${NUMBER}(?:${minutesUnit})?${RANGE_JOIN}${NUMBER}${minutesUnit}`, 'u'),
+      seconds: (match) => {
+        const low = chineseNumber(match[1])
+        const high = chineseNumber(match[2])
+        return low !== undefined && high !== undefined ? ((low + high) / 2) * 60 : undefined
+      },
+    },
+    {
+      // 1分30秒 / 两分半 / 2分半钟
+      regex: new RegExp(`${NUMBER}分(?:钟)?(?:(半)|${NUMBER}秒)`, 'u'),
+      seconds: (match) => {
+        const minutes = chineseNumber(match[1])
+        if (minutes === undefined) return undefined
+        if (match[2]) return minutes * 60 + 30
+        const seconds = chineseNumber(match[3] ?? '')
+        return seconds === undefined ? undefined : minutes * 60 + seconds
+      },
+    },
+    {
+      regex: /半分钟/u,
+      seconds: () => 30,
+    },
+    {
+      // 3分钟 / 三分钟 / 1.5分钟
+      regex: new RegExp(`${NUMBER}${minutesUnit}`, 'u'),
+      seconds: (match) => {
+        const minutes = chineseNumber(match[1])
+        return minutes === undefined ? undefined : minutes * 60
+      },
+    },
+    {
+      // 120秒 / 一百二十秒不支持，只认阿拉伯数字秒数
+      regex: /(\d{2,3})秒/u,
+      seconds: (match) => Number(match[1]),
+    },
+  ]
+  for (const pattern of patterns) {
+    const match = value.match(pattern.regex)
+    if (!match) continue
+    const seconds = pattern.seconds(match)
+    if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) continue
+    return nearestArticleVideoDuration(seconds)
+  }
   return undefined
+}
+
+export function articleVideoNarrationChars(storyboard: Pick<ArticleVideoStoryboard, 'scenes'>): number {
+  return storyboard.scenes.reduce((sum, scene) => sum + scene.voiceover.replace(/\s/gu, '').length, 0)
+}
+
+export function estimateArticleVideoSeconds(narrationChars: number): number {
+  return Math.round(narrationChars / ARTICLE_VIDEO_NARRATION_CHARS_PER_SECOND)
+}
+
+/** 与私有后端一致：目标秒数 × 实测语速，下限 92%。低于下限时成片必然短于目标。 */
+export function articleVideoNarrationMinChars(duration: ArticleVideoDuration): number {
+  return Math.round(duration * ARTICLE_VIDEO_NARRATION_CHARS_PER_SECOND * 0.92 / 5) * 5
 }
 
 export function articleVideoDurationFromText(text: string): ArticleVideoDuration {
@@ -349,8 +438,12 @@ function sceneVisualDetails(scene: ArticleVideoScene): string[] {
 
 /** 主对话里的逐幕可读稿；不暴露内部 JSON，也不要求用户理解页型字段。 */
 export function articleVideoStoryboardMarkdown(storyboard: ArticleVideoStoryboard): string {
-  const narrationChars = storyboard.scenes
-    .reduce((sum, scene) => sum + scene.voiceover.replace(/\s/gu, '').length, 0)
+  const narrationChars = articleVideoNarrationChars(storyboard)
+  const estimatedSeconds = estimateArticleVideoSeconds(narrationChars)
+  const minChars = articleVideoNarrationMinChars(storyboard.durationTarget)
+  const lengthHint = narrationChars < minChars
+    ? `⚠️ 旁白只有 ${narrationChars} 字，按真人配音语速预计约 ${estimatedSeconds} 秒，达不到 ${storyboard.durationTarget} 秒目标（至少需要约 ${minChars} 字）。可以直接回复“旁白扩写到 ${minChars} 字，补原文里的例子和做法”。`
+    : `按真人配音语速预计约 ${estimatedSeconds} 秒。`
   const sections = storyboard.scenes.map((scene, index) => {
     const lines = [
       `### 第 ${index + 1} 幕｜${ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type]}`,
@@ -364,7 +457,7 @@ export function articleVideoStoryboardMarkdown(storyboard: ArticleVideoStoryboar
   })
   return [
     `## 视频脚本草稿｜${storyboard.title}`,
-    `起草目标约 ${storyboard.durationTarget} 秒，当前共 ${storyboard.scenes.length} 幕、旁白约 ${narrationChars} 字。最终时长以确认后的真实配音为准。`,
+    `起草目标约 ${storyboard.durationTarget} 秒，当前共 ${storyboard.scenes.length} 幕、旁白约 ${narrationChars} 字。${lengthHint}最终时长以确认后的真实配音为准。`,
     ...sections,
   ].join('\n\n')
 }
