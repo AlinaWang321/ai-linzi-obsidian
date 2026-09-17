@@ -113,6 +113,49 @@ export interface ArticleVideoStoryboard {
   scenes: ArticleVideoScene[]
 }
 
+export interface ArticleVideoHorizontalChapter {
+  title: string
+  startScene: number
+  endScene: number
+}
+
+function horizontalChapterKeyword(scene: ArticleVideoScene): string {
+  const eyebrow = (scene.eyebrow ?? '').trim()
+  const source = /[\u3400-\u9fff]/u.test(eyebrow) ? eyebrow : scene.headline
+  const clause = source
+    .normalize('NFKC')
+    .replace(/^[“”"'「」《》【】\s]+/gu, '')
+    .split(/[，。！？；：、｜|—-]/u)[0]
+    ?.replace(/^(?:为什么|如何|不是|就是|从|把|先|再|当你|真正的?)/u, '')
+    .replace(/\s+/gu, '')
+  const compact = [...(clause || ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type])].slice(0, 6).join('')
+  return compact || ARTICLE_VIDEO_SCENE_TYPE_LABELS[scene.type]
+}
+
+/**
+ * 横版底部只保留 3–5 个章节关键词，避免把每一幕都挤成难读的刻度。
+ * 分组完全在本机完成，不增加模型调用，也不改变脚本确认流程。
+ */
+export function articleVideoHorizontalChapters(
+  scenes: ArticleVideoScene[],
+): ArticleVideoHorizontalChapter[] {
+  if (scenes.length === 0) return []
+  const chapterCount = scenes.length <= 6 ? 3 : scenes.length >= 10 ? 5 : 4
+  const chapters: ArticleVideoHorizontalChapter[] = []
+  const used = new Set<string>()
+  for (let index = 0; index < chapterCount; index += 1) {
+    const startScene = Math.floor(index * scenes.length / chapterCount)
+    const endScene = Math.max(startScene, Math.floor((index + 1) * scenes.length / chapterCount) - 1)
+    const candidates = scenes.slice(startScene, endScene + 1).reverse()
+    let title = candidates.map(horizontalChapterKeyword).find((entry) => !used.has(entry))
+      ?? horizontalChapterKeyword(scenes[startScene])
+    if (used.has(title)) title = ARTICLE_VIDEO_SCENE_TYPE_LABELS[scenes[startScene].type]
+    used.add(title)
+    chapters.push({ title, startScene, endScene })
+  }
+  return chapters
+}
+
 export type ArticleVideoReviewPhase =
   | 'draft'
   | 'revising'

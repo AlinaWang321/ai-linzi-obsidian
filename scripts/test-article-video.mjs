@@ -87,6 +87,28 @@ assert.equal(core.articleVideoPlatform('win32'), 'windows')
 assert.deepEqual(core.articleVideoHorizontalNumberLayout('3'), { fontSize: 180, wide: false })
 assert.deepEqual(core.articleVideoHorizontalNumberLayout('30-50万'), { fontSize: 104, wide: true })
 assert.equal(core.articleVideoHorizontalNumberLayout('1000万').wide, true)
+const horizontalChapters = core.articleVideoHorizontalChapters([
+  { id: 's1', type: 'hook', eyebrow: '现实卡点', headline: '为什么越做越累', voiceover: '旁白' },
+  { id: 's2', type: 'number', eyebrow: '体力上限', headline: '时间有上限', voiceover: '旁白' },
+  { id: 's3', type: 'flow', eyebrow: '错误扩张', headline: '加人不等于机制', voiceover: '旁白' },
+  { id: 's4', type: 'timeline', eyebrow: '身份换挡', headline: '四次身份变化', voiceover: '旁白' },
+  { id: 's5', type: 'steps', eyebrow: '岗位机制', headline: '拆出关键岗位', voiceover: '旁白' },
+  { id: 's6', type: 'summary', eyebrow: '两条路径', headline: '只剩两条路', voiceover: '旁白' },
+  { id: 's7', type: 'quote', eyebrow: '最终选择', headline: '换身份', voiceover: '旁白' },
+  { id: 's8', type: 'summary', eyebrow: '行动收束', headline: '现在就行动', voiceover: '旁白' },
+])
+assert.deepEqual(horizontalChapters, [
+  { title: '体力上限', startScene: 0, endScene: 1 },
+  { title: '身份换挡', startScene: 2, endScene: 3 },
+  { title: '两条路径', startScene: 4, endScene: 5 },
+  { title: '行动收束', startScene: 6, endScene: 7 },
+])
+assert.equal(core.articleVideoHorizontalChapters(horizontalChapters.slice(0, 5).map((chapter, index) => ({
+  id: `c${index}`,
+  type: 'quote',
+  headline: chapter.title,
+  voiceover: '旁白',
+}))).length, 3)
 assert.equal(core.isArticleVideoCancelIntent('取消这个视频'), true)
 assert.equal(core.articleVideoPendingTurnAction('第 3 幕再口语一点', 'draft'), 'revise')
 assert.equal(core.articleVideoPendingTurnAction('确认', 'draft'), 'confirm')
@@ -306,7 +328,15 @@ assert.match(runtime, /\.number\.number-wide\{align-items:flex-start;flex-direct
 assert.match(runtime, /horizontal-ai-explainer/)
 assert.match(runtime, /format: draft\.format/)
 assert.match(runtime, /--scene-start:\$\{sceneStart\}s/)
-assert.match(runtime, /class="timeline" aria-label="视频进度"/)
+assert.match(runtime, /articleVideoHorizontalChapters\(storyboard\.scenes\)/)
+assert.match(runtime, /class="timeline chapter-timeline" aria-label="视频章节进度"/)
+assert.match(runtime, /class="chapter-label\$\{state\}"/)
+assert.match(runtime, /class="chapter-dividers"/)
+assert.match(runtime, /class="capacity-meter"/)
+assert.match(runtime, /class="flow-pulse"/)
+assert.match(runtime, /class="timeline-cursor"/)
+assert.match(runtime, /class="step-spark"/)
+assert.match(runtime, /class="fork-pulse"/)
 assert.match(runtime, /linear-gradient\(90deg,var\(--blue\),var\(--blue-soft\) 55%,var\(--orange\)\)/)
 assert.match(runtime, /animation:cameraDrift var\(--scene-duration\) ease-in-out var\(--scene-start\) both/)
 assert.match(runtime, /animation:pulse var\(--scene-duration\) ease-in-out var\(--scene-start\) both/)
