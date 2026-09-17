@@ -616,13 +616,25 @@ export function safeArticleVideoName(value: string): string {
     .slice(0, 48) || '文章转短视频'
 }
 
-export function articleVideoHorizontalNumberLayout(value: string): { fontSize: number; wide: boolean } {
-  const visualWeight = [...value.trim()].reduce((total, character) => {
+function articleVideoNumberVisualWeight(value: string): number {
+  return [...value.trim()].reduce((total, character) => {
     if (/\p{Script=Han}/u.test(character)) return total + 1
     if (/[0-9]/u.test(character)) return total + 0.62
-    if (/[-–—.]/u.test(character)) return total + 0.45
+    if (/[-–—.→]/u.test(character)) return total + 0.45
     return total + 0.7
   }, 0)
+}
+
+export function articleVideoVerticalNumberLayout(value: string): { fontSize: number; wide: boolean } {
+  const visualWeight = articleVideoNumberVisualWeight(value)
+  return {
+    fontSize: Math.max(88, Math.min(310, Math.floor(850 / Math.max(visualWeight, 1)))),
+    wide: visualWeight > 3.2,
+  }
+}
+
+export function articleVideoHorizontalNumberLayout(value: string): { fontSize: number; wide: boolean } {
+  const visualWeight = articleVideoNumberVisualWeight(value)
   return {
     fontSize: Math.max(76, Math.min(180, Math.floor(410 / Math.max(visualWeight, 1)))),
     wide: visualWeight > 2.8,
