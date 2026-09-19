@@ -580,6 +580,38 @@ assert.equal(core.isVaultBatchTask('批量总结这个文件夹里的所有逐�
 assert.equal(core.isVaultBatchTask('逐份处理这些客户档案'), true)
 assert.equal(core.isVaultBatchTask('总结当前打开的笔记'), false)
 assert.equal(core.isVaultBatchTask('帮我找一份 Obsidian 资料'), false)
+// 0.7.121：「文件夹里/下」只说明文件在哪，不代表要处理一批。点名单份文件的请求
+// 被判成批量后，搜索顺带命中的无关文件全进必读清单，方案被无限打回（真实用户原话）。
+assert.equal(
+  core.isVaultBatchTask('帮我把raw文件夹下面根据销售逐字稿“小A-第一次售前诊断对话”，在wiki文件下按照客户档案模板生成客户档案'),
+  false,
+)
+// 0.7.66 的真机验收原句；0.7.92 引入批量判定后它同样被误判。
+assert.equal(core.isVaultBatchTask('帮我根据raw文件夹里面小A的资料，在wiki里面生成一份小A的客户档案'), false)
+assert.equal(core.isVaultBatchTask('总结 raw 文件夹里的这份逐字稿'), false)
+// 显式数量词仍然进入批量：整夹、全部、逐份都不受影响。
+assert.equal(core.isVaultBatchTask('把raw文件夹下所有逐字稿逐份整理成客户档案'), true)
+assert.equal(core.isVaultBatchTask('整理整个文件夹的资料'), true)
+// 粘贴进来的长正文不参与批量判定：只看开头和结尾的指令部分。
+{
+  const pasted = '我们把所有内容都过了一遍，然后总结每个环节的资料。'.repeat(40)
+  assert.ok(pasted.length > core.VAULT_BATCH_INSTRUCTION_WINDOW_CHARS * 2)
+  assert.equal(
+    core.isVaultBatchTask(`把下面这份咨询逐字稿写成一份咨询简报。${'。'.repeat(320)}${pasted}${'。'.repeat(320)}以上是原文，谢谢。`),
+    false,
+    '正文里碰巧出现的数量词不得把单份任务判成批量',
+  )
+  assert.equal(
+    core.isVaultBatchTask(`请批量总结 raw 里的所有逐字稿。${'。'.repeat(320)}${pasted}`),
+    true,
+    '写在开头的批量指令仍然生效',
+  )
+  assert.equal(
+    core.isVaultBatchTask(`${pasted}${'。'.repeat(320)}以上是背景。请逐份处理这些客户档案。`),
+    true,
+    '写在结尾的批量指令仍然生效',
+  )
+}
 
 // ── 预算并入：去重 / 截断 / 用尽提示（0.7.45）──
 {

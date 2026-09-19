@@ -279,6 +279,101 @@ console.log('[test-vault-task-state]')
   console.log('  ✓ 7c. 批量断点不保存原文；重启后安全进入暂停态')
 }
 
+// ── 7c-2. 批量收尾闸门：有限次提醒，之后放行并披露，绝不无限打回（0.7.121）──
+{
+  let task = newTask({ batch: core.createVaultBatchCheckpoint(NOW) })
+  task = core.advanceVaultTask(task, {
+    type: 'search',
+    candidatePaths: ['01_Raw/小A.docx', '02_Wiki/模板.md', '01_Raw/无关A.md', '01_Raw/无关B.md'],
+  }, NOW + 1)
+  for (const path of ['01_Raw/小A.docx', '02_Wiki/模板.md']) {
+    task = core.markVaultBatchRead(task, {
+      snapshot: { path, mtime: 1, size: 100 },
+      nextOffset: null,
+    }, NOW + 2)
+  }
+  const unread = core.vaultBatchUnread(task)
+  assert.deepEqual(unread.remainingPaths, ['01_Raw/无关A.md', '01_Raw/无关B.md'])
+  assert.equal(unread.count, 2)
+  const signature = core.vaultBatchUnreadSignature(task)
+  assert.ok(signature.length > 0)
+  assert.equal(core.vaultBatchUnreadSignature(null), '')
+  assert.equal(core.vaultBatchUnreadSignature(newTask()), '', '非批量任务没有未读清单')
+
+  const decide = (overrides = {}) => core.decideVaultBatchGate({
+    unreadSignature: signature,
+    state: { pushbacks: 0, lastSignature: null },
+    roundsExhausted: false,
+    toolBudgetExhausted: false,
+    ...overrides,
+  })
+  assert.equal(decide({ unreadSignature: '' }), 'accept', '清单读完直接放行')
+  assert.equal(decide(), 'pushback', '第一次：提醒模型核对未读清单')
+  // 真实事故的复现点：模型被提醒后一份都没再读、仍提交同一份方案——旧实现在这里
+  // 继续打回直到 36 轮；新规则必须放行。
+  assert.equal(
+    decide({ state: { pushbacks: 1, lastSignature: signature } }),
+    'accept_with_unread',
+    '同一份未读清单只打回一次',
+  )
+  // 提醒后确实多读了文件（指纹变了）但仍没读完：允许再提醒一次，但总数封顶。
+  assert.equal(decide({ state: { pushbacks: 1, lastSignature: 'other' } }), 'pushback')
+  assert.equal(core.VAULT_BATCH_GATE_MAX_PUSHBACKS, 2)
+  assert.equal(
+    decide({ state: { pushbacks: 2, lastSignature: 'other' } }),
+    'accept_with_unread',
+    '打回次数封顶，绝不无限循环',
+  )
+  // 读取预算用满：模型已被要求基于已读内容收尾，续跑也只会回灌同一批结果。
+  assert.equal(decide({ toolBudgetExhausted: true }), 'accept_with_unread')
+  // 从没提醒过就撞到轮次上限 = 真的大批量：保存断点等「继续」。
+  assert.equal(decide({ roundsExhausted: true }), 'pause')
+  // 已经提醒过、模型坚持收尾，即使正好在最后一轮也交付结果而不是丢弃。
+  assert.equal(
+    decide({ roundsExhausted: true, state: { pushbacks: 1, lastSignature: signature } }),
+    'accept_with_unread',
+  )
+  // 任意输入序列下，打回次数都不可能超过上限。
+  {
+    const state = { pushbacks: 0, lastSignature: null }
+    let rounds = 0
+    for (let index = 0; index < 100; index++) {
+      const changing = `sig-${index}`
+      const result = core.decideVaultBatchGate({
+        unreadSignature: changing,
+        state,
+        roundsExhausted: false,
+        toolBudgetExhausted: false,
+      })
+      if (result !== 'pushback') break
+      state.pushbacks += 1
+      state.lastSignature = changing
+      rounds += 1
+    }
+    assert.equal(rounds, core.VAULT_BATCH_GATE_MAX_PUSHBACKS)
+  }
+
+  const partial = core.markVaultBatchRead(task, {
+    snapshot: { path: '01_Raw/无关A.md', mtime: 1, size: 100 },
+    nextOffset: 12_000,
+  }, NOW + 3)
+  assert.notEqual(core.vaultBatchUnreadSignature(partial), signature, '读到一半也会改变指纹')
+  const toolOutput = core.vaultBatchPushbackToolOutput(partial)
+  assert.match(toolOutput, /01_Raw\/无关B\.md/)
+  assert.match(toolOutput, /offset=12000/)
+  assert.match(toolOutput, /无关的.*不要读取/u, '必须给出「无关就直接交付」这条出路')
+  assert.doesNotMatch(toolOutput, /积分|扣费|计费/u)
+  assert.match(core.vaultBatchPushbackActivity(task), /2 项未读/)
+
+  const disclosure = core.vaultBatchUnreadDisclosure(task)
+  assert.match(disclosure, /只基于已经读完的 2 份文件/)
+  assert.match(disclosure, /无关A\.md/)
+  assert.doesNotMatch(disclosure, /01_Raw\//, '披露只给文件名，不铺开整条路径')
+  assert.doesNotMatch(disclosure, /积分|扣费|计费/u)
+  assert.equal(core.vaultBatchUnreadDisclosure(newTask()), '')
+  console.log('  ✓ 7c-2. 批量收尾闸门有限次提醒后放行并披露，不再无限打回')
+}
+
 // ── 7d. UI 接线哨兵：会话持久化、停止与恢复不可被重构漏掉 ──
 {
   const mainSource = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')
@@ -293,6 +388,15 @@ console.log('[test-vault-task-state]')
   assert.match(mainSource, /批量结果不包含 \$\{failedBatchPaths\.length\} 份读取失败的文件/)
   assert.match(mainSource, /batchCheckpoint: batchCheckpointForApi\(\)/)
   assert.match(mainSource, /await this\.persistNow\(\)/)
+  // 0.7.121：闸门必须经过有上限的 decideVaultBatchGate，且只在本轮确实是批量运行时生效。
+  assert.match(mainSource, /decideVaultBatchGate\(\{/)
+  assert.match(mainSource, /batchMode && this\.pendingVaultTask\?\.batch\s*\?\s*vaultBatchUnreadSignature/)
+  assert.match(mainSource, /const nativeGate = batchGateDecision\(step \+ 1 >= maxRounds\)/)
+  assert.match(mainSource, /const batchGateResult = batchGateDecision\(round >= maxRounds - 1\)/)
+  assert.match(mainSource, /pendingRetryReason = 'batch_unread_remaining'/)
+  assert.match(mainSource, /withBatchUnreadDisclosure\(lastText\)/)
+  // 旧的无上限写法（清单没读完就一律 deferred_answer）不得回潮。
+  assert.doesNotMatch(mainSource, /if \(batchStillReading\)/)
   console.log('  ✓ 7d. 会话保存、停止按钮与 API 检查点接线完整')
 }
 

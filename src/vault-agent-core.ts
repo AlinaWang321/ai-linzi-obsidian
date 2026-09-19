@@ -36,10 +36,29 @@ export const VAULT_NOTE_WRITE_MAX_CHARS = 30_000
 export const VAULT_NOTE_UPDATE_MAX_OPERATIONS = 30
 export const VAULT_NOTE_WRITE_MAX_FILES = 12
 
-/** 只在用户明确要求处理一批资料时扩容，避免普通闲聊误跑 36 轮。 */
+/**
+ * 只在用户明确要求处理一批资料时扩容，避免普通闲聊误跑 36 轮。
+ *
+ * 0.7.121：去掉单独的「文件夹里/内/下」。它只说明文件「在哪」，不说明「有几份」——
+ * 「把 raw 文件夹下面的逐字稿『某某』按模板生成客户档案」点名的是一份文件，旧规则却
+ * 因为出现「文件夹下」把它判成批量：搜索顺带命中的十几个无关文件全部进了必读清单，
+ * 模型每交一次方案就被「清单没读完」打回，原地空转到 36 轮（2026-09-18 真实用户案；
+ * 0.7.66 的真机验收原句「根据 raw 文件夹里面小A的资料…生成客户档案」同样中招）。
+ * 整夹处理仍由「批量/全部/所有/每份/逐份/整个文件夹」等显式数量词触发。
+ *
+ * 长消息只看开头和结尾的指令部分：用户常把整段逐字稿或文章粘进来，正文里几乎必然
+ * 同时出现「所有…内容…总结」这类词，整条消息就被判成批量，其他纠正循环也跟着从
+ * 12 轮放大到 36 轮（2026-09 多个真实会话）。指令写在中间的极少数情况只是不进批量
+ * 模式，仍按普通 12 轮正常处理。
+ */
+export const VAULT_BATCH_INSTRUCTION_WINDOW_CHARS = 300
+
 export function isVaultBatchTask(text: string): boolean {
-  const normalized = text.normalize('NFKC')
-  const scope = /(?:批量|全部|所有|每(?:一|份|篇|个)|逐(?:份|篇|个)|整批|一批|多份|多个|整个(?:文件夹|目录|Vault|仓库|知识库)|文件夹(?:里|内|下))/iu
+  const full = text.normalize('NFKC')
+  const normalized = full.length > VAULT_BATCH_INSTRUCTION_WINDOW_CHARS * 2
+    ? `${full.slice(0, VAULT_BATCH_INSTRUCTION_WINDOW_CHARS)}\n${full.slice(-VAULT_BATCH_INSTRUCTION_WINDOW_CHARS)}`
+    : full
+  const scope = /(?:批量|全部|所有|每(?:一|份|篇|个)|逐(?:份|篇|个)|整批|一批|多份|多个|整个(?:文件夹|目录|Vault|仓库|知识库))/iu
   const material = /(?:逐字稿|文件|文档|笔记|材料|资料|文章|档案|记录|内容|Vault|仓库|知识库)/iu
   const action = /(?:处理|总结|整理|提炼|归纳|分析|改写|生成|更新|读取|搜索|查找|扫描|复盘)/u
   return scope.test(normalized) && material.test(normalized) && action.test(normalized)
@@ -207,6 +226,8 @@ export type VaultAnswerRetryReason =
   | 'empty_response'
   | 'unexpected_plan'
   | 'stalled_write_flow'
+  /** 0.7.121：批量清单还有未读文件。与 deferred_answer 分开，服务端才能给出不自相矛盾的纠正。 */
+  | 'batch_unread_remaining'
 
 /**
  * 跨用户轮次的 Vault 任务状态（2026-08-17 阶段 A）。
@@ -481,6 +502,139 @@ export function vaultBatchProgress(task: PendingVaultTask): VaultBatchProgressSu
     pendingFolders: task.batch.folderProgress.length,
     remainingPaths,
   }
+}
+
+/**
+ * 批量任务「清单没读完」的收尾闸门（0.7.121 重写）。
+ *
+ * 旧实现只要清单里还有未读文件，就无条件把模型的收尾打回、且没有次数上限。可清单
+ * 来自 vault_search / list_folder 的全部命中，其中常有与任务无关的文件——模型不会去读，
+ * 闸门也就永远不放行：同样的输入被整轮重跑到 36 轮，用户一份结果都拿不到。
+ *
+ * 新规则：最多打回 VAULT_BATCH_GATE_MAX_PUSHBACKS 次，且同一份未读清单只打回一次；
+ * 之后采信模型「其余文件与本任务无关」的判断，放行并在结果里如实列出未读文件——
+ * 未读文件既不冒充已处理，也不再拖死整个任务。
+ */
+export const VAULT_BATCH_GATE_MAX_PUSHBACKS = 2
+
+export interface VaultBatchGateState {
+  /** 本次运行内已经打回的次数（原生引擎与常规通道共用同一份计数）。 */
+  pushbacks: number
+  /** 上一次打回时的未读清单指纹；指纹没变 = 模型被提醒后一份都没再读，仍坚持收尾。 */
+  lastSignature: string | null
+}
+
+export type VaultBatchGateDecision = 'accept' | 'accept_with_unread' | 'pushback' | 'pause'
+
+export interface VaultBatchUnread {
+  /** 清单里还没开始读的文件。 */
+  remainingPaths: string[]
+  /** 读到一半、需要沿 nextOffset 继续的长文件。 */
+  partialReads: { path: string; nextOffset: number }[]
+  /** list_folder 还没翻完的目录页。 */
+  pendingFolders: string[]
+  count: number
+}
+
+export function vaultBatchUnread(task: PendingVaultTask | null): VaultBatchUnread {
+  const progress = task ? vaultBatchProgress(task) : null
+  if (!task?.batch || !progress) {
+    return { remainingPaths: [], partialReads: [], pendingFolders: [], count: 0 }
+  }
+  const partialReads = task.batch.readProgress.map((item) => ({
+    path: item.path,
+    nextOffset: item.nextOffset,
+  }))
+  const pendingFolders = task.batch.folderProgress.map((item) => item.path || 'Vault 根目录')
+  return {
+    remainingPaths: progress.remainingPaths,
+    partialReads,
+    pendingFolders,
+    count: progress.remainingPaths.length + partialReads.length + pendingFolders.length,
+  }
+}
+
+/** 未读清单的确定性指纹；空字符串 = 清单已经读完。只含路径与游标，不含任何正文。 */
+export function vaultBatchUnreadSignature(task: PendingVaultTask | null): string {
+  const unread = vaultBatchUnread(task)
+  if (unread.count === 0) return ''
+  return JSON.stringify([
+    [...unread.remainingPaths].sort(),
+    unread.partialReads
+      .map((item) => `${item.path}@${item.nextOffset}`)
+      .sort(),
+    [...unread.pendingFolders].sort(),
+  ])
+}
+
+export function decideVaultBatchGate(input: {
+  unreadSignature: string
+  state: VaultBatchGateState
+  roundsExhausted: boolean
+  toolBudgetExhausted: boolean
+}): VaultBatchGateDecision {
+  if (!input.unreadSignature) return 'accept'
+  // 读取预算用满后，模型已被明确要求「基于已读材料立即收尾」；此时再打回或只存断点
+  // 都拿不到结果（续跑会原样回灌同一批已满的结果），只能如实交付已读部分。
+  if (input.toolBudgetExhausted) return 'accept_with_unread'
+  if (input.state.pushbacks >= VAULT_BATCH_GATE_MAX_PUSHBACKS) return 'accept_with_unread'
+  if (input.state.pushbacks > 0 && input.state.lastSignature === input.unreadSignature) {
+    return 'accept_with_unread'
+  }
+  // 还没提醒过就撞到轮次上限：多半是真的大批量，保存断点等用户说「继续」。
+  if (input.roundsExhausted) return 'pause'
+  return 'pushback'
+}
+
+function vaultBatchFilenames(paths: string[], max: number): string {
+  const names = paths.slice(0, max).map((path) => path.split('/').at(-1) ?? path)
+  return `${names.join('、')}${paths.length > max ? ' 等' : ''}`
+}
+
+/** 活动流里给用户看的一句话：为什么又多跑了一轮。 */
+export function vaultBatchPushbackActivity(task: PendingVaultTask | null): string {
+  return `批量清单还有 ${vaultBatchUnread(task).count} 项未读，已请 AI 核对：要用的继续读，无关的直接交付`
+}
+
+/** 原生引擎里回给模型的工具结果：说清还差什么、以及两条合法出路。 */
+export function vaultBatchPushbackToolOutput(task: PendingVaultTask | null): string {
+  const unread = vaultBatchUnread(task)
+  const parts: string[] = ['这份方案暂时没有展示给用户：批量清单里还有没读完的内容。']
+  if (unread.remainingPaths.length > 0) {
+    parts.push(`尚未读取（${unread.remainingPaths.length} 份）：${unread.remainingPaths.slice(0, 24).join('、')}。`)
+  }
+  if (unread.partialReads.length > 0) {
+    parts.push(
+      `读到一半：${unread.partialReads
+        .slice(0, 12)
+        .map((item) => `${item.path}（从 offset=${item.nextOffset} 继续）`)
+        .join('、')}。`,
+    )
+  }
+  if (unread.pendingFolders.length > 0) {
+    parts.push(`目录还没翻完：${unread.pendingFolders.slice(0, 12).join('、')}。`)
+  }
+  parts.push(
+    '请核对后二选一：① 其中属于用户这次要求处理范围的，立即按上面的精确路径继续 read_note / list_folder，读完再提交方案；' +
+      '② 确认与这次任务无关的（例如搜索顺带命中的其他资料、模板、旧稿），不要读取，直接重新提交最终方案，并在 notes 里用一句话说明哪些文件没有纳入。' +
+      '不要回复「稍后」「接下来」。',
+  )
+  return parts.join('')
+}
+
+/** 放行但清单未读完时，附在结果末尾的如实披露；未读文件绝不冒充已处理。 */
+export function vaultBatchUnreadDisclosure(task: PendingVaultTask | null): string {
+  const progress = task ? vaultBatchProgress(task) : null
+  const unread = vaultBatchUnread(task)
+  if (!progress || unread.count === 0) return ''
+  const unreadFiles = [
+    ...unread.remainingPaths,
+    ...unread.partialReads.map((item) => item.path),
+  ]
+  const detail = unreadFiles.length > 0
+    ? `清单里另有 ${unreadFiles.length} 份没有读完、也没有纳入：${vaultBatchFilenames(unreadFiles, 5)}。`
+    : `另有 ${unread.pendingFolders.length} 个目录没有翻完。`
+  return `> ℹ️ **这次结果只基于已经读完的 ${progress.completed} 份文件。** ${detail}需要把它们也算进来时，告诉我要补读哪几份。`
 }
 
 export function resumeVaultBatchTask(task: PendingVaultTask, now: number): PendingVaultTask {

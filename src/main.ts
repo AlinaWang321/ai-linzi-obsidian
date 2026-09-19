@@ -236,6 +236,7 @@ import {
   buildVaultExecuteFailureToolResult,
   createVaultBatchCheckpoint,
   completedVaultReadCount,
+  decideVaultBatchGate,
   detectVaultAgentIntent,
   extractVaultOrganizePlan,
   extractVaultToolCalls,
@@ -272,8 +273,14 @@ import {
   vaultAnswerRetryReason,
   vaultToolCallSignature,
   vaultBatchProgress,
+  vaultBatchPushbackActivity,
+  vaultBatchPushbackToolOutput,
+  vaultBatchUnread,
+  vaultBatchUnreadDisclosure,
+  vaultBatchUnreadSignature,
   vaultWriteFlowRetryReason,
   type PendingVaultTask,
+  type VaultBatchGateState,
   type VaultAnswerRetryReason,
   type VaultAgentToolCall,
   type VaultAgentToolResult,
@@ -6920,6 +6927,39 @@ class ChatView extends ItemView {
     // 本机结果预算（2026-08-18 开放到 36 万字符）：满了不再报错断头，
     // 改为提示模型基于已读内容收尾，并关闭后续工具轮。
     let toolBudgetExhausted = false
+    // 0.7.121：批量「清单没读完」闸门的本轮状态，原生引擎与常规通道共用。旧实现没有
+    // 次数上限，搜索顺带命中的无关文件永远读不完，同一份方案被打回到 36 轮（见
+    // decideVaultBatchGate）。现在最多提醒两次，之后放行并如实披露未读文件。
+    const batchGate: VaultBatchGateState = { pushbacks: 0, lastSignature: null }
+    // 放行瞬间就定格披露文案：纯问答收尾会在返回前清空 pendingVaultTask，届时已无清单可读。
+    let batchUnreadDisclosure = ''
+    const withBatchUnreadDisclosure = (text: string): string =>
+      batchUnreadDisclosure && !text.includes(batchUnreadDisclosure)
+        ? [text, batchUnreadDisclosure].join('\n\n')
+        : text
+    /**
+     * 模型想收尾（方案或最终答复）时统一过这一关。只在本轮确实是批量运行时生效：
+     * 旧实现连普通提问也拦——对话里只要留着一份没读完的旧批量任务，之后每句无关
+     * 的话都会被「清单没读完」打回到轮次上限。
+     */
+    const batchGateDecision = (roundsExhausted: boolean) => {
+      const unreadSignature = batchMode && this.pendingVaultTask?.batch
+        ? vaultBatchUnreadSignature(this.pendingVaultTask)
+        : ''
+      const decision = decideVaultBatchGate({
+        unreadSignature,
+        state: batchGate,
+        roundsExhausted,
+        toolBudgetExhausted,
+      })
+      if (decision === 'pushback') {
+        batchGate.pushbacks += 1
+        batchGate.lastSignature = unreadSignature
+      } else if (decision === 'accept_with_unread') {
+        batchUnreadDisclosure = vaultBatchUnreadDisclosure(this.pendingVaultTask)
+      }
+      return decision
+    }
     const appendToolResults = (incoming: VaultAgentToolResult[]) => {
       const merged = appendToolResultsWithinBudget(
         toolResults,
@@ -7763,7 +7803,43 @@ class ChatView extends ItemView {
                 }
                 continue
               }
-              this.activityStep('📋 已生成整理方案，等待你确认', null)
+              // 0.7.121：批量清单没读完时，先在同一条 Responses 线程里提醒一次；不再把
+              // 方案当成已就绪交给下方常规通道反复打回（那条路每轮都要重发全部上下文）。
+              const nativeGate = batchGateDecision(step + 1 >= maxRounds)
+              if (nativeGate === 'pushback') {
+                const proposeCallId = typeof record.callId === 'string' ? record.callId : ''
+                if (!proposeCallId) throw new Error('native: invalid plan call')
+                this.activityStep(`🧭 ${vaultBatchPushbackActivity(this.pendingVaultTask)}`)
+                const pushback = vaultBatchPushbackToolOutput(this.pendingVaultTask)
+                nextBody = {
+                  question: input.question,
+                  round: Math.min(requestRound + 1, maxRounds - 1),
+                  batchMode,
+                  sessionId: this.sessionId,
+                  previousResponseId,
+                  // Responses 要求同一轮的每个 function_call 都有对应输出。
+                  toolOutputs: nativeCalls
+                    .filter((item) => typeof item.callId === 'string' && item.callId)
+                    .slice(0, VAULT_AGENT_MAX_CALLS_PER_ROUND)
+                    .map((item) => ({
+                      callId: item.callId as string,
+                      output: item === propose
+                        ? pushback
+                        : '这个调用本轮未执行；请先处理上面的批量清单提醒，仍需要时下一轮重新调用。',
+                    })),
+                }
+                continue
+              }
+              if (nativeGate === 'pause') {
+                await pauseBatch('round-limit')
+                return `${batchPauseMarker}\n${batchPauseText()}`
+              }
+              this.activityStep(
+                nativeGate === 'accept_with_unread'
+                  ? `📋 已按读完的内容生成方案，等待你确认（清单另有 ${vaultBatchUnread(this.pendingVaultTask).count} 项未读，已在结果里注明）`
+                  : '📋 已生成整理方案，等待你确认',
+                null,
+              )
               const dashboardPlan = record.name === 'propose_dynamic_dashboard'
                 ? dynamicDashboardPlanFromToolArguments(args)
                 : null
@@ -8069,6 +8145,8 @@ class ChatView extends ItemView {
                     ? '方案未过本机检查，要求重新核对生成'
                     : pendingRetryReason === 'unexpected_plan'
                       ? '本轮只读，已退回越界的写入方案'
+                      : pendingRetryReason === 'batch_unread_remaining'
+                        ? vaultBatchPushbackActivity(this.pendingVaultTask)
                       : pendingRetryReason === 'deferred_answer'
                         ? batchMode && this.pendingVaultTask?.stage === 'source_read'
                           ? '已读取来源，要求继续批读或生成综合方案'
@@ -8333,27 +8411,17 @@ class ChatView extends ItemView {
           pendingRetryReason = 'invalid_plan'
           continue
         }
-        const batchProgress = this.pendingVaultTask?.batch
-          ? vaultBatchProgress(this.pendingVaultTask)
-          : null
-        const batchStillReading = Boolean(
-          batchProgress &&
-          (
-            (
-              batchProgress.total > 0 &&
-              (batchProgress.remainingPaths.length > 0 || batchProgress.inProgress > 0)
-            ) ||
-            batchProgress.pendingFolders > 0
-          ),
-        )
-        // 批量任务不能在清单尚未读完时提前交“综合结果”或写入方案。这个判定
-        // 只看本机游标与文件指纹，不相信模型说了“全部完成”。
-        if (batchStillReading) {
-          if (round >= maxRounds - 1 || toolBudgetExhausted) {
-            await pauseBatch(toolBudgetExhausted ? 'tool-budget' : 'round-limit')
-            return { text: batchPauseText(), sources, localSkillRunIds }
-          }
-          pendingRetryReason = 'deferred_answer'
+        // 批量任务不应在清单尚未读完时草率交“综合结果”或写入方案：未读/读到一半的
+        // 判定只看本机游标与文件指纹，不相信模型说了“全部完成”。但清单来自搜索和
+        // 列目录的全部命中，常混有与任务无关的文件——0.7.121 起只提醒有限次，之后
+        // 放行并如实披露未读文件，绝不再无限打回同一份方案（decideVaultBatchGate）。
+        const batchGateResult = batchGateDecision(round >= maxRounds - 1)
+        if (batchGateResult === 'pause') {
+          await pauseBatch('round-limit')
+          return { text: batchPauseText(), sources, localSkillRunIds }
+        }
+        if (batchGateResult === 'pushback') {
+          pendingRetryReason = 'batch_unread_remaining'
           continue
         }
         // create-note Skill 的服务端兼容协议会返回 <<<新建笔记>>> 确认卡。
@@ -8365,7 +8433,7 @@ class ChatView extends ItemView {
           extractCreateNoteBlocks(lastText).blocks.length > 0 &&
           !plan.plan
         ) {
-          return { text: lastText, sources, localSkillRunIds }
+          return { text: withBatchUnreadDisclosure(lastText), sources, localSkillRunIds }
         }
         if (input.intent === 'answer' && plan.plan) {
           if (round >= maxRounds - 1) {
@@ -8496,7 +8564,12 @@ class ChatView extends ItemView {
           }
           try {
             await this.plugin.vaultAgent.preflightPlan(plan.plan, input.localSkillContext)
-            this.activityStep('📋 已生成整理方案，等待你确认', null)
+            this.activityStep(
+              batchGateResult === 'accept_with_unread'
+                ? `📋 已按读完的内容生成方案，等待你确认（清单另有 ${vaultBatchUnread(this.pendingVaultTask).count} 项未读，已在结果里注明）`
+                : '📋 已生成整理方案，等待你确认',
+              null,
+            )
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             if (round >= maxRounds - 1) {
@@ -8572,7 +8645,10 @@ class ChatView extends ItemView {
         }
         // 合法终态：产出通过预检的方案卡 → 任务停在 previewed 等用户确认；
         // 纯问答正常收尾 → 任务结清。两种情况都不把中间状态带进下一轮新话题。
-        const failedBatchPaths = this.pendingVaultTask?.batch?.failures.map((item) => item.path) ?? []
+        // 同样只对本轮批量运行生效：残留旧任务的失败清单不该附在无关提问的回答后面。
+        const failedBatchPaths = batchMode
+          ? this.pendingVaultTask?.batch?.failures.map((item) => item.path) ?? []
+          : []
         if (plan.plan) {
           const planTarget = plan.plan.operations.length === 1 &&
             (plan.plan.operations[0].type === 'append_note' ||
@@ -8631,7 +8707,7 @@ class ChatView extends ItemView {
             `> ⚠️ **批量结果不包含 ${failedBatchPaths.length} 份读取失败的文件：** ${shown.join('、')}${failedBatchPaths.length > shown.length ? '等' : ''}。插件没有把它们算作已完成。`,
           ].join('\n\n')
         }
-        return { text: lastText, sources, localSkillRunIds }
+        return { text: withBatchUnreadDisclosure(lastText), sources, localSkillRunIds }
       }
       if (round >= maxRounds - 1) {
         if (batchMode && this.pendingVaultTask?.batch) {
