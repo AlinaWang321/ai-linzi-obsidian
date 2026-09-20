@@ -65,7 +65,10 @@ assert(
   readme.includes('never installs, downloads, or updates these dependencies'),
   'README 必须公开说明 Article to Video 不会由插件安装或更新本机依赖',
 )
-assert(!sources.includes('.vault.adapter.'), '插件状态和 Vault 文件操作不得直接使用 Adapter API')
+// Obsidian documents the Adapter API as necessary for hidden plugin-private files:
+// https://docs.obsidian.md/Plugins/Vault . The sole exception is our bounded recovery journal.
+assert(sourceEntries.filter(entry => entry.name !== 'vault-run-journal.ts').every(entry => !entry.text.includes('.vault.adapter.')), '用户文档必须使用 Vault API；Adapter 仅限隐藏任务缓存')
+assert(sourceEntries.find(entry => entry.name === 'vault-run-journal.ts').text.includes('/plugins/ai-linzi/vault-tasks'), '任务缓存只能写入自身插件目录')
 assert(!sources.includes('window.confirm('), '确认操作必须使用 Obsidian Modal')
 
 /**

@@ -1,3 +1,5 @@
+import { pruneVaultRuns, loadVaultRun, saveVaultRun, vaultRunMemory, canResumeVaultRun, recoverableVaultStep, type VaultRunJournal } from './vault-run-journal'
+import { VAULT_WORK_NAMES, runVaultWorkTool, recordWorkRead } from './vault-work-tools'
 /**
  * AI霖子 Obsidian 插件 · 学员内容工作流
  *
@@ -1590,6 +1592,7 @@ export default class AiLinziPlugin extends Plugin {
   async onload() {
     this.pluginUnloaded = false
     await this.loadSettings()
+    void pruneVaultRuns(this.app).catch(() => { /* Retry cache housekeeping on next launch. */ })
     this.wechatInbox = new WechatInboxManager({
       app: this.app,
       pluginVersion: this.manifest.version,
@@ -6907,6 +6910,17 @@ class ChatView extends ItemView {
     weeklyBusinessScan?: WeeklyBusinessScanState
   }> {
     throwIfAborted(input.signal)
+    let recoverableNative = !input.localSkillContext && !requiresWebSearchNativeRouting(input.question) && input.vaultAccess
+    let journal: VaultRunJournal | null = recoverableNative ? await loadVaultRun(this.app, this.sessionId) : null
+    if (input.resumeQuestion && !journal) recoverableNative = false
+    const resumingNative = Boolean(journal && !journal.finished && (input.resumeQuestion || isVaultTaskContinuation(input.question)))
+    if (!resumingNative) journal = null
+    if (journal && !canResumeVaultRun(journal, path => this.plugin.vaultFileStat(path))) {
+      throw new Error('来源文件在暂停期间发生了变化，已保留草稿。请重新发送完整任务，系统会按最新文件重新处理')
+    }
+    const createJournal = (): VaultRunJournal => ({ version: 1, sessionId: this.sessionId, taskId: uid(),
+      question: input.question, updatedAt: Date.now(), round: 0, snapshots: [], reads: {}, plan: [], summaries: {}, drafts: {} })
+
     const requestedBatchMode = isVaultBatchTask([
       input.question,
       input.resumeQuestion?.goal ?? '',
@@ -6983,6 +6997,15 @@ class ChatView extends ItemView {
     const callNativeStep = async (
       body: Record<string, unknown>,
     ): Promise<Record<string, unknown>> => {
+      if (recoverableNative) {
+        journal ??= createJournal()
+        return recoverableVaultStep({
+          request: (path, init) => this.plugin.api(path, init),
+          save: () => saveVaultRun(this.app, journal!),
+          progress: text => this.activityCurrent(text),
+          sleep: nativeRetryDelay, uid,
+        }, journal, body, input.signal)
+      }
       const requestId = uid()
       let lastError: unknown
       for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -7214,7 +7237,7 @@ class ChatView extends ItemView {
       pendingTask: taskContinuation ? this.pendingVaultTask : null,
     })
     // 承接上一轮未完成任务：按受控路径重新读取本地文件重建工具结果（不落盘正文）。
-    if (this.pendingVaultTask && input.vaultAccess && taskContinuation) {
+    if (this.pendingVaultTask && input.vaultAccess && taskContinuation && !resumingNative) {
       let task = this.pendingVaultTask
       if (task.batch) {
         let changed = false
@@ -7454,6 +7477,8 @@ class ChatView extends ItemView {
     // 0.7.54：引擎失败通常是网络/服务端原因，短时间内重试大概率同样失败。
     // 记住失败，标记路径不再把同一个引擎整轮重跑一遍（白等一次超时+白扣积分）。
     let nativeChannelFailed = false
+    const nativeState: { receipt?: { responseId: string; calls: Record<string, unknown>[]; round: number } } = {}
+    let nativeCorrections = 0
     // “引擎能否使用”和“是否走本地词表快路径”必须分开。
     // 旧实现把二者绑在 mutationAsk 上：Luna 即使在判断轮明确输出
     // VAULT_NATIVE_TURN，客户端也会因本地词表没命中“做个工作台”等自然说法
@@ -7588,6 +7613,7 @@ class ChatView extends ItemView {
     )
     const nativeFastPath = nativeAvailable && (
       Boolean(input.resumeQuestion) ||
+      resumingNative ||
       Boolean(input.localSkillContext) ||
       mutationAsk ||
       webSearchNativeRouting ||
@@ -7596,10 +7622,18 @@ class ChatView extends ItemView {
     // 抽成闭包函数：词表命中的快路径与「模型自主切换标记」（0.7.52）共用同一引擎。
     const runNativeChannel = async (): Promise<string | null> => {
       try {
+        if (recoverableNative) journal ??= createJournal()
+        if (journal && resumingNative) {
+          for (const snapshot of journal.snapshots) {
+            sources.push({ sourceId: 'resumed', filename: snapshot.path.split('/').at(-1) ?? snapshot.path, path: snapshot.path, kind: 'read' })
+            verifiedWritePaths.add(snapshot.path)
+          }
+        }
+        const nativeLimit = recoverableNative ? 120 : maxRounds
         let previousResponseId = input.resumeQuestion?.responseId ?? ''
         let nextBody: Record<string, unknown> | null = input.resumeQuestion
           ? {
-              question: input.question,
+              question: journal?.question ?? input.question,
               round: input.resumeQuestion.round,
               batchMode,
               sessionId: this.sessionId,
@@ -7612,17 +7646,22 @@ class ChatView extends ItemView {
                 input.resumeQuestion.kind === 'web-search' && input.question.trim() === '允许联网搜索',
             }
           : null
+        if (!input.resumeQuestion) {
+          if (journal?.pending) nextBody = journal.pending.body
+          else if (journal?.nextBody) nextBody = journal.nextBody
+        } else if (journal) journal.pending = undefined
         let stalledRetries = 0
-        for (let step = 0; step < maxRounds; step++) {
+        let noProgressSteps = 0
+        for (let step = journal?.round ?? 0; step < nativeLimit; step++) {
           throwIfAborted(input.signal)
           this.activityCurrent(
             step === 0
               ? '文件操作引擎启动，正在核对相关文件…'
-              : `${batchMode ? '批量文件引擎' : '文件引擎'} 第 ${step + 1}/${maxRounds} 步 · 继续执行…`,
+              : `${batchMode ? '批量文件引擎' : '文件引擎'} 第 ${step + 1}/${nativeLimit} 步 · 继续执行…`,
           )
           const requestBody: Record<string, unknown> = {
             ...(nextBody ?? {
-              question: input.question,
+              question: journal?.question ?? input.question,
               round: 0,
               batchMode,
               sessionId: this.sessionId,
@@ -7631,8 +7670,15 @@ class ChatView extends ItemView {
             }),
             ...nativeLocalSkillRequest,
           }
+          if (journal) {
+            requestBody.vaultAccess = true
+            requestBody.taskMemory = vaultRunMemory(journal)
+            journal.nextBody = requestBody
+            journal.round = step
+            await saveVaultRun(this.app, journal)
+          }
           const requestRound = typeof requestBody.round === 'number' ? requestBody.round : 0
-          const data = await callNativeStep(requestBody)
+          const data = await callNativeStep(journal?.pending?.body ?? requestBody)
           const responseId = typeof data.responseId === 'string' ? data.responseId : ''
           const nativeCalls: Record<string, unknown>[] = Array.isArray(data.toolCalls)
             ? data.toolCalls.filter(isUnknownRecord)
@@ -7640,6 +7686,47 @@ class ChatView extends ItemView {
           const text = typeof data.text === 'string' ? data.text.trim() : ''
           if (!responseId) throw new Error('native: missing responseId')
           previousResponseId = responseId
+          nativeState.receipt = { responseId, calls: nativeCalls, round: requestRound }
+          if (journal && nativeCalls.some(call => VAULT_WORK_NAMES.has(String(call.name)))) {
+            const outputs: { callId: string; output: string }[] = []
+            let compact = false
+            let progressed = false
+            for (const call of nativeCalls) {
+              const callId = typeof call.callId === 'string' ? call.callId : ''
+              if (!VAULT_WORK_NAMES.has(String(call.name))) {
+                outputs.push({ callId, output: '此调用本轮未执行。请先使用任务记录回执，仍需要时下一轮调用。' })
+                continue
+              }
+              try {
+                if (call.name === 'propose_staged_notes' && nativeCalls.length !== 1) throw new Error('提交最终方案时请单独调用 propose_staged_notes')
+                const result = runVaultWorkTool(journal, String(call.name), isUnknownRecord(call.arguments) ? call.arguments : {},
+                  path => Boolean(this.app.vault.getAbstractFileByPath(path)))
+                progressed = true
+                outputs.push({ callId, output: result.output })
+                compact ||= Boolean(result.compact)
+                if (result.plan) return result.plan
+                this.activityStep(call.name === 'stage_note_draft' ? '📝 已暂存一篇完整草稿' :
+                  call.name === 'save_research_note' ? '📚 已完成一份资料的研究记录' : `📋 已建立 ${journal.plan.length} 份资料的处理清单`)
+              } catch (error) {
+                outputs.push({ callId, output: JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }) })
+              }
+            }
+            noProgressSteps = progressed ? 0 : noProgressSteps + 1
+            if (noProgressSteps >= 3) throw new Error('连续三步未能推进，资料与草稿已保留。请查看活动记录中的失败原因后继续')
+            nextBody = { question: journal.question, round: Math.min(step + 1, nativeLimit - 1), batchMode,
+              sessionId: this.sessionId, previousResponseId, toolOutputs: outputs }
+            if (compact && Object.keys(journal.summaries).length > 0) {
+              seenVaultReadCallSignatures.clear()
+              toolResults = []
+              // Research notes + source locations are enough to plan the next read. Original files remain locally available.
+              nextBody = { question: journal.question, round: 0, batchMode, sessionId: this.sessionId, vaultAccess: true }
+            }
+            journal.pending = undefined
+            journal.nextBody = nextBody
+            journal.round = step + 1
+            await saveVaultRun(this.app, journal)
+            continue
+          }
           if (nativeCalls.length > 0) {
             const localSkillCalls = nativeCalls.filter(
               (item) => item.name === 'read_skill_file' || item.name === 'propose_skill_action',
@@ -7699,14 +7786,14 @@ class ChatView extends ItemView {
                 (result) => result.output.includes('"status":"script_read_required"'),
               )
               nextBody = {
-                question: input.question,
-                round: Math.min(requestRound + 1, maxRounds - 1),
+                question: journal?.question ?? input.question,
+                round: Math.min(requestRound + 1, nativeLimit - 1),
                 batchMode,
                 sessionId: this.sessionId,
                 previousResponseId,
                 toolOutputs: executedResults.map((result) => ({
                   callId: result.callId,
-                  output: result.output.slice(0, 18_000),
+                  output: result.output,
                 })),
                 ...(readCalls.length > 0 || actionNeedsScriptRead
                   ? { retryHint: 'local_skill_tool_required' }
@@ -7734,7 +7821,7 @@ class ChatView extends ItemView {
                   '不会把 Vault 路径、客户姓名或私密原文发给搜索引擎。',
                 options: ['允许联网搜索', '仅用现有内容'],
                 allowFreeText: false,
-                round: Math.min(requestRound + 1, maxRounds - 1),
+                round: Math.min(requestRound + 1, nativeLimit - 1),
                 goal: this.pendingVaultTask?.goal ?? input.resumeQuestion?.goal ?? input.question.slice(0, 300),
                 createdAt: Date.now(),
                 webSearchQuery: query,
@@ -7763,7 +7850,7 @@ class ChatView extends ItemView {
                   ? args.options.filter((item): item is string => typeof item === 'string').map((item) => item.trim().slice(0, 120)).filter(Boolean).slice(0, 6)
                   : [],
                 allowFreeText: args.allowFreeText !== false,
-                round: Math.min(requestRound + 1, maxRounds - 1),
+                round: Math.min(requestRound + 1, nativeLimit - 1),
                 goal: this.pendingVaultTask?.goal ?? input.resumeQuestion?.goal ?? input.question.slice(0, 300),
                 createdAt: Date.now(),
               }
@@ -7780,6 +7867,15 @@ class ChatView extends ItemView {
                 item.name === 'propose_dynamic_dashboard',
             )
             if (propose) {
+              const unreadPlanned = journal?.plan.filter(path => journal?.reads[path]?.nextOffset !== null) ?? []
+              if (unreadPlanned.length) {
+                if (++noProgressSteps >= 3) throw new Error('资料清单仍有未读文件，已保留草稿，请核对后继续')
+                nextBody = { question: journal!.question, round: Math.min(requestRound + 1, nativeLimit - 1),
+                  batchMode, sessionId: this.sessionId, previousResponseId, toolOutputs: nativeCalls.map(call => ({
+                    callId: call.callId, output: JSON.stringify({ ok: false, error: '资料清单尚未读完，请沿游标读取后提交', unread: unreadPlanned }),
+                  })) }
+                continue
+              }
               const record = propose
               const args = isUnknownRecord(record.arguments) ? record.arguments : {}
               if (
@@ -7789,8 +7885,8 @@ class ChatView extends ItemView {
                 const callId = typeof record.callId === 'string' ? record.callId : ''
                 if (!callId) throw new Error('native: invalid dynamic dashboard call')
                 nextBody = {
-                  question: input.question,
-                  round: Math.min(requestRound + 1, maxRounds - 1),
+                  question: journal?.question ?? input.question,
+                  round: Math.min(requestRound + 1, nativeLimit - 1),
                   batchMode,
                   sessionId: this.sessionId,
                   previousResponseId,
@@ -7805,22 +7901,21 @@ class ChatView extends ItemView {
               }
               // 0.7.121：批量清单没读完时，先在同一条 Responses 线程里提醒一次；不再把
               // 方案当成已就绪交给下方常规通道反复打回（那条路每轮都要重发全部上下文）。
-              const nativeGate = batchGateDecision(step + 1 >= maxRounds)
+              const nativeGate = batchGateDecision(step + 1 >= nativeLimit)
               if (nativeGate === 'pushback') {
                 const proposeCallId = typeof record.callId === 'string' ? record.callId : ''
                 if (!proposeCallId) throw new Error('native: invalid plan call')
                 this.activityStep(`🧭 ${vaultBatchPushbackActivity(this.pendingVaultTask)}`)
                 const pushback = vaultBatchPushbackToolOutput(this.pendingVaultTask)
                 nextBody = {
-                  question: input.question,
-                  round: Math.min(requestRound + 1, maxRounds - 1),
+                  question: journal?.question ?? input.question,
+                  round: Math.min(requestRound + 1, nativeLimit - 1),
                   batchMode,
                   sessionId: this.sessionId,
                   previousResponseId,
                   // Responses 要求同一轮的每个 function_call 都有对应输出。
                   toolOutputs: nativeCalls
                     .filter((item) => typeof item.callId === 'string' && item.callId)
-                    .slice(0, VAULT_AGENT_MAX_CALLS_PER_ROUND)
                     .map((item) => ({
                       callId: item.callId as string,
                       output: item === propose
@@ -7926,8 +8021,8 @@ class ChatView extends ItemView {
                 this.rememberVaultBatchToolResults(this.pendingVaultTask.id, toolResults)
               }
               nextBody = {
-                question: input.question,
-                round: Math.min(requestRound + 1, maxRounds - 1),
+                question: journal?.question ?? input.question,
+                round: Math.min(requestRound + 1, nativeLimit - 1),
                 batchMode,
                 sessionId: this.sessionId,
                 previousResponseId,
@@ -7957,6 +8052,8 @@ class ChatView extends ItemView {
               freshCalls.push(call)
             }
             const executed = await this.plugin.vaultAgent.executeCalls(freshCalls, undefined)
+            noProgressSteps = executed.results.some(item => item.ok) ? 0 : noProgressSteps + 1
+            if (journal && noProgressSteps >= 3) throw new Error('连续三步未能读取新资料，已保留进度。请核对资料路径或说明需要调整的范围')
             executed.results.push(...duplicateResults, ...limitedCalls.deferredResults)
             for (const call of limitedCalls.executable) {
               const result = executed.results.find((item) => item.callId === call.id)
@@ -8016,17 +8113,41 @@ class ChatView extends ItemView {
             if (this.pendingVaultTask?.batch) {
               this.rememberVaultBatchToolResults(this.pendingVaultTask.id, toolResults)
             }
+            if (journal) {
+              for (const call of freshCalls) {
+                const result = executed.results.find(item => item.callId === call.id)
+                if (call.name === 'read_note' && result?.ok && typeof call.arguments.path === 'string') {
+                  const path = call.arguments.path.replace(/\\/g, '/')
+                  const stat = this.plugin.vaultFileStat(path)
+                  if (stat) {
+                    const old = journal.snapshots.find(item => item.path === path)
+                    if (old && (old.mtime !== stat.mtime || old.size !== stat.size)) {
+                      delete journal.reads[path]
+                      delete journal.summaries[path]
+                    }
+                    journal.snapshots = journal.snapshots.filter(item => item.path !== path)
+                    journal.snapshots.push(stat)
+                    recordWorkRead(journal, path, result.output)
+                  }
+                }
+              }
+            }
             nextBody = {
-              question: input.question,
-              round: Math.min(requestRound + 1, maxRounds - 1),
+              question: journal?.question ?? input.question,
+              round: Math.min(requestRound + 1, nativeLimit - 1),
               batchMode,
               sessionId: this.sessionId,
               previousResponseId,
               toolOutputs: executed.results.map((result) => ({
                 callId: result.callId,
-                output: result.output.slice(0, 18_000),
+                output: result.output,
               })),
               ...(toolBudgetExhausted ? { disableTools: true, retryHint: 'budget' } : {}),
+            }
+            if (journal) {
+              journal.nextBody = nextBody
+              journal.round = step + 1
+              await saveVaultRun(this.app, journal)
             }
             continue
           }
@@ -8034,10 +8155,10 @@ class ChatView extends ItemView {
             const localRetryReason = input.localSkillContext
               ? localSkillAnswerRetryReason(text)
               : undefined
-            if (localRetryReason && step + 1 < maxRounds) {
+            if (localRetryReason && step + 1 < nativeLimit) {
               nextBody = {
-                question: input.question,
-                round: Math.min(requestRound + 1, maxRounds - 1),
+                question: journal?.question ?? input.question,
+                round: Math.min(requestRound + 1, nativeLimit - 1),
                 batchMode,
                 sessionId: this.sessionId,
                 previousResponseId,
@@ -8062,11 +8183,11 @@ class ChatView extends ItemView {
                   vaultWriteFlowRetryReason(this.pendingVaultTask, 'organize', false, false) !== undefined
                 )
               )
-            if (needsPlan && step + 1 < maxRounds) {
+            if (needsPlan && step + 1 < nativeLimit) {
               stalledRetries += 1
               nextBody = {
-                question: input.question,
-                round: Math.min(requestRound + 1, maxRounds - 1),
+                question: journal?.question ?? input.question,
+                round: Math.min(requestRound + 1, nativeLimit - 1),
                 batchMode,
                 sessionId: this.sessionId,
                 previousResponseId,
@@ -8087,8 +8208,8 @@ class ChatView extends ItemView {
           this.activityCurrent('技能资料已读取，正在整理最终答复…')
           const finalData = await callNativeStep({
               ...nextBody,
-              question: input.question,
-              round: maxRounds - 1,
+              question: journal?.question ?? input.question,
+              round: nativeLimit - 1,
               batchMode,
               sessionId: this.sessionId,
               previousResponseId,
@@ -8111,7 +8232,8 @@ class ChatView extends ItemView {
         }
         throw new Error('native: no final text')
       } catch (error) {
-        if (isAbortError(error)) throw error
+        if (isAbortError(error) || input.signal?.aborted) throw error
+        if (recoverableNative) throw new Error(friendlyErrorMessage(error instanceof Error ? error.message : String(error)))
         // 本地 Skill 已进入原生工具通道后，失败必须如实结束；不能静默掉回
         // 没有 read_skill_file/propose_skill_action 的散文兼容通道，再声称“无工具”。
         if (input.localSkillContext) throw error
@@ -8228,6 +8350,18 @@ class ChatView extends ItemView {
         // 原生通道已拿到最终文本：跳过本轮模型调用，直接进入共用收尾管线。
         lastText = pendingNativeText
         pendingNativeText = null
+      } else if (journal && nativeState.receipt) {
+        if (++nativeCorrections > 2) throw new Error('本次方案尚未通过核验，资料与草稿已保存。请说明需要调整的部分后继续')
+        journal.nextBody = { question: journal.question, round: Math.min(nativeState.receipt.round + 1, 119),
+          batchMode, sessionId: this.sessionId, previousResponseId: nativeState.receipt.responseId,
+          toolOutputs: nativeState.receipt.calls.map(call => ({ callId: String(call.callId), output: JSON.stringify({
+            ok: false, error: pendingRetryReason ?? '需要先核验目标原文后重新提交方案',
+            detail: toolResults.filter(result => !result.ok).slice(-2).map(result => result.output),
+          }) })), retryHint: 'stalled' }
+        journal.pending = undefined
+        journal.round += 1
+        await saveVaultRun(this.app, journal)
+        lastText = await runNativeChannel() ?? ''
       } else if (round === 0 && intent === 'auto') {
         const streamed = await this.sendStreaming(
           input.noteContext,
@@ -8415,7 +8549,8 @@ class ChatView extends ItemView {
         // 判定只看本机游标与文件指纹，不相信模型说了“全部完成”。但清单来自搜索和
         // 列目录的全部命中，常混有与任务无关的文件——0.7.121 起只提醒有限次，之后
         // 放行并如实披露未读文件，绝不再无限打回同一份方案（decideVaultBatchGate）。
-        const batchGateResult = batchGateDecision(round >= maxRounds - 1)
+        const batchGateResult = journal?.plan.length
+          ? 'accept' : batchGateDecision(round >= maxRounds - 1)
         if (batchGateResult === 'pause') {
           await pauseBatch('round-limit')
           return { text: batchPauseText(), sources, localSkillRunIds }
@@ -8707,6 +8842,7 @@ class ChatView extends ItemView {
             `> ⚠️ **批量结果不包含 ${failedBatchPaths.length} 份读取失败的文件：** ${shown.join('、')}${failedBatchPaths.length > shown.length ? '等' : ''}。插件没有把它们算作已完成。`,
           ].join('\n\n')
         }
+        if (journal) { journal.finished = true; journal.pending = undefined; journal.nextBody = undefined; await saveVaultRun(this.app, journal) }
         return { text: withBatchUnreadDisclosure(lastText), sources, localSkillRunIds }
       }
       if (round >= maxRounds - 1) {

@@ -391,8 +391,8 @@ console.log('[test-vault-task-state]')
   // 0.7.121：闸门必须经过有上限的 decideVaultBatchGate，且只在本轮确实是批量运行时生效。
   assert.match(mainSource, /decideVaultBatchGate\(\{/)
   assert.match(mainSource, /batchMode && this\.pendingVaultTask\?\.batch\s*\?\s*vaultBatchUnreadSignature/)
-  assert.match(mainSource, /const nativeGate = batchGateDecision\(step \+ 1 >= maxRounds\)/)
-  assert.match(mainSource, /const batchGateResult = batchGateDecision\(round >= maxRounds - 1\)/)
+  assert.match(mainSource, /const nativeGate = batchGateDecision\(step \+ 1 >= nativeLimit\)/)
+  assert.match(mainSource, /const batchGateResult = journal\?\.plan\.length[\s\S]*?batchGateDecision\(round >= maxRounds - 1\)/)
   assert.match(mainSource, /pendingRetryReason = 'batch_unread_remaining'/)
   assert.match(mainSource, /withBatchUnreadDisclosure\(lastText\)/)
   // 旧的无上限写法（清单没读完就一律 deferred_answer）不得回潮。
@@ -544,7 +544,7 @@ console.log('[test-vault-task-state]')
   )
   assert.match(
     mainSource,
-    /catch \(error\) \{\s*if \(isAbortError\(error\)\) throw error[\s\S]{0,180}if \(input\.localSkillContext\) throw error[\s\S]{0,180}nativeChannelFailed = true\s*return null/,
+    /catch \(error\) \{\s*if \(isAbortError\(error\) \|\| input\.signal\?\.aborted\) throw error\s*if \(recoverableNative\) throw new Error[\s\S]{0,500}if \(input\.localSkillContext\) throw error[\s\S]{0,180}nativeChannelFailed = true\s*return null/,
     '用户停止和本地 Skill 原生错误必须向上传播；普通原生通道失败仍保留兼容回退',
   )
   assert.match(

@@ -77,3 +77,5 @@ v0.7.121 起，批量模式（36 轮/100 万字符）只由“批量/全部/所�
 新增任何第三方依赖前，必须先扫描其 dist 产物是否内联了动态 `<script>` 创建或 `eval`/`new Function` 类 polyfill——官方市场审核的 CODE OBFUSCATION 区按发布产物里的字面量计数，2026-08 的下架事故就是 `docx` 依赖链带进 4 处动态 `<script>` 所致。`npm run check:marketplace` 已内置两道产物闸：构建产物 `main.js` 的动态 `<script>` 字面量必须为 0；动态代码生成锁定基线 4 处（全部来自第三方，本仓库源码硬禁 eval 与 new Function），只许降不许升，涨了必须定位来源而不是默默放大基线。
 
 抬 `LATEST_PLUGIN_VERSION` 时，先在 webapp 仓库 grep 全库的旧版本号字面量找齐所有钉子——该常量目前在 `scripts/test-plugin-v1-contract.mts` 与 `scripts/test-plugin-vault-agent.mts` 两处都有写死断言（刻意如此，逼开发者两处刻意改），只改一处会让 CI 红叉。推送前按 `.github/workflows/ci.yml` 在本地跑完整四步：`npx tsc --noEmit`、`npm run lint -- --max-warnings=0`、`npm run test:plugin-api`、`npm run test:stability`，不要只跑自己记得住的那几个测试。
+
+自 v0.7.122 起，普通文件任务使用 v2 后台步骤、稳定请求编号和本机恢复记录；不得静默回退到重复发送全部原文的聊天通道。任务计划决定真实来源，不能仅凭关键词扩大必读范围。一次可登记最多 100 份来源、逐篇暂存最多 12 篇新文档，统一预览确认；长文必须保留 JSON 和 nextOffset 游标。隐藏恢复缓存的 Adapter 例外仅限 `src/vault-run-journal.ts` 与当前配置目录下 `plugins/ai-linzi/vault-tasks`；所有用户文档继续用 Vault API。不得放宽全库正文上传、保护路径、云端历史隔离或同名覆盖边界。

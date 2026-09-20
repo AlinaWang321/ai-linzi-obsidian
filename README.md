@@ -87,3 +87,9 @@ Every release tag must exactly match the version in `manifest.json`. The release
 ## License
 
 [MIT](LICENSE)
+
+### Recoverable document tasks (0.7.122)
+
+Document tasks can plan a set of sources, read long documents page by page, retain research notes, and propose multiple Markdown files in one preview. Files are written only after confirmation; existing files are never silently overwritten. A batch can plan up to 100 sources and stage up to 12 new documents.
+
+If the connection fails, the plugin retrieves the same background step instead of starting it again. Reply “继续” in the same conversation after reopening Obsidian to resume. Changed source files require a fresh task. Local task checkpoints (selected text pages, summaries and unfinished drafts) live under the current Vault configuration folder, `plugins/ai-linzi/vault-tasks/`, and expire after 24 hours; expired files are cleaned on plugin startup. These caches are not sent to chat history. Vault-sync software may sync the configuration folder according to your own settings. The server keeps only operation identifiers, ownership and status for recovery, and expires them after 24 hours; the scheduled cleanup removes expired metadata. Successful retrieved model steps are charged once. Failed or cancelled steps are not charged.

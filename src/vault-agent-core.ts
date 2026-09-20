@@ -61,7 +61,9 @@ export function isVaultBatchTask(text: string): boolean {
   const scope = /(?:批量|全部|所有|每(?:一|份|篇|个)|逐(?:份|篇|个)|整批|一批|多份|多个|整个(?:文件夹|目录|Vault|仓库|知识库))/iu
   const material = /(?:逐字稿|文件|文档|笔记|材料|资料|文章|档案|记录|内容|Vault|仓库|知识库)/iu
   const action = /(?:处理|总结|整理|提炼|归纳|分析|改写|生成|更新|读取|搜索|查找|扫描|复盘)/u
-  return scope.test(normalized) && material.test(normalized) && action.test(normalized)
+  const pluralFolder = /(?:文件夹|目录)(?:中|里|内|下|里面|下面)?(?:的)?(?:文件|文档|资料|材料)(?:[，,。；;\s]|$)/u.test(normalized)
+  const namedPlural = (normalized.match(/[^\s、，,;；]+\.(?:md|txt|pdf|docx)(?=[\s、，,。;；]|$)/giu)?.length ?? 0) >= 2
+  return (scope.test(normalized) || pluralFolder || namedPlural) && material.test(normalized) && action.test(normalized)
 }
 
 export type VaultAgentToolName =

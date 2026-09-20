@@ -85,6 +85,8 @@ const app = {
     requestSaveLayout: () => undefined,
   },
   vault: {
+    configDir: '.obsidian',
+    adapter: { exists: async () => false, mkdir: async () => {}, write: async () => {}, rename: async () => {}, remove: async () => {} },
     getFiles: () => [],
     getAllLoadedFiles: () => [],
     getAllFolders: () => [],
@@ -209,13 +211,13 @@ async function runScenario({ question, intent = 'auto', nativeFails = false, see
   plugin.api = async (apiPath, init) => {
     const body = init?.body ?? {}
     requests.push({ path: apiPath, body })
-    if (apiPath === '/api/plugin/v1/vault-native/step') {
+    if (apiPath === '/api/plugin/v1/vault-native/step' || apiPath === '/api/plugin/v2/vault-native/step') {
       if (nativeFails) throw new Error('native: scripted failure')
       nativeStep += 1
       const responseId = `resp-${nativeStep}`
       if (nativeStep === 1) {
         return {
-          responseId,
+          status: 'completed', ok: true, responseId,
           toolCalls: [
             { callId: 'call-search-1', name: 'vault_search', arguments: { query: '小A 第一次售前诊断对话' } },
             { callId: 'call-search-2', name: 'vault_search', arguments: { query: '客户档案模板' } },
@@ -224,7 +226,7 @@ async function runScenario({ question, intent = 'auto', nativeFails = false, see
       }
       if (nativeStep === 2) {
         return {
-          responseId,
+          status: 'completed', ok: true, responseId,
           toolCalls: [
             { callId: 'call-read-1', name: 'read_note', arguments: { path: TEMPLATE } },
             { callId: 'call-read-2', name: 'read_note', arguments: { path: TRANSCRIPT } },
@@ -233,7 +235,7 @@ async function runScenario({ question, intent = 'auto', nativeFails = false, see
       }
       // 之后无论被提醒多少次，模型都坚持「两份相关文件已经读完」，原样再交方案。
       return {
-        responseId,
+        status: 'completed', ok: true, responseId,
         toolCalls: [{ callId: `call-plan-${nativeStep}`, name: 'propose_organize_plan', arguments: PLAN }],
       }
     }
@@ -305,40 +307,8 @@ try {
       console.log('  ✓ 2. 真批量（原生引擎）只提醒一次，模型坚持则放行并注明 13 份未读')
     }
 
-    // ── 3. 同一场景走常规通道（原生引擎失败回退）：用独立原因上报，同样有限次收敛 ──
-    {
-      const { result, requests } = await runScenario({
-        question: TRUE_BATCH_QUESTION,
-        intent: 'organize',
-        nativeFails: true,
-        chatScript: (round) => {
-          if (round === 1) {
-            return proseToolCalls([
-              { id: 's1', name: 'vault_search', arguments: { query: '小A 第一次售前诊断对话' } },
-              { id: 's2', name: 'vault_search', arguments: { query: '客户档案模板' } },
-            ])
-          }
-          if (round === 2) {
-            return proseToolCalls([
-              { id: 'r1', name: 'read_note', arguments: { path: TEMPLATE } },
-              { id: 'r2', name: 'read_note', arguments: { path: TRANSCRIPT } },
-            ])
-          }
-          return PLAN_TEXT
-        },
-      })
-      const chatRequests = requests.filter((item) => item.path === '/api/plugin/v1/chat')
-      assert.equal(chatRequests.length, 4, `常规通道应在 4 轮内收敛；实际 ${chatRequests.length} 轮`)
-      assert.equal(chatRequests[2].body.vaultAgent.retryReason, undefined)
-      assert.equal(
-        chatRequests[3].body.vaultAgent.retryReason,
-        'batch_unread_remaining',
-        '清单未读完必须用独立原因上报，不能再冒充 deferred_answer',
-      )
-      assert.match(result.text, /<<<VAULT_ORGANIZE_PLAN>>>/)
-      assert.match(result.text, /清单里另有 13 份/)
-      console.log('  ✓ 3. 常规通道同样只提醒一次，并以 batch_unread_remaining 上报')
-    }
+    // Recoverable failures must not restart with the entire context in chat.
+    await assert.rejects(runScenario({ question: TRUE_BATCH_QUESTION, intent: 'organize', nativeFails: true }), /scripted failure/)
 
     // ── 4. 对话里残留一份没读完的旧批量任务，不得拖死之后的普通提问 ──
     {

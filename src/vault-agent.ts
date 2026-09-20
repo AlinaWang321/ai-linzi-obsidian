@@ -43,7 +43,7 @@ import {
 } from './weekly-business-cache'
 import { buildVaultInventory } from './vault-inventory-core'
 
-const TOOL_OUTPUT_MAX_CHARS = 20_000
+const TOOL_OUTPUT_MAX_CHARS = 18_000
 const RECENT_DOCUMENT_OUTPUT_MAX_CHARS = 180_000
 const RECENT_DOCUMENT_PAGE_MAX_CHARS = 70_000
 const RECENT_DOCUMENT_FILE_MAX_CHARS = 80_000
@@ -100,12 +100,24 @@ function toolText(value: unknown, max: number): string {
 
 function outputJson(value: unknown, maxChars = TOOL_OUTPUT_MAX_CHARS): string {
   const raw = JSON.stringify(value)
-  return raw.length <= maxChars
-    ? raw
-    : JSON.stringify({
-        truncated: true,
-        preview: raw.slice(0, Math.max(0, maxChars - 2_000)),
-      })
+  if (raw.length <= maxChars) return raw
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>
+    const field = typeof record.text === 'string' ? 'text' : typeof record.content === 'string' ? 'content' : null
+    if (field && typeof record.offset === 'number' && typeof record.totalChars === 'number') {
+      const text = record[field] as string
+      let low = 0, high = text.length
+      while (low < high) {
+        const size = Math.ceil((low + high) / 2)
+        const candidate = { ...record, [field]: text.slice(0, size), nextOffset: record.offset + size, truncated: true }
+        if (JSON.stringify(candidate).length <= maxChars) low = size
+        else high = size - 1
+      }
+      if (low > 0) return JSON.stringify({ ...record, [field]: text.slice(0, low), nextOffset: record.offset + low, truncated: true })
+    }
+  }
+  // Never slice serialized JSON: preserve a machine-readable failure and request a smaller page.
+  return JSON.stringify({ truncated: true, error: '这批结果过大，请降低 maxEntries / maxChars 后继续；当前结果未完整返回' })
 }
 
 function fileExtension(path: string): string {
