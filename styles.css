@@ -4334,3 +4334,18 @@
 .ai-linzi-wechat-qr-link {
   font-size: var(--font-ui-smaller);
 }
+
+/* 文章配图结果与恢复操作留在同一条对话中。 */
+.ai-linzi-illustration-delivery {
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-primary);
+  overflow-wrap: anywhere;
+}
+.ai-linzi-illustration-delivery-path,
+.ai-linzi-illustration-delivery-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.ai-linzi-illustration-delivery .ai-linzi-msg-actions { flex-wrap: wrap; }

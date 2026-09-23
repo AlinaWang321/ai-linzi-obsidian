@@ -11,6 +11,105 @@ export interface IllustrationAsset {
   anchor: string
   kind: 'cover' | 'body'
   savedPath?: string
+  inserted?: boolean
+}
+
+export interface IllustrationDelivery {
+  requestId: string
+  notePath: string
+  folder: string
+  expected: number
+  phase: 'running' | 'attention' | 'complete'
+  summary: string
+  assets: IllustrationAsset[]
+}
+
+/** 只领取本次任务已有原图；两个按钮都不会提交生成请求。 */
+export async function retryIllustrationDelivery(
+  plugin: AiLinziPlugin, delivery: IllustrationDelivery, insert: boolean,
+): Promise<void> {
+  if (delivery.assets.length < delivery.expected) {
+    let result: { images: { imageId: string; imageUrl: string | null; kind: 'cover' | 'body' }[] }
+    try {
+      result = await plugin.api(`${ILLUSTRATION_RESULTS_API}?taskId=${encodeURIComponent(delivery.requestId)}`) as typeof result
+    } catch (error) {
+      // 已下载的图片可以离线插入，查询暂时失败不能挡住已有成果。
+      if (!delivery.assets.length) throw error
+      result = { images: [] }
+    }
+    const jobs = plugin.getIllustrationJobsData() as RecoveryJob[]
+    const job = jobs.find((item) => item.requestId === delivery.requestId)
+    for (const image of result.images) {
+      if (!image.imageUrl || delivery.assets.some((asset) => asset.imageId === image.imageId)) continue
+      const saved = job?.deliveryImages?.find((asset) => asset.imageId === image.imageId)
+      delivery.assets.push(saved ? { ...saved } : {
+        imageId: image.imageId, imageUrl: image.imageUrl, kind: image.kind,
+        title: image.kind === 'cover' ? '封面' : '正文配图', anchor: '',
+      })
+    }
+  }
+  if (!delivery.assets.length) throw new Error('暂未查到已完成的图片，请稍后再次点击；不会重新生成')
+  const errors: string[] = []
+  for (const asset of delivery.assets) {
+    try {
+      await saveIllustrationAsset(plugin, asset, delivery.folder)
+      // 先保存下载成果，即使下一步插入失败也能保留文件和恢复记录。
+      const current = plugin.getIllustrationJobsData() as RecoveryJob[]
+      const currentJob = current.find((item) => item.requestId === delivery.requestId)
+      if (currentJob) {
+        currentJob.deliveryImages ??= []
+        const existing = currentJob.deliveryImages.find((item) => item.imageId === asset.imageId)
+        if (existing) Object.assign(existing, asset)
+        else currentJob.deliveryImages.push({ ...asset })
+      } else current.push({ requestId: delivery.requestId, notePath: delivery.notePath,
+        folder: delivery.folder, deliveryImages: [{ ...asset }], updatedAt: Date.now() })
+      await plugin.setIllustrationJobsData(current)
+      if (insert) {
+        await insertIllustrationAssets(plugin, delivery.notePath, [asset])
+        asset.inserted = true
+      }
+    } catch (error) { errors.push(`${asset.title}：${error instanceof Error ? error.message : String(error)}`) }
+  }
+  delivery.phase = delivery.assets.length >= delivery.expected && delivery.assets.every((asset) => asset.inserted) && !errors.length
+    ? 'complete' : 'attention'
+  const saved = delivery.assets.filter((asset) => asset.savedPath).length
+  delivery.summary = errors.length ? errors.join('；')
+    : insert ? `已保存并插入 ${delivery.assets.length} 张图片。`
+      : `已保存 ${saved} 张原图，可点击“插入笔记”放回原文章。`
+  if (!errors.length && delivery.assets.length < delivery.expected) delivery.summary += ' 其余图片尚未完成，可再次调用“文章配图”继续。'
+}
+
+export function renderIllustrationDelivery(
+  container: HTMLElement, plugin: AiLinziPlugin, delivery: IllustrationDelivery,
+  persist: (delivery: IllustrationDelivery) => Promise<void>,
+): void {
+  const card = container.createDiv({ cls: 'ai-linzi-illustration-delivery' })
+  card.createEl('strong', { text: '文章配图' })
+  const summary = card.createEl('p', { text: delivery.summary })
+  card.createEl('p', { text: `原文章：${delivery.notePath}`, cls: 'ai-linzi-illustration-delivery-path' })
+  if (delivery.assets.length) {
+    const list = card.createEl('ul')
+    for (const asset of delivery.assets) {
+      const saved = asset.savedPath && plugin.app.vault.getAbstractFileByPath(asset.savedPath) instanceof TFile
+      list.createEl('li', { text: `${asset.title} · ${saved ? asset.inserted ? '已插入' : '已保存，待插入' : '已生成，待下载'}` })
+    }
+  }
+  const actions = card.createDiv({ cls: 'ai-linzi-msg-actions' })
+  const buttons: HTMLButtonElement[] = []
+  for (const [label, insert] of [['重新下载', false], ['插入笔记', true]] as const) {
+    const button = actions.createEl('button', { text: label })
+    buttons.push(button)
+    button.disabled = delivery.phase === 'running'
+    button.onclick = async () => {
+      for (const item of buttons) item.disabled = true
+      summary.setText(insert ? '正在领取原图并插入原文章…' : '正在领取原图并保存…')
+      try { await retryIllustrationDelivery(plugin, delivery, insert) }
+      catch (error) { delivery.phase = 'attention'; delivery.summary = error instanceof Error ? error.message : String(error) }
+      try { await persist(delivery) }
+      catch { summary.setText('恢复记录暂未保存，请保留此对话后重试。'); for (const item of buttons) item.disabled = false }
+    }
+  }
+  card.createEl('p', { text: '领取已有原图，不重新生成；下载和插入不重复扣积分。', cls: 'ai-linzi-illustration-delivery-hint' })
 }
 
 interface RecoveryJob {

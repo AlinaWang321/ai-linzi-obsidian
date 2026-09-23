@@ -18,7 +18,7 @@ import {
 import type AiLinziPlugin from './main'
 import {
   ILLUSTRATION_RESULTS_API, illustrationImageId, saveIllustrationAsset,
-  insertIllustrationAssets, openIllustrationRecovery, type IllustrationAsset,
+  insertIllustrationAssets, type IllustrationAsset, type IllustrationDelivery,
 } from './illustration-recovery'
 import { friendlyErrorMessage } from './friendly-error'
 import {
@@ -1334,41 +1334,7 @@ class IllustrationResumeModal extends Modal {
   }
 }
 
-class IllustrationCompleteModal extends Modal {
-  private handedOff = false
 
-  constructor(
-    app: App,
-    private summary: string,
-    private onComplete: () => void,
-  ) {
-    super(app)
-  }
-
-  onOpen() {
-    this.titleEl.setText('文章配图已写入当前笔记')
-    this.contentEl.createEl('p', { text: this.summary, cls: 'ai-linzi-plan-intro' })
-    this.contentEl.createEl('p', {
-      text: '点击完成后先在正文中查看配图效果。右侧 AI霖子 对话区会保留“修改某一张配图”入口。',
-      cls: 'ai-linzi-plan-intro',
-    })
-    new Setting(this.contentEl)
-      .addButton((button) =>
-        button
-          .setButtonText('完成并查看文章')
-          .setCta()
-          .onClick(() => this.close()),
-      )
-  }
-
-  onClose() {
-    if (!this.handedOff) {
-      this.handedOff = true
-      this.onComplete()
-    }
-    this.contentEl.empty()
-  }
-}
 
 interface IllustrationSetupResult {
   count: number
@@ -1687,6 +1653,8 @@ async function runArticleIllustrationTask(plugin: AiLinziPlugin) {
   let confirmed: IllustrationPlan | null = null
   let planning: Notice | null = null
   let taskRequestId = resumable?.requestId || contentId()
+  let delivery: IllustrationDelivery | undefined
+  let publishDelivery: ((state: IllustrationDelivery) => Promise<void>) | undefined
 
   try {
     if (resumable) {
@@ -1741,6 +1709,10 @@ async function runArticleIllustrationTask(plugin: AiLinziPlugin) {
     }
     await saveIllustrationJob(plugin, job)
     const assets = job.deliveryImages!
+    delivery = { requestId: taskRequestId, notePath: note.file.path, folder,
+      expected: confirmed.images.length + (confirmed.cover ? 1 : 0), phase: 'running',
+      summary: '正在逐张生成并保存配图…', assets }
+    publishDelivery = await plugin.beginIllustrationDelivery(delivery)
     const slots: { key: string; plan: IllustrationPlan; title: string; anchor: string; kind: 'cover' | 'body' }[] = []
     if (confirmed.cover) slots.push({ key: 'cover', plan: { cover: confirmed.cover, images: [] }, title: confirmed.cover.title, anchor: '', kind: 'cover' })
     for (const item of confirmed.images) slots.push({ key: await illustrationSlot(item), plan: { cover: null, images: [item] }, title: item.title, anchor: item.anchor, kind: 'body' })
@@ -1766,7 +1738,7 @@ async function runArticleIllustrationTask(plugin: AiLinziPlugin) {
         let asset = assets.find((item) => item.imageId.endsWith(`-${slot.key}`))
         if (!asset) {
           if (job.submittedSlot) {
-            generationError = '上一次图片请求的结果尚待确认，请在“找回已生成图片”中重新读取；不会自动重画'
+            generationError = '上一次图片请求的结果尚待确认，请点击下方“重新下载”领取已生成原图；不会自动重画'
             break
           }
           generating.setMessage(`正在生成第 ${index + 1}/${slots.length} 张：${slot.title}`)
@@ -1810,6 +1782,9 @@ async function runArticleIllustrationTask(plugin: AiLinziPlugin) {
           await saveIllustrationAsset(plugin, asset, folder)
           await saveIllustrationJob(plugin, job)
           await insertIllustrationAssets(plugin, note.file.path, [asset])
+          asset.inserted = true
+          delivery.summary = `已保存并插入 ${index + 1}/${slots.length} 张，正在继续处理。`
+          await publishDelivery(delivery)
         } catch (error) {
           deliveryErrors.push(error instanceof Error ? error.message : String(error))
           // 下载或写入失败时停止后续生图，保留已生成成果和剩余方案。
@@ -1825,8 +1800,10 @@ async function runArticleIllustrationTask(plugin: AiLinziPlugin) {
     const hits = saved.filter((item) => article.includes(item.anchor)).length
     if (!complete) {
       await saveIllustrationJob(plugin, job)
-      new Notice(`已保存 ${actualTotal}/${expectedTotal} 张。${generationError || deliveryErrors[0] || '尚有图片未完成'}。可从工作台“找回已生成图片”重新下载和插入。`, 15000)
-      openIllustrationRecovery(plugin)
+      delivery.phase = 'attention'
+      delivery.summary = `已生成 ${assets.length}/${expectedTotal} 张，已保存 ${actualTotal} 张。${generationError || deliveryErrors[0] || '尚有图片未完成'}。`
+      await publishDelivery(delivery)
+      new Notice('配图尚未全部插入，可直接在对话结果下方重新下载或插入笔记。', 8000)
       return
     }
     const styleReferencePaths = [
@@ -1846,13 +1823,17 @@ async function runArticleIllustrationTask(plugin: AiLinziPlugin) {
       ? `已生成 ${actualTotal} 张图片：${coverPath ? '1 张封面 + ' : ''}${saved.length} 张正文插图（${hits} 张按段落定位）。`
       : `已保留并插入 ${actualTotal}/${expectedTotal} 张可用图片；剩余 ${expectedTotal - actualTotal} 张可再次运行“文章配图”继续补齐。`
     new Notice(`${complete ? '✅' : '⚠️'} ${completionSummary}`, complete ? 10000 : 14000)
-    new IllustrationCompleteModal(plugin.app, completionSummary, () => {
-      void plugin.offerArticleIllustrationEdit(note.file.path, completionSummary)
-    }).open()
+    delivery.phase = 'complete'
+    delivery.summary = completionSummary
+    await publishDelivery(delivery)
   } catch (e) {
     planning?.hide()
     new Notice(`❌ 文章配图:${imageFailureMessage(e instanceof Error ? e.message : String(e))}`, 10000)
-    if (confirmed) openIllustrationRecovery(plugin)
+    if (delivery && publishDelivery) {
+      delivery.phase = 'attention'
+      delivery.summary = imageFailureMessage(e instanceof Error ? e.message : String(e))
+      await publishDelivery(delivery)
+    }
   }
 }
 

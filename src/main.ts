@@ -1,4 +1,4 @@
-import { openIllustrationRecovery } from './illustration-recovery'
+import { openIllustrationRecovery, renderIllustrationDelivery, type IllustrationDelivery } from './illustration-recovery'
 import { pruneVaultRuns, loadVaultRun, saveVaultRun, vaultRunMemory, canResumeVaultRun, recoverableVaultStep, type VaultRunJournal } from './vault-run-journal'
 import { VAULT_WORK_NAMES, runVaultWorkTool, recordWorkRead } from './vault-work-tools'
 /**
@@ -658,6 +658,8 @@ interface WireMessage {
   aiImageResult?: ChatAiImageResult
   /** 整篇配图完成后的本地操作卡片；只保存目标笔记路径，不同步到云端。 */
   articleIllustrationEditOffer?: ArticleIllustrationEditOffer
+  /** 文章配图交付卡：只存本机，任务与原文章绑定。 */
+  illustrationDelivery?: IllustrationDelivery
   /** 本地 Vault 检索来源；只保存在插件本机历史，messagesForApi 会剥离。 */
   vaultSources?: VaultMessageSource[]
   /** 调用技能的进度状态条（锁定/生成中/完成/失败）；只存本机历史，不发给主对话 API。 */
@@ -1482,6 +1484,7 @@ export default class AiLinziPlugin extends Plugin {
   /** Obsidian data.json 是整体快照；所有保存串行化，避免设置与对话同时落盘丢数据。 */
   private settingsSaveQueue: Promise<void> = Promise.resolve()
   private savedIllustrationJobs: unknown[] = []
+  readonly activeIllustrationDeliveries = new Set<string>()
   private imageStyleContext: SavedImageStyleContext | null = null
   private vaultActionHistory: VaultActionRecord[] = []
   private localSkillRunHistory: LocalSkillRunRecord[] = []
@@ -2522,6 +2525,18 @@ export default class AiLinziPlugin extends Plugin {
     await workspace.revealLeaf(leaf)
   }
 
+  async beginIllustrationDelivery(initial: IllustrationDelivery): Promise<(state: IllustrationDelivery) => Promise<void>> {
+    await this.activateChatView()
+    const view = this.activeChatView()
+    if (!view) throw new Error('无法打开配图结果对话，请重新打开 AI霖子面板')
+    this.activeIllustrationDeliveries.add(initial.requestId)
+    const update = await view.createIllustrationDeliveryReporter(initial)
+    return async (state) => {
+      if (state.phase !== 'running') this.activeIllustrationDeliveries.delete(state.requestId)
+      await update(state)
+    }
+  }
+
   /**
    * 整篇配图完成后，把“修改某一张配图”留在右侧对话区。
    * 用户先关闭完成弹窗查看正文效果，再随时回来选择具体图片，不再被弹窗挡住文章。
@@ -3466,6 +3481,34 @@ class ChatView extends ItemView {
     })
   }
 
+  async createIllustrationDeliveryReporter(initial: IllustrationDelivery): Promise<(state: IllustrationDelivery) => Promise<void>> {
+    const sessionId = this.sessionId
+    const id = uid()
+    this.messages.push({ id, role: 'assistant', parts: [{ type: 'text', text: '文章配图' }],
+      illustrationDelivery: { ...initial, assets: initial.assets.map((asset) => ({ ...asset })) } })
+    await this.persistNow()
+    this.renderMessages()
+    return (state) => this.saveIllustrationDelivery(sessionId, id, state)
+  }
+
+  private async saveIllustrationDelivery(sessionId: string, id: string, state: IllustrationDelivery): Promise<void> {
+    const snapshot = { ...state, assets: state.assets.map((asset) => ({ ...asset })) }
+    if (sessionId === this.sessionId) {
+      const message = this.messages.find((item) => item.id === id)
+      if (!message) return
+      message.illustrationDelivery = snapshot
+      await this.persistNow()
+      this.renderMessages()
+    } else {
+      // 生成期间切换对话时只更新发起任务的对话；已删除的对话不复活。
+      const saved = (await this.plugin.loadConvos()).find((item) => item.id === sessionId)
+      const message = saved?.messages.find((item) => item.id === id)
+      if (!saved || !message) return
+      message.illustrationDelivery = snapshot
+      await this.plugin.saveConvo({ ...saved, updatedAt: Date.now() })
+    }
+  }
+
   async addArticleIllustrationEditOffer(notePath: string, summary: string): Promise<void> {
     const previous = this.messages.at(-1)?.articleIllustrationEditOffer
     if (previous?.notePath === notePath && previous.summary === summary) return
@@ -3496,7 +3539,7 @@ class ChatView extends ItemView {
       const cloud = await this.plugin.loadCloudConvo(targetId, savedConversationTitleState(local))
       const localHasRichCards = Boolean(
         local?.messages.some((message) =>
-          message.aiImageResult || message.imageResult || message.articleVideoReview ||
+          message.aiImageResult || message.imageResult || message.articleVideoReview || message.illustrationDelivery || message.articleIllustrationEditOffer ||
             (message.vaultSources?.length ?? 0) > 0,
         ),
       )
@@ -3588,6 +3631,12 @@ class ChatView extends ItemView {
     this.clearAuthorizedContent()
     let repairedInterruptedStatus = false
     this.messages = c.messages.map((message) => {
+      if (message.illustrationDelivery?.phase === 'running' &&
+        !this.plugin.activeIllustrationDeliveries.has(message.illustrationDelivery.requestId)) {
+        repairedInterruptedStatus = true
+        message = { ...message, illustrationDelivery: { ...message.illustrationDelivery,
+          phase: 'attention', summary: '上次配图过程已中断。点击下方按钮领取已生成的原图，再保存或插入原文章。' } }
+      }
       if (message.articleVideoReview) {
         message = {
           ...message,
@@ -4473,7 +4522,7 @@ class ChatView extends ItemView {
     return this.messages
       .filter((message) =>
         !message.localSkillStatus && !message.localSkillChoice &&
-          !message.articleVideoReview && !message.articleVideoTurn)
+          !message.articleVideoReview && !message.articleVideoTurn && !message.illustrationDelivery)
       .map(({ id, role, parts }) => ({ id, role, parts }))
   }
 
@@ -10433,6 +10482,16 @@ class ChatView extends ItemView {
       const body = row.createDiv({ cls: 'ai-linzi-msg-body' })
       this.enableMessageTextSelection(body)
       const text = m.parts.map((p) => p.text).join('')
+      if (m.illustrationDelivery) {
+        const sessionId = this.sessionId
+        renderIllustrationDelivery(body, this.plugin, m.illustrationDelivery,
+          (state) => this.saveIllustrationDelivery(sessionId, m.id, state))
+        if (m.illustrationDelivery.phase === 'complete') this.renderArticleIllustrationEditOffer(body, {
+          kind: 'article-illustration-edit-offer', notePath: m.illustrationDelivery.notePath,
+          summary: '需要调整时，可以修改其中一张配图。',
+        })
+        continue
+      }
       if (m.localSkillStatus) {
         // 活动流/技能状态条：区别于正文气泡的紧凑样式；进行中(⚙️开头)带持续动效。
         row.addClass('ai-linzi-status-row')
