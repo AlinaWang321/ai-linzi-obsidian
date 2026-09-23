@@ -16,9 +16,12 @@ import {
   requestUrl,
 } from 'obsidian'
 import type AiLinziPlugin from './main'
+import {
+  ILLUSTRATION_RESULTS_API, illustrationImageId, saveIllustrationAsset,
+  insertIllustrationAssets, openIllustrationRecovery, type IllustrationAsset,
+} from './illustration-recovery'
 import { friendlyErrorMessage } from './friendly-error'
 import {
-  insertCoverEmbed,
   insertEmbeds,
   isCompleteWechatArticle,
   prepareWechatArticle,
@@ -108,7 +111,8 @@ async function callImageApi<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   let lastError = ''
-  for (let attempt = 1; attempt <= IMAGE_API_ATTEMPTS; attempt++) {
+  const attempts = path === ARTICLE_ILLUSTRATION_API && body.mode === 'generate' ? 1 : IMAGE_API_ATTEMPTS
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     if (signal?.aborted) throw abortError()
     try {
       return await plugin.api(path, {
@@ -121,7 +125,8 @@ async function callImageApi<T>(
         throw error
       }
       lastError = error instanceof Error ? error.message : String(error)
-      if (!isRetryableImageTransportError(lastError) || attempt >= IMAGE_API_ATTEMPTS) {
+      if (attempts === 1) throw error
+      if (!isRetryableImageTransportError(lastError) || attempt >= attempts) {
         throw new Error(imageFailureMessage(lastError))
       }
       await abortableImageDelay(attempt * 800, signal)
@@ -1153,10 +1158,12 @@ interface SavedIllustrationJob {
   /** 同一篇未完成配图续跑时复用，避免断连后重复生成已经成功的图片。 */
   requestId?: string
   pendingPlan: IllustrationPlan
+  folder?: string
+  deliveryImages?: IllustrationAsset[]
+  /** 已提交但没有明确终态的单张，只领取云端结果，不能自动再次生图。 */
+  submittedSlot?: string
   updatedAt: number
 }
-
-const ILLUSTRATION_JOB_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 function illustrationArticleFingerprint(article: string): string {
   const normalized = article
@@ -1174,15 +1181,14 @@ function illustrationArticleFingerprint(article: string): string {
 
 async function loadIllustrationJobs(plugin: AiLinziPlugin): Promise<SavedIllustrationJob[]> {
   const parsed = plugin.getIllustrationJobsData()
-  const cutoff = Date.now() - ILLUSTRATION_JOB_MAX_AGE_MS
   return parsed.filter(
     (item): item is SavedIllustrationJob =>
       Boolean(item) &&
       typeof item === 'object' &&
       typeof (item as SavedIllustrationJob).notePath === 'string' &&
       typeof (item as SavedIllustrationJob).articleFingerprint === 'string' &&
-      typeof (item as SavedIllustrationJob).updatedAt === 'number' &&
-      (item as SavedIllustrationJob).updatedAt >= cutoff,
+      Boolean((item as SavedIllustrationJob).pendingPlan) &&
+      typeof (item as SavedIllustrationJob).updatedAt === 'number',
   )
 }
 
@@ -1193,20 +1199,33 @@ async function writeIllustrationJobs(
   try {
     await plugin.setIllustrationJobsData(jobs)
   } catch {
-    new Notice('配图任务状态暂时无法保存；请保持 Obsidian 打开并稍后重试', 7000)
+    throw new Error('配图任务状态暂时无法保存；请保持 Obsidian 打开并稍后重试')
   }
 }
 
 async function saveIllustrationJob(plugin: AiLinziPlugin, job: SavedIllustrationJob): Promise<void> {
-  const jobs = (await loadIllustrationJobs(plugin)).filter((item) => item.notePath !== job.notePath)
+  const jobs = plugin.getIllustrationJobsData().filter((raw) => {
+    const item = raw as SavedIllustrationJob
+    return job.requestId ? item.requestId !== job.requestId : item.notePath !== job.notePath
+  }) as SavedIllustrationJob[]
   jobs.push({ ...job, updatedAt: Date.now() })
   await writeIllustrationJobs(plugin, jobs)
 }
 
 async function clearIllustrationJob(plugin: AiLinziPlugin, notePath: string): Promise<void> {
-  const jobs = await loadIllustrationJobs(plugin)
-  const next = jobs.filter((item) => item.notePath !== notePath)
-  if (next.length !== jobs.length) await writeIllustrationJobs(plugin, next)
+  const jobs = plugin.getIllustrationJobsData() as SavedIllustrationJob[]
+  for (const job of jobs) {
+    if (job.notePath === notePath) {
+      job.pendingPlan = { cover: null, images: [] }
+      job.submittedSlot = undefined
+    }
+  }
+  await writeIllustrationJobs(plugin, jobs)
+}
+
+async function illustrationSlot(item: IllustrationPlanItem): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${item.anchor}|${item.title}`))
+  return `b${Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 8)}`
 }
 
 function illustrationFailureMessages(result: IllustrationGenerateResult | null): string[] {
@@ -1286,7 +1305,7 @@ class IllustrationResumeModal extends Modal {
   onOpen() {
     this.titleEl.setText('继续上次未完成的配图?')
     this.contentEl.createEl('p', {
-      text: `检测到这篇文章还有 ${this.remaining} 张图片未完成。继续补图不会重新生成方案，也不会重做已经成功的图片。`,
+      text: `继续处理这篇文章的 ${this.remaining} 张配图。已有图片会直接找回并补齐下载或插入。继续补图不会重新生成方案，也不会重做已经成功的图片。`,
       cls: 'ai-linzi-plan-intro',
     })
     new Setting(this.contentEl)
@@ -1636,7 +1655,18 @@ export async function insertChatIllustrationIntoNote(
   return path
 }
 
+const activeIllustrations = new WeakSet<AiLinziPlugin>()
+
 export async function runArticleIllustration(plugin: AiLinziPlugin) {
+  if (activeIllustrations.has(plugin)) {
+    new Notice('已有配图任务正在处理，请等待本轮完成')
+    return
+  }
+  activeIllustrations.add(plugin)
+  try { await runArticleIllustrationTask(plugin) } finally { activeIllustrations.delete(plugin) }
+}
+
+async function runArticleIllustrationTask(plugin: AiLinziPlugin) {
   const note = await getActiveNote(plugin)
   if (!note) return
   const prepared = prepareWechatArticle(note.text)
@@ -1650,7 +1680,8 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
   }
   const fingerprint = illustrationArticleFingerprint(article)
   const resumable = (await loadIllustrationJobs(plugin)).find(
-    (job) => job.notePath === note.file.path && job.articleFingerprint === fingerprint,
+    (job) => job.notePath === note.file.path && job.articleFingerprint === fingerprint &&
+      (Boolean(job.pendingPlan.cover) || job.pendingPlan.images.length > 0),
   )
   let count = 3
   let confirmed: IllustrationPlan | null = null
@@ -1698,116 +1729,106 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
       }
     }
 
-    // 方案只存插件目录中的短期恢复状态，不写进用户正文或输出文件夹。
-    // 生图连接波动后再次运行本技能，会直接续跑剩余图片，不重新规划。
-    await saveIllustrationJob(plugin, {
-      notePath: note.file.path,
-      articleFingerprint: fingerprint,
-      articleTitle,
-      count,
-      requestId: taskRequestId,
-      pendingPlan: confirmed,
-      updatedAt: Date.now(),
-    })
-
-    const folder = normalizePath(
+    const folder = resumable?.folder || normalizePath(
       `${plugin.settings.outputFolder || 'AI霖子输出'}/公众号文章/配图/${today()}_${sanitizeTitle(note.file.basename)}`,
     )
-    await ensureFolder(plugin, folder)
+    const job: SavedIllustrationJob = {
+      notePath: note.file.path, articleFingerprint: fingerprint, articleTitle, count,
+      requestId: taskRequestId, pendingPlan: confirmed, folder,
+      deliveryImages: resumable?.requestId === taskRequestId ? (resumable.deliveryImages ?? []) : [],
+      submittedSlot: resumable?.requestId === taskRequestId ? resumable.submittedSlot : undefined,
+      updatedAt: Date.now(),
+    }
+    await saveIllustrationJob(plugin, job)
+    const assets = job.deliveryImages!
+    const slots: { key: string; plan: IllustrationPlan; title: string; anchor: string; kind: 'cover' | 'body' }[] = []
+    if (confirmed.cover) slots.push({ key: 'cover', plan: { cover: confirmed.cover, images: [] }, title: confirmed.cover.title, anchor: '', kind: 'cover' })
+    for (const item of confirmed.images) slots.push({ key: await illustrationSlot(item), plan: { cover: null, images: [item] }, title: item.title, anchor: item.anchor, kind: 'body' })
 
-    const generating = new Notice('🤖 AI霖子正在生成文章配图…（多张高清图约需 2—8 分钟，可继续使用 Obsidian，请勿退出）', 0)
-    const characterReferenceImageDataUrl = await configuredIllustrationCharacterReference(plugin)
-    let pendingPlan: IllustrationPlan = confirmed
-    let generatedCover: IllustrationGenerateResult['cover'] = null
-    const generatedImages = new Map<string, NonNullable<IllustrationGenerateResult['images']>[number]>()
-    let lastResult: IllustrationGenerateResult | null = null
-    try {
-      // 服务端会保留本轮成功图并返回 failedPlan。插件只重试失败项，不再把已经成功的
-      // 图片整组重画；最多三轮，覆盖临时限流、单张错字或质检偶发失败。
-      for (let round = 1; round <= 3; round++) {
-        if (round > 1) generating.setMessage(`文章配图：正在补齐第 ${round} 轮（只重试缺失图片）…`)
-        const result = await callImageApi<IllustrationGenerateResult>(
-          plugin,
-          ARTICLE_ILLUSTRATION_API,
-          {
-            article: clip(article, 20_000, '文章'),
-            articleTitle,
-            count,
-            mode: 'generate',
-            plan: pendingPlan,
-            characterReferenceImageDataUrl,
-          },
-          taskRequestId,
-        )
-        lastResult = result
-        if (result.cover?.imageUrl) generatedCover = result.cover
-        for (const image of result.images ?? []) {
-          if (image.imageUrl) generatedImages.set(image.anchor, image)
-        }
-        if (result.status !== 'partial' || !result.failedPlan) break
-        pendingPlan = result.failedPlan
-        await saveIllustrationJob(plugin, {
-          notePath: note.file.path,
-          articleFingerprint: fingerprint,
-          articleTitle,
-          count,
-          requestId: taskRequestId,
-          pendingPlan,
-          updatedAt: Date.now(),
-        })
+    // 先领取原图，不要求余额，也不重新提交生成。旧版保留的任务编号同样可以恢复。
+    const recovered = await plugin.api(`${ILLUSTRATION_RESULTS_API}?taskId=${encodeURIComponent(taskRequestId)}`) as {
+      images: { imageId: string; imageUrl: string | null }[]
+    }
+    for (const image of recovered.images) {
+      const slot = slots.find((item) => image.imageId.endsWith(`-${item.key}`))
+      if (slot && image.imageUrl && !assets.some((item) => item.imageId === image.imageId)) {
+        assets.push({ imageId: image.imageId, imageUrl: image.imageUrl, title: slot.title, anchor: slot.anchor, kind: slot.kind })
       }
-    } finally {
-      generating.hide()
     }
-    const data: IllustrationGenerateResult = {
-      ...lastResult,
-      cover: generatedCover,
-      images: confirmed.images
-        .map((item) => generatedImages.get(item.anchor))
-        .filter((item): item is NonNullable<typeof item> => Boolean(item)),
+    await saveIllustrationJob(plugin, job)
+    const generating = new Notice('正在逐张生成并保存配图；已完成图片会立即保留。', 0)
+    const deliveryErrors: string[] = []
+    let generationError = ''
+    try {
+      const characterReferenceImageDataUrl = await configuredIllustrationCharacterReference(plugin)
+      for (let index = 0; index < slots.length; index++) {
+        const slot = slots[index]
+        let asset = assets.find((item) => item.imageId.endsWith(`-${slot.key}`))
+        if (!asset) {
+          if (job.submittedSlot) {
+            generationError = '上一次图片请求的结果尚待确认，请在“找回已生成图片”中重新读取；不会自动重画'
+            break
+          }
+          generating.setMessage(`正在生成第 ${index + 1}/${slots.length} 张：${slot.title}`)
+          job.submittedSlot = slot.key
+          await saveIllustrationJob(plugin, job)
+          let result: IllustrationGenerateResult
+          try {
+            // 每个请求只生一张；传输中断只领取结果，不自动重发可能仍在运行的生成。
+            result = await callImageApi<IllustrationGenerateResult>(plugin, ARTICLE_ILLUSTRATION_API, {
+              article: clip(article, 20_000, '文章'), articleTitle, count, mode: 'generate',
+              plan: slot.plan, characterReferenceImageDataUrl,
+            }, taskRequestId)
+          } catch (error) {
+            const status = (error as { status?: number })?.status
+            if (status && status >= 400 && status < 500) {
+              job.submittedSlot = undefined
+              await saveIllustrationJob(plugin, job)
+            }
+            generationError = imageFailureMessage(error instanceof Error ? error.message : String(error))
+            break
+          }
+          const output = slot.kind === 'cover' ? result.cover : result.images?.[0]
+          if (!output?.imageUrl) {
+            job.submittedSlot = undefined
+            await saveIllustrationJob(plugin, job)
+            generationError = illustrationFailureMessages(result).join('；') || '本张图片未完成，可再次运行“文章配图”可直接继续补图'
+            break
+          }
+          asset = { imageId: illustrationImageId(output.imageUrl), imageUrl: output.imageUrl,
+            title: slot.title, anchor: slot.anchor, kind: slot.kind }
+          if (!asset.imageId) throw new Error('图片已生成，但领取编号缺失，请打开“找回已生成图片”')
+          assets.push(asset)
+          job.submittedSlot = undefined
+          // 先保存 URL 和任务状态，再下载文件，下载失败也不能丢失恢复入口。
+          await saveIllustrationJob(plugin, job)
+        } else if (job.submittedSlot === slot.key) {
+          job.submittedSlot = undefined
+        }
+        generating.setMessage(`正在保存第 ${index + 1}/${slots.length} 张：${slot.title}`)
+        try {
+          await saveIllustrationAsset(plugin, asset, folder)
+          await saveIllustrationJob(plugin, job)
+          await insertIllustrationAssets(plugin, note.file.path, [asset])
+        } catch (error) {
+          deliveryErrors.push(error instanceof Error ? error.message : String(error))
+          // 下载或写入失败时停止后续生图，保留已生成成果和剩余方案。
+          break
+        }
+      }
+    } finally { generating.hide() }
+    const expectedTotal = slots.length
+    const actualTotal = assets.filter((asset) => Boolean(asset.savedPath)).length
+    const complete = actualTotal === expectedTotal && !generationError && deliveryErrors.length === 0
+    const saved = assets.filter((asset) => asset.kind === 'body' && asset.savedPath).map((asset) => ({ path: asset.savedPath!, anchor: asset.anchor }))
+    const coverPath = assets.find((asset) => asset.kind === 'cover')?.savedPath ?? null
+    const hits = saved.filter((item) => article.includes(item.anchor)).length
+    if (!complete) {
+      await saveIllustrationJob(plugin, job)
+      new Notice(`已保存 ${actualTotal}/${expectedTotal} 张。${generationError || deliveryErrors[0] || '尚有图片未完成'}。可从工作台“找回已生成图片”重新下载和插入。`, 15000)
+      openIllustrationRecovery(plugin)
+      return
     }
-    const imgs = data.images ?? []
-    const expectedTotal = confirmed.images.length + (confirmed.cover ? 1 : 0)
-    const actualTotal = imgs.length + (data.cover ? 1 : 0)
-    const complete = imgs.length === confirmed.images.length && Boolean(data.cover) === Boolean(confirmed.cover)
-    if (actualTotal === 0) {
-      const reason = illustrationFailureMessages(lastResult).slice(0, 2).join('；')
-      const supportId = lastResult?.requestId ? `（问题编号：${lastResult.requestId}）` : ''
-      throw new Error(
-        `${reason || '图片生成服务本轮没有返回可用图片，请稍后重试'}${supportId}。未完成任务已保留，再次运行“文章配图”可直接继续补图。`,
-      )
-    }
-
-    // 封面单独处理:存 00_封面,插到文章最顶部(发草稿箱时自动成为封面)
-    let coverPath: string | null = null
-    if (data.cover) {
-      const bin = await fetchImageBinary(data.cover.imageUrl)
-      coverPath = uniqueVaultPath(
-        plugin,
-        normalizePath(`${folder}/${today()}_00_封面_${sanitizeTitle(data.cover.title) || '封面'}.png`),
-      )
-      await plugin.app.vault.createBinary(coverPath, bin)
-    }
-
-    const saved: { path: string; anchor: string }[] = []
-    for (let i = 0; i < imgs.length; i++) {
-      const bin = await fetchImageBinary(imgs[i].imageUrl)
-      const path = uniqueVaultPath(
-        plugin,
-        normalizePath(`${folder}/${today()}_${String(i + 1).padStart(2, '0')}_${sanitizeTitle(imgs[i].title) || '配图'}.png`),
-      )
-      await plugin.app.vault.createBinary(path, bin)
-      saved.push({ path, anchor: imgs[i].anchor })
-    }
-
-    let hits = 0
-    await plugin.app.vault.process(note.file, (content) => {
-      const r = insertEmbeds(content, saved)
-      let out = r.out
-      hits = r.hits
-      if (coverPath) out = insertCoverEmbed(out, coverPath)
-      return out
-    })
     const styleReferencePaths = [
       ...saved.map((item) => item.path),
       ...(coverPath ? [coverPath] : []),
@@ -1831,6 +1852,7 @@ export async function runArticleIllustration(plugin: AiLinziPlugin) {
   } catch (e) {
     planning?.hide()
     new Notice(`❌ 文章配图:${imageFailureMessage(e instanceof Error ? e.message : String(e))}`, 10000)
+    if (confirmed) openIllustrationRecovery(plugin)
   }
 }
 

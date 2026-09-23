@@ -1,3 +1,4 @@
+import { openIllustrationRecovery } from './illustration-recovery'
 import { pruneVaultRuns, loadVaultRun, saveVaultRun, vaultRunMemory, canResumeVaultRun, recoverableVaultStep, type VaultRunJournal } from './vault-run-journal'
 import { VAULT_WORK_NAMES, runVaultWorkTool, recordWorkRead } from './vault-work-tools'
 /**
@@ -1731,6 +1732,12 @@ export default class AiLinziPlugin extends Plugin {
     })
 
     this.addCommand({
+      id: 'recover-illustration-images',
+      name: '找回已生成图片',
+      callback: () => openIllustrationRecovery(this),
+    })
+
+    this.addCommand({
       id: 'open-cockpit',
       name: '打开一人公司驾驶舱',
       callback: () => this.activateCockpit(),
@@ -2173,7 +2180,7 @@ export default class AiLinziPlugin extends Plugin {
   }
 
   async setIllustrationJobsData(jobs: unknown[]): Promise<void> {
-    this.savedIllustrationJobs = jobs.slice(-20)
+    this.savedIllustrationJobs = jobs.slice(-100)
     await this.saveSettings()
   }
 
@@ -2642,9 +2649,37 @@ export default class AiLinziPlugin extends Plugin {
             ? '生成时间超过服务上限。系统没有写入残缺图片，请稍后重试。'
             : `请求失败(${res.status})`
       const supportId = typeof data.requestId === 'string' ? `（问题编号：${data.requestId}）` : ''
-      throw new Error(`${msg}${supportId}`)
+      const error = new Error(`${msg}${supportId}`) as Error & { status?: number }
+      error.status = res.status
+      throw error
     }
     return data
+  }
+
+  /** 同域、带身份的原图领取；与 AI 生成分离，失败只重试下载。 */
+  async downloadIllustration(imageId: string): Promise<ArrayBuffer> {
+    if (!/^[a-zA-Z0-9_-]{8,80}$/.test(imageId)) throw new Error('图片编号无效')
+    const token = this.getApiToken()
+    if (!token || !this.settings.serverUrl) throw new Error(NOT_CONNECTED_MSG)
+    let lastError = '图片暂时无法下载'
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await requestUrl({
+          url: `${this.settings.serverUrl.replace(/\/+$/, '')}/api/plugin/v1/article-illustration/results?imageId=${encodeURIComponent(imageId)}&download=1`,
+          headers: { Authorization: `Bearer ${token}`, 'X-AI-Linzi-Plugin-Version': this.manifest.version },
+          throw: false,
+        })
+        if (response.status === 200 && /^image\/(png|jpeg|webp)/i.test(responseHeader(response.headers, 'Content-Type')) && response.arrayBuffer.byteLength > 0) {
+          return response.arrayBuffer
+        }
+        lastError = `图片下载暂未完成（${response.status}）`
+        if ([400, 401, 403, 404].includes(response.status)) break
+      } catch {
+        lastError = '图片下载连接中断'
+      }
+      if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)))
+    }
+    throw new Error(`${lastError}；原图仍保存在云端，请稍后点“重新下载”`)
   }
 
   async getCapabilities(force = false, signal?: AbortSignal): Promise<PluginCapabilities> {
@@ -3252,6 +3287,8 @@ class ChatView extends ItemView {
 
   /** 「工作台」菜单:内容看板 + CEO驾驶舱。都是打开已有视图,不产生调用与积分。 */
   private buildWorkbenchMenu(menu: Menu): void {
+    menu.addItem((item) => item.setTitle('找回已生成图片').setIcon('images')
+      .onClick(() => openIllustrationRecovery(this.plugin)))
     menu.addItem((item) =>
       item
         .setTitle('内容看板')
