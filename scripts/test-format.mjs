@@ -5,21 +5,26 @@ import { build } from 'esbuild'
 
 const require = createRequire(import.meta.url)
 
-async function loadTs(entry, withObsidianStub = false) {
+async function loadTs(entry, withObsidianStub = false, harness) {
   const plugins = withObsidianStub
     ? [
         {
           name: 'obsidian-stub',
           setup(ctx) {
+            if (harness) {
+              ctx.onResolve({ filter: /wechat-theme-picker$/ }, () => ({ path: 'picker', namespace: 'picker-stub' }))
+              ctx.onLoad({ filter: /.*/, namespace: 'picker-stub' }, () => ({ loader: 'js', contents: 'export const pickWechatTheme = (plugin, preview) => harness.pick(plugin, preview)' }))
+            }
             ctx.onResolve({ filter: /^obsidian$/ }, () => ({ path: 'obsidian', namespace: 'stub' }))
             ctx.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
               loader: 'js',
               contents: `
                 export class Notice { hide() {} }
-                export class TFile {}
+                export const TFile = harness?.TFile ?? class {}
                 export class Modal {}
                 export class Setting {}
-                export const requestUrl = async () => ({})
+                export const sanitizeHTMLToDom = () => {};
+                export const requestUrl = async (options) => harness ? harness.requestUrl(options) : ({})
                 export const normalizePath = (value) => value
               `,
             }))
@@ -37,7 +42,7 @@ async function loadTs(entry, withObsidianStub = false) {
     logLevel: 'silent',
   })
   const module = { exports: {} }
-  new Function('module', 'exports', 'require', result.outputFiles[0].text)(module, module.exports, require)
+  new Function('module', 'exports', 'require', 'harness', result.outputFiles[0].text)(module, module.exports, require, harness)
   return module.exports
 }
 
@@ -219,7 +224,7 @@ const warmHtml = publisher.mdToWechatHtml(themeSample, () => '', false, warm)
 assert.match(warmHtml, /<h2 style="[^"]*border-radius:6px;background:/, '暖橙杂志的大标题应为底色块变体')
 
 const publishSource = await readFile(new URL('../src/publish.ts', import.meta.url), 'utf8')
-assert.match(publishSource, /pickWechatTheme\(plugin\)/, '排版与发草稿箱入口必须先经过主题选择卡')
+assert.match(publishSource, /pickArticleWechatTheme\(plugin, note\)/, '排版与发草稿箱入口必须先经过主题选择卡')
 const pickerSource = await readFile(new URL('../src/wechat-theme-picker.ts', import.meta.url), 'utf8')
 assert.match(pickerSource, /wechatThemeId/, '主题选择卡必须记住上次选择')
 const sendDraftStart = publishSource.indexOf('export async function sendToWechatDraft')
@@ -236,3 +241,96 @@ assert.doesNotMatch(
 )
 
 console.log('format regression tests passed')
+
+// 中文编号标题与导入的 HTML 必须真正使用当前主题，不能只让示例卡好看。
+const numbered = '一、第一节标题\n\n第一节合成正文。\n\n**二、第二节标题**\n\n第二节合成正文。\n\n（一）一个子标题\n\n子标题正文。'
+const imported = '<section style="color:black"><h2 id="chapter" class="MsoHeading2" style="color:black">导入标题</h2><p class="MsoNormal" style="font-size:12px"><span style="color:red"><font color="red">合成正文</font></span><b>强调文字</b></p></section>'
+for (const theme of themes.WECHAT_THEMES) {
+  const result = publisher.mdToWechatHtml(numbered, () => '', false, theme)
+  assert.equal((result.match(/<h2\b/g) ?? []).length, 2, `${theme.id}: 两个中文编号主标题`)
+  assert.equal((result.match(/<h3\b/g) ?? []).length, 1, `${theme.id}: 中文括号子标题`)
+  assert.ok(result.includes(`color:${theme.accent}`))
+  const restored = publisher.mdToWechatHtml(imported, () => '', false, theme)
+  assert.match(restored, /<h2 id="chapter" style=/)
+  assert.ok(restored.includes(`color:${theme.accent}`))
+  assert.doesNotMatch(restored, /Mso|color:black|color:red|font-size:12px|<font|<span/)
+  assert.match(restored, /<strong style=/)
+  assert.doesNotMatch(restored, /<[^>]*\bstyle="[^">]*"[^>]*\bstyle=/, '不能重复写 style 属性')
+}
+for (const md of [
+  '一、这是一句正文，不是标题。',
+  '一、第一项\n二、第二项',
+  '> 一、引用里的编号',
+  '- 一、列表里的编号',
+  '```html\n<p>一、代码示例</p>\n```',
+  '<table><tr><td><p>一、表格内容</p></td></tr></table>',
+  '一、' + '很长的段落'.repeat(20),
+]) {
+  assert.doesNotMatch(publisher.mdToWechatHtml(md, () => ''), /<h[23]\b/, '不得把正文/引用/列表/表格/代码升为章节')
+}
+const keepLinks = publisher.mdToWechatHtml('<p class="x">正文 <a href="https://example.com?q=1" title="literal style=blue > text">链接</a></p>\n<ol start="3"><li value="5">项目</li></ol>', () => '')
+assert.match(keepLinks, /href="https:\/\/example.com\?q=1"/)
+assert.match(keepLinks, /title="literal style=blue > text"/)
+assert.match(keepLinks, /<ol start="3" style=/)
+assert.match(keepLinks, /<li value="5" style=/)
+const importedParagraph = publisher.mdToWechatHtml('<p id="section" class="MsoNormal">一、导入的小节</p><img src="https://example.com/image.png" style="width:80%;height:auto">', () => '')
+assert.match(importedParagraph, /<h2 id="section" style=/)
+assert.match(importedParagraph, /style="width:80%;height:auto"/)
+assert.match(publishSource, /render: \(theme\) => mdToWechatHtml\(note.body/)
+assert.match(pickerSource, /sanitizeHTMLToDom/)
+console.log('wechat source compatibility tests passed')
+
+
+// 真正调用发送函数，拦截微信边界；不能只检查字符串接线或只验证转换器。
+class DraftFile { constructor(path) { this.path = path; this.name = path; this.basename = path.replace(/\.md$/, '') } }
+for (const theme of themes.WECHAT_THEMES) {
+  const source = new DraftFile('synthetic-original.md')
+  const other = new DraftFile('synthetic-other.md')
+  const cover = new DraftFile('assets/cover.png')
+  const body = `![[assets/cover.png]]\n\n${numbered}\n\n${imported}`
+  let current = source
+  let previewHtml = ''
+  let payload
+  let savedTarget
+  let count = 0
+  const harness = {
+    TFile: DraftFile,
+    pick: async (_plugin, preview) => {
+      previewHtml = preview.render(theme)
+      current = other // 在选模板时切换当前笔记，来源必须仍锁定原文章。
+      return theme
+    },
+    requestUrl: async (options) => {
+      count++
+      if (options.url.includes('/token?')) return { json: { access_token: 'synthetic-token' } }
+      if (options.url.includes('/material/add_material?')) return { json: { media_id: 'synthetic-cover' } }
+      if (options.url.includes('/draft/add?')) {
+        payload = JSON.parse(options.body)
+        return { json: { media_id: 'synthetic-draft' } }
+      }
+      throw new Error('unexpected request')
+    },
+  }
+  const publish = await loadTs('src/publish.ts', true, harness)
+  const plugin = {
+    settings: { wechatAppId: `synthetic-${theme.id}`, brandFooter: false },
+    getWechatAppSecret: () => 'synthetic-secret',
+    rememberCurrentMarkdownFile: () => current,
+    app: {
+      vault: { cachedRead: async (file) => { assert.equal(file, source); return body }, readBinary: async () => new ArrayBuffer(8) },
+      metadataCache: { getFirstLinkpathDest: () => cover, getFileCache: () => ({ frontmatter: { title: '合成验收文章' } }) },
+      fileManager: { processFrontMatter: async (file, update) => { savedTarget = file; const fm = {}; update(fm); assert.equal(fm['公众号草稿ID'], 'synthetic-draft') } },
+    },
+  }
+  await publish.sendToWechatDraft(plugin)
+  assert.equal(count, 3, '只发生令牌、封面上传和草稿三个预期请求')
+  assert.equal(savedTarget, source, '状态回写原笔记')
+  assert.equal(payload.articles[0].content, previewHtml, '无正文图的完整预览必须与发送载荷逐字一致')
+  assert.ok(payload.articles[0].content.includes(`color:${theme.accent}`))
+  assert.equal((payload.articles[0].content.match(/<h2\b/g) ?? []).length, 3)
+  current = source
+  harness.pick = async () => null
+  await publish.sendToWechatDraft(plugin)
+  assert.equal(count, 3, '取消模板选择必须零请求')
+}
+console.log('wechat draft payload and source-lock tests passed')

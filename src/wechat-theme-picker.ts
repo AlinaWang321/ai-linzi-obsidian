@@ -6,7 +6,7 @@
  * 迷你预览与正式排版共用 wechat-themes.ts 同一份内联样式,只按比例缩小
  * 字号,颜色与结构所见即所得。
  */
-import { Modal, type App } from 'obsidian'
+import { Modal, Notice, sanitizeHTMLToDom, type App } from 'obsidian'
 import type AiLinziPlugin from './main'
 import {
   WECHAT_THEMES,
@@ -41,7 +41,7 @@ class WechatThemePickerModal extends Modal {
   private resolve!: (theme: WechatTheme | null) => void
   readonly result: Promise<WechatTheme | null>
 
-  constructor(app: App, private plugin: AiLinziPlugin) {
+  constructor(app: App, private plugin: AiLinziPlugin, private preview?: WechatArticlePreview) {
     super(app)
     this.selectedId = getWechatTheme(plugin.settings.wechatThemeId).id
     this.result = new Promise((r) => (this.resolve = r))
@@ -52,7 +52,9 @@ class WechatThemePickerModal extends Modal {
     this.titleEl.setText('选择公众号排版主题')
     this.modalEl.addClass('ai-linzi-wtheme-modal')
     const list = this.contentEl.createDiv({ cls: 'ai-linzi-wtheme-list' })
+    if (this.preview) list.addClass('ai-linzi-wtheme-list-compact')
     const cards = new Map<string, HTMLElement>()
+    let refreshPreview = () => {}
 
     for (const theme of WECHAT_THEMES) {
       const card = list.createDiv({ cls: 'ai-linzi-wtheme-card' })
@@ -64,30 +66,58 @@ class WechatThemePickerModal extends Modal {
       }
       head.createSpan({ cls: 'ai-linzi-wtheme-name', text: theme.name })
       head.createSpan({ cls: 'ai-linzi-wtheme-tagline', text: theme.tagline })
-      renderMiniPreview(card, theme)
+      if (!this.preview) renderMiniPreview(card, theme)
       card.addEventListener('click', () => {
         this.selectedId = theme.id
         for (const [id, el] of cards) el.toggleClass('is-selected', id === this.selectedId)
+        refreshPreview()
       })
     }
     for (const [id, el] of cards) el.toggleClass('is-selected', id === this.selectedId)
 
+    if (this.preview) {
+      this.contentEl.createDiv({ cls: 'ai-linzi-wtheme-hint', text: `当前文章：${this.preview.title}` })
+      const previewEl = this.contentEl.createDiv({ cls: 'ai-linzi-wtheme-preview ai-linzi-wtheme-article' })
+      refreshPreview = () => {
+        const scrollTop = previewEl.scrollTop
+        previewEl.empty()
+        const fragment = sanitizeHTMLToDom(this.preview!.render(getWechatTheme(this.selectedId)))
+        // 预览只显示排版与图片位置，不请求任何外部图片或提前上传素材。
+        for (const img of Array.from(fragment.querySelectorAll('img'))) {
+          img.replaceWith(previewEl.ownerDocument.createTextNode('📷 正文配图'))
+        }
+        previewEl.appendChild(fragment)
+        previewEl.scrollTop = scrollTop
+      }
+      refreshPreview()
+    }
+
     this.contentEl.createDiv({
       cls: 'ai-linzi-wtheme-hint',
-      text: '选择会被记住,下次默认用它;「一键复制」和「发到草稿箱」用同一套主题。',
+      text: this.preview
+        ? '预览使用当前文章；图片显示为占位。选择会被记住，复制和发草稿箱使用同一套排版。'
+        : '选择会被记住,下次默认用它;「一键复制」和「发到草稿箱」用同一套主题。',
     })
     const actions = this.contentEl.createDiv({ cls: 'ai-linzi-wtheme-actions' })
     actions.createEl('button', { text: '取消' }).addEventListener('click', () => this.close())
-    actions.createEl('button', { text: '就用这个排版', cls: 'mod-cta' }).addEventListener('click', () => {
+    const confirm = actions.createEl('button', { text: '就用这个排版', cls: 'mod-cta' })
+    confirm.addEventListener('click', () => {
       void (async () => {
-        this.submitted = true
+        if (confirm.disabled) return
+        confirm.disabled = true
         const theme = getWechatTheme(this.selectedId)
-        if (this.plugin.settings.wechatThemeId !== theme.id) {
+        const previousId = this.plugin.settings.wechatThemeId
+        try {
           this.plugin.settings.wechatThemeId = theme.id
           await this.plugin.saveSettings()
+          this.submitted = true
+          this.close()
+          this.resolve(theme)
+        } catch {
+          this.plugin.settings.wechatThemeId = previousId
+          confirm.disabled = false
+          new Notice('排版选择保存失败，请重试')
         }
-        this.close()
-        this.resolve(theme)
       })()
     })
   }
@@ -99,6 +129,11 @@ class WechatThemePickerModal extends Modal {
 }
 
 /** 弹出主题选择卡;确认返回所选主题并记住,取消/关闭返回 null。 */
-export function pickWechatTheme(plugin: AiLinziPlugin): Promise<WechatTheme | null> {
-  return new WechatThemePickerModal(plugin.app, plugin).result
+export interface WechatArticlePreview {
+  title: string
+  render: (theme: WechatTheme) => string
+}
+
+export function pickWechatTheme(plugin: AiLinziPlugin, preview?: WechatArticlePreview): Promise<WechatTheme | null> {
+  return new WechatThemePickerModal(plugin.app, plugin, preview).result
 }
