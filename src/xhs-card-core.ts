@@ -93,10 +93,7 @@ export function composeGeneratedXhsNote(
 }
 
 function inlineText(text: string): { text: string; boldRanges: XhsBoldRange[] } {
-  const source = text
-    .replace(/!\[\[[^\]]+\]\]/g, '')
-    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+  const source = replaceMarkdownLinks(text.replace(/!\[\[[^\]]+\]\]/g, ''))
     .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target: string, alias?: string) => alias || target)
     .replace(/<[^>]+>/g, '')
     .replace(/`([^`]+)`/g, '$1')
@@ -151,11 +148,144 @@ function splitParagraphs(markdown: string): string[] {
     .filter(Boolean)
 }
 
-const IMAGE_TOKEN_PATTERN =
-  /!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]+\)|<img\b[^>]*\bsrc\s*=\s*["'][^"']+["'][^>]*>/gi
+/**
+ * 读取 Markdown 链接/图片的 `(目标)` 部分，起点必须是 `(`。
+ *
+ * 不能用 `[^)]+`：公众号剪藏里常见的懒加载占位图是
+ * `data:image/svg+xml,...translate(-249.000000, -126.000000)...`，
+ * 目标里本身带括号。旧正则在第一个 `)` 截断，剩下的半截 SVG 被当成正文
+ * 画进卡片（客户反馈「卡片里莫名有链接」）。这里按 CommonMark 的平衡括号规则读取。
+ */
+function readLinkDestination(text: string, open: number): { target: string; end: number } | null {
+  if (text[open] !== '(') return null
+  let index = open + 1
+  while (text[index] === ' ' || text[index] === '\t') index++
+  if (text[index] === '<') {
+    const close = text.indexOf('>', index)
+    if (close < 0 || text.slice(index, close).includes('\n')) return null
+    const target = text.slice(index + 1, close)
+    const end = text.indexOf(')', close)
+    if (end < 0 || text.slice(close, end).includes('\n')) return null
+    return { target, end: end + 1 }
+  }
+  const start = index
+  let depth = 0
+  let quote = ''
+  for (; index < text.length; index++) {
+    const char = text[index]
+    if (char === '\n') return null
+    if (quote) {
+      if (char === quote) quote = ''
+      continue
+    }
+    if (char === '\\') {
+      index++
+      continue
+    }
+    if (char === '(') depth++
+    else if (char === ')') {
+      if (depth === 0) {
+        const raw = text.slice(start, index).trim()
+        const target = /^data:/i.test(raw) ? raw : raw.replace(/\s+["'][^"']*["']$/, '')
+        return { target: target.trim(), end: index + 1 }
+      }
+      depth--
+    } else if (
+      (char === '"' || char === "'") &&
+      /\s/.test(text[index - 1] ?? '') &&
+      !/^data:/i.test(text.slice(start, index))
+    ) {
+      quote = char
+    }
+  }
+  return null
+}
+
+interface MarkdownLinkToken {
+  start: number
+  end: number
+  image: boolean
+  label: string
+  target: string
+}
+
+/** 从 `index` 处读取 `![alt](src)`、`[![alt](src)](href)` 或 `[text](href)`。 */
+function readMarkdownLink(text: string, index: number): MarkdownLinkToken | null {
+  const image = text[index] === '!'
+  const labelOpen = image ? index + 1 : index
+  if (text[labelOpen] !== '[' || text[labelOpen + 1] === '[') return null
+  if (!image && text[labelOpen + 1] === '!') {
+    // 带链接的图片 `[![alt](src)](href)`：整体视为图片，外层链接丢弃。
+    const inner = readMarkdownLink(text, labelOpen + 1)
+    if (inner?.image && text[inner.end] === ']') {
+      const outer = readLinkDestination(text, inner.end + 1)
+      if (outer) return { ...inner, start: index, end: outer.end }
+    }
+  }
+  const labelClose = text.indexOf(']', labelOpen + 1)
+  if (labelClose < 0 || text.slice(labelOpen, labelClose).includes('\n')) return null
+  const destination = readLinkDestination(text, labelClose + 1)
+  if (!destination) return null
+  return {
+    start: index,
+    end: destination.end,
+    image,
+    label: text.slice(labelOpen + 1, labelClose),
+    target: destination.target,
+  }
+}
+
+/** 图片去掉，普通链接保留文字。 */
+function replaceMarkdownLinks(text: string): string {
+  let output = ''
+  let cursor = 0
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] !== '[' && !(text[index] === '!' && text[index + 1] === '[')) continue
+    const token = readMarkdownLink(text, index)
+    if (!token) continue
+    output += text.slice(cursor, index) + (token.image ? '' : token.label)
+    cursor = token.end
+    index = token.end - 1
+  }
+  return output + text.slice(cursor)
+}
+
+const NON_MARKDOWN_IMAGE_PATTERN =
+  /!\[\[[^\]]+\]\]|<img\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi
 
 function separateImageTokens(markdown: string): string {
-  return markdown.replace(IMAGE_TOKEN_PATTERN, (match) => `\n\n${match}\n\n`)
+  const ranges: { start: number; end: number }[] = []
+  for (let index = 0; index < markdown.length; index++) {
+    if (markdown[index] !== '[' && markdown[index] !== '!') continue
+    const token = readMarkdownLink(markdown, index)
+    if (!token) continue
+    if (token.image) ranges.push({ start: token.start, end: token.end })
+    index = token.end - 1
+  }
+  for (const match of markdown.matchAll(NON_MARKDOWN_IMAGE_PATTERN)) {
+    const start = match.index ?? 0
+    const end = start + match[0].length
+    if (!ranges.some((range) => start < range.end && end > range.start)) ranges.push({ start, end })
+  }
+  ranges.sort((a, b) => a.start - b.start)
+  let output = ''
+  let cursor = 0
+  for (const range of ranges) {
+    output += `${markdown.slice(cursor, range.start)}\n\n${markdown.slice(range.start, range.end)}\n\n`
+    cursor = range.end
+  }
+  return output + markdown.slice(cursor)
+}
+
+/** 公众号懒加载占位图（1×1 透明 SVG）等内嵌 SVG 不是正文配图，也画不出来。 */
+function isPlaceholderImageSource(source: string): boolean {
+  return /^data:image\/svg\+xml/i.test(source.trim())
+}
+
+function htmlAttribute(tag: string, name: string): string {
+  const pattern = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i')
+  const match = pattern.exec(tag)
+  return (match?.[1] ?? match?.[2] ?? match?.[3] ?? '').trim()
 }
 
 function imageBlock(markdown: string): XhsCardBlock | null {
@@ -171,22 +301,20 @@ function imageBlock(markdown: string): XhsCardBlock | null {
       imageSource: cleanTarget,
     }
   }
-  const standard = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(source)
-  if (standard) {
-    const rawTarget = standard[2].trim()
-    const target = rawTarget.startsWith('<')
-      ? rawTarget.slice(1, rawTarget.indexOf('>'))
-      : rawTarget.replace(/\s+["'][^"']*["']\s*$/, '')
-    if (!target) return null
+  const standard = source.startsWith('!') || source.startsWith('[![') ? readMarkdownLink(source, 0) : null
+  if (standard?.image && standard.end === source.length) {
+    if (!standard.target) return null
     return {
       kind: 'image',
-      text: plainInline(standard[1]),
-      imageSource: target,
+      text: plainInline(standard.label),
+      imageSource: standard.target,
     }
   }
   if (/^<img\b/i.test(source)) {
-    const target = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(source)?.[1]?.trim() ?? ''
-    const alt = /\balt\s*=\s*["']([^"']*)["']/i.exec(source)?.[1] ?? ''
+    // 公众号 HTML：src 常是占位 SVG，真实地址在 data-src。
+    const candidates = [htmlAttribute(source, 'src'), htmlAttribute(source, 'data-src')]
+    const target = candidates.find((value) => value && !isPlaceholderImageSource(value)) ?? candidates[0]
+    const alt = htmlAttribute(source, 'alt')
     if (!target) return null
     return { kind: 'image', text: plainInline(alt), imageSource: target }
   }
@@ -247,7 +375,7 @@ export function parseXhsCardDocument(
   for (const part of splitParagraphs(separateImageTokens(lines.join('\n')))) {
     const image = imageBlock(part)
     if (image) {
-      blocks.push(image)
+      if (!isPlaceholderImageSource(image.imageSource ?? '')) blocks.push(image)
       continue
     }
     const partLines = part.split('\n').map((line) => line.trim()).filter(Boolean)

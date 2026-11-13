@@ -474,4 +474,31 @@ for (const match of actionsSource.matchAll(/pickXhsCardStyle\(plugin\)[\s\S]{0,1
   assert.match(match[0], /if \(!styleChoice\) return/, '取消选择必须在服务端调用前中止')
 }
 
+// 客户反馈（2026-11-13）：公众号剪藏文章有十几张图时，卡片里出现半截
+// `'%20fill='%23FFFFFF'%3E...%3C/svg%3E)` 链接文字。根因是懒加载占位 SVG 的
+// data URI 里带 `translate(-249.000000, -126.000000)`，旧正则在第一个 `)` 截断。
+{
+  const placeholder =
+    "data:image/svg+xml,%3C%3Fxml version='1.0' encoding='UTF-8'%3F%3E%3Csvg width='1px' height='1px' viewBox='0 0 1 1' version='1.1' xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'%3E%3Ctitle%3E%3C/title%3E%3Cg stroke='none' stroke-width='1' fill='none' fill-rule='evenodd' fill-opacity='0'%3E%3Cg transform='translate(-249.000000, -126.000000)' fill='%23FFFFFF'%3E%3Crect x='249' y='126' width='1' height='1'%3E%3C/rect%3E%3C/g%3E%3C/g%3E%3C/svg%3E"
+  const photos = Array.from({ length: 14 }, (_, i) => `https://mmbiz.qpic.cn/photo-${i}.jpg`)
+  const body = photos
+    .map((url, i) =>
+      i % 3 === 0
+        ? `![](${url})![](${placeholder})`
+        : i % 3 === 1
+          ? `[![图${i}](${url})](https://mp.weixin.qq.com/s/abc)`
+          : `<img src="${placeholder}" data-src="${url}" alt="图${i}">`,
+    )
+    .join('\n\n')
+  const clipped = cards.parseXhsCardDocument(
+    `# 内在成长营现场\n\n一段开场。\n\n${body}\n\n参考 [维基 (条目)](https://en.wikipedia.org/wiki/Foo_(bar)) 收尾。`,
+    '备用',
+  )
+  const images = clipped.blocks.filter((block) => block.kind === 'image')
+  assert.deepEqual(images.map((block) => block.imageSource), photos, '14 张真图按原顺序保留，占位 SVG 全部丢弃')
+  const texts = clipped.blocks.filter((block) => block.kind !== 'image').map((block) => block.text)
+  assert.deepEqual(texts, ['一段开场。', '参考 维基 (条目) 收尾。'], '正文不得出现链接残片')
+  for (const text of texts) assert.doesNotMatch(text, /%3E|svg|fill=|\]\(|https?:/i)
+}
+
 console.log('xhs card core regression tests passed')
